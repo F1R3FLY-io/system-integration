@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  service-1:
+    build:
+      context: ./services/service-1
+      dockerfile: Dockerfile.dev
+      target: development
+    environment:
+      - ENV=development
+      - LOG_LEVEL=debug
+      - DEBUG=true
+    volumes:
+      # Mount source code for hot reload
+      - ./services/service-1:/app
+      - /app/node_modules  # Exclude node_modules if Node.js service
+    command: npm run dev  # Override with dev command
+    profiles:
+      - dev
+
+  service-2:
+    build:
+      context: ./services/service-2
+      dockerfile: Dockerfile.dev
+      target: development
+    environment:
+      - ENV=development
+      - LOG_LEVEL=debug
+      - DEBUG=true
+    volumes:
+      # Mount source code for hot reload
+      - ./services/service-2:/app
+      - /app/node_modules
+    command: npm run dev
+    profiles:
+      - dev
+
+  postgres:
+    profiles:
+      - dev
+    environment:
+      - POSTGRES_PASSWORD=dev_password  # Different password for dev
+    ports:
+      - "5433:5432"  # Different port for dev to avoid conflicts
+
+  redis:
+    profiles:
+      - dev
+    command: redis-server --appendonly yes --requirepass dev_redis_pass
+
+  # Development tools
+  adminer:
+    image: adminer:latest
+    container_name: adminer
+    restart: unless-stopped
+    profiles:
+      - dev
+    networks:
+      - app-network
+    ports:
+      - "8080:8080"
+    environment:
+      - ADMINER_DEFAULT_SERVER=postgres
+
+  # Redis Commander for dev
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    restart: unless-stopped
+    profiles:
+      - dev
+    networks:
+      - app-network
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379:0:dev_redis_pass

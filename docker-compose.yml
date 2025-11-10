@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  # Example service 1
+  service-1:
+    build:
+      context: ./services/service-1
+      dockerfile: Dockerfile
+    container_name: service-1
+    restart: unless-stopped
+    networks:
+      - app-network
+    ports:
+      - "8001:8000"
+    environment:
+      - ENV=production
+      - LOG_LEVEL=info
+    volumes:
+      - service-1-data:/data
+
+  # Example service 2
+  service-2:
+    build:
+      context: ./services/service-2
+      dockerfile: Dockerfile
+    container_name: service-2
+    restart: unless-stopped
+    networks:
+      - app-network
+    ports:
+      - "8002:8000"
+    environment:
+      - ENV=production
+      - LOG_LEVEL=info
+    volumes:
+      - service-2-data:/data
+    depends_on:
+      - service-1
+
+  # Example database service
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    restart: unless-stopped
+    profiles:
+      - prod
+    networks:
+      - app-network
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=app_db
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  # Example cache service
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    profiles:
+      - prod
+    networks:
+      - app-network
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  service-1-data:
+  service-2-data:
+  postgres-data:
+  redis-data:

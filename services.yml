@@ -1,0 +1,6 @@
+# Service repositories configuration
+# Map service names to their git repository URLs
+
+repositories:
+  f1r3node: git@github.com:F1R3FLY-io/f1r3node.git
+  rust-client: git@github.com:F1R3FLY-io/rust-client.git
