@@ -11,6 +11,12 @@ repositories:
   rust-client:
     url: git@github.com:F1R3FLY-io/rust-client.git
     branch: main
+  f1r3sky-backend:
+    url: git@github.com:F1R3FLY-io/f1r3sky-backend.git
+    branch: main
+  f1r3sky:
+    url: git@github.com:F1R3FLY-io/f1r3sky.git
+    branch: main
 
 # Build configuration for services
 builds:
@@ -97,3 +103,101 @@ builds:
     # - Connects to F1R3FLY nodes (typically running in Docker)
     # - No containerization needed - runs locally
     # - Uses f1r3fly-models, f1r3fly-crypto, f1r3fly-rholang dependencies
+
+  f1r3sky-backend-bsky:
+    # AT Protocol AppView service (app.bsky.* API endpoints)
+    # Main build command
+    build_command: "pnpm install --frozen-lockfile && pnpm build"
+
+    # Docker build command for bsky service
+    docker_build_command: "docker build -f services/bsky/Dockerfile -t f1r3flyindustries/f1r3sky-bsky:latest ."
+
+    # Working directory (uses f1r3sky-backend repo for all sub-services)
+    working_directory: "f1r3sky-backend"
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/f1r3sky-bsky:latest"
+
+    # Build dependencies
+    dependencies:
+      - "node >= 18"
+      - "pnpm >= 8.15.9"
+
+    # Notes:
+    # - TypeScript/Node.js monorepo service
+    # - Provides AppView implementation of app.bsky.* APIs
+    # - Multi-stage Docker build for optimized image size
+    # - Runs on port 3000 by default
+
+  f1r3sky-backend-pds:
+    # Personal Data Server (hosts atproto account data)
+    # Main build command
+    build_command: "pnpm install --frozen-lockfile && pnpm build"
+
+    # Docker build command for pds service
+    docker_build_command: "docker build -f services/pds/Dockerfile -t f1r3flyindustries/f1r3sky-pds:latest ."
+
+    # Working directory (uses f1r3sky-backend repo for all sub-services)
+    working_directory: "f1r3sky-backend"
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/f1r3sky-pds:latest"
+
+    # Build dependencies
+    dependencies:
+      - "node >= 18"
+      - "pnpm >= 8.15.9"
+
+    # Notes:
+    # - TypeScript/Node.js monorepo service
+    # - Hosts repository content for atproto accounts
+    # - Core service for AT Protocol implementation
+    # - Multi-stage Docker build for optimized image size
+
+  f1r3sky-backend-bsync:
+    # Background sync service
+    # Main build command
+    build_command: "pnpm install --frozen-lockfile && pnpm build"
+
+    # Docker build command for bsync service
+    docker_build_command: "docker build -f services/bsync/Dockerfile -t f1r3flyindustries/f1r3sky-bsync:latest ."
+
+    # Working directory (uses f1r3sky-backend repo for all sub-services)
+    working_directory: "f1r3sky-backend"
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/f1r3sky-bsync:latest"
+
+    # Build dependencies
+    dependencies:
+      - "node >= 18"
+      - "pnpm >= 8.15.9"
+
+    # Notes:
+    # - TypeScript/Node.js monorepo service
+    # - Handles background synchronization tasks
+    # - Multi-stage Docker build for optimized image size
+
+  f1r3sky-backend-ozone:
+    # Moderation service
+    # Main build command
+    build_command: "pnpm install --frozen-lockfile && pnpm build"
+
+    # Docker build command for ozone service
+    docker_build_command: "docker build -f services/ozone/Dockerfile -t f1r3flyindustries/f1r3sky-ozone:latest ."
+
+    # Working directory (uses f1r3sky-backend repo for all sub-services)
+    working_directory: "f1r3sky-backend"
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/f1r3sky-ozone:latest"
+
+    # Build dependencies
+    dependencies:
+      - "node >= 18"
+      - "pnpm >= 8.15.9"
+
+    # Notes:
+    # - TypeScript/Node.js monorepo service
+    # - Provides moderation and content filtering capabilities
+    # - Multi-stage Docker build for optimized image size

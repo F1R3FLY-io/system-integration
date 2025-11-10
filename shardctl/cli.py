@@ -342,8 +342,12 @@ def build_service_cmd(
         )
         raise typer.Exit(1)
 
-    # Get service path
-    service_path = config.services_dir / service
+    # Get service path - use working_directory if specified, otherwise use service name
+    working_dir = build_config.get("working_directory")
+    if working_dir:
+        service_path = config.services_dir / working_dir
+    else:
+        service_path = config.services_dir / service
 
     # Build the service
     success = build_service(service, service_path, build_config, docker=docker)
