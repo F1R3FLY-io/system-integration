@@ -186,6 +186,136 @@ def format_ports(publishers: list) -> str:
     return ", ".join(port_strs) if port_strs else "N/A"
 
 
+def build_service(
+    service_name: str,
+    service_path: Path,
+    build_config: dict,
+    docker: bool = False
+) -> bool:
+    """Build a service using its build configuration.
+
+    Args:
+        service_name: Name of the service.
+        service_path: Path to the service directory.
+        build_config: Build configuration dictionary.
+        docker: If True, run docker build command; otherwise run main build command.
+
+    Returns:
+        True if build succeeded, False otherwise.
+    """
+    if not service_path.exists():
+        console.print(
+            f"[red]Error: Service directory {service_path} does not exist[/red]\n"
+            f"[dim]Run 'shardctl setup' to clone service repositories[/dim]"
+        )
+        return False
+
+    # Determine which command to run
+    if docker:
+        build_command = build_config.get("docker_build_command")
+        if not build_command:
+            console.print(
+                f"[yellow]No docker build command configured for {service_name}[/yellow]"
+            )
+            return False
+        console.print(f"[bold blue]Building Docker image for {service_name}...[/bold blue]")
+    else:
+        build_command = build_config.get("build_command")
+        if not build_command:
+            console.print(
+                f"[red]No build command configured for {service_name}[/red]"
+            )
+            return False
+        console.print(f"[bold blue]Building {service_name}...[/bold blue]")
+
+    # Check if we need to wrap commands with nix develop
+    environment = build_config.get("environment")
+    use_nix = False
+
+    if environment == "nix":
+        # Check if nix is available
+        try:
+            subprocess.run(
+                ["nix", "--version"],
+                capture_output=True,
+                check=True
+            )
+            use_nix = True
+            console.print("[dim]Running in Nix development environment[/dim]")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            console.print(
+                "[yellow]Warning: Nix not found, trying build without Nix environment[/yellow]"
+            )
+
+    # Run pre-build steps
+    if docker:
+        # Docker build uses docker_pre_build_steps
+        pre_build_steps = build_config.get("docker_pre_build_steps", [])
+    else:
+        # Regular build uses pre_build_steps
+        pre_build_steps = build_config.get("pre_build_steps", [])
+
+    if pre_build_steps:
+        console.print("[dim]Running pre-build steps...[/dim]")
+        for step in pre_build_steps:
+            # Wrap pre-build step in nix if needed
+            if use_nix:
+                step_cmd = f'nix develop --command bash -c "{step}"'
+            else:
+                step_cmd = step
+
+            console.print(f"[dim]$ {step}[/dim]")
+            try:
+                result = subprocess.run(
+                    step_cmd,
+                    shell=True,
+                    cwd=service_path,
+                    check=True
+                )
+            except subprocess.CalledProcessError as e:
+                console.print(f"[red]Pre-build step failed: {step}[/red]")
+                return False
+
+    # Wrap main build command in nix if needed
+    if use_nix:
+        build_command = f'nix develop --command bash -c "{build_command}"'
+
+    # Run the build command
+    console.print(f"[dim]$ {build_command}[/dim]")
+
+    try:
+        result = subprocess.run(
+            build_command,
+            shell=True,
+            cwd=service_path,
+            check=True
+        )
+
+        if docker:
+            docker_image = build_config.get("docker_image", "N/A")
+            console.print(
+                f"[green]✓[/green] Docker image built successfully: {docker_image}"
+            )
+        else:
+            console.print(f"[green]✓[/green] Build completed successfully")
+
+            # Show binary path if available
+            binary_path = build_config.get("binary_path")
+            if binary_path:
+                full_binary_path = service_path / binary_path
+                if full_binary_path.exists():
+                    console.print(f"[dim]Binary: {full_binary_path}[/dim]")
+
+        return True
+
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]✗ Build failed with exit code {e.returncode}[/red]")
+        return False
+    except Exception as e:
+        console.print(f"[red]✗ Build error: {e}[/red]")
+        return False
+
+
 def create_services_config_example(config_path: Path) -> None:
     """Create an example services.yml configuration file.
 

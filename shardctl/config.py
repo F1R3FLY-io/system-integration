@@ -116,6 +116,40 @@ class Config:
 
         return {}
 
+    def get_service_build_config(self, service_name: str) -> Optional[Dict]:
+        """Get build configuration for a specific service.
+
+        Args:
+            service_name: Name of the service.
+
+        Returns:
+            Dictionary with build configuration, or None if not found.
+        """
+        services_config_file = self.root_dir / "services.yml"
+
+        if services_config_file.exists():
+            with open(services_config_file, 'r') as f:
+                services_config = yaml.safe_load(f)
+                builds = services_config.get('builds', {})
+                return builds.get(service_name)
+
+        return None
+
+    def get_all_build_configs(self) -> Dict[str, Dict]:
+        """Get all service build configurations.
+
+        Returns:
+            Dictionary mapping service names to their build configurations.
+        """
+        services_config_file = self.root_dir / "services.yml"
+
+        if services_config_file.exists():
+            with open(services_config_file, 'r') as f:
+                services_config = yaml.safe_load(f)
+                return services_config.get('builds', {})
+
+        return {}
+
     def ensure_services_dir(self):
         """Ensure services directory exists."""
         self.services_dir.mkdir(parents=True, exist_ok=True)

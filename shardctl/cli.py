@@ -10,6 +10,7 @@ from rich.table import Table
 from .compose import ComposeManager
 from .config import Config
 from .utils import (
+    build_service,
     clone_services,
     create_services_config_example,
     format_service_status,
@@ -272,6 +273,83 @@ def setup(
     console.print("[bold blue]Setting up service repositories...[/bold blue]\n")
     clone_services(service_repos, config.services_dir, force=force)
     console.print("\n[green]✓[/green] Setup completed")
+
+
+@app.command(name="build-service")
+def build_service_cmd(
+    service: Optional[str] = typer.Argument(None, help="Service name to build"),
+    docker: bool = typer.Option(
+        False,
+        "--docker",
+        "-d",
+        help="Build Docker image instead of regular build"
+    ),
+    list_services: bool = typer.Option(
+        False,
+        "--list",
+        "-l",
+        help="List all services with build configurations"
+    ),
+):
+    """Build a service using its configured build commands.
+
+    This command reads the build configuration from services.yml and executes
+    the appropriate build commands for the specified service. Use --docker to
+    build the Docker image instead of the regular build.
+
+    Examples:
+        shardctl build-service f1r3node
+        shardctl build-service f1r3node --docker
+        shardctl build-service --list
+    """
+    config = Config()
+
+    # List services if requested
+    if list_services:
+        build_configs = config.get_all_build_configs()
+        if not build_configs:
+            console.print("[yellow]No build configurations found in services.yml[/yellow]")
+            return
+
+        table = Table(title="Services with Build Configurations", show_header=True)
+        table.add_column("Service", style="cyan")
+        table.add_column("Build Command", style="green")
+        table.add_column("Docker Build", style="blue")
+        table.add_column("Environment", style="magenta")
+
+        for svc_name, cfg in build_configs.items():
+            build_cmd = cfg.get("build_command", "N/A")
+            docker_cmd = cfg.get("docker_build_command", "N/A")
+            env = cfg.get("environment", "default")
+            table.add_row(svc_name, build_cmd, docker_cmd, env)
+
+        console.print(table)
+        return
+
+    # Require service argument if not listing
+    if not service:
+        console.print("[red]Error: SERVICE argument is required[/red]")
+        console.print("[dim]Use --list to see available services[/dim]")
+        raise typer.Exit(1)
+
+    # Get build configuration for the service
+    build_config = config.get_service_build_config(service)
+
+    if not build_config:
+        console.print(
+            f"[red]No build configuration found for service '{service}'[/red]\n"
+            f"[dim]Add build configuration to services.yml or use --list to see available services[/dim]"
+        )
+        raise typer.Exit(1)
+
+    # Get service path
+    service_path = config.services_dir / service
+
+    # Build the service
+    success = build_service(service, service_path, build_config, docker=docker)
+
+    if not success:
+        raise typer.Exit(1)
 
 
 @app.command()

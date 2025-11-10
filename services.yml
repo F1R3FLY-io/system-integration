@@ -1,6 +1,68 @@
 # Service repositories configuration
-# Map service names to their git repository URLs
+# Map service names to their git repository URLs and build commands
 
 repositories:
   f1r3node: git@github.com:F1R3FLY-io/f1r3node.git
   rust-client: git@github.com:F1R3FLY-io/rust-client.git
+
+# Build configuration for services
+builds:
+  f1r3node:
+    # Main build command (compiles Scala and stages executable)
+    build_command: "sbt stage"
+
+    # Alternative: Clean build
+    # build_command: "sbt clean stage"
+
+    # Docker build command (includes Rust library compilation)
+    docker_build_command: "sbt node/docker:publishLocal"
+
+    # Build environment
+    environment: "nix"  # Uses nix develop shell
+
+    # Pre-build steps for regular builds
+    pre_build_steps:
+      - "./scripts/build_rust_libraries.sh"  # Native build
+      # Or for cross-platform: "./scripts/build_rust_libraries_docker.sh"
+
+    # Pre-build steps for Docker builds (runs in Nix environment)
+    docker_pre_build_steps:
+      - "rustup default stable"  # Configure Rust toolchain
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/f1r3fly-rust-node:latest"
+
+    # Build dependencies
+    dependencies:
+      - "sbt"
+      - "cargo"
+      - "rustc"
+      - "nix (optional but recommended)"
+
+    # Notes:
+    # - Uses SBT (Scala Build Tool) as primary build system
+    # - Requires Rust for native libraries (rspace, rholang)
+    # - Nix flake provides complete dev environment: nix develop
+    # - Multi-architecture support: AMD64 and AARCH64
+    # - Docker entrypoint auto-detects architecture
+
+  rust-client:
+    # Main build command
+    build_command: "cargo build --release"
+
+    # No dedicated Docker build (CLI tool that connects to f1r3node)
+    docker_build_command: null
+
+    # Binary location after build
+    binary_path: "target/release/node_cli"
+
+    # Build dependencies
+    dependencies:
+      - "cargo"
+      - "rustc >= 1.85.0"
+
+    # Notes:
+    # - Pure Rust CLI application
+    # - Connects to F1R3FLY nodes (typically running in Docker)
+    # - No containerization needed - runs locally
+    # - Uses f1r3fly-models, f1r3fly-crypto, f1r3fly-rholang dependencies
