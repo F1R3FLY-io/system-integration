@@ -9,13 +9,9 @@ services:
       - .env.embers
     networks:
       - f1r3fly
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+    restart: on-failure:5
+    # healthcheck disabled - curl not available in image
+    # Service can be verified externally: curl http://localhost:8080/api/service/ready
 
   # Embers Frontend - React 19 web UI (optional, requires NPM_TOKEN)
   # Uncomment once you have NPM_TOKEN configured in ~/.npmrc
@@ -35,5 +31,5 @@ services:
 
 networks:
   f1r3fly:
-    name: system-integration_f1r3fly
+    name: f1r3fly
     external: true
