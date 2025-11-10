@@ -1,0 +1,39 @@
+services:
+  # Embers API - HTTP service that bridges f1r3sky to f1r3node blockchain
+  embers-api:
+    image: f1r3flyindustries/embers:latest
+    container_name: embers-api
+    ports:
+      - "8080:3000"  # Expose on 8080 externally (f1r3sky expects this), runs on 3000 internally
+    env_file:
+      - .env.embers
+    networks:
+      - f1r3fly
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Embers Frontend - React 19 web UI (optional, requires NPM_TOKEN)
+  # Uncomment once you have NPM_TOKEN configured in ~/.npmrc
+  # embers-frontend:
+  #   image: f1r3flyindustries/embers-frontend:latest
+  #   container_name: embers-frontend
+  #   ports:
+  #     - "5173:80"  # Frontend UI on port 5173
+  #   environment:
+  #     API_URL: "http://localhost:8080"  # Points to embers-api
+  #   depends_on:
+  #     embers-api:
+  #       condition: service_healthy
+  #   networks:
+  #     - f1r3fly
+  #   restart: unless-stopped
+
+networks:
+  f1r3fly:
+    name: system-integration_f1r3fly
+    external: true

@@ -16,6 +16,12 @@ repositories:
     branch: main
   f1r3sky:
     url: git@github.com:F1R3FLY-io/f1r3sky.git
+    branch: demo-dev
+  embers:
+    url: git@github.com:F1R3FLY-io/embers.git
+    branch: main
+  embers-frontend:
+    url: git@github.com:F1R3FLY-io/embers-frontend.git
     branch: main
 
 # Build configuration for services
@@ -201,3 +207,53 @@ builds:
     # - TypeScript/Node.js monorepo service
     # - Provides moderation and content filtering capabilities
     # - Multi-stage Docker build for optimized image size
+
+  embers:
+    # Embers API - Rust HTTP service that bridges f1r3sky to f1r3node blockchain
+    # Main build command (builds Rust workspace)
+    build_command: "cargo build --release"
+
+    # Docker build command for embers API service
+    docker_build_command: "docker build -f docker/embers.dockerfile -t f1r3flyindustries/embers:latest ."
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/embers:latest"
+
+    # Build dependencies
+    dependencies:
+      - "rust >= 1.91"
+      - "cargo"
+      - "pkg-config"
+      - "protobuf-compiler"
+      - "clang"
+
+    # Notes:
+    # - Rust workspace with multiple packages (embers, events-sync, state-sync, firefly-client)
+    # - Provides HTTP API on port 8080 for wallet and agent operations
+    # - Connects f1r3sky frontend to f1r3node blockchain
+    # - Multi-architecture support (AMD64, AARCH64)
+    # - Main binary: packages/embers
+
+  embers-frontend:
+    # Embers Frontend - React 19 web UI for Embers platform
+    # Main build command (builds client SDK first, then frontend)
+    build_command: "pnpm install --frozen-lockfile && pnpm --filter @f1r3fly-io/embers-client-sdk build && pnpm --filter @f1r3fly-io/embers-frontend build"
+
+    # Docker build command for embers frontend
+    docker_build_command: "docker build -f apps/embers/Dockerfile -t f1r3flyindustries/embers-frontend:latest . --secret id=npmrc,src=$HOME/.npmrc"
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/embers-frontend:latest"
+
+    # Build dependencies
+    dependencies:
+      - "node >= 24"
+      - "pnpm >= 8.15.9"
+      - "NPM_TOKEN environment variable (GitHub PAT with read:packages scope)"
+
+    # Notes:
+    # - React 19 + TypeScript + Vite monorepo
+    # - pnpm workspace: packages/client + apps/embers
+    # - Requires GitHub token for @f1r3fly-io/lightning-bug package
+    # - Nginx-based static site serving on port 80
+    # - Connects to Embers API on port 8080

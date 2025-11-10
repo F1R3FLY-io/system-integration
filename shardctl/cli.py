@@ -40,6 +40,46 @@ def get_manager(profile: Optional[str] = None) -> ComposeManager:
 
 
 @app.command()
+def clone(
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Remove existing service directories before cloning"
+    ),
+):
+    """Clone all service repositories with their configured branches.
+
+    This command reads repository URLs and branches from services.yml and clones
+    them into the services/ directory. Each service becomes an independent git
+    repository that is ignored by the parent integration repo.
+
+    Example:
+        shardctl clone          # Clone all services (skip existing)
+        shardctl clone --force  # Remove and re-clone all services
+    """
+    config = Config()
+
+    # Get service repositories from config
+    service_repos = config.get_service_repos()
+
+    if not service_repos:
+        console.print(
+            "[yellow]No service repositories configured.[/yellow]\n"
+            "[dim]Check your services.yml file. It should have a 'repositories' section.[/dim]"
+        )
+        return
+
+    # Ensure services directory exists
+    config.ensure_services_dir()
+
+    # Clone services
+    console.print("[bold blue]Cloning service repositories...[/bold blue]\n")
+    clone_services(service_repos, config.services_dir, force=force)
+    console.print("\n[green]✓[/green] Clone completed")
+
+
+@app.command()
 def up(
     services: Optional[List[str]] = typer.Argument(None, help="Services to start"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
