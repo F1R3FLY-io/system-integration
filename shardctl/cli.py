@@ -5,7 +5,6 @@ from typing import List, Optional
 
 import typer
 from rich.console import Console
-from rich.table import Table
 
 from .compose import ComposeManager
 from .config import Config
@@ -239,7 +238,7 @@ def shell(
 def status(
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
 ):
-    """Display service status in a formatted table."""
+    """Display service status."""
     if not validate_environment():
         raise typer.Exit(1)
 
@@ -250,35 +249,26 @@ def status(
         console.print("[yellow]No running services found[/yellow]")
         return
 
-    # Create a table
-    table = Table(title="Service Status", show_header=True, header_style="bold magenta")
-    table.add_column("Name", style="cyan", no_wrap=True)
-    table.add_column("Service", style="blue")
-    table.add_column("State", style="green")
-    table.add_column("Status", style="yellow")
-    table.add_column("Ports", style="magenta")
-
     for service_info in services:
         formatted = format_service_status(service_info)
 
         # Color code the state
         state = formatted["State"]
         if state == "running":
-            state_display = f"[green]{state}[/green]"
+            state_color = "green"
         elif state == "exited":
-            state_display = f"[red]{state}[/red]"
+            state_color = "red"
         else:
-            state_display = f"[yellow]{state}[/yellow]"
+            state_color = "yellow"
 
-        table.add_row(
-            formatted["Name"],
-            formatted["Service"],
-            state_display,
-            formatted["Status"],
-            formatted["Ports"],
+        # Simple line format: NAME SERVICE STATE STATUS PORTS
+        console.print(
+            f"{formatted['Name']:<30} "
+            f"{formatted['Service']:<20} "
+            f"[{state_color}]{state:<10}[/{state_color}] "
+            f"{formatted['Status']:<30} "
+            f"{formatted['Ports']}"
         )
-
-    console.print(table)
 
 
 @app.command()
@@ -404,20 +394,19 @@ def build_service_cmd(
                 )
             return
 
-        title = "All Services with Build Configurations" if all_services else "Enabled Services with Build Configurations"
-        table = Table(title=title, show_header=True)
-        table.add_column("Service", style="cyan")
-        table.add_column("Build Command", style="green")
-        table.add_column("Docker Build", style="blue")
-        table.add_column("Environment", style="magenta")
-
+        # Simple list output - one service per line
         for svc_name, cfg in build_configs.items():
             build_cmd = cfg.get("build_command", "N/A")
             docker_cmd = cfg.get("docker_build_command", "N/A")
             env = cfg.get("environment", "default")
-            table.add_row(svc_name, build_cmd, docker_cmd, env)
 
-        console.print(table)
+            # Format: SERVICE_NAME (env: ENVIRONMENT)
+            console.print(f"[cyan]{svc_name}[/cyan] [dim](env: {env})[/dim]")
+            console.print(f"  Build: {build_cmd}")
+            if docker_cmd != "N/A":
+                console.print(f"  Docker: {docker_cmd}")
+            console.print()  # Empty line between services
+
         return
 
     # Build all enabled services if -a/--all is specified without a service name
