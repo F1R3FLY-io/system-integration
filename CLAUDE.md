@@ -80,4 +80,8 @@ Services are defined in `services.yml` with their git URLs and branches:
    - `docker-compose.embers.yml` - Embers API and frontend
    - `docker-compose.f1r3sky.yml` - F1R3Sky AT Protocol services
 4. **Services communicate via Docker network** - `system-integration_f1r3fly` network
-5. **Read README.md** for complete documentation and best practices
+5. **Always use shardctl commands** - Don't run builds manually (cargo, sbt, etc.). Use:
+   - `poetry run shardctl build-service <service>` for regular builds
+   - `poetry run shardctl build-service <service> --docker` for Docker image builds
+   - `poetry run shardctl build-service --list` to see available services
+6. **Read README.md** for complete documentation and best practices

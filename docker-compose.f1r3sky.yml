@@ -12,7 +12,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
-      - f1r3sky
+      - f1r3fly
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -28,7 +28,7 @@ services:
     volumes:
       - redis_data:/data
     networks:
-      - f1r3sky
+      - f1r3fly
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -41,24 +41,10 @@ services:
     container_name: f1r3sky-bsky
     ports:
       - "2584:2584"
+    env_file:
+      - .env.f1r3sky
     environment:
-      # Service URLs
-      BSKY_BSYNC_URL: ${BSKY_BSYNC_URL:-http://bsync:3000}
-      MOD_SERVICE_DID: ${MOD_SERVICE_DID:-did:web:ozone.f1r3fly.local}
-      MOD_SERVICE_URL: ${MOD_SERVICE_URL:-http://ozone:3001}
-
-      # Database configuration
-      BSKY_DB_POSTGRES_URL: ${BSKY_DB_POSTGRES_URL:-postgresql://postgres:postgres@postgres:5432/atproto}
-
-      # Redis configuration (optional)
-      REDIS_HOST: ${REDIS_HOST:-redis}
-      REDIS_PORT: ${REDIS_PORT:-6379}
-
-      # Service configuration
-      BSKY_SERVICE_SIGNING_KEY: ${BSKY_SERVICE_SIGNING_KEY:-}
-      BSKY_DID_PLC_URL: ${BSKY_DID_PLC_URL:-https://plc.directory}
-
-      # Port
+      # Port (not in env file)
       PORT: 2584
     depends_on:
       postgres:
@@ -68,35 +54,24 @@ services:
       bsync:
         condition: service_started
     networks:
-      - f1r3sky
+      - f1r3fly
     restart: unless-stopped
 
   # PDS (Personal Data Server) - hosts atproto account data
   pds:
     image: f1r3flyindustries/f1r3sky-pds:latest
     container_name: f1r3sky-pds
+    user: root
     ports:
       - "2583:2583"
+    env_file:
+      - .env.f1r3sky
+    volumes:
+      - pds_blocks:/pds/blocks
+      - pds_tmp:/pds/tmp
+      - pds_data:/pds
     environment:
-      # Service URLs
-      PDS_BSKY_APP_VIEW_URL: ${PDS_BSKY_APP_VIEW_URL:-http://bsky:2584}
-      PDS_MOD_SERVICE_URL: ${PDS_MOD_SERVICE_URL:-http://ozone:3001}
-      PDS_MOD_SERVICE_DID: ${PDS_MOD_SERVICE_DID:-did:web:ozone.f1r3fly.local}
-
-      # Database configuration
-      PDS_DB_POSTGRES_URL: ${PDS_DB_POSTGRES_URL:-postgresql://postgres:postgres@postgres:5432/atproto}
-
-      # JWT configuration
-      PDS_JWT_SECRET: ${PDS_JWT_SECRET:-change-me-in-production}
-
-      # DID configuration
-      PDS_DID_PLC_URL: ${PDS_DID_PLC_URL:-https://plc.directory}
-      PDS_HOSTNAME: ${PDS_HOSTNAME:-pds.f1r3fly.local}
-
-      # Service configuration
-      PDS_SERVICE_HANDLE_DOMAINS: ${PDS_SERVICE_HANDLE_DOMAINS:-.bsky.social}
-
-      # Port
+      # Port (not in env file)
       PORT: 2583
     depends_on:
       postgres:
@@ -104,7 +79,7 @@ services:
       bsky:
         condition: service_started
     networks:
-      - f1r3sky
+      - f1r3fly
     restart: unless-stopped
 
   # BSYNC (Background Sync Service)
@@ -113,23 +88,16 @@ services:
     container_name: f1r3sky-bsync
     ports:
       - "3100:3000"
+    env_file:
+      - .env.f1r3sky
     environment:
-      # Database configuration
-      BSYNC_DB_POSTGRES_URL: ${BSYNC_DB_POSTGRES_URL:-postgresql://postgres:postgres@postgres:5432/atproto}
-
-      # Service configuration
-      BSYNC_API_KEYS: ${BSYNC_API_KEYS:-change-me-in-production}
-
-      # DID configuration
-      BSYNC_DID_PLC_URL: ${BSYNC_DID_PLC_URL:-https://plc.directory}
-
-      # Port
+      # Port (not in env file)
       PORT: 3000
     depends_on:
       postgres:
         condition: service_healthy
     networks:
-      - f1r3sky
+      - f1r3fly
     restart: unless-stopped
 
   # OZONE (Moderation Service)
@@ -138,23 +106,10 @@ services:
     container_name: f1r3sky-ozone
     ports:
       - "3101:3001"
+    env_file:
+      - .env.f1r3sky
     environment:
-      # Service URLs
-      OZONE_APPVIEW_URL: ${OZONE_APPVIEW_URL:-http://bsky:2584}
-      OZONE_PDS_URL: ${OZONE_PDS_URL:-http://pds:2583}
-
-      # Database configuration
-      OZONE_DB_POSTGRES_URL: ${OZONE_DB_POSTGRES_URL:-postgresql://postgres:postgres@postgres:5432/atproto}
-
-      # Service configuration
-      OZONE_SIGNING_KEY_HEX: ${OZONE_SIGNING_KEY_HEX:-}
-      OZONE_DID_PLC_URL: ${OZONE_DID_PLC_URL:-https://plc.directory}
-      OZONE_SERVER_DID: ${OZONE_SERVER_DID:-did:web:ozone.f1r3fly.local}
-
-      # Admin configuration
-      OZONE_ADMIN_DIDS: ${OZONE_ADMIN_DIDS:-}
-
-      # Port
+      # Port (not in env file)
       PORT: 3001
     depends_on:
       postgres:
@@ -164,13 +119,17 @@ services:
       pds:
         condition: service_started
     networks:
-      - f1r3sky
+      - f1r3fly
     restart: unless-stopped
 
 networks:
-  f1r3sky:
-    driver: bridge
+  f1r3fly:
+    name: f1r3fly
+    external: true
 
 volumes:
   postgres_data:
   redis_data:
+  pds_blocks:
+  pds_tmp:
+  pds_data:

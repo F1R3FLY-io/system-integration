@@ -56,7 +56,7 @@ services:
     profiles:
       - dev
     networks:
-      - app-network
+      - f1r3fly
     ports:
       - "8080:8080"
     environment:
@@ -70,8 +70,14 @@ services:
     profiles:
       - dev
     networks:
-      - app-network
+      - f1r3fly
     ports:
       - "8081:8081"
     environment:
       - REDIS_HOSTS=local:redis:6379:0:dev_redis_pass
+
+networks:
+  f1r3fly:
+    name: f1r3fly
+    external: true
+
