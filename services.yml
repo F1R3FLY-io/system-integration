@@ -1,0 +1,259 @@
+# Service repositories configuration
+# Map service names to their git repository URLs and build commands
+
+repositories:
+  f1r3node:
+    url: git@github.com:nashef/f1r3fly.git
+    branch: casper-bugs  # Working branch for bug fixes
+  f1r3node-rust:
+    url: git@github.com:F1R3FLY-io/f1r3node.git
+    branch: rust-dev  # Rust node on rust-dev branch
+  rust-client:
+    url: git@github.com:F1R3FLY-io/rust-client.git
+    branch: main
+  f1r3sky-backend:
+    url: git@github.com:F1R3FLY-io/f1r3sky-backend.git
+    branch: main
+  f1r3sky:
+    url: git@github.com:F1R3FLY-io/f1r3sky.git
+    branch: demo-dev
+  embers:
+    url: git@github.com:nashef/firefly-embers.git
+    branch: main
+  embers-frontend:
+    url: git@github.com:F1R3FLY-io/embers-frontend.git
+    branch: main
+
+# Build configuration for services
+builds:
+  f1r3node:
+    # Scala node build configuration (main branch)
+    # Main build command (compiles Scala and stages executable)
+    build_command: "sbt stage"
+
+    # Docker build command for Scala node
+    docker_build_command: "sbt node/docker:publishLocal"
+
+    # Build environment
+    environment: "nix"  # Uses nix develop shell
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/f1r3fly-scala-node:latest"
+
+    # Build dependencies
+    dependencies:
+      - "sbt"
+      - "cargo"
+      - "rustc"
+      - "nix (optional but recommended)"
+
+    # Notes:
+    # - Scala-based node implementation on main branch
+    # - Uses SBT (Scala Build Tool) as primary build system
+    # - Requires Rust for native libraries (rspace, rholang)
+    # - Nix flake provides complete dev environment
+
+  f1r3node-rust:
+    # Rust node build configuration (rust-dev branch)
+    # Main build command (compiles Scala and stages executable)
+    build_command: "sbt stage"
+
+    # Docker build command (includes Rust library compilation)
+    docker_build_command: "sbt node/docker:publishLocal"
+
+    # Build environment
+    environment: "nix"  # Uses nix develop shell
+
+    # Pre-build steps for regular builds
+    pre_build_steps:
+      - "./scripts/build_rust_libraries.sh"  # Native build
+
+    # Pre-build steps for Docker builds (runs in Nix environment)
+    docker_pre_build_steps:
+      - "rustup default stable"  # Configure Rust toolchain
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/f1r3fly-rust-node:latest"
+
+    # Build dependencies
+    dependencies:
+      - "sbt"
+      - "cargo"
+      - "rustc"
+      - "nix (optional but recommended)"
+
+    # Notes:
+    # - Uses SBT (Scala Build Tool) as primary build system
+    # - Requires Rust for native libraries (rspace, rholang)
+    # - Nix flake provides complete dev environment: nix develop
+    # - Multi-architecture support: AMD64 and AARCH64
+    # - Docker entrypoint auto-detects architecture
+
+  rust-client:
+    # Main build command
+    build_command: "cargo build --release"
+
+    # No dedicated Docker build (CLI tool that connects to f1r3node)
+    docker_build_command: null
+
+    # Binary location after build
+    binary_path: "target/release/node_cli"
+
+    # Build dependencies
+    dependencies:
+      - "cargo"
+      - "rustc >= 1.85.0"
+
+    # Notes:
+    # - Pure Rust CLI application
+    # - Connects to F1R3FLY nodes (typically running in Docker)
+    # - No containerization needed - runs locally
+    # - Uses f1r3fly-models, f1r3fly-crypto, f1r3fly-rholang dependencies
+
+  f1r3sky-backend-bsky:
+    # AT Protocol AppView service (app.bsky.* API endpoints)
+    # Main build command
+    build_command: "pnpm install --frozen-lockfile && pnpm build"
+
+    # Docker build command for bsky service
+    docker_build_command: "docker build -f services/bsky/Dockerfile -t f1r3flyindustries/f1r3sky-bsky:latest ."
+
+    # Working directory (uses f1r3sky-backend repo for all sub-services)
+    working_directory: "f1r3sky-backend"
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/f1r3sky-bsky:latest"
+
+    # Build dependencies
+    dependencies:
+      - "node >= 18"
+      - "pnpm >= 8.15.9"
+
+    # Notes:
+    # - TypeScript/Node.js monorepo service
+    # - Provides AppView implementation of app.bsky.* APIs
+    # - Multi-stage Docker build for optimized image size
+    # - Runs on port 3000 by default
+
+  f1r3sky-backend-pds:
+    # Personal Data Server (hosts atproto account data)
+    # Main build command
+    build_command: "pnpm install --frozen-lockfile && pnpm build"
+
+    # Docker build command for pds service
+    docker_build_command: "docker build -f services/pds/Dockerfile -t f1r3flyindustries/f1r3sky-pds:latest ."
+
+    # Working directory (uses f1r3sky-backend repo for all sub-services)
+    working_directory: "f1r3sky-backend"
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/f1r3sky-pds:latest"
+
+    # Build dependencies
+    dependencies:
+      - "node >= 18"
+      - "pnpm >= 8.15.9"
+
+    # Notes:
+    # - TypeScript/Node.js monorepo service
+    # - Hosts repository content for atproto accounts
+    # - Core service for AT Protocol implementation
+    # - Multi-stage Docker build for optimized image size
+
+  f1r3sky-backend-bsync:
+    # Background sync service
+    # Main build command
+    build_command: "pnpm install --frozen-lockfile && pnpm build"
+
+    # Docker build command for bsync service
+    docker_build_command: "docker build -f services/bsync/Dockerfile -t f1r3flyindustries/f1r3sky-bsync:latest ."
+
+    # Working directory (uses f1r3sky-backend repo for all sub-services)
+    working_directory: "f1r3sky-backend"
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/f1r3sky-bsync:latest"
+
+    # Build dependencies
+    dependencies:
+      - "node >= 18"
+      - "pnpm >= 8.15.9"
+
+    # Notes:
+    # - TypeScript/Node.js monorepo service
+    # - Handles background synchronization tasks
+    # - Multi-stage Docker build for optimized image size
+
+  f1r3sky-backend-ozone:
+    # Moderation service
+    # Main build command
+    build_command: "pnpm install --frozen-lockfile && pnpm build"
+
+    # Docker build command for ozone service
+    docker_build_command: "docker build -f services/ozone/Dockerfile -t f1r3flyindustries/f1r3sky-ozone:latest ."
+
+    # Working directory (uses f1r3sky-backend repo for all sub-services)
+    working_directory: "f1r3sky-backend"
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/f1r3sky-ozone:latest"
+
+    # Build dependencies
+    dependencies:
+      - "node >= 18"
+      - "pnpm >= 8.15.9"
+
+    # Notes:
+    # - TypeScript/Node.js monorepo service
+    # - Provides moderation and content filtering capabilities
+    # - Multi-stage Docker build for optimized image size
+
+  embers:
+    # Embers API - Rust HTTP service that bridges f1r3sky to f1r3node blockchain
+    # Main build command (builds Rust workspace)
+    build_command: "cargo build --release"
+
+    # Docker build command for embers API service
+    docker_build_command: "docker build -f docker/embers.dockerfile -t f1r3flyindustries/embers:latest ."
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/embers:latest"
+
+    # Build dependencies
+    dependencies:
+      - "rust >= 1.91"
+      - "cargo"
+      - "pkg-config"
+      - "protobuf-compiler"
+      - "clang"
+
+    # Notes:
+    # - Rust workspace with multiple packages (embers, events-sync, state-sync, firefly-client)
+    # - Provides HTTP API on port 8080 for wallet and agent operations
+    # - Connects f1r3sky frontend to f1r3node blockchain
+    # - Multi-architecture support (AMD64, AARCH64)
+    # - Main binary: packages/embers
+
+  embers-frontend:
+    # Embers Frontend - React 19 web UI for Embers platform
+    # Main build command (builds client SDK first, then frontend)
+    build_command: "pnpm install --frozen-lockfile && pnpm --filter @f1r3fly-io/embers-client-sdk build && pnpm --filter @f1r3fly-io/embers-frontend build"
+
+    # Docker build command for embers frontend
+    docker_build_command: "docker build -f apps/embers/Dockerfile -t f1r3flyindustries/embers-frontend:latest . --secret id=npmrc,src=$HOME/.npmrc"
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/embers-frontend:latest"
+
+    # Build dependencies
+    dependencies:
+      - "node >= 24"
+      - "pnpm >= 8.15.9"
+      - "NPM_TOKEN environment variable (GitHub PAT with read:packages scope)"
+
+    # Notes:
+    # - React 19 + TypeScript + Vite monorepo
+    # - pnpm workspace: packages/client + apps/embers
+    # - Requires GitHub token for @f1r3fly-io/lightning-bug package
+    # - Nginx-based static site serving on port 80
+    # - Connects to Embers API on port 8080
