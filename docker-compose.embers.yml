@@ -13,21 +13,28 @@ services:
     # healthcheck disabled - curl not available in image
     # Service can be verified externally: curl http://localhost:8080/api/service/ready
 
-  # Embers Frontend - React 19 web UI (optional, requires NPM_TOKEN)
-  # Uncomment once you have NPM_TOKEN configured in ~/.npmrc
-  # embers-frontend:
-  #   image: f1r3flyindustries/embers-frontend:latest
-  #   container_name: embers-frontend
-  #   ports:
-  #     - "5173:80"  # Frontend UI on port 5173
-  #   environment:
-  #     API_URL: "http://localhost:8080"  # Points to embers-api
-  #   depends_on:
-  #     embers-api:
-  #       condition: service_healthy
-  #   networks:
-  #     - f1r3fly
-  #   restart: unless-stopped
+  # Embers Frontend - React 19 web UI (requires ~/.npmrc with GitHub token)
+  embers-frontend:
+    build:
+      context: ./services/embers-frontend
+      dockerfile: apps/embers/Dockerfile
+      secrets:
+        - npmrc
+    image: f1r3flyindustries/embers-frontend:latest
+    container_name: embers-frontend
+    ports:
+      - "5173:80"  # Frontend UI on port 5173
+    environment:
+      API_URL: "http://localhost:8080"  # Points to embers-api
+    depends_on:
+      - embers-api
+    networks:
+      - f1r3fly
+    restart: unless-stopped
+
+secrets:
+  npmrc:
+    file: ~/.npmrc
 
 networks:
   f1r3fly:
