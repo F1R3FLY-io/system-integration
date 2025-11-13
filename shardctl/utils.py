@@ -261,6 +261,23 @@ def build_service(
                 "[yellow]Warning: Nix not found, trying build without Nix environment[/yellow]"
             )
 
+    # Detect if this is a Node.js project (to apply nvm/node 18 environment)
+    node_deps = build_config.get("dependencies", [])
+    is_node_project = any(
+        str(dep).strip().lower().startswith("node") for dep in node_deps
+    ) or (service_path / "package.json").exists()
+
+    # Node 18 environment bootstrap (safe if nvm not installed)
+    # - Sources nvm if present
+    # - Switches to Node 18
+    # - Enables corepack for pnpm/yarn
+    node18_prefix = (
+        'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"; '
+        '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '
+        'if command -v nvm >/dev/null 2>&1; then nvm install 18 >/dev/null && nvm use 18 >/dev/null; fi; '
+        'corepack enable >/dev/null 2>&1; '
+    )
+
     # Run pre-build steps
     if docker:
         # Docker build uses docker_pre_build_steps
@@ -272,11 +289,16 @@ def build_service(
     if pre_build_steps:
         console.print("[dim]Running pre-build steps...[/dim]")
         for step in pre_build_steps:
-            # Wrap pre-build step in nix if needed
+            # Wrap pre-build step in nix and/or node 18 if needed
+            step_core = step
+            if is_node_project and not docker:
+                step_core = node18_prefix + step_core
+
             if use_nix:
-                step_cmd = f'nix develop --command bash -c "{step}"'
+                # Use login shell (-l) to ensure a predictable environment and then run the step
+                step_cmd = f'nix develop --command bash -lc "{step_core}"'
             else:
-                step_cmd = step
+                step_cmd = step_core
 
             console.print(f"[dim]$ {step}[/dim]")
             try:
@@ -291,8 +313,11 @@ def build_service(
                 return False
 
     # Wrap main build command in nix if needed
+    if is_node_project and not docker:
+        build_command = node18_prefix + build_command
+
     if use_nix:
-        build_command = f'nix develop --command bash -c "{build_command}"'
+        build_command = f'nix develop --command bash -lc "{build_command}"'
 
     # Run the build command
     console.print(f"[dim]$ {build_command}[/dim]")

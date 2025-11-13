@@ -19,6 +19,8 @@ class Config:
         self.root_dir = root_dir or Path.cwd()
         self.services_dir = self.root_dir / "services"
         self.compose_file = self.root_dir / "docker-compose.yml"
+        self.compose_embers_file = self.root_dir / "docker-compose.embers.yml"
+        self.compose_f1r3sky_file = self.root_dir / "docker-compose.f1r3sky.yml"
         self.compose_dev_file = self.root_dir / "docker-compose.dev.yml"
 
     @property
@@ -39,6 +41,12 @@ class Config:
             List of compose file paths for the profile.
         """
         files = [self.compose_file]
+
+        # Always include embers and f1r3sky compose files if they exist
+        if self.compose_embers_file.exists():
+            files.append(self.compose_embers_file)
+        if self.compose_f1r3sky_file.exists():
+            files.append(self.compose_f1r3sky_file)
 
         if profile == "dev" and self.compose_dev_file.exists():
             files.append(self.compose_dev_file)

@@ -40,6 +40,7 @@ def get_manager(profile: Optional[str] = None) -> ComposeManager:
 
 @app.command()
 def clone(
+    services: Optional[List[str]] = typer.Argument(None, help="Specific services to clone"),
     force: bool = typer.Option(
         False,
         "--force",
@@ -55,41 +56,64 @@ def clone(
     """Clone service repositories with their configured branches.
 
     By default, only enabled services are cloned. Use --all to clone all services
-    including disabled ones.
+    including disabled ones. Specify service names to clone specific services.
 
     This command reads repository URLs and branches from services.yml and clones
     them into the services/ directory. Each service becomes an independent git
     repository that is ignored by the parent integration repo.
 
     Example:
-        shardctl clone              # Clone enabled services only
-        shardctl clone --all        # Clone all services (including disabled)
-        shardctl clone --force      # Remove and re-clone enabled services
-        shardctl clone --all --force  # Remove and re-clone all services
+        shardctl clone                    # Clone enabled services only
+        shardctl clone f1r3sky embers     # Clone specific services
+        shardctl clone --all              # Clone all services (including disabled)
+        shardctl clone --force            # Remove and re-clone enabled services
+        shardctl clone f1r3sky --force    # Remove and re-clone specific service
     """
     config = Config()
 
-    # Get service repositories from config (filter by enabled unless --all is specified)
-    service_repos = config.get_service_repos(only_enabled=not all_services)
+    # If specific services requested, clone only those
+    if services:
+        all_repos = config.get_service_repos(only_enabled=False)
+        service_repos = {}
+        not_found = []
+        
+        for service in services:
+            if service in all_repos:
+                service_repos[service] = all_repos[service]
+            else:
+                not_found.append(service)
+        
+        if not_found:
+            console.print(
+                f"[yellow]Services not found in configuration: {', '.join(not_found)}[/yellow]\n"
+                "[dim]Check your services.yml file for available services.[/dim]"
+            )
+            if not service_repos:
+                return
+    else:
+        # Get service repositories from config (filter by enabled unless --all is specified)
+        service_repos = config.get_service_repos(only_enabled=not all_services)
 
-    if not service_repos:
-        if all_services:
-            console.print(
-                "[yellow]No service repositories configured.[/yellow]\n"
-                "[dim]Check your services.yml file. It should have a 'repositories' section.[/dim]"
-            )
-        else:
-            console.print(
-                "[yellow]No enabled service repositories found.[/yellow]\n"
-                "[dim]Use --all to clone disabled services or check your services.yml file.[/dim]"
-            )
-        return
+        if not service_repos:
+            if all_services:
+                console.print(
+                    "[yellow]No service repositories configured.[/yellow]\n"
+                    "[dim]Check your services.yml file. It should have a 'repositories' section.[/dim]"
+                )
+            else:
+                console.print(
+                    "[yellow]No enabled service repositories found.[/yellow]\n"
+                    "[dim]Use --all to clone disabled services or check your services.yml file.[/dim]"
+                )
+            return
 
     # Ensure services directory exists
     config.ensure_services_dir()
 
     # Clone services
-    if all_services:
+    if services:
+        console.print(f"[bold blue]Cloning {len(service_repos)} service(s): {', '.join(service_repos.keys())}...[/bold blue]\n")
+    elif all_services:
         console.print("[bold blue]Cloning all service repositories (including disabled)...[/bold blue]\n")
     else:
         console.print("[bold blue]Cloning enabled service repositories...[/bold blue]\n")
