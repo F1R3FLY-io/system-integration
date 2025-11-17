@@ -296,8 +296,8 @@ def build_service(
                 step_core = node18_prefix + step_core
 
             if use_nix:
-                # Use login shell (-l) to ensure a predictable environment and then run the step
-                step_cmd = f'nix develop --command bash -lc "{step_core}"'
+                # Run the command directly in nix develop environment
+                step_cmd = f'nix develop --command bash -c "{step_core}"'
             else:
                 step_cmd = step_core
 
@@ -319,7 +319,7 @@ def build_service(
         build_command = node18_prefix + build_command
 
     if use_nix:
-        build_command = f'nix develop --command bash -lc "{build_command}"'
+        build_command = f'nix develop --command bash -c "{build_command}"'
 
     # Run the build command
     console.print(f"[dim]$ {build_command}[/dim]")
