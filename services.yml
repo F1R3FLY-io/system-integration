@@ -27,15 +27,15 @@ repositories:
     branch: main
   f1r3sky:
     url: git@github.com:F1R3FLY-io/f1r3sky.git
-    branch: demo-dev
-    enabled: false  # Frontend demo - disable by default
+    branch: main
+    enabled: true  # Frontend demo
   embers:
     url: git@github.com:nashef/firefly-embers.git
     branch: main
   embers-frontend:
     url: git@github.com:F1R3FLY-io/embers-frontend.git
     branch: main
-    enabled: false  # Web UI frontend - disable by default (requires NPM_TOKEN)
+    enabled: true  # Web UI frontend (requires ~/.npmrc with GitHub token)
 
 # Build configuration for services
 builds:
@@ -221,6 +221,31 @@ builds:
     # - Provides moderation and content filtering capabilities
     # - Multi-stage Docker build for optimized image size
 
+  f1r3sky:
+    # F1R3Sky Frontend Web App - React Native/Expo web app with bskyweb Go server
+    # Main build command (install dependencies and build web bundle)
+    # Requires: ~/.npmrc with GitHub token (//npm.pkg.github.com/:_authToken=TOKEN)
+    build_command: "yarn install && yarn intl:build && yarn build-web"
+
+    # Docker build command for f1r3sky web frontend (uses ~/.npmrc)
+    docker_build_command: "docker build -t f1r3flyindustries/f1r3sky:latest . --secret id=npmrc,src=$HOME/.npmrc"
+
+    # Docker image produced
+    docker_image: "f1r3flyindustries/f1r3sky:latest"
+
+    # Build dependencies
+    dependencies:
+      - "node >= 20"
+      - "yarn >= 1.22"
+      - "go >= 1.23"
+
+    # Notes:
+    # - React Native/Expo web app (Bluesky social app fork)
+    # - Builds JavaScript bundle with Expo and serves via bskyweb Go server
+    # - Serves on port 8100 by default
+    # - Connects to f1r3sky-bsky AppView service (port 2584)
+    # - Multi-stage Docker build: Node.js build + Go server
+
   embers:
     # Embers API - Rust HTTP service that bridges f1r3sky to f1r3node blockchain
     # Main build command (builds Rust workspace)
@@ -250,9 +275,10 @@ builds:
   embers-frontend:
     # Embers Frontend - React 19 web UI for Embers platform
     # Main build command (builds client SDK first, then frontend)
+    # Requires: ~/.npmrc with GitHub token (//npm.pkg.github.com/:_authToken=TOKEN)
     build_command: "pnpm install --frozen-lockfile && pnpm --filter @f1r3fly-io/embers-client-sdk build && pnpm --filter @f1r3fly-io/embers-frontend build"
 
-    # Docker build command for embers frontend
+    # Docker build command for embers frontend (uses ~/.npmrc)
     docker_build_command: "docker build -f apps/embers/Dockerfile -t f1r3flyindustries/embers-frontend:latest . --secret id=npmrc,src=$HOME/.npmrc"
 
     # Docker image produced

@@ -122,6 +122,35 @@ services:
       - f1r3fly
     restart: unless-stopped
 
+  # F1R3SKY Frontend Web App (bskyweb) - requires ~/.npmrc with GitHub token
+  f1r3sky:
+    build:
+      context: ../f1r3sky
+      dockerfile: Dockerfile
+      secrets:
+        - npmrc
+    image: f1r3flyindustries/f1r3sky:latest
+    container_name: f1r3sky
+    ports:
+      - "8100:8100"
+    environment:
+      HTTP_ADDRESS: ":8100"
+      ATP_APPVIEW_HOST: "http://bsky:2584"
+      DEBUG: "false"
+    depends_on:
+      bsky:
+        condition: service_started
+      pds:
+        condition: service_started
+    networks:
+      - f1r3fly
+    restart: unless-stopped
+    command: ["/usr/bin/bskyweb", "serve"]
+
+secrets:
+  npmrc:
+    file: ~/.npmrc
+
 networks:
   f1r3fly:
     name: f1r3fly
