@@ -3,9 +3,6 @@
 
 set -e
 
-# Change to the f1r3sky directory
-cd services/f1r3sky
-
 # Check if NPM_TOKEN is set, if not try to load from .token.classic
 if [ -z "${NPM_TOKEN}" ]; then
     if [ -f "../../.token.classic" ]; then
