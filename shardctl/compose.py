@@ -64,18 +64,45 @@ class ComposeManager:
 
         console.print(f"[dim]$ {' '.join(full_command)}[/dim]")
 
-        if capture_output:
-            result = subprocess.run(
-                full_command,
-                capture_output=True,
-                text=True,
-                check=check
-            )
-        else:
-            result = subprocess.run(
-                full_command,
-                check=check
-            )
+        try:
+            if capture_output:
+                result = subprocess.run(
+                    full_command,
+                    capture_output=True,
+                    text=True,
+                    check=check
+                )
+            else:
+                result = subprocess.run(
+                    full_command,
+                    capture_output=True,
+                    text=True,
+                    check=check
+                )
+        except subprocess.CalledProcessError as e:
+            # Parse common Docker Compose errors and provide helpful messages
+            error_output = e.stderr if e.stderr else e.stdout if e.stdout else str(e)
+
+            if "already in use by container" in error_output:
+                console.print("\n[red]Error: Container name conflict[/red]")
+                console.print("[yellow]Some containers with the same names already exist.[/yellow]")
+                console.print("Try running: [bold]shardctl down[/bold] first to clean up existing containers.")
+            elif "address already in use" in error_output:
+                console.print("\n[red]Error: Port conflict[/red]")
+                console.print("[yellow]One or more ports are already in use.[/yellow]")
+                console.print("Try running: [bold]shardctl down[/bold] first, or check for other services using the same ports.")
+            elif "no such service" in error_output:
+                console.print("\n[red]Error: Unknown service[/red]")
+                console.print("[yellow]The specified service was not found in the compose files.[/yellow]")
+            else:
+                console.print(f"\n[red]Error running docker compose:[/red]")
+                if error_output:
+                    # Show only the relevant error lines, not the full output
+                    error_lines = error_output.strip().split('\n')
+                    for line in error_lines:
+                        if 'Error' in line or 'error' in line or 'failed' in line:
+                            console.print(f"  {line}")
+            raise SystemExit(1)
 
         return result
 
