@@ -47,27 +47,27 @@ def clone(
         "-f",
         help="Remove existing service directories before cloning"
     ),
-    all_services: bool = typer.Option(
+    include_disabled: bool = typer.Option(
         False,
-        "--all",
-        help="Clone all services including disabled ones (default: enabled only)"
+        "--include-disabled",
+        help="Include disabled services (default: enabled only)"
     ),
 ):
     """Clone service repositories with their configured branches.
 
-    By default, only enabled services are cloned. Use --all to clone all services
-    including disabled ones. Specify service names to clone specific services.
+    By default, only enabled services are cloned. Use --include-disabled to also clone disabled services.
+    Specify service names to clone only specific services (overrides --include-disabled).
 
     This command reads repository URLs and branches from services.yml and clones
     them into the services/ directory. Each service becomes an independent git
     repository that is ignored by the parent integration repo.
 
     Example:
-        shardctl clone                    # Clone enabled services only
-        shardctl clone f1r3sky embers     # Clone specific services
-        shardctl clone --all              # Clone all services (including disabled)
-        shardctl clone --force            # Remove and re-clone enabled services
-        shardctl clone f1r3sky --force    # Remove and re-clone specific service
+        shardctl clone                         # Clone all enabled services
+        shardctl clone --include-disabled      # Clone all services (enabled + disabled)
+        shardctl clone f1r3sky embers          # Clone specific services only
+        shardctl clone --force                 # Remove and re-clone all enabled services
+        shardctl clone f1r3sky --force         # Remove and re-clone specific service
     """
     config = Config()
 
@@ -76,13 +76,13 @@ def clone(
         all_repos = config.get_service_repos(only_enabled=False)
         service_repos = {}
         not_found = []
-        
+
         for service in services:
             if service in all_repos:
                 service_repos[service] = all_repos[service]
             else:
                 not_found.append(service)
-        
+
         if not_found:
             console.print(
                 f"[yellow]Services not found in configuration: {', '.join(not_found)}[/yellow]\n"
@@ -91,11 +91,11 @@ def clone(
             if not service_repos:
                 return
     else:
-        # Get service repositories from config (filter by enabled unless --all is specified)
-        service_repos = config.get_service_repos(only_enabled=not all_services)
+        # Get service repositories from config (filter by enabled unless --include-disabled is specified)
+        service_repos = config.get_service_repos(only_enabled=not include_disabled)
 
         if not service_repos:
-            if all_services:
+            if include_disabled:
                 console.print(
                     "[yellow]No service repositories configured.[/yellow]\n"
                     "[dim]Check your services.yml file. It should have a 'repositories' section.[/dim]"
@@ -103,7 +103,7 @@ def clone(
             else:
                 console.print(
                     "[yellow]No enabled service repositories found.[/yellow]\n"
-                    "[dim]Use --all to clone disabled services or check your services.yml file.[/dim]"
+                    "[dim]Use --include-disabled to clone disabled services or check your services.yml file.[/dim]"
                 )
             return
 
@@ -113,7 +113,7 @@ def clone(
     # Clone services
     if services:
         console.print(f"[bold blue]Cloning {len(service_repos)} service(s): {', '.join(service_repos.keys())}...[/bold blue]\n")
-    elif all_services:
+    elif include_disabled:
         console.print("[bold blue]Cloning all service repositories (including disabled)...[/bold blue]\n")
     else:
         console.print("[bold blue]Cloning enabled service repositories...[/bold blue]\n")
@@ -303,10 +303,10 @@ def setup(
         "-f",
         help="Remove existing service directories before cloning"
     ),
-    all_services: bool = typer.Option(
+    include_disabled: bool = typer.Option(
         False,
-        "--all",
-        help="Clone all services including disabled ones (default: enabled only)"
+        "--include-disabled",
+        help="Include disabled services (default: enabled only)"
     ),
     create_config: bool = typer.Option(
         False,
@@ -316,8 +316,7 @@ def setup(
 ):
     """Clone service repositories into the services/ directory.
 
-    By default, only enabled services are cloned. Use --all to clone all services
-    including disabled ones.
+    By default, only enabled services are cloned. Use --include-disabled to also clone disabled services.
 
     This command reads repository URLs from services.yml and clones them
     into the services/ directory. Each service becomes an independent git
@@ -337,11 +336,11 @@ def setup(
             create_services_config_example(services_config_file)
         return
 
-    # Get service repositories from config (filter by enabled unless --all is specified)
-    service_repos = config.get_service_repos(only_enabled=not all_services)
+    # Get service repositories from config (filter by enabled unless --include-disabled is specified)
+    service_repos = config.get_service_repos(only_enabled=not include_disabled)
 
     if not service_repos:
-        if all_services:
+        if include_disabled:
             console.print(
                 "[yellow]No service repositories configured.[/yellow]\n"
                 "[dim]Run 'shardctl setup --create-config' to create an example configuration.[/dim]"
@@ -349,7 +348,7 @@ def setup(
         else:
             console.print(
                 "[yellow]No enabled service repositories found.[/yellow]\n"
-                "[dim]Use --all to clone disabled services or run 'shardctl setup --create-config' to create an example configuration.[/dim]"
+                "[dim]Use --include-disabled to clone disabled services or run 'shardctl setup --create-config' to create an example configuration.[/dim]"
             )
         return
 
@@ -357,7 +356,7 @@ def setup(
     config.ensure_services_dir()
 
     # Clone services
-    if all_services:
+    if include_disabled:
         console.print("[bold blue]Setting up all service repositories (including disabled)...[/bold blue]\n")
     else:
         console.print("[bold blue]Setting up enabled service repositories...[/bold blue]\n")
@@ -367,7 +366,7 @@ def setup(
 
 @app.command(name="build-service")
 def build_service_cmd(
-    service: Optional[str] = typer.Argument(None, help="Service name to build"),
+    service: Optional[str] = typer.Argument(None, help="Specific service name to build"),
     no_docker: bool = typer.Option(
         False,
         "--no-docker",
@@ -379,42 +378,44 @@ def build_service_cmd(
         "-l",
         help="List services with build configurations"
     ),
-    all_services: bool = typer.Option(
+    include_disabled: bool = typer.Option(
         False,
-        "--all",
-        "-a",
-        help="Build all enabled services (without service arg) or show disabled services (with --list)"
+        "--include-disabled",
+        help="Include disabled services (default: enabled only)"
     ),
 ):
     """Build a service using its configured build commands.
 
-    By default, this command builds both from source AND creates Docker images.
+    By default, this command builds all ENABLED services (both from source AND creates Docker images).
     Use --no-docker to skip Docker image building.
+    Specify a service name to build only that service.
+    Use --include-disabled to also build disabled services.
 
     This command reads the build configuration from services.yml and executes
-    the appropriate build commands for the specified service.
+    the appropriate build commands for the specified service(s).
 
     Examples:
-        shardctl build-service f1r3node           # Build source + Docker image
-        shardctl build-service f1r3node --no-docker  # Build source only
-        shardctl build-service -a                 # Build all enabled services (source + Docker)
-        shardctl build-service -a --no-docker     # Build all enabled services (source only)
-        shardctl build-service --list             # List enabled services
-        shardctl build-service --list --all       # List all services (including disabled)
+        shardctl build-service                              # Build all enabled services (source + Docker)
+        shardctl build-service --no-docker                  # Build all enabled services (source only)
+        shardctl build-service --include-disabled           # Build all services including disabled (source + Docker)
+        shardctl build-service f1r3node                     # Build only f1r3node (source + Docker)
+        shardctl build-service f1r3node --no-docker         # Build only f1r3node (source only)
+        shardctl build-service --list                       # List enabled services
+        shardctl build-service --list --include-disabled    # List all services (including disabled)
     """
     config = Config()
 
     # List services if requested
     if list_services:
-        # Use all_services flag to determine if we show disabled services
-        build_configs = config.get_all_build_configs(only_enabled=not all_services)
+        # Use include_disabled flag to determine if we show disabled services
+        build_configs = config.get_all_build_configs(only_enabled=not include_disabled)
         if not build_configs:
-            if all_services:
+            if include_disabled:
                 console.print("[yellow]No build configurations found in services.yml[/yellow]")
             else:
                 console.print(
                     "[yellow]No enabled services with build configurations found[/yellow]\n"
-                    "[dim]Use --all to see disabled services[/dim]"
+                    "[dim]Use --include-disabled to see disabled services[/dim]"
                 )
             return
 
@@ -433,9 +434,9 @@ def build_service_cmd(
 
         return
 
-    # Build all enabled services if -a/--all is specified without a service name
-    if all_services and not service:
-        build_configs = config.get_all_build_configs(only_enabled=True)
+    # Build all enabled services if no service name is specified
+    if not service:
+        build_configs = config.get_all_build_configs(only_enabled=not include_disabled)
         if not build_configs:
             console.print("[yellow]No enabled services with build configurations found[/yellow]")
             return
