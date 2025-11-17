@@ -229,17 +229,11 @@ poetry run shardctl build-service -a
 
 #### 6. Start the Stack
 
-Start all services using Docker Compose:
+Start all services using shardctl (which automatically orchestrates all configured services):
 
 ```bash
-# Start F1R3node blockchain shard (5 validators)
+# Start all services (F1R3node, F1R3Sky, and Embers)
 poetry run shardctl up
-
-# Start F1R3Sky AT Protocol services
-docker compose -f docker-compose.f1r3sky.yml up -d
-
-# Start Embers API bridge
-docker compose -f docker-compose.embers.yml up -d
 ```
 
 **Important:** F1R3node blockchain needs 2-3 minutes after startup to:
@@ -247,7 +241,11 @@ docker compose -f docker-compose.embers.yml up -d
 2. Transition to "Running" state
 3. Initialize Casper consensus (ready to accept deployments)
 
-Wait for blockchain initialization before using Embers API.
+Wait for blockchain initialization before using Embers API. You can monitor the blockchain startup progress with:
+
+```bash
+poetry run shardctl logs --follow rnode.bootstrap
+```
 
 #### 7. Verify All Services Running
 
@@ -257,8 +255,8 @@ Check that all containers are healthy:
 # View formatted status
 poetry run shardctl status
 
-# Or check all containers
-docker ps --format "table {{.Names}}\t{{.Status}}"
+# Or list all containers
+poetry run shardctl ps
 ```
 
 You should see:
@@ -283,18 +281,21 @@ Services are now accessible:
 
 #### 9. View Logs
 
-Monitor service logs:
+Monitor service logs using shardctl:
 
 ```bash
 # F1R3node blockchain logs
-poetry run shardctl logs --follow
+poetry run shardctl logs --follow rnode.bootstrap
 
 # Embers API logs
-docker logs -f embers-api
+poetry run shardctl logs --follow embers-api
 
 # F1R3Sky service logs
-docker logs -f f1r3sky-pds
-docker logs -f f1r3sky-bsky
+poetry run shardctl logs --follow f1r3sky-pds
+poetry run shardctl logs --follow f1r3sky-bsky
+
+# View all logs at once
+poetry run shardctl logs --follow
 ```
 
 #### 10. Stop Services
@@ -304,8 +305,6 @@ When done:
 ```bash
 # Stop all services
 poetry run shardctl down
-docker compose -f docker-compose.f1r3sky.yml down
-docker compose -f docker-compose.embers.yml down
 ```
 
 ### Quick Commands Reference
@@ -660,11 +659,11 @@ brew install protobuf
 1. Wait 2-3 minutes after `shardctl up` for Casper to fully initialize
 2. Check logs for "Making a transition to Running state":
    ```bash
-   docker logs rnode.bootstrap 2>&1 | grep "Running state"
+   poetry run shardctl logs rnode.bootstrap | grep "Running state"
    ```
 3. Restart Embers after blockchain is ready:
    ```bash
-   docker compose -f docker-compose.embers.yml restart
+   poetry run shardctl restart embers-api
    ```
 
 #### Blockchain stuck or won't start properly
@@ -704,35 +703,34 @@ sudo rm -rf services/f1r3node/docker/data
 
 ```bash
 # Check compose configuration
-shardctl compose config
+poetry run shardctl compose config
 
 # View service logs
-shardctl logs service-name
+poetry run shardctl logs service-name
 
 # Check if ports are already in use
-shardctl compose ps
-docker ps  # Check for conflicts
+poetry run shardctl ps
 ```
 
 #### Permission Issues
 
 ```bash
 # Shell into container to check
-shardctl shell service-name
+poetry run shardctl shell service-name
 
 # Check file ownership
-shardctl exec service-name ls -la /app
+poetry run shardctl exec service-name ls -la /app
 ```
 
 ### Network Issues
 
 ```bash
-# Inspect network
-docker network inspect f1r3fly
-
 # Restart with fresh network
-shardctl down
-shardctl up
+poetry run shardctl down
+poetry run shardctl up
+
+# For advanced network diagnostics, you can use docker directly:
+docker network inspect system-integration_f1r3fly
 ```
 
 ### Complete Clean Slate
@@ -742,12 +740,9 @@ If nothing else works, start completely fresh:
 ```bash
 # Stop everything
 poetry run shardctl down
-docker compose -f docker-compose.f1r3sky.yml down
-docker compose -f docker-compose.embers.yml down
 
 # Remove all volumes and data
-docker compose -f docker-compose.yml down --volumes
-docker compose -f docker-compose.f1r3sky.yml down --volumes
+poetry run shardctl down --volumes
 sudo rm -rf services/f1r3node/docker/data
 
 # Remove and re-clone services
@@ -759,9 +754,8 @@ poetry run shardctl build-service -a
 
 # Start fresh
 poetry run shardctl up
-docker compose -f docker-compose.f1r3sky.yml up -d
 # Wait 2-3 minutes for blockchain initialization
-docker compose -f docker-compose.embers.yml up -d
+poetry run shardctl logs --follow rnode.bootstrap
 ```
 
 ## Advanced Usage

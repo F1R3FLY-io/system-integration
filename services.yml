@@ -224,11 +224,13 @@ builds:
   f1r3sky:
     # F1R3Sky Frontend Web App - React Native/Expo web app with bskyweb Go server
     # Main build command (install dependencies and build web bundle)
-    # Requires: ~/.npmrc with GitHub token (//npm.pkg.github.com/:_authToken=TOKEN)
-    build_command: "yarn install && yarn intl:build && yarn build-web"
+    # Requires: .token.classic file with GitHub token (NPM_TOKEN environment variable)
+    # We have a little wrapper shell script in system-integration to allow the environment
+    # to be configured correctly.
+    build_command: "../../firesky_build.sh"
 
-    # Docker build command for f1r3sky web frontend (uses ~/.npmrc)
-    docker_build_command: "docker build -t f1r3flyindustries/f1r3sky:latest . --secret id=npmrc,src=$HOME/.npmrc"
+    # Docker build command for f1r3sky web frontend (uses wrapper script for NPM auth)
+    docker_build_command: "../../firesky_docker_build.sh"
 
     # Docker image produced
     docker_image: "f1r3flyindustries/f1r3sky:latest"
