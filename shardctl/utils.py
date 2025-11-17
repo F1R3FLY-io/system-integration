@@ -1,5 +1,6 @@
 """Utility functions for shardctl."""
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -271,7 +272,7 @@ def build_service(
     # - Sources nvm if present
     # - Switches to Node 18
     # - Enables corepack for pnpm/yarn
-    node18_prefix = ('corepack enable;')
+    node18_prefix = ('')
 #        'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"; '
 #        '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '
 #        'if command -v nvm >/dev/null 2>&1; then nvm install 18 >/dev/null && nvm use 18 >/dev/null; fi; '
@@ -306,6 +307,7 @@ def build_service(
                     step_cmd,
                     shell=True,
                     cwd=service_path,
+                    env=os.environ.copy(),
                     check=True
                 )
             except subprocess.CalledProcessError as e:
@@ -327,6 +329,7 @@ def build_service(
             build_command,
             shell=True,
             cwd=service_path,
+            env=os.environ.copy(),
             check=True
         )
 
