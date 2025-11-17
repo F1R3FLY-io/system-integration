@@ -10,6 +10,7 @@ from .compose import ComposeManager
 from .config import Config
 from .utils import (
     build_service,
+    clean_services,
     clone_services,
     create_services_config_example,
     format_service_status,
@@ -152,6 +153,23 @@ def down(
     console.print("[bold blue]Stopping services...[/bold blue]")
     manager.down(volumes=volumes, remove_orphans=not keep_orphans)
     console.print("[green]✓[/green] Services stopped successfully")
+
+
+@app.command()
+def clean(
+    services: Optional[List[str]] = typer.Argument(None, help="Specific services to clean"),
+):
+    """Delete cloned service repositories from services/ directory.
+
+    By default, cleans all cloned services. Specify service names to clean only those.
+    Includes both enabled and disabled services.
+
+    Examples:
+        shardctl clean                    # Clean all services (with confirmation)
+        shardctl clean f1r3sky embers     # Clean only f1r3sky and embers
+    """
+    config = Config()
+    clean_services(services, config.services_dir, all_services=not services)
 
 
 @app.command()

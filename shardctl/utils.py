@@ -2,7 +2,7 @@
 
 import subprocess
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -271,12 +271,12 @@ def build_service(
     # - Sources nvm if present
     # - Switches to Node 18
     # - Enables corepack for pnpm/yarn
-    node18_prefix = (
-        'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"; '
-        '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '
-        'if command -v nvm >/dev/null 2>&1; then nvm install 18 >/dev/null && nvm use 18 >/dev/null; fi; '
-        'corepack enable >/dev/null 2>&1; '
-    )
+    node18_prefix = ('corepack enable;')
+#        'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"; '
+#        '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '
+#        'if command -v nvm >/dev/null 2>&1; then nvm install 18 >/dev/null && nvm use 18 >/dev/null; fi; '
+#        'corepack enable >/dev/null 2>&1; '
+#    )
 
     # Run pre-build steps
     if docker:
@@ -353,6 +353,63 @@ def build_service(
     except Exception as e:
         console.print(f"[red]✗ Build error: {e}[/red]")
         return False
+
+
+def clean_services(
+    services_to_clean: Optional[List[str]],
+    services_dir: Path,
+    all_services: bool = True
+) -> None:
+    """Remove service directories from services/ folder.
+
+    Args:
+        services_to_clean: List of specific services to clean. If None or empty, cleans based on all_services flag.
+        services_dir: Path to services directory.
+        all_services: If True (and no services_to_clean specified), remove all services. If False, remove nothing.
+    """
+    import shutil
+
+    if not services_dir.exists():
+        console.print("[yellow]Services directory does not exist[/yellow]")
+        return
+
+    # Determine which services to remove
+    if services_to_clean:
+        # Clean specific services
+        services_list = services_to_clean
+    elif all_services:
+        # Clean all services
+        services_list = [d.name for d in services_dir.iterdir() if d.is_dir() and d.name != ".gitkeep"]
+    else:
+        console.print("[yellow]No services specified and --all not set[/yellow]")
+        return
+
+    if not services_list:
+        console.print("[yellow]No services to clean[/yellow]")
+        return
+
+    # Confirm before deleting
+    console.print(f"[yellow]About to remove {len(services_list)} service(s):[/yellow]")
+    for service in services_list:
+        console.print(f"  - {service}")
+
+    if typer.confirm("Continue?"):
+        removed_count = 0
+        for service in services_list:
+            service_path = services_dir / service
+            if service_path.exists():
+                try:
+                    shutil.rmtree(service_path)
+                    console.print(f"[green]✓[/green] Removed {service}")
+                    removed_count += 1
+                except Exception as e:
+                    console.print(f"[red]✗[/red] Error removing {service}: {e}")
+            else:
+                console.print(f"[dim]- {service} (not found)[/dim]")
+
+        console.print(f"\n[green]✓[/green] Cleaned {removed_count} service(s)")
+    else:
+        console.print("[dim]Cancelled[/dim]")
 
 
 def create_services_config_example(config_path: Path) -> None:
