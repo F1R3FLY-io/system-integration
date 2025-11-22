@@ -1,8 +1,8 @@
 services:
   # Embers API - HTTP service that bridges f1r3sky to f1r3node blockchain
-  embers-api:
+  embers:
     image: f1r3flyindustries/embers:latest
-    container_name: embers-api
+    container_name: embers
     ports:
       - "8080:3000"  # Expose on 8080 externally (f1r3sky expects this), runs on 3000 internally
     env_file:
@@ -25,9 +25,9 @@ services:
     ports:
       - "5173:80"  # Frontend UI on port 5173
     environment:
-      API_URL: "http://localhost:8080"  # Points to embers-api
+      API_URL: "http://localhost:8080"  # Points to embers
     depends_on:
-      - embers-api
+      - embers
     networks:
       - f1r3fly
     restart: unless-stopped
