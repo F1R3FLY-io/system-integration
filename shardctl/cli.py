@@ -141,6 +141,7 @@ def up(
 
 @app.command()
 def down(
+    services: Optional[List[str]] = typer.Argument(None, help="Services to stop"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
     volumes: bool = typer.Option(False, "--volumes", "-v", help="Remove named volumes"),
     keep_orphans: bool = typer.Option(False, "--keep-orphans", help="Keep orphan containers"),
@@ -151,7 +152,7 @@ def down(
 
     manager = get_manager(profile)
     console.print("[bold blue]Stopping services...[/bold blue]")
-    manager.down(volumes=volumes, remove_orphans=not keep_orphans)
+    manager.down(services=services, volumes=volumes, remove_orphans=not keep_orphans)
     console.print("[green]✓[/green] Services stopped successfully")
 
 

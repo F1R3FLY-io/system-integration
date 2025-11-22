@@ -127,10 +127,11 @@ class ComposeManager:
 
         self._run_command(cmd)
 
-    def down(self, volumes: bool = False, remove_orphans: bool = True):
+    def down(self, services: Optional[List[str]] = None, volumes: bool = False, remove_orphans: bool = True):
         """Stop and remove services.
 
         Args:
+            services: List of specific services to stop. If None, stops all.
             volumes: Remove named volumes.
             remove_orphans: Remove containers for services not defined in compose file.
         """
@@ -141,6 +142,9 @@ class ComposeManager:
 
         if remove_orphans:
             cmd.append("--remove-orphans")
+
+        if services:
+            cmd.extend(services)
 
         self._run_command(cmd)
 
