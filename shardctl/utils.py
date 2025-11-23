@@ -1,10 +1,12 @@
 """Utility functions for shardctl."""
 
 import os
+import signal
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import typer
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
@@ -297,21 +299,57 @@ def build_service(
 
             if use_nix:
                 # Run the command directly in nix develop environment
-                step_cmd = f'nix develop --command bash -c "{step_core}"'
+                step_cmd = f'nix --extra-experimental-features nix-command --extra-experimental-features flakes develop --command bash -c "{step_core}"'
             else:
                 step_cmd = step_core
 
             console.print(f"[dim]$ {step}[/dim]")
+
+            step_process = None
+
+            def cleanup_step_process():
+                """Kill process group for pre-build step."""
+                if step_process and step_process.pid:
+                    try:
+                        os.killpg(os.getpgid(step_process.pid), signal.SIGTERM)
+                        try:
+                            step_process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(os.getpgid(step_process.pid), signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+
             try:
-                result = subprocess.run(
+                step_process = subprocess.Popen(
                     step_cmd,
                     shell=True,
                     cwd=service_path,
                     env=os.environ.copy(),
-                    check=True
+                    preexec_fn=os.setpgrp,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1
                 )
+
+                for line in step_process.stdout:
+                    console.print(line, end='')
+
+                returncode = step_process.wait()
+                if returncode != 0:
+                    raise subprocess.CalledProcessError(returncode, step_cmd)
+
+            except KeyboardInterrupt:
+                console.print(f"\n[yellow]Pre-build step interrupted: {step}[/yellow]")
+                cleanup_step_process()
+                return False
             except subprocess.CalledProcessError as e:
+                cleanup_step_process()
                 console.print(f"[red]Pre-build step failed: {step}[/red]")
+                return False
+            except Exception as e:
+                cleanup_step_process()
+                console.print(f"[red]Error in pre-build step: {e}[/red]")
                 return False
 
     # Wrap main build command in nix if needed
@@ -319,19 +357,50 @@ def build_service(
         build_command = node18_prefix + build_command
 
     if use_nix:
-        build_command = f'nix develop --command bash -c "{build_command}"'
+        build_command = f'nix --extra-experimental-features nix-command --extra-experimental-features flakes develop --command bash -c "{build_command}"'
 
     # Run the build command
     console.print(f"[dim]$ {build_command}[/dim]")
 
+    process = None
+
+    def cleanup_process_group():
+        """Kill entire process group on exit."""
+        if process and process.pid:
+            try:
+                # Kill entire process group
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                # Wait briefly, then force kill if needed
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass  # Process already terminated
+
     try:
-        result = subprocess.run(
+        # Use Popen with process group for better signal handling
+        process = subprocess.Popen(
             build_command,
             shell=True,
             cwd=service_path,
             env=os.environ.copy(),
-            check=True
+            preexec_fn=os.setpgrp,  # Create new process group
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
         )
+
+        # Stream output in real-time
+        for line in process.stdout:
+            console.print(line, end='')
+
+        # Wait for completion
+        returncode = process.wait()
+
+        if returncode != 0:
+            raise subprocess.CalledProcessError(returncode, build_command)
 
         if docker:
             docker_image = build_config.get("docker_image", "N/A")
@@ -350,10 +419,16 @@ def build_service(
 
         return True
 
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Build interrupted by user (CTRL-C)[/yellow]")
+        cleanup_process_group()
+        return False
     except subprocess.CalledProcessError as e:
+        cleanup_process_group()
         console.print(f"[red]✗ Build failed with exit code {e.returncode}[/red]")
         return False
     except Exception as e:
+        cleanup_process_group()
         console.print(f"[red]✗ Build error: {e}[/red]")
         return False
 

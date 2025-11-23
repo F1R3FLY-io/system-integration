@@ -141,6 +141,7 @@ def up(
 
 @app.command()
 def down(
+    services: Optional[List[str]] = typer.Argument(None, help="Services to stop"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
     volumes: bool = typer.Option(False, "--volumes", "-v", help="Remove named volumes"),
     keep_orphans: bool = typer.Option(False, "--keep-orphans", help="Keep orphan containers"),
@@ -151,7 +152,7 @@ def down(
 
     manager = get_manager(profile)
     console.print("[bold blue]Stopping services...[/bold blue]")
-    manager.down(volumes=volumes, remove_orphans=not keep_orphans)
+    manager.down(services=services, volumes=volumes, remove_orphans=not keep_orphans)
     console.print("[green]✓[/green] Services stopped successfully")
 
 
@@ -464,7 +465,6 @@ def build_service_cmd(
         else:
             console.print(f"[bold blue]Building {len(build_configs)} enabled service(s) (source + Docker)...[/bold blue]\n")
 
-        failed_services = []
         for svc_name, build_config in build_configs.items():
             console.print(f"[cyan]Building {svc_name}...[/cyan]")
 
@@ -479,9 +479,8 @@ def build_service_cmd(
             success = build_service(svc_name, service_path, build_config, docker=False)
 
             if not success:
-                failed_services.append(svc_name)
-                console.print()  # Empty line between services
-                continue
+                console.print(f"[red]✗[/red] Build failed, stopping")
+                raise typer.Exit(1)
 
             # Build Docker image if not skipped
             if not no_docker:
@@ -489,16 +488,13 @@ def build_service_cmd(
                 if build_config.get("docker_build_command"):
                     success_docker = build_service(svc_name, service_path, build_config, docker=True)
                     if not success_docker:
-                        failed_services.append(f"{svc_name} (Docker)")
+                        console.print(f"[red]✗[/red] Docker build failed, stopping")
+                        raise typer.Exit(1)
                 # If no docker build command, that's okay - just skip it
 
             console.print()  # Empty line between services
 
-        if failed_services:
-            console.print(f"[red]✗[/red] {len(failed_services)} build(s) failed: {', '.join(failed_services)}")
-            raise typer.Exit(1)
-        else:
-            console.print(f"[green]✓[/green] All {len(build_configs)} service(s) built successfully")
+        console.print(f"[green]✓[/green] All {len(build_configs)} service(s) built successfully")
         return
 
     # Require service argument if not listing and not building all
