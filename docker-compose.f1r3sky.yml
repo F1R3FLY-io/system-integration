@@ -35,6 +35,33 @@ services:
       timeout: 5s
       retries: 5
 
+  # BSKY Migration - runs database migrations before AppView starts
+  bsky-migrate:
+    image: f1r3flyindustries/f1r3sky-bsky:latest
+    container_name: f1r3sky-bsky-migrate
+    env_file:
+      - .env.f1r3sky
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - f1r3fly
+    command: >
+      node -e "
+      const { Database } = require('@atproto/bsky');
+      (async () => {
+        console.log('Running bsky database migrations...');
+        const db = new Database({
+          url: process.env.BSKY_DB_POSTGRES_URL || 'postgresql://postgres:postgres@postgres:5432/atproto',
+          schema: process.env.BSKY_DB_POSTGRES_SCHEMA
+        });
+        await db.migrateToLatestOrThrow();
+        await db.close();
+        console.log('Bsky migrations complete!');
+      })();
+      "
+    restart: "no"
+
   # BSKY AppView service (app.bsky.* API endpoints)
   bsky:
     image: f1r3flyindustries/f1r3sky-bsky:latest
@@ -53,6 +80,8 @@ services:
         condition: service_healthy
       bsync:
         condition: service_started
+      bsky-migrate:
+        condition: service_completed_successfully
     networks:
       - f1r3fly
     restart: unless-stopped
