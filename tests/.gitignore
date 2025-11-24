@@ -1,0 +1,9 @@
+# Test artifacts
+*.log
+*.tmp
+test-results/
+.test-*
+
+# Test data
+test-accounts.txt
+test-sessions.json
