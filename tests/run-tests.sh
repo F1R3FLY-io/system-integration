@@ -1,7 +1,7 @@
 #!/bin/bash
-# F1R3FLY Integration Test Suite
+# F1R3FLY Integration Test Runner
 #
-# Usage: ./integration-tests.sh [services...] [options]
+# Usage: ./run-tests.sh [services...] [options]
 #
 # Services:
 #   f1r3sky    - Test F1R3Sky AT Protocol services
@@ -13,6 +13,7 @@
 #   --no-build  - Skip building services before testing
 #   --no-up     - Skip starting services (assumes already running)
 #   --clean     - Clean up services after testing
+#   --verbose   - Enable verbose output
 #   --help      - Show this help message
 
 set -e
@@ -21,8 +22,12 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Source helper functions
-source "$SCRIPT_DIR/lib/helpers.sh"
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
 # Test configuration
 SERVICES_TO_TEST=()
@@ -30,14 +35,32 @@ NO_BUILD=false
 NO_UP=false
 CLEAN=false
 VERBOSE=false
+WAIT_TIME=${TEST_WAIT_TIME:-90}  # Default 90 seconds wait after starting services
 
 # Available test services
 AVAILABLE_SERVICES=("f1r3sky" "embers" "f1r3node")
 
+# Logging functions
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+log_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
 # Show help
 show_help() {
     cat << EOF
-F1R3FLY Integration Test Suite
+F1R3FLY Integration Test Runner
 
 Usage: $0 [services...] [options]
 
@@ -52,6 +75,7 @@ Options:
   --no-up        - Skip starting services (assumes they are already running)
   --clean        - Clean up and stop services after testing
   --verbose, -v  - Enable verbose output (show HTTP details and container logs)
+  --wait TIME    - Wait TIME seconds after starting services (default: 90)
   --help, -h     - Show this help message
 
 Examples:
@@ -66,7 +90,8 @@ Examples:
 
 Environment Variables:
   TEST_VERBOSE=1              - Enable verbose output (same as --verbose)
-  TEST_TIMEOUT=120            - Set container wait timeout (default: 60s)
+  TEST_TIMEOUT=120            - Set container wait timeout (default: 60-120s)
+  TEST_WAIT_TIME=90           - Seconds to wait after starting services (default: 90)
 
 EOF
     exit 0
@@ -95,6 +120,16 @@ parse_args() {
                 VERBOSE=true
                 export TEST_VERBOSE=true
                 shift
+                ;;
+            --wait)
+                shift
+                if [[ $1 =~ ^[0-9]+$ ]]; then
+                    WAIT_TIME=$1
+                    shift
+                else
+                    log_error "--wait requires a numeric argument"
+                    exit 1
+                fi
                 ;;
             -*)
                 log_error "Unknown option: $1"
@@ -137,27 +172,15 @@ build_services() {
     fi
 
     log_info "Building services..."
-
     cd "$ROOT_DIR"
 
-    for service in "${SERVICES_TO_TEST[@]}"; do
-        case $service in
-            f1r3sky)
-                log_info "Building f1r3sky services..."
-                poetry run shardctl compose -f docker-compose.f1r3sky.yml build
-                ;;
-            embers)
-                log_info "Building embers services..."
-                poetry run shardctl compose -f docker-compose.embers.yml build
-                ;;
-            f1r3node)
-                log_info "Building f1r3node services..."
-                poetry run shardctl compose -f docker-compose.yml build
-                ;;
-        esac
-    done
-
-    log_success "Build completed"
+    if poetry run shardctl build; then
+        log_success "Build completed"
+        return 0
+    else
+        log_error "Build failed"
+        return 1
+    fi
 }
 
 # Start services
@@ -168,27 +191,46 @@ start_services() {
     fi
 
     log_info "Starting services..."
-
     cd "$ROOT_DIR"
 
-    for service in "${SERVICES_TO_TEST[@]}"; do
-        case $service in
-            f1r3sky)
-                log_info "Starting f1r3sky services..."
-                poetry run shardctl compose -f docker-compose.f1r3sky.yml up -d
-                ;;
-            embers)
-                log_info "Starting embers services..."
-                poetry run shardctl compose -f docker-compose.embers.yml up -d
-                ;;
-            f1r3node)
-                log_info "Starting f1r3node services..."
-                poetry run shardctl compose -f docker-compose.yml up -d
-                ;;
-        esac
-    done
+    if poetry run shardctl up; then
+        log_success "Services started"
+        return 0
+    else
+        log_error "Failed to start services"
+        return 1
+    fi
+}
 
-    log_success "Services started"
+# Wait for services to be ready
+wait_for_services() {
+    if [ "$NO_UP" = true ]; then
+        log_info "Skipping wait (--no-up specified, assuming services already ready)"
+        return 0
+    fi
+
+    log_info "Waiting ${WAIT_TIME} seconds for services to initialize..."
+    log_info "Services need time to:"
+    log_info "  - Complete database migrations"
+    log_info "  - Establish connections between services"
+    log_info "  - Start health check endpoints"
+    log_info "  - Begin indexing/subscription processes"
+    
+    local elapsed=0
+    local interval=10
+    
+    while [ $elapsed -lt $WAIT_TIME ]; do
+        sleep $interval
+        elapsed=$((elapsed + interval))
+        local remaining=$((WAIT_TIME - elapsed))
+        
+        if [ $remaining -gt 0 ]; then
+            log_info "  Waiting... ${elapsed}/${WAIT_TIME}s elapsed (${remaining}s remaining)"
+        fi
+    done
+    
+    log_success "Wait complete - services should be ready for testing"
+    echo ""
 }
 
 # Run tests for a specific service
@@ -221,48 +263,42 @@ cleanup_services() {
     fi
 
     log_info "Cleaning up services..."
-
     cd "$ROOT_DIR"
 
-    for service in "${SERVICES_TO_TEST[@]}"; do
-        case $service in
-            f1r3sky)
-                log_info "Stopping f1r3sky services..."
-                poetry run shardctl compose -f docker-compose.f1r3sky.yml down
-                ;;
-            embers)
-                log_info "Stopping embers services..."
-                poetry run shardctl compose -f docker-compose.embers.yml down
-                ;;
-            f1r3node)
-                log_info "Stopping f1r3node services..."
-                poetry run shardctl compose -f docker-compose.yml down
-                ;;
-        esac
-    done
-
-    log_success "Cleanup completed"
+    if poetry run shardctl down; then
+        log_success "Cleanup completed"
+        return 0
+    else
+        log_error "Cleanup failed"
+        return 1
+    fi
 }
 
 # Main execution
 main() {
-    log_info "F1R3FLY Integration Test Suite"
+    log_info "F1R3FLY Integration Test Runner"
     echo ""
-
-    # Check for jq
-    check_jq
 
     # Parse arguments
     parse_args "$@"
 
     log_info "Services to test: ${SERVICES_TO_TEST[*]}"
+    if [ "$VERBOSE" = true ]; then
+        log_info "Verbose mode: ENABLED"
+    fi
+    if [ "$NO_UP" != true ]; then
+        log_info "Service wait time: ${WAIT_TIME} seconds"
+    fi
     echo ""
 
     # Build services
-    build_services
+    build_services || exit 1
 
     # Start services
-    start_services
+    start_services || exit 1
+
+    # Wait for services to be ready
+    wait_for_services
 
     # Run tests
     log_info "Running integration tests..."
@@ -298,3 +334,6 @@ main() {
 
 # Run main function
 main "$@"
+
+
+

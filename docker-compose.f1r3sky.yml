@@ -135,6 +135,33 @@ services:
       - f1r3fly
     restart: unless-stopped
 
+  # BSYNC Migration - runs database migrations for bsync
+  bsync-migrate:
+    image: f1r3flyindustries/f1r3sky-bsync:latest
+    container_name: f1r3sky-bsync-migrate
+    env_file:
+      - .env.f1r3sky
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - f1r3fly
+    command: >
+      node -e "
+      const { Database } = require('@atproto/bsync');
+      (async () => {
+        console.log('Running bsync database migrations...');
+        const db = new Database({
+          url: process.env.BSYNC_DB_POSTGRES_URL || process.env.BSKY_DB_POSTGRES_URL || 'postgresql://postgres:postgres@postgres:5432/atproto',
+          schema: process.env.BSYNC_DB_POSTGRES_SCHEMA || process.env.BSKY_DB_POSTGRES_SCHEMA
+        });
+        await db.migrateToLatestOrThrow();
+        await db.close();
+        console.log('Bsync migrations complete!');
+      })();
+      "
+    restart: "no"
+
   # BSYNC (Background Sync Service)
   bsync:
     image: f1r3flyindustries/f1r3sky-bsync:latest
@@ -149,31 +176,33 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      bsync-migrate:
+        condition: service_completed_successfully
     networks:
       - f1r3fly
     restart: unless-stopped
 
-  # OZONE (Moderation Service)
-  ozone:
-    image: f1r3flyindustries/f1r3sky-ozone:latest
-    container_name: f1r3sky-ozone
-    ports:
-      - "3101:3001"
-    env_file:
-      - .env.f1r3sky
-    environment:
-      # Port (not in env file)
-      PORT: 3001
-    depends_on:
-      postgres:
-        condition: service_healthy
-      bsky:
-        condition: service_started
-      pds:
-        condition: service_started
-    networks:
-      - f1r3fly
-    restart: unless-stopped
+  # OZONE (Moderation Service) - DISABLED FOR NOW
+  # ozone:
+  #   image: f1r3flyindustries/f1r3sky-ozone:latest
+  #   container_name: f1r3sky-ozone
+  #   ports:
+  #     - "3101:3001"
+  #   env_file:
+  #     - .env.f1r3sky
+  #   environment:
+  #     # Port (not in env file)
+  #     PORT: 3001
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     bsky:
+  #       condition: service_started
+  #     pds:
+  #       condition: service_started
+  #   networks:
+  #     - f1r3fly
+  #   restart: unless-stopped
 
   # F1R3SKY Frontend Web App (bskyweb) - requires ~/.npmrc with GitHub token
   f1r3sky:

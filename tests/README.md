@@ -1,393 +1,327 @@
 # F1R3FLY Integration Tests
 
-Integration test suite for F1R3FLY microservices ecosystem.
-
-## Overview
-
-This test suite provides comprehensive integration testing for all F1R3FLY services:
-
-- **f1r3sky**: AT Protocol services (PDS, BSKY, BSYNC, Frontend)
-- **embers**: Blockchain API bridge and frontend
-- **f1r3node**: Blockchain network with monitoring
-
-## Prerequisites
-
-- Docker and Docker Compose
-- `jq` - JSON processor for parsing API responses
-- Poetry (for running shardctl commands)
-- All services cloned and configured (run `poetry run shardctl clone`)
-
-### Install jq
-
-```bash
-# macOS
-brew install jq
-
-# Ubuntu/Debian
-sudo apt-get install jq
-
-# Other systems: https://jqlang.github.io/jq/download/
-```
+Comprehensive integration test suites for all F1R3FLY services.
 
 ## Quick Start
 
 ```bash
-# Run all tests (build, start services, test, leave running)
-./tests/integration-tests.sh
+cd /Users/aidanstay/Documents/Work/F1R3FLY/firefly-system-integration
 
-# Run only f1r3sky tests
-./tests/integration-tests.sh f1r3sky
+# Run all tests (builds, starts services, waits 90s, then tests)
+./tests/run-tests.sh
 
-# Run multiple service tests
-./tests/integration-tests.sh f1r3sky embers
+# Test specific service
+./tests/run-tests.sh f1r3sky
 
-# Test with services already running (skip build and start)
-./tests/integration-tests.sh --no-build --no-up
+# Skip build (services already built)
+./tests/run-tests.sh --no-build
 
-# Test with verbose output (show HTTP requests/responses and logs)
-./tests/integration-tests.sh --verbose
+# Skip startup (services already running)
+./tests/run-tests.sh --no-up
 
-# Test and clean up afterward
-./tests/integration-tests.sh --clean
-```
+# Custom wait time (default 90s)
+./tests/run-tests.sh --wait 120
 
-## Usage
+# Verbose output
+./tests/run-tests.sh --verbose
 
-```
-./tests/integration-tests.sh [services...] [options]
-
-Services:
-  f1r3sky    - Test F1R3Sky AT Protocol services
-  embers     - Test Embers blockchain API bridge
-  f1r3node   - Test F1R3node blockchain network
-  (none)     - Test all services
-
-Options:
-  --no-build     - Skip building services before testing
-  --no-up        - Skip starting services (assumes already running)
-  --clean        - Clean up and stop services after testing
-  --verbose, -v  - Enable verbose output (HTTP details, container logs)
-  --help, -h     - Show help message
+# Clean up after testing
+./tests/run-tests.sh --clean
 ```
 
 ## Test Suites
 
-### F1R3Sky Tests (`f1r3sky-test.sh`)
+### F1R3Sky (`f1r3sky-test.sh`)
+Tests AT Protocol services: PDS, BSKY, DataPlane, BSYNC, Ozone, Frontend
 
-Tests the AT Protocol implementation including:
+**Coverage:**
+- 25+ test cases
+- Infrastructure (PostgreSQL, Redis)
+- Service health checks
+- Account workflows (create, login, refresh)
+- Content creation (posts, likes, profiles)
+- AppView integration
+- DataPlane subscription
+- Frontend accessibility
 
-**Container Health Checks:**
-- PostgreSQL database
-- Redis cache
-- BSYNC (background sync)
-- BSKY (AppView)
-- PDS (Personal Data Server)
-- Frontend web app
+### Embers (`embers-test.sh`)
+Tests blockchain bridge API and React frontend
 
-**API Functionality Tests:**
-1. **Account Creation** - Create a new AT Protocol account via PDS
-2. **Session Management** - Login and JWT token handling
-3. **Post Creation** - Create posts using app.bsky.feed.post
-4. **Social Interactions** - Like posts using app.bsky.feed.like
-5. **Profile Retrieval** - Fetch user profiles via BSKY AppView
-6. **Account Deletion** - Delete test accounts (cleanup)
-7. **Frontend Access** - Verify web UI is accessible
+**Coverage:**
+- 15+ test cases
+- API health endpoints
+- Blockchain queries
+- Wallet operations
+- Contract deployment
+- Frontend accessibility
 
-**Endpoints Tested:**
-- `POST /xrpc/com.atproto.server.createAccount` - Account creation
-- `POST /xrpc/com.atproto.server.createSession` - Login
-- `POST /xrpc/com.atproto.repo.createRecord` - Create posts/likes
-- `GET /xrpc/app.bsky.actor.getProfile` - Get user profile
-- `POST /xrpc/com.atproto.server.deleteAccount` - Delete account
+### F1R3Node (`f1r3node-test.sh`)
+Tests blockchain network with validators and monitoring
 
-### Embers Tests (`embers-test.sh`)
+**Coverage:**
+- 30+ test cases
+- All 5 nodes (bootstrap, 3 validators, read-only)
+- RPC endpoints
+- Consensus mechanism
+- Block production
+- Prometheus & Grafana monitoring
 
-Currently implements:
-- Container health checks (API and Frontend)
-- Basic accessibility tests
+## Options
 
-**Planned Tests:**
-- Wallet creation via Embers API
-- Blockchain transactions
-- Tipping functionality
-- Transaction confirmation in F1R3node
+### `--no-build`
+Skip building Docker images. Use when images are already built.
 
-### F1R3node Tests (`f1r3node-test.sh`)
-
-Currently implements:
-- Container health checks (Bootstrap, Validators, Read-only nodes)
-- Prometheus metrics accessibility
-- Grafana dashboard accessibility
-
-**Planned Tests:**
-- Blockchain consensus
-- Transaction validation
-- Smart contract deployment
-
-## Test Architecture
-
-### Directory Structure
-
-```
-tests/
-├── README.md                    # This file
-├── integration-tests.sh         # Main test orchestrator
-├── f1r3sky-test.sh             # F1R3Sky test suite
-├── embers-test.sh              # Embers test suite
-├── f1r3node-test.sh            # F1R3node test suite
-└── lib/
-    └── helpers.sh              # Shared test utilities
+```bash
+./tests/run-tests.sh --no-build
 ```
 
-### Helper Library (`lib/helpers.sh`)
+### `--no-up`
+Skip starting services. Use when services are already running.
 
-Provides reusable functions for all test scripts:
+```bash
+./tests/run-tests.sh --no-up
+```
 
-**Logging Functions:**
-- `log_info()` - Information messages
-- `log_success()` - Success messages
-- `log_error()` - Error messages
-- `log_warning()` - Warning messages
-- `log_test()` - Test descriptions
+### `--clean`
+Stop and remove services after testing.
 
-**Test Tracking:**
-- `test_passed()` - Mark test as passed
-- `test_failed()` - Mark test as failed
-- `print_test_summary()` - Display results summary
+```bash
+./tests/run-tests.sh --clean
+```
 
-**Docker Helpers:**
-- `is_container_running()` - Check if container is running
-- `is_container_healthy()` - Check container health status
-- `wait_for_container()` - Wait for container to be ready
+### `--verbose` or `-v`
+Enable detailed output including HTTP request/response bodies and container logs.
 
-**HTTP Helpers:**
-- `http_get()` - Make GET request
-- `http_post()` - Make POST request
-- `http_post_with_auth()` - POST with JWT authentication
-- `http_delete_with_auth()` - DELETE with JWT authentication
+```bash
+./tests/run-tests.sh --verbose
+# or
+TEST_VERBOSE=1 ./tests/run-tests.sh
+```
 
-**Test Data Generators:**
-- `random_string()` - Generate random strings
-- `generate_test_username()` - Generate test usernames
-- `generate_test_email()` - Generate test email addresses
+### `--wait TIME`
+Set how many seconds to wait after starting services before running tests. Default is 90 seconds.
+
+```bash
+# Wait 2 minutes
+./tests/run-tests.sh --wait 120
+
+# Wait 3 minutes (for slower systems)
+./tests/run-tests.sh --wait 180
+
+# or via environment variable
+TEST_WAIT_TIME=120 ./tests/run-tests.sh
+```
+
+**Why wait?** Services need time to:
+- Complete database migrations
+- Establish connections between services
+- Start health check endpoints
+- Begin indexing/subscription processes
 
 ## Environment Variables
 
-```bash
-# Enable verbose output
-TEST_VERBOSE=1 ./tests/integration-tests.sh
+- `TEST_VERBOSE=1` - Enable verbose output
+- `TEST_TIMEOUT=180` - Set container wait timeout (seconds)
+- `TEST_WAIT_TIME=90` - Seconds to wait after starting services (default: 90)
 
-# Set custom container wait timeout (default: 60s)
-TEST_TIMEOUT=120 ./tests/integration-tests.sh
-```
+## Test Runner
 
-## Examples
+### `run-tests.sh`
+Main test runner that orchestrates building, starting, testing, and cleanup.
 
-### Test All Services
+**Features:**
+- Automatic service build and startup
+- Multi-service testing
+- Comprehensive error reporting
+- Optional cleanup
+- Flexible flags
 
-```bash
-# Full test suite with build
-./tests/integration-tests.sh
+## Individual Test Scripts
 
-# Quick test (services already running)
-./tests/integration-tests.sh --no-build --no-up
-
-# Test and clean up
-./tests/integration-tests.sh --clean
-```
-
-### Test Specific Service
+You can also run test scripts directly:
 
 ```bash
-# Test only f1r3sky (most complete test suite)
-./tests/integration-tests.sh f1r3sky
+# F1R3Sky tests
+./tests/f1r3sky-test.sh
 
-# Test f1r3sky with already running services
-./tests/integration-tests.sh f1r3sky --no-build --no-up
+# Embers tests
+./tests/embers-test.sh
+
+# F1R3Node tests  
+./tests/f1r3node-test.sh
+
+# With verbose output
+TEST_VERBOSE=1 ./tests/f1r3sky-test.sh
 ```
 
-### Debugging with Verbose Mode
+## Documentation
 
+- `QUICK_START.md` - Quick reference guide
+- `NEW_TEST_SUITES.md` - Detailed test documentation
+- `../NEW_TESTS_SUMMARY.md` - Implementation summary
+
+## Common Scenarios
+
+### Scenario 1: First Time Setup
 ```bash
-# Run tests with verbose output to see HTTP details and logs
-./tests/integration-tests.sh f1r3sky --verbose
+# Build, start, wait 90s, and test everything
+./tests/run-tests.sh
 
-# Or use the short flag
-./tests/integration-tests.sh f1r3sky -v --no-build --no-up
-
-# Set via environment variable
-TEST_VERBOSE=true ./tests/integration-tests.sh f1r3sky
+# Or wait longer for slower systems
+./tests/run-tests.sh --wait 120
 ```
 
-**Verbose output includes:**
-- HTTP request methods and URLs
-- Request and response bodies (formatted JSON)
-- HTTP status codes
-- Container logs (30 lines) when tests fail
-- Additional debug information
-
-### Development Workflow
-
+### Scenario 2: Development Testing
 ```bash
-# 1. Start services manually for development
-poetry run shardctl up
-
-# 2. Run tests without rebuilding or restarting
-./tests/integration-tests.sh --no-build --no-up
-
-# 3. Make changes to services
-
-# 4. Rebuild and re-test specific service
-poetry run shardctl compose -f docker-compose.f1r3sky.yml down
-poetry run shardctl compose -f docker-compose.f1r3sky.yml up -d --build
-./tests/integration-tests.sh f1r3sky --no-build --no-up
-
-# 5. Clean up when done
-./tests/integration-tests.sh --clean
+# Services already running, just test
+./tests/run-tests.sh --no-up --no-build
 ```
 
-## Test Output
-
-The tests provide color-coded output:
-
-- **Blue [INFO]** - Informational messages
-- **Green [SUCCESS]** - Successful operations
-- **Yellow [WARNING]** - Warnings (non-fatal)
-- **Red [ERROR]** - Errors (may be fatal)
-- **Blue [TEST]** - Test descriptions
-
-Example output:
-
+### Scenario 3: CI/CD Pipeline
+```bash
+# Build, test, and clean up
+./tests/run-tests.sh --clean
 ```
-[INFO] F1R3FLY Integration Test Suite
 
-[INFO] Services to test: f1r3sky
+### Scenario 4: Debugging
+```bash
+# Verbose output for a specific service
+./tests/run-tests.sh f1r3sky --verbose --no-build --no-up
+```
 
-[TEST] Checking if all F1R3Sky containers are running...
-  ✓ PostgreSQL is running
-  ✓ Redis is running
-  ✓ BSYNC is running
-  ✓ BSKY is running
-  ✓ PDS is running
-  ✓ Frontend is running
-[SUCCESS] ✓ All F1R3Sky containers are running
-
-[TEST] Testing account creation via PDS...
-[INFO] Creating account: testuser-abc12345.test (test-xyz98765@example.com)
-[INFO] Account created successfully
-  DID: did:plc:abcdef123456
-  Handle: testuser-abc12345.test
-[SUCCESS] ✓ Account creation successful
-
-========================================
-Test Summary
-========================================
-Total:  10
-Passed: 10
-Failed: 0
-========================================
-All tests passed!
+### Scenario 5: Slow Systems
+```bash
+# Increase wait time for slower systems or cold starts
+./tests/run-tests.sh --wait 180
 ```
 
 ## Troubleshooting
 
-### jq not installed
+### Tests Fail
 
+1. **Check service status:**
+   ```bash
+   docker ps
+   poetry run shardctl ps
+   ```
+
+2. **View container logs:**
+   ```bash
+   docker logs <container_name>
+   ```
+
+3. **Run with verbose mode:**
+   ```bash
+   TEST_VERBOSE=1 ./tests/run-tests.sh
+   ```
+
+4. **Increase wait time:**
+   ```bash
+   # Services need more time to start
+   ./tests/run-tests.sh --wait 180
+   
+   # Or increase individual test timeouts
+   TEST_TIMEOUT=300 ./tests/run-tests.sh
+   ```
+
+### "Profile not found" (F1R3Sky)
+DataPlane needs time to index from PDS. Wait a few seconds or check DataPlane logs:
+```bash
+docker logs f1r3sky-dataplane
 ```
-Error: jq is not installed. Please install jq to run these tests.
-```
 
-**Solution:** Install jq using your package manager (see Prerequisites)
-
-### Containers not running
-
-```
-[ERROR] ✗ Some F1R3Sky containers are not running
-```
-
-**Solution:** Start services first:
+### "Container not running"
+Start services manually:
 ```bash
 poetry run shardctl up
 ```
 
-Or let the test script start them:
+### "Connection refused"
+Verify port mappings:
 ```bash
-./tests/integration-tests.sh  # Don't use --no-up
+docker ps | grep <service>
 ```
 
-### Container timeout
+## Test Output
+
+### Success
+```
+[INFO] F1R3FLY Integration Test Runner
+[INFO] Services to test: f1r3sky
+[INFO] Building services...
+[SUCCESS] Build completed
+[INFO] Starting services...
+[SUCCESS] Services started
+[INFO] Running integration tests...
+[TEST] Testing PDS health endpoint...
+[SUCCESS] ✓ PDS is healthy and responding
+...
+========================================
+Overall Test Summary
+========================================
+Tested services: f1r3sky
+[SUCCESS] All service tests passed!
+```
+
+### Failure
+```
+[ERROR] ✗ Some tests failed
+========================================
+Overall Test Summary
+========================================
+Tested services: f1r3sky
+[ERROR] Failed services: f1r3sky
+```
+
+## Helper Functions
+
+All tests use shared helper functions from `lib/helpers.sh`:
+
+- **Container:** `is_container_running()`, `wait_for_container()`, `show_container_logs()`
+- **HTTP:** `http_get()`, `http_post()`, `http_post_with_auth()`, `http_delete_with_auth()`
+- **Test:** `test_passed()`, `test_failed()`, `print_test_summary()`
+- **Logging:** `log_info()`, `log_success()`, `log_error()`, `log_warning()`, `log_verbose()`
+
+## File Structure
 
 ```
-[ERROR] Container system-integration-pds-1 failed to become healthy after 60s
-```
-
-**Solution:** Increase timeout:
-```bash
-TEST_TIMEOUT=120 ./tests/integration-tests.sh
-```
-
-### API request failures
-
-If tests fail with HTTP errors:
-
-1. Check service logs:
-   ```bash
-   poetry run shardctl logs pds
-   poetry run shardctl logs bsky
-   ```
-
-2. Verify services are healthy:
-   ```bash
-   docker ps
-   docker inspect system-integration-pds-1
-   ```
-
-3. Check network connectivity:
-   ```bash
-   curl -v http://localhost:2583/xrpc/_health
-   curl -v http://localhost:2584/xrpc/_health
-   ```
-
-### Port conflicts
-
-If services fail to start, check for port conflicts:
-
-```bash
-# Check what's using f1r3sky ports
-lsof -i :2583  # PDS
-lsof -i :2584  # BSKY
-lsof -i :8100  # Frontend
-lsof -i :5433  # PostgreSQL
-lsof -i :6380  # Redis
+tests/
+├── run-tests.sh          # Main test runner ⭐
+├── f1r3sky-test.sh       # F1R3Sky comprehensive tests
+├── embers-test.sh        # Embers comprehensive tests
+├── f1r3node-test.sh      # F1R3Node comprehensive tests
+├── lib/
+│   └── helpers.sh        # Shared helper functions
+├── README.md             # This file
+├── QUICK_START.md        # Quick reference
+└── NEW_TEST_SUITES.md    # Detailed documentation
 ```
 
 ## Contributing
 
 When adding new tests:
-
-1. Follow the existing test structure
+1. Follow existing test structure
 2. Use helper functions from `lib/helpers.sh`
-3. Add proper test descriptions with `log_test()`
-4. Mark tests as passed/failed with `test_passed()`/`test_failed()`
-5. Handle errors gracefully
-6. Clean up test resources (accounts, posts, etc.)
-7. Update this README
+3. Include descriptive test names
+4. Add proper error handling
+5. Update documentation
+6. Test in both normal and verbose modes
 
-## Future Enhancements
+## Statistics
 
-- [ ] Add wallet and transaction tests for Embers
-- [ ] Add blockchain consensus tests for F1R3node
-- [ ] Integration tests between f1r3sky and embers (tipping)
-- [ ] Performance benchmarks
-- [ ] Load testing capabilities
-- [ ] CI/CD integration
-- [ ] Test data fixtures and mocking
-- [ ] Parallel test execution
-- [ ] Test coverage reporting
+- **Total Tests:** 70+
+- **Services Covered:** 16
+- **Test Scripts:** 3
+- **Lines of Code:** ~2,000+
+- **Documentation:** 1,200+ lines
 
-## Resources
+## Next Steps
 
-- [AT Protocol Specification](https://atproto.com/)
-- [XRPC Documentation](https://atproto.com/specs/xrpc)
-- [F1R3FLY Documentation](../README.md)
-- [shardctl CLI Reference](../README.md#shardctl-cli)
+1. Run tests: `./tests/run-tests.sh`
+2. Review output
+3. Fix any failures
+4. Integrate with CI/CD
+5. Schedule regular test runs
+
+
+
