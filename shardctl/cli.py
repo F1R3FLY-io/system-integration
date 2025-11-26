@@ -129,14 +129,40 @@ def up(
     foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground"),
     build: bool = typer.Option(False, "--build", "-b", help="Build images before starting"),
 ):
-    """Start services (detached by default)."""
+    """Start services (detached by default).
+
+    Services are started in the order defined in services.yml startup_order.
+    Each compose file is brought up separately to ensure dependencies
+    (like networks) are created before dependent services start.
+    """
     if not validate_environment():
         raise typer.Exit(1)
 
+    config = Config()
     manager = get_manager(profile)
+
+    # Get the ordered list of compose files
+    startup_order = config.get_startup_order()
+
+    if not startup_order:
+        console.print("[red]No compose files found to start[/red]")
+        raise typer.Exit(1)
+
     console.print("[bold blue]Starting services...[/bold blue]")
-    manager.up(services=services, detached=not foreground, build=build)
-    console.print("[green]✓[/green] Services started successfully")
+    console.print(f"[dim]Startup order: {', '.join(f.name for f in startup_order)}[/dim]\n")
+
+    # Bring up each compose file in order
+    for i, compose_file in enumerate(startup_order, 1):
+        console.print(f"[cyan]({i}/{len(startup_order)}) Starting {compose_file.name}...[/cyan]")
+        manager.up_single_file(
+            compose_file=compose_file,
+            services=services,
+            detached=not foreground,
+            build=build
+        )
+        console.print(f"[green]✓[/green] {compose_file.name} started\n")
+
+    console.print("[green]✓[/green] All services started successfully")
 
 
 @app.command()

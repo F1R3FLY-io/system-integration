@@ -11,6 +11,14 @@
 #   shardctl build-service -a   # Builds all enabled services
 #   shardctl build-service my-disabled-service --docker  # Builds specific service even if disabled
 
+# Startup order for compose files
+# The 'up' command brings up each compose file in order, waiting for each to succeed.
+# This ensures dependencies (like networks) are created before dependent services start.
+startup_order:
+  - docker-compose.yml           # Base f1r3node - creates the f1r3fly network
+  - docker-compose.embers.yml    # Embers API - depends on f1r3fly network
+  - docker-compose.f1r3sky.yml   # F1R3Sky services - depends on f1r3fly network
+
 repositories:
   f1r3node:
     url: git@github.com:nashef/f1r3fly.git
@@ -126,10 +134,10 @@ builds:
   f1r3sky-backend-bsky:
     # AT Protocol AppView service (app.bsky.* API endpoints)
     # Main build command
-    build_command: "pnpm install --frozen-lockfile && pnpm build"
+    build_command: "yes | pnpm install --frozen-lockfile && pnpm build"
 
     # Docker build command for bsky service
-    docker_build_command: "docker build -f services/bsky/Dockerfile -t f1r3flyindustries/f1r3sky-bsky:latest ."
+    docker_build_command: "docker build --network=host -f services/bsky/Dockerfile -t f1r3flyindustries/f1r3sky-bsky:latest ."
 
     # Working directory (uses f1r3sky-backend repo for all sub-services)
     working_directory: "f1r3sky-backend"
@@ -151,10 +159,10 @@ builds:
   f1r3sky-backend-pds:
     # Personal Data Server (hosts atproto account data)
     # Main build command
-    build_command: "pnpm install --frozen-lockfile && pnpm build"
+    build_command: "yes | pnpm install --frozen-lockfile && pnpm build"
 
     # Docker build command for pds service
-    docker_build_command: "docker build -f services/pds/Dockerfile -t f1r3flyindustries/f1r3sky-pds:latest ."
+    docker_build_command: "docker build --network=host -f services/pds/Dockerfile -t f1r3flyindustries/f1r3sky-pds:latest ."
 
     # Working directory (uses f1r3sky-backend repo for all sub-services)
     working_directory: "f1r3sky-backend"
@@ -176,10 +184,10 @@ builds:
   f1r3sky-backend-bsync:
     # Background sync service
     # Main build command
-    build_command: "pnpm install --frozen-lockfile && pnpm build"
+    build_command: "yes |pnpm install --frozen-lockfile && pnpm build"
 
     # Docker build command for bsync service
-    docker_build_command: "docker build -f services/bsync/Dockerfile -t f1r3flyindustries/f1r3sky-bsync:latest ."
+    docker_build_command: "docker build --network=host -f services/bsync/Dockerfile -t f1r3flyindustries/f1r3sky-bsync:latest ."
 
     # Working directory (uses f1r3sky-backend repo for all sub-services)
     working_directory: "f1r3sky-backend"
@@ -200,10 +208,10 @@ builds:
   f1r3sky-backend-ozone:
     # Moderation service
     # Main build command
-    build_command: "pnpm install --frozen-lockfile && pnpm build"
+    build_command: "yes | pnpm install --frozen-lockfile && pnpm build"
 
     # Docker build command for ozone service
-    docker_build_command: "docker build -f services/ozone/Dockerfile -t f1r3flyindustries/f1r3sky-ozone:latest ."
+    docker_build_command: "docker build --network=host -f services/ozone/Dockerfile -t f1r3flyindustries/f1r3sky-ozone:latest ."
 
     # Working directory (uses f1r3sky-backend repo for all sub-services)
     working_directory: "f1r3sky-backend"
@@ -254,7 +262,7 @@ builds:
     build_command: "cargo build --release"
 
     # Docker build command for embers API service
-    docker_build_command: "docker build -f docker/embers.dockerfile -t f1r3flyindustries/embers:latest ."
+    docker_build_command: "docker build --network=host -f docker/embers.dockerfile -t f1r3flyindustries/embers:latest ."
 
     # Docker image produced
     docker_image: "f1r3flyindustries/embers:latest"
@@ -278,10 +286,10 @@ builds:
     # Embers Frontend - React 19 web UI for Embers platform
     # Main build command (builds client SDK first, then frontend)
     # Requires: ~/.npmrc with GitHub token (//npm.pkg.github.com/:_authToken=TOKEN)
-    build_command: "pnpm install --frozen-lockfile && pnpm --filter @f1r3fly-io/embers-client-sdk build && pnpm --filter @f1r3fly-io/embers-frontend build"
+    build_command: "yes | pnpm install --frozen-lockfile && pnpm --filter @f1r3fly-io/embers-client-sdk build && pnpm --filter @f1r3fly-io/embers-frontend build"
 
     # Docker build command for embers frontend (uses ~/.npmrc)
-    docker_build_command: "docker build -f apps/embers/Dockerfile -t f1r3flyindustries/embers-frontend:latest . --secret id=npmrc,src=$HOME/.npmrc"
+    docker_build_command: "docker build --network=host -f apps/embers/Dockerfile -t f1r3flyindustries/embers-frontend:latest . --secret id=npmrc,src=$HOME/.npmrc"
 
     # Docker image produced
     docker_image: "f1r3flyindustries/embers-frontend:latest"
