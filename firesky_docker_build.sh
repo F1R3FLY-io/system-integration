@@ -30,7 +30,7 @@ EOF
 
 # Build the Docker image
 echo "Building Docker image with NPM authentication..."
-docker build -t f1r3flyindustries/f1r3sky:latest .
+docker build --network=host -t f1r3flyindustries/f1r3sky:latest .
 
 # Restore the original .npmrc
 if [ -f ".npmrc.backup" ]; then

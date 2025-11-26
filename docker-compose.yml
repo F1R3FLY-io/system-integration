@@ -175,7 +175,7 @@ services:
       - "3000:3000"
     environment:
       - GF_USERS_DEFAULT_THEME=light
-      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+      # Note: grafana-piechart-panel is built into Grafana 8.x+, no need to install
     volumes:
       - ./services/f1r3node/docker/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
 

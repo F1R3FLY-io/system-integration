@@ -129,14 +129,40 @@ def up(
     foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground"),
     build: bool = typer.Option(False, "--build", "-b", help="Build images before starting"),
 ):
-    """Start services (detached by default)."""
+    """Start services (detached by default).
+
+    Services are started in the order defined in services.yml startup_order.
+    Each compose file is brought up separately to ensure dependencies
+    (like networks) are created before dependent services start.
+    """
     if not validate_environment():
         raise typer.Exit(1)
 
+    config = Config()
     manager = get_manager(profile)
+
+    # Get the ordered list of compose files
+    startup_order = config.get_startup_order()
+
+    if not startup_order:
+        console.print("[red]No compose files found to start[/red]")
+        raise typer.Exit(1)
+
     console.print("[bold blue]Starting services...[/bold blue]")
-    manager.up(services=services, detached=not foreground, build=build)
-    console.print("[green]✓[/green] Services started successfully")
+    console.print(f"[dim]Startup order: {', '.join(f.name for f in startup_order)}[/dim]\n")
+
+    # Bring up each compose file in order
+    for i, compose_file in enumerate(startup_order, 1):
+        console.print(f"[cyan]({i}/{len(startup_order)}) Starting {compose_file.name}...[/cyan]")
+        manager.up_single_file(
+            compose_file=compose_file,
+            services=services,
+            detached=not foreground,
+            build=build
+        )
+        console.print(f"[green]✓[/green] {compose_file.name} started\n")
+
+    console.print("[green]✓[/green] All services started successfully")
 
 
 @app.command()
@@ -465,7 +491,6 @@ def build_service_cmd(
         else:
             console.print(f"[bold blue]Building {len(build_configs)} enabled service(s) (source + Docker)...[/bold blue]\n")
 
-        failed_services = []
         for svc_name, build_config in build_configs.items():
             console.print(f"[cyan]Building {svc_name}...[/cyan]")
 
@@ -480,9 +505,8 @@ def build_service_cmd(
             success = build_service(svc_name, service_path, build_config, docker=False)
 
             if not success:
-                failed_services.append(svc_name)
-                console.print()  # Empty line between services
-                continue
+                console.print(f"[red]✗[/red] Build failed, stopping")
+                raise typer.Exit(1)
 
             # Build Docker image if not skipped
             if not no_docker:
@@ -490,16 +514,13 @@ def build_service_cmd(
                 if build_config.get("docker_build_command"):
                     success_docker = build_service(svc_name, service_path, build_config, docker=True)
                     if not success_docker:
-                        failed_services.append(f"{svc_name} (Docker)")
+                        console.print(f"[red]✗[/red] Docker build failed, stopping")
+                        raise typer.Exit(1)
                 # If no docker build command, that's okay - just skip it
 
             console.print()  # Empty line between services
 
-        if failed_services:
-            console.print(f"[red]✗[/red] {len(failed_services)} build(s) failed: {', '.join(failed_services)}")
-            raise typer.Exit(1)
-        else:
-            console.print(f"[green]✓[/green] All {len(build_configs)} service(s) built successfully")
+        console.print(f"[green]✓[/green] All {len(build_configs)} service(s) built successfully")
         return
 
     # Require service argument if not listing and not building all

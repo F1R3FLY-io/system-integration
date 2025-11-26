@@ -3,7 +3,7 @@
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from rich.console import Console
 
@@ -97,11 +97,11 @@ class ComposeManager:
             else:
                 console.print(f"\n[red]Error running docker compose:[/red]")
                 if error_output:
-                    # Show only the relevant error lines, not the full output
-                    error_lines = error_output.strip().split('\n')
-                    for line in error_lines:
-                        if 'Error' in line or 'error' in line or 'failed' in line:
-                            console.print(f"  {line}")
+                    # Show the full error output - don't hide anything
+                    console.print(f"[yellow]{error_output.strip()}[/yellow]")
+                else:
+                    console.print("[yellow]No error output captured. Try running the command manually.[/yellow]")
+                    console.print(f"[dim]Command was: {' '.join(full_command)}[/dim]")
             raise SystemExit(1)
 
         return result
@@ -126,6 +126,52 @@ class ComposeManager:
             cmd.extend(services)
 
         self._run_command(cmd)
+
+    def up_single_file(
+        self,
+        compose_file: Path,
+        services: Optional[List[str]] = None,
+        detached: bool = True,
+        build: bool = False
+    ):
+        """Start services from a single compose file.
+
+        Args:
+            compose_file: Path to the compose file.
+            services: List of specific services to start. If None, starts all.
+            detached: Run in detached mode.
+            build: Build images before starting.
+        """
+        cmd = ["docker", "compose", "-f", str(compose_file), "up"]
+
+        if detached:
+            cmd.append("-d")
+
+        if build:
+            cmd.append("--build")
+
+        if services:
+            cmd.extend(services)
+
+        console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+        except subprocess.CalledProcessError as e:
+            error_output = e.stderr if e.stderr else e.stdout if e.stdout else str(e)
+            console.print(f"\n[red]Error running docker compose for {compose_file.name}:[/red]")
+            if error_output:
+                console.print(f"[yellow]{error_output.strip()}[/yellow]")
+            else:
+                console.print("[yellow]No error output captured.[/yellow]")
+            raise SystemExit(1)
+
+        return result
 
     def down(self, services: Optional[List[str]] = None, volumes: bool = False, remove_orphans: bool = True):
         """Stop and remove services.

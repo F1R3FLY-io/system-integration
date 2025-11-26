@@ -249,3 +249,31 @@ class Config:
         gitkeep = self.services_dir / ".gitkeep"
         if not gitkeep.exists():
             gitkeep.touch()
+
+    def get_startup_order(self) -> List[Path]:
+        """Get ordered list of compose files for startup.
+
+        Reads the startup_order from services.yml. If not defined, falls back
+        to the default compose file list.
+
+        Returns:
+            List of compose file paths in startup order.
+        """
+        services_config_file = self.root_dir / "services.yml"
+
+        if services_config_file.exists():
+            with open(services_config_file, 'r') as f:
+                services_config = yaml.safe_load(f)
+                startup_order = services_config.get('startup_order', [])
+
+                if startup_order:
+                    # Convert to absolute paths and filter to only existing files
+                    compose_files = []
+                    for filename in startup_order:
+                        filepath = self.root_dir / filename
+                        if filepath.exists():
+                            compose_files.append(filepath)
+                    return compose_files
+
+        # Fallback: return all compose files (original behavior)
+        return self.get_compose_files_for_profile(None)
