@@ -31,7 +31,7 @@ repositories:
     url: git@github.com:F1R3FLY-io/rust-client.git
     branch: main
   f1r3sky-backend:
-    url: git@github.com:F1R3FLY-io/f1r3sky-backend.git
+    url: git@github.com:nashef/f1r3sky-backend.git
     branch: main
   f1r3sky:
     url: git@github.com:F1R3FLY-io/f1r3sky.git
