@@ -43,7 +43,25 @@ This repository provides a clean structure for managing multiple microservice re
 
 #### Core Requirements
 
-- **Python 3.8+** - Required for shardctl CLI
+- **Python 3.10** - Required for shardctl CLI and service builds
+
+  On many recent Linux distributions, the latest Python is 3.13, which is not compatible with some services. At the moment, you need to use 3.10 or the build will likely fail. You can get the right python version any way you like, but `pyenv` is recommended.
+
+  - **Recommended:** Use [pyenv](https://github.com/pyenv/pyenv) to manage Python versions
+  ```bash
+  # Install pyenv (Linux)
+  curl https://pyenv.run | bash
+
+  # Add to ~/.bashrc or ~/.zshrc:
+  export PYENV_ROOT="$HOME/.pyenv"
+  [[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
+  eval "$(pyenv init -)"
+
+  # Restart shell, then install Python 3.10
+  pyenv install 3.10
+  pyenv local 3.10  # Sets Python 3.10 for this project
+  ```
+  - Alternatively, use [asdf](https://asdf-vm.com/) with the python plugin, or your system package manager
 - **Docker & Docker Compose** - Container orchestration
 - **Git** - For cloning service repositories
 - **Poetry** - Python dependency management for shardctl
@@ -69,6 +87,9 @@ Different services require specific build tools. Install based on which services
 
 **For F1R3Sky services (AT Protocol - Node.js/TypeScript):**
 - **Node.js 18+** - JavaScript runtime (version 20.11 recommended for Docker builds)
+
+  This project assumes you have `nvm` installed and working and the current version of node is 20.11.
+
 - **pnpm 8.15.9+** - Fast, disk-efficient package manager
   ```bash
   curl -fsSL https://get.pnpm.io/install.sh | sh -
@@ -646,6 +667,15 @@ sudo apt-get install pkg-config libssl-dev protobuf-compiler clang
 # Or on macOS
 brew install protobuf
 ```
+
+#### PNPM fails in Docker build
+
+**Symptom:** The `pnpm` command fails in docker build for f1r3sky builds.
+
+**Solution:**
+
+The `pnpm` command will use IPv6 if it appears to be available and has no option for fall-back to IPv4. The `services.yml` file is configured to run the `f1r3sky` builds using host networking, but if your host interface has IPv6 configured *and* if it doesn't work, then `pnpm` can fail. Disable IPv6 on your host interface to resolve the issue.
+
 
 ### Blockchain Issues
 
