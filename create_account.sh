@@ -42,3 +42,5 @@ else
     ERROR=$(echo "$RESPONSE" | jq -r '.message // .error // "Unknown error"')
     echo "Error: $ERROR"
 fi
+
+
