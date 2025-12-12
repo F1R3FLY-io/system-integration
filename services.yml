@@ -22,7 +22,7 @@ startup_order:
 repositories:
   f1r3node:
     url: git@github.com:nashef/f1r3fly.git
-    branch: casper-bugs  # Working branch for bug fixes
+    branch: main
   f1r3node-rust:
     url: git@github.com:F1R3FLY-io/f1r3node.git
     branch: rust-dev  # Rust node on rust-dev branch

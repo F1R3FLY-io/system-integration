@@ -126,6 +126,13 @@ services:
     environment:
       # Port (not in env file)
       PORT: 2583
+      # Blockchain node integration
+      DEPLOY_SERVICE_URL: ${DEPLOY_SERVICE_URL:-http://rnode.validator1:40401}
+      PROPOSE_SERVICE_URL: ${PROPOSE_SERVICE_URL:-http://rnode.validator1:40402}
+      READ_NODE_URL: ${READ_NODE_URL:-http://rnode.readonly:40403}
+      READ_NODE_WS_URL: ${READ_NODE_WS_URL:-ws://rnode.readonly:40403}
+      DEFAULT_WALLET_KEY: ${DEFAULT_WALLET_KEY:-232DADA5BBAFC0799D5F370DA04AF70CE438F69F954512B26D6FB5B560B81DFE}
+      DEFAULT_WALLET_ADDRESS: ${DEFAULT_WALLET_ADDRESS:-1111EjdAxnKb5zKUc8ikuxfdi3kwSGH7BJCHKWjnVzfAF3SjCBvjh}
     depends_on:
       postgres:
         condition: service_healthy
