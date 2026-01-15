@@ -176,6 +176,7 @@ services:
       - "3000:3000"
     environment:
       - GF_USERS_DEFAULT_THEME=light
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/f1r3node.json
       # Note: grafana-piechart-panel is built into Grafana 8.x+, no need to install
     volumes:
       - ./services/f1r3node/docker/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
