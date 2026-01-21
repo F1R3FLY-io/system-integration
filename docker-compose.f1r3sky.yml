@@ -1,0 +1,164 @@
+services:
+  # PostgreSQL database for AT Protocol services
+  postgres:
+    image: postgres:16-alpine
+    container_name: f1r3sky-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-atproto}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - f1r3fly
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis cache for AT Protocol services
+  redis:
+    image: redis:7-alpine
+    container_name: f1r3sky-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - f1r3fly
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # BSKY AppView service (app.bsky.* API endpoints)
+  bsky:
+    image: f1r3flyindustries/f1r3sky-bsky:latest
+    container_name: f1r3sky-bsky
+    ports:
+      - "2584:2584"
+    env_file:
+      - .env.f1r3sky
+    environment:
+      # Port (not in env file)
+      PORT: 2584
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bsync:
+        condition: service_started
+    networks:
+      - f1r3fly
+    restart: unless-stopped
+
+  # PDS (Personal Data Server) - hosts atproto account data
+  pds:
+    image: f1r3flyindustries/f1r3sky-pds:latest
+    container_name: f1r3sky-pds
+    user: root
+    ports:
+      - "2583:2583"
+    env_file:
+      - .env.f1r3sky
+    volumes:
+      - pds_blocks:/pds/blocks
+      - pds_tmp:/pds/tmp
+      - pds_data:/pds
+    environment:
+      # Port (not in env file)
+      PORT: 2583
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bsky:
+        condition: service_started
+    networks:
+      - f1r3fly
+    restart: unless-stopped
+
+  # BSYNC (Background Sync Service)
+  bsync:
+    image: f1r3flyindustries/f1r3sky-bsync:latest
+    container_name: f1r3sky-bsync
+    ports:
+      - "3100:3000"
+    env_file:
+      - .env.f1r3sky
+    environment:
+      # Port (not in env file)
+      PORT: 3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - f1r3fly
+    restart: unless-stopped
+
+  # OZONE (Moderation Service)
+  ozone:
+    image: f1r3flyindustries/f1r3sky-ozone:latest
+    container_name: f1r3sky-ozone
+    ports:
+      - "3101:3001"
+    env_file:
+      - .env.f1r3sky
+    environment:
+      # Port (not in env file)
+      PORT: 3001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bsky:
+        condition: service_started
+      pds:
+        condition: service_started
+    networks:
+      - f1r3fly
+    restart: unless-stopped
+
+  # F1R3SKY Frontend Web App (bskyweb) - requires ~/.npmrc with GitHub token
+  f1r3sky:
+    build:
+      context: ../f1r3sky
+      dockerfile: Dockerfile
+      secrets:
+        - npmrc
+    image: f1r3flyindustries/f1r3sky:latest
+    container_name: f1r3sky
+    ports:
+      - "8100:8100"
+    environment:
+      HTTP_ADDRESS: ":8100"
+      ATP_APPVIEW_HOST: "http://bsky:2584"
+      DEBUG: "false"
+    depends_on:
+      bsky:
+        condition: service_started
+      pds:
+        condition: service_started
+    networks:
+      - f1r3fly
+    restart: unless-stopped
+    command: ["/usr/bin/bskyweb", "serve"]
+
+secrets:
+  npmrc:
+    file: ~/.npmrc
+
+networks:
+  f1r3fly:
+    name: f1r3fly
+    external: true
+
+volumes:
+  postgres_data:
+  redis_data:
+  pds_blocks:
+  pds_tmp:
+  pds_data:
