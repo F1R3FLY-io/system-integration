@@ -407,6 +407,9 @@ shardctl build [SERVICES...] [OPTIONS]
 # Pull service images
 shardctl pull [SERVICES...] [OPTIONS]
   --profile, -p TEXT    Profile (dev/prod)
+
+# Bring up only the shard (blockchain stack)
+shardctl up --shard-only
 ```
 
 ### Container Interaction

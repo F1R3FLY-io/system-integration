@@ -128,6 +128,11 @@ def up(
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
     foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground"),
     build: bool = typer.Option(False, "--build", "-b", help="Build images before starting"),
+    shard_only: bool = typer.Option(
+        False,
+        "--shard-only",
+        help="Start only the shard (rnode) compose file",
+    ),
 ):
     """Start services (detached by default).
 
@@ -141,8 +146,16 @@ def up(
     config = Config()
     manager = get_manager(profile)
 
-    # Get the ordered list of compose files
-    startup_order = config.get_startup_order()
+    # Determine which compose files to start
+    if shard_only:
+        shard_file = config.compose_file
+        if not shard_file.exists():
+            console.print(f"[red]Shard compose file not found at {shard_file}[/red]")
+            raise typer.Exit(1)
+        startup_order = [shard_file]
+        console.print("[dim]Shard-only mode: starting blockchain stack without downstream services[/dim]")
+    else:
+        startup_order = config.get_startup_order()
 
     if not startup_order:
         console.print("[red]No compose files found to start[/red]")

@@ -1,6 +1,9 @@
 # Ignore all service subdirectories but track the services directory itself
 services/*/
 
+# Temp dirs
+tmp/**
+
 # Python
 __pycache__/
 *.py[cod]

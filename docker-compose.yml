@@ -148,6 +148,7 @@ services:
       - --allow-private-addresses
       - -Dlogback.configurationFile=/var/lib/rnode/logback.xml
     volumes:
+      - ./services/f1r3node/docker/conf/observer.conf:/var/lib/rnode/rnode.conf
       - ./services/f1r3node/docker/conf/logback.xml:/var/lib/rnode/logback.xml
 
   prometheus:
@@ -175,9 +176,129 @@ services:
       - "3000:3000"
     environment:
       - GF_USERS_DEFAULT_THEME=light
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/f1r3node.json
       # Note: grafana-piechart-panel is built into Grafana 8.x+, no need to install
     volumes:
       - ./services/f1r3node/docker/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+
+  # State sync services - run with: docker compose --profile state-sync up
+  state-sync-init:
+    build:
+      context: ./services/embers
+      dockerfile: docker/state-sync.dockerfile
+      args:
+        POSTGRESQL_VERSION: 17
+    depends_on:
+      validator1:
+        condition: service_healthy
+    restart: "no"
+    profiles:
+      - state-sync
+    networks:
+      - f1r3fly
+    command:
+      - --wallet-key=232DADA5BBAFC0799D5F370DA04AF70CE438F69F954512B26D6FB5B560B81DFE
+      - --deploy-service-url=http://rnode.validator1:40401
+      - --propose-service-url=http://rnode.validator1:40402
+      - --service-id=docker-pds
+      - init
+
+  state-sync:
+    build:
+      context: ./services/embers
+      dockerfile: docker/state-sync.dockerfile
+      args:
+        POSTGRESQL_VERSION: 17
+    depends_on:
+      validator1:
+        condition: service_healthy
+      state-sync-init:
+        condition: service_completed_successfully
+    profiles:
+      - state-sync
+    networks:
+      - f1r3fly
+    command:
+      - --wallet-key=232DADA5BBAFC0799D5F370DA04AF70CE438F69F954512B26D6FB5B560B81DFE
+      - --deploy-service-url=http://rnode.validator1:40401
+      - --propose-service-url=http://rnode.validator1:40402
+      - --service-id=docker-pds
+      - upload
+      - --db-url=postgresql://postgres@postgresql:5432
+      - --interval=300
+
+  # Events services - run with: docker compose --profile multiple-networks up
+  events-init:
+    build:
+      context: ./services/embers
+      dockerfile: docker/events-sync.dockerfile
+    depends_on:
+      validator1:
+        condition: service_healthy
+    restart: "no"
+    profiles:
+      - multiple-networks
+    networks:
+      - f1r3fly
+    command:
+      - --wallet-key=232DADA5BBAFC0799D5F370DA04AF70CE438F69F954512B26D6FB5B560B81DFE
+      - --deploy-service-url=http://rnode.validator1:40401
+      - --propose-service-url=http://rnode.validator1:40402
+      - --service-id=docker-pds
+      - init
+
+  events-listen:
+    build:
+      context: ./services/embers
+      dockerfile: docker/events-sync.dockerfile
+    depends_on:
+      validator1:
+        condition: service_healthy
+      events-init:
+        condition: service_completed_successfully
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - 2683:2683
+    profiles:
+      - multiple-networks
+    networks:
+      - f1r3fly
+    command:
+      - --wallet-key=232DADA5BBAFC0799D5F370DA04AF70CE438F69F954512B26D6FB5B560B81DFE
+      - --deploy-service-url=http://rnode.validator1:40401
+      - --propose-service-url=http://rnode.validator1:40402
+      - --service-id=docker-pds
+      - listen
+      - --communication-service-api-addr=0.0.0.0:8082
+      - --sync-api-addr=0.0.0.0:2683
+      - --external-hostname=events-listen
+      - --extra-sources=ws://host.docker.internal:2999/xrpc/com.atproto.sync.subscribeRepos
+
+  events-push:
+    build:
+      context: ./services/embers
+      dockerfile: docker/events-sync.dockerfile
+    depends_on:
+      validator1:
+        condition: service_healthy
+      events-init:
+        condition: service_completed_successfully
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    profiles:
+      - multiple-networks
+    networks:
+      - f1r3fly
+    command:
+      - --wallet-key=232DADA5BBAFC0799D5F370DA04AF70CE438F69F954512B26D6FB5B560B81DFE
+      - --deploy-service-url=http://rnode.validator1:40401
+      - --propose-service-url=http://rnode.validator1:40402
+      - --service-id=docker-pds
+      - push
+      - --events-source-url=ws://host.docker.internal:2583/xrpc/com.atproto.sync.subscribeRepos
+      - --time-threshold=3
+      - --size-threshold=16
 
 networks:
   f1r3fly:

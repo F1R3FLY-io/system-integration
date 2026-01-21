@@ -85,3 +85,22 @@ Services are defined in `services.yml` with their git URLs and branches:
    - `poetry run shardctl build-service <service> --docker` for Docker image builds
    - `poetry run shardctl build-service --list` to see available services
 6. **Read README.md** for complete documentation and best practices
+
+## Testing After Shard Restart
+
+**IMPORTANT**: After any shard restart or rebuild, run the test script before manual debugging:
+
+```bash
+./test_embers_deploys.sh
+```
+
+This script checks:
+- Container status (all nodes + embers)
+- Port mappings for readonly node
+- Block progress and blocks with deploys
+- Deploy selection logs
+- DagMerger merge activity
+- Exploratory deploy API functionality
+- Embers wallet API response
+
+**Do not manually run docker logs, curl commands, or grep searches** to check deploy status. Use the test script first - it's faster and more comprehensive.

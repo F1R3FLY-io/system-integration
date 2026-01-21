@@ -35,6 +35,55 @@ services:
       timeout: 5s
       retries: 5
 
+  # BSKY Migration - runs database migrations before services start
+  bsky-migrate:
+    image: f1r3flyindustries/f1r3sky-bsky:latest
+    container_name: f1r3sky-bsky-migrate
+    env_file:
+      - .env.f1r3sky
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - f1r3fly
+    command: >
+      node -e "
+      const { Database } = require('@atproto/bsky');
+      (async () => {
+        console.log('Running bsky database migrations...');
+        const db = new Database({
+          url: process.env.BSKY_DB_POSTGRES_URL || 'postgresql://postgres:postgres@postgres:5432/atproto',
+          schema: process.env.BSKY_DB_POSTGRES_SCHEMA
+        });
+        await db.migrateToLatestOrThrow();
+        await db.close();
+        console.log('Bsky migrations complete!');
+      })();
+      "
+    restart: "no"
+
+  # BSKY DataPlane Server - serves indexed data via gRPC
+  dataplane:
+    image: f1r3flyindustries/f1r3sky-bsky:latest
+    container_name: f1r3sky-dataplane
+    ports:
+      - "2585:2585"
+    env_file:
+      - .env.f1r3sky
+    environment:
+      DATAPLANE_PORT: 2585
+    volumes:
+      - ./services/f1r3sky-backend/services/bsky/dataplane.js:/app/services/bsky/dataplane.js:ro
+    command: ["node", "--enable-source-maps", "dataplane.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bsky-migrate:
+        condition: service_completed_successfully
+    networks:
+      - f1r3fly
+    restart: unless-stopped
+
   # BSKY AppView service (app.bsky.* API endpoints)
   bsky:
     image: f1r3flyindustries/f1r3sky-bsky:latest
@@ -51,6 +100,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      bsky-migrate:
+        condition: service_completed_successfully
+      dataplane:
+        condition: service_started
       bsync:
         condition: service_started
     networks:
@@ -73,6 +126,13 @@ services:
     environment:
       # Port (not in env file)
       PORT: 2583
+      # Blockchain node integration
+      DEPLOY_SERVICE_URL: ${DEPLOY_SERVICE_URL:-http://rnode.validator1:40401}
+      PROPOSE_SERVICE_URL: ${PROPOSE_SERVICE_URL:-http://rnode.validator1:40402}
+      READ_NODE_URL: ${READ_NODE_URL:-http://rnode.readonly:40403}
+      READ_NODE_WS_URL: ${READ_NODE_WS_URL:-ws://rnode.readonly:40403}
+      DEFAULT_WALLET_KEY: ${DEFAULT_WALLET_KEY:-232DADA5BBAFC0799D5F370DA04AF70CE438F69F954512B26D6FB5B560B81DFE}
+      DEFAULT_WALLET_ADDRESS: ${DEFAULT_WALLET_ADDRESS:-1111EjdAxnKb5zKUc8ikuxfdi3kwSGH7BJCHKWjnVzfAF3SjCBvjh}
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,6 +141,33 @@ services:
     networks:
       - f1r3fly
     restart: unless-stopped
+
+  # BSYNC Migration - runs database migrations for bsync
+  bsync-migrate:
+    image: f1r3flyindustries/f1r3sky-bsync:latest
+    container_name: f1r3sky-bsync-migrate
+    env_file:
+      - .env.f1r3sky
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - f1r3fly
+    command: >
+      node -e "
+      const { Database } = require('@atproto/bsync');
+      (async () => {
+        console.log('Running bsync database migrations...');
+        const db = new Database({
+          url: process.env.BSYNC_DB_POSTGRES_URL || process.env.BSKY_DB_POSTGRES_URL || 'postgresql://postgres:postgres@postgres:5432/atproto',
+          schema: process.env.BSYNC_DB_POSTGRES_SCHEMA || process.env.BSKY_DB_POSTGRES_SCHEMA
+        });
+        await db.migrateToLatestOrThrow();
+        await db.close();
+        console.log('Bsync migrations complete!');
+      })();
+      "
+    restart: "no"
 
   # BSYNC (Background Sync Service)
   bsync:
@@ -96,31 +183,33 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      bsync-migrate:
+        condition: service_completed_successfully
     networks:
       - f1r3fly
     restart: unless-stopped
 
-  # OZONE (Moderation Service)
-  ozone:
-    image: f1r3flyindustries/f1r3sky-ozone:latest
-    container_name: f1r3sky-ozone
-    ports:
-      - "3101:3001"
-    env_file:
-      - .env.f1r3sky
-    environment:
-      # Port (not in env file)
-      PORT: 3001
-    depends_on:
-      postgres:
-        condition: service_healthy
-      bsky:
-        condition: service_started
-      pds:
-        condition: service_started
-    networks:
-      - f1r3fly
-    restart: unless-stopped
+  # OZONE (Moderation Service) - DISABLED FOR NOW
+  # ozone:
+  #   image: f1r3flyindustries/f1r3sky-ozone:latest
+  #   container_name: f1r3sky-ozone
+  #   ports:
+  #     - "3101:3001"
+  #   env_file:
+  #     - .env.f1r3sky
+  #   environment:
+  #     # Port (not in env file)
+  #     PORT: 3001
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     bsky:
+  #       condition: service_started
+  #     pds:
+  #       condition: service_started
+  #   networks:
+  #     - f1r3fly
+  #   restart: unless-stopped
 
   # F1R3SKY Frontend Web App (bskyweb) - requires ~/.npmrc with GitHub token
   f1r3sky:

@@ -22,16 +22,16 @@ startup_order:
 repositories:
   f1r3node:
     url: git@github.com:nashef/f1r3fly.git
-    branch: casper-bugs  # Working branch for bug fixes
+    branch: main
   f1r3node-rust:
     url: git@github.com:F1R3FLY-io/f1r3node.git
     branch: rust-dev  # Rust node on rust-dev branch
     enabled: false  # rust-dev branch doesn't exist yet
   rust-client:
-    url: git@github.com:F1R3FLY-io/rust-client.git
+    url: git@github.com:nashef/rust-client.git
     branch: main
   f1r3sky-backend:
-    url: git@github.com:F1R3FLY-io/f1r3sky-backend.git
+    url: git@github.com:nashef/f1r3sky-backend.git
     branch: main
   f1r3sky:
     url: git@github.com:F1R3FLY-io/f1r3sky.git
@@ -205,29 +205,29 @@ builds:
     # - Handles background synchronization tasks
     # - Multi-stage Docker build for optimized image size
 
-  f1r3sky-backend-ozone:
-    # Moderation service
-    # Main build command
-    build_command: "yes | pnpm install --frozen-lockfile && pnpm build"
+  # f1r3sky-backend-ozone:
+  #   # Moderation service
+  #   # Main build command
+  #   build_command: "yes | pnpm install --frozen-lockfile && pnpm build"
 
-    # Docker build command for ozone service
-    docker_build_command: "docker build --network=host -f services/ozone/Dockerfile -t f1r3flyindustries/f1r3sky-ozone:latest ."
+  #   # Docker build command for ozone service
+  #   docker_build_command: "docker build --network=host -f services/ozone/Dockerfile -t f1r3flyindustries/f1r3sky-ozone:latest ."
 
-    # Working directory (uses f1r3sky-backend repo for all sub-services)
-    working_directory: "f1r3sky-backend"
+  #   # Working directory (uses f1r3sky-backend repo for all sub-services)
+  #   working_directory: "f1r3sky-backend"
 
-    # Docker image produced
-    docker_image: "f1r3flyindustries/f1r3sky-ozone:latest"
+  #   # Docker image produced
+  #   docker_image: "f1r3flyindustries/f1r3sky-ozone:latest"
 
-    # Build dependencies
-    dependencies:
-      - "node >= 18"
-      - "pnpm >= 8.15.9"
+  #   # Build dependencies
+  #   dependencies:
+  #     - "node >= 18"
+  #     - "pnpm >= 8.15.9"
 
-    # Notes:
-    # - TypeScript/Node.js monorepo service
-    # - Provides moderation and content filtering capabilities
-    # - Multi-stage Docker build for optimized image size
+  #   # Notes:
+  #   # - TypeScript/Node.js monorepo service
+  #   # - Provides moderation and content filtering capabilities
+  #   # - Multi-stage Docker build for optimized image size
 
   f1r3sky:
     # F1R3Sky Frontend Web App - React Native/Expo web app with bskyweb Go server
