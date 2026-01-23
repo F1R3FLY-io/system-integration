@@ -174,7 +174,8 @@ build_services() {
     log_info "Building services..."
     cd "$ROOT_DIR"
 
-    if poetry run shardctl build; then
+    # Build docker-compose images via the compose pass-through command
+    if poetry run shardctl compose build; then
         log_success "Build completed"
         return 0
     else

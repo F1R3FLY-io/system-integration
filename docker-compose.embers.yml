@@ -4,7 +4,7 @@ services:
     image: f1r3flyindustries/embers:latest
     container_name: embers
     ports:
-      - "8080:3000"  # Expose on 8080 externally (f1r3sky expects this), runs on 3000 internally
+      - "8080:3000"  # Expose on 8080 externally, runs on 3000 internally
     env_file:
       - .env.embers
     environment:
@@ -23,8 +23,12 @@ services:
     networks:
       - f1r3fly
     restart: on-failure:5
-    # healthcheck disabled - curl not available in image
-    # Service can be verified externally: curl http://localhost:8080/api/service/ready
+    healthcheck:
+      test: ["CMD-SHELL", "cat < /dev/tcp/localhost/3000 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # Embers Frontend - React 19 web UI (requires ~/.npmrc with GitHub token)
   embers-frontend:
@@ -38,7 +42,8 @@ services:
     ports:
       - "5173:80"  # Frontend UI on port 5173
     environment:
-      API_URL: "http://localhost:8080"  # Points to embers
+      # Browser-side URL: must be accessible from the user's browser (host-published port)
+      API_URL: "http://localhost:8080"
     depends_on:
       - embers
     networks:

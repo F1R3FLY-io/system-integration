@@ -72,9 +72,39 @@ services:
       - .env.f1r3sky
     environment:
       DATAPLANE_PORT: 2585
-    volumes:
-      - ./services/f1r3sky-backend/services/bsky/dataplane.js:/app/services/bsky/dataplane.js:ro
-    command: ["node", "--enable-source-maps", "dataplane.js"]
+    command: >
+      node -e "
+      const { Database, DataPlaneServer, RepoSubscription } = require('@atproto/bsky');
+      (async () => {
+        const port = parseInt(process.env.DATAPLANE_PORT || process.env.PORT || '2585', 10);
+        const plcUrl =
+          process.env.BSKY_DID_PLC_URL ||
+          process.env.DID_PLC_URL ||
+          'https://plc.directory';
+        const repoSubUrls = (process.env.DATAPLANE_REPOSUBSCRIPTION_URLS || '').split(',').map(s => s.trim()).filter(Boolean);
+        if (!repoSubUrls.length) {
+          throw new Error('Missing DATAPLANE_REPOSUBSCRIPTION_URLS (expected e.g. ws://pds:2583)');
+        }
+        const db = new Database({
+          url: process.env.BSKY_DB_POSTGRES_URL || 'postgresql://postgres:postgres@postgres:5432/atproto',
+          schema: process.env.BSKY_DB_POSTGRES_SCHEMA,
+        });
+        console.log('Starting bsky dataplane server...');
+        const dp = await DataPlaneServer.create(db, port, plcUrl);
+        console.log('Starting bsky dataplane repo subscription...');
+        const sub = new RepoSubscription({ service: repoSubUrls[0], db, idResolver: dp.idResolver });
+        sub.start();
+        const shutdown = async () => {
+          console.log('Shutting down bsky dataplane...');
+          try { await sub.destroy(); } catch (err) { console.error(err); }
+          try { await dp.destroy(); } catch (err) { console.error(err); }
+          try { await db.close(); } catch (err) { console.error(err); }
+          process.exit(0);
+        };
+        process.on('SIGTERM', shutdown);
+        process.on('SIGINT', shutdown);
+      })();
+      "
     depends_on:
       postgres:
         condition: service_healthy
@@ -189,33 +219,38 @@ services:
       - f1r3fly
     restart: unless-stopped
 
-  # OZONE (Moderation Service) - DISABLED FOR NOW
-  # ozone:
-  #   image: f1r3flyindustries/f1r3sky-ozone:latest
-  #   container_name: f1r3sky-ozone
-  #   ports:
-  #     - "3101:3001"
-  #   env_file:
-  #     - .env.f1r3sky
-  #   environment:
-  #     # Port (not in env file)
-  #     PORT: 3001
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #     bsky:
-  #       condition: service_started
-  #     pds:
-  #       condition: service_started
-  #   networks:
-  #     - f1r3fly
-  #   restart: unless-stopped
+  # OZONE (Moderation Service)
+  ozone:
+    image: f1r3flyindustries/f1r3sky-ozone:latest
+    container_name: f1r3sky-ozone
+    ports:
+      - "3101:3001"
+    env_file:
+      - .env.f1r3sky
+    environment:
+      PORT: 3001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bsky:
+        condition: service_started
+      pds:
+        condition: service_started
+    networks:
+      - f1r3fly
+    restart: unless-stopped
 
   # F1R3SKY Frontend Web App (bskyweb) - requires ~/.npmrc with GitHub token
+  # EXPO_PUBLIC_* vars must be passed as build args because the bskyweb Go binary
+  # serves a pre-compiled JS bundle — it cannot inject env vars at runtime.
+  # These are browser-side URLs and must point to host-accessible ports.
   f1r3sky:
     build:
-      context: ../f1r3sky
+      context: ./services/f1r3sky
       dockerfile: Dockerfile
+      args:
+        EXPO_PUBLIC_EMBERS_API_URL: ${EXPO_PUBLIC_EMBERS_API_URL:-http://localhost:8080}
+        EXPO_PUBLIC_EMBERS_URL: ${EXPO_PUBLIC_EMBERS_URL:-http://localhost:5173}
       secrets:
         - npmrc
     image: f1r3flyindustries/f1r3sky:latest

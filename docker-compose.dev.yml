@@ -1,83 +1,553 @@
-version: '3.8'
+# F1R3FLY Dev Stack - Single-Validator Setup
+#
+# Unified compose for local development. No PDS blockchain integration.
+# Matches the working local stack architecture (services/embers/docker pattern).
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# Prerequisites:
+#   - Run `poetry run shardctl clone` to set up service repositories
+#   - NPM_TOKEN env var with GitHub PAT (read:packages scope) for @f1r3fly-io packages:
+#     export NPM_TOKEN=ghp_YOUR_TOKEN
+#   - services/embers/docker/mainnet/genesis/ and testnet/genesis/ directories
+#   - services/embers/docker/certs/ directory with TLS certs
+#   - Embers is built from source (Rust toolchain NOT needed — Docker handles it)
+#
+# Startup order (managed by depends_on + healthchecks):
+#   Phase 1: postgres, redis, plc
+#   Phase 2: firefly, firefly-testnet (validators)
+#   Phase 3: firefly-read, firefly-read-testnet (read-only nodes)
+#   Phase 4: bsky-migrate, bsync-migrate (database migrations)
+#   Phase 5: dataplane (gRPC data layer)
+#   Phase 6: bsync (background sync)
+#   Phase 7: bsky (AppView)
+#   Phase 8: pds (Personal Data Server - no blockchain)
+#   Phase 9: ozone (moderation)
+#   Phase 10: embers (blockchain API bridge, built from source)
+#   Phase 11: f1r3sky (frontend - Expo dev server)
 
 services:
-  service-1:
-    build:
-      context: ./services/service-1
-      dockerfile: Dockerfile.dev
-      target: development
-    environment:
-      - ENV=development
-      - LOG_LEVEL=debug
-      - DEBUG=true
-    volumes:
-      # Mount source code for hot reload
-      - ./services/service-1:/app
-      - /app/node_modules  # Exclude node_modules if Node.js service
-    command: npm run dev  # Override with dev command
-    profiles:
-      - dev
-
-  service-2:
-    build:
-      context: ./services/service-2
-      dockerfile: Dockerfile.dev
-      target: development
-    environment:
-      - ENV=development
-      - LOG_LEVEL=debug
-      - DEBUG=true
-    volumes:
-      # Mount source code for hot reload
-      - ./services/service-2:/app
-      - /app/node_modules
-    command: npm run dev
-    profiles:
-      - dev
+  # ============================================================
+  # Infrastructure
+  # ============================================================
 
   postgres:
-    profiles:
-      - dev
+    image: postgres:14.4-alpine
+    container_name: dev-postgres
     environment:
-      - POSTGRES_PASSWORD=dev_password  # Different password for dev
+      POSTGRES_USER: pg
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: postgres
     ports:
-      - "5433:5432"  # Different port for dev to avoid conflicts
+      - "5433:5432"
+    networks:
+      - dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pg -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   redis:
-    profiles:
-      - dev
-    command: redis-server --appendonly yes --requirepass dev_redis_pass
-
-  # Development tools
-  adminer:
-    image: adminer:latest
-    container_name: adminer
-    restart: unless-stopped
-    profiles:
-      - dev
-    networks:
-      - f1r3fly
+    image: redis:7.0-alpine
+    container_name: dev-redis
     ports:
-      - "8080:8080"
-    environment:
-      - ADMINER_DEFAULT_SERVER=postgres
-
-  # Redis Commander for dev
-  redis-commander:
-    image: rediscommander/redis-commander:latest
-    container_name: redis-commander
-    restart: unless-stopped
-    profiles:
-      - dev
+      - "6380:6379"
     networks:
-      - f1r3fly
+      - dev
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ============================================================
+  # Blockchain Shard (Single-Validator, matching embers/docker)
+  # ============================================================
+
+  firefly:
+    image: f1r3flyindustries/f1r3fly-scala-node:latest
+    pull_policy: always
+    container_name: dev-firefly
+    user: root
     ports:
-      - "8081:8081"
+      - "14401:40401"  # deploy service
+      - "14402:40402"  # propose service
+      - "14403:40403"  # rest api
+    volumes:
+      - ./services/embers/docker/mainnet/genesis:/var/lib/rnode/genesis
+      - ./services/embers/docker/certs/node.key.pem:/var/lib/rnode/node.key.pem:ro
+      - ./services/embers/docker/certs/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+    command:
+      - run
+      - -s
+      - --validator-private-key=6a786ec387aff99fcce1bd6faa35916bfad3686d5c98e90a89f77670f535607c
+      - --host=firefly
+      - --no-upnp
+      - --allow-private-addresses
+      - --synchrony-constraint-threshold=0.0
+      - --protocol-port=40400
+      - --discovery-port=40404
+      - --tls-key-path=/var/lib/rnode/node.key.pem
+      - --tls-certificate-path=/var/lib/rnode/node.certificate.pem
+    networks:
+      - dev
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:40403/status || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  firefly-read:
+    image: f1r3flyindustries/f1r3fly-scala-node:latest
+    pull_policy: always
+    container_name: dev-firefly-read
+    user: root
+    ports:
+      - "14413:40403"  # rest api (read-only)
+    command:
+      - run
+      - --bootstrap=rnode://ebffd419dea60220734ccea8875e86d87bac10a7@firefly?protocol=40400&discovery=40404
+      - --host=firefly-read
+      - --no-upnp
+      - --allow-private-addresses
+    depends_on:
+      firefly:
+        condition: service_healthy
+    networks:
+      - dev
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:40403/status || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  firefly-testnet:
+    image: f1r3flyindustries/f1r3fly-scala-node:latest
+    pull_policy: always
+    container_name: dev-firefly-testnet
+    user: root
+    ports:
+      - "15401:40401"  # deploy service
+      - "15402:40402"  # propose service
+      - "15403:40403"  # rest api
+    volumes:
+      - ./services/embers/docker/testnet/genesis:/var/lib/rnode/genesis
+      - ./services/embers/docker/certs/node.key.pem:/var/lib/rnode/node.key.pem:ro
+      - ./services/embers/docker/certs/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+    command:
+      - run
+      - -s
+      - --validator-private-key=6a786ec387aff99fcce1bd6faa35916bfad3686d5c98e90a89f77670f535607c
+      - --host=firefly-testnet
+      - --no-upnp
+      - --allow-private-addresses
+      - --synchrony-constraint-threshold=0.0
+      - --protocol-port=40400
+      - --discovery-port=40404
+      - --tls-key-path=/var/lib/rnode/node.key.pem
+      - --tls-certificate-path=/var/lib/rnode/node.certificate.pem
+    networks:
+      - dev
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:40403/status || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  firefly-read-testnet:
+    image: f1r3flyindustries/f1r3fly-scala-node:latest
+    pull_policy: always
+    container_name: dev-firefly-read-testnet
+    user: root
+    ports:
+      - "15413:40403"  # rest api (read-only)
+    command:
+      - run
+      - --bootstrap=rnode://ebffd419dea60220734ccea8875e86d87bac10a7@firefly-testnet?protocol=40400&discovery=40404
+      - --host=firefly-read-testnet
+      - --no-upnp
+      - --allow-private-addresses
+    depends_on:
+      firefly-testnet:
+        condition: service_healthy
+    networks:
+      - dev
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:40403/status || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  # ============================================================
+  # AT Protocol - PLC (DID Registry)
+  # ============================================================
+
+  # PLC server provides did:plc: registration and resolution.
+  # Uses in-memory SQLite (ephemeral — DIDs lost on restart, matching local dev-env).
+  # Required for: user account creation in PDS, DID resolution in BSKY/Ozone.
+  plc:
+    build:
+      context: ./services/plc
+    image: f1r3flyindustries/plc:dev
+    container_name: dev-plc
+    ports:
+      - "2582:2582"
+    networks:
+      - dev
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const s=require('net').connect(2582,'localhost',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1))\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  # ============================================================
+  # AT Protocol - Database Migrations (run-once)
+  # ============================================================
+
+  bsky-migrate:
+    image: f1r3flyindustries/f1r3sky-bsky:latest
+    container_name: dev-bsky-migrate
+    env_file:
+      - .env.dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - dev
+    command: >
+      node -e "
+      const { Database } = require('@atproto/bsky');
+      (async () => {
+        console.log('Running bsky database migrations...');
+        const db = new Database({
+          url: process.env.BSKY_DB_POSTGRES_URL,
+          schema: process.env.BSKY_DB_POSTGRES_SCHEMA
+        });
+        await db.migrateToLatestOrThrow();
+        await db.close();
+        console.log('Bsky migrations complete!');
+      })();
+      "
+    restart: "no"
+
+  bsync-migrate:
+    image: f1r3flyindustries/f1r3sky-bsync:latest
+    container_name: dev-bsync-migrate
+    env_file:
+      - .env.dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - dev
+    command: >
+      node -e "
+      const { Database } = require('@atproto/bsync');
+      (async () => {
+        console.log('Running bsync database migrations...');
+        const db = new Database({
+          url: process.env.BSYNC_DB_POSTGRES_URL,
+          schema: process.env.BSYNC_DB_POSTGRES_SCHEMA
+        });
+        await db.migrateToLatestOrThrow();
+        await db.close();
+        console.log('Bsync migrations complete!');
+      })();
+      "
+    restart: "no"
+
+  ozone-migrate:
+    image: f1r3flyindustries/f1r3sky-ozone:latest
+    container_name: dev-ozone-migrate
+    env_file:
+      - .env.dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - dev
+    command: >
+      node -e "
+      const { Database } = require('@atproto/ozone');
+      (async () => {
+        console.log('Running ozone database migrations...');
+        const db = new Database({
+          url: process.env.OZONE_DB_POSTGRES_URL,
+          schema: process.env.OZONE_DB_POSTGRES_SCHEMA || 'ozone_db'
+        });
+        await db.migrateToLatestOrThrow();
+        await db.close();
+        console.log('Ozone migrations complete!');
+      })();
+      "
+    restart: "no"
+
+  # ============================================================
+  # AT Protocol - Services
+  # ============================================================
+
+  dataplane:
+    image: f1r3flyindustries/f1r3sky-bsky:latest
+    container_name: dev-dataplane
+    ports:
+      - "2585:2585"
+    env_file:
+      - .env.dev
     environment:
-      - REDIS_HOSTS=local:redis:6379:0:dev_redis_pass
+      DATAPLANE_PORT: 2585
+    command: >
+      node -e "
+      const { Database, DataPlaneServer, RepoSubscription } = require('@atproto/bsky');
+      (async () => {
+        const port = parseInt(process.env.DATAPLANE_PORT || '2585', 10);
+        const plcUrl = process.env.BSKY_DID_PLC_URL || 'http://plc:2582';
+        const repoSubUrls = (process.env.DATAPLANE_REPOSUBSCRIPTION_URLS || '').split(',').map(s => s.trim()).filter(Boolean);
+        if (!repoSubUrls.length) {
+          throw new Error('Missing DATAPLANE_REPOSUBSCRIPTION_URLS');
+        }
+        const db = new Database({
+          url: process.env.BSKY_DB_POSTGRES_URL,
+          schema: process.env.BSKY_DB_POSTGRES_SCHEMA,
+        });
+        console.log('Starting dataplane server on port ' + port + '...');
+        const dp = await DataPlaneServer.create(db, port, plcUrl);
+        console.log('Starting repo subscription to ' + repoSubUrls[0] + '...');
+        const sub = new RepoSubscription({ service: repoSubUrls[0], db, idResolver: dp.idResolver });
+        sub.start();
+        const shutdown = async () => {
+          console.log('Shutting down dataplane...');
+          try { await sub.destroy(); } catch (err) { console.error(err); }
+          try { await dp.destroy(); } catch (err) { console.error(err); }
+          try { await db.close(); } catch (err) { console.error(err); }
+          process.exit(0);
+        };
+        process.on('SIGTERM', shutdown);
+        process.on('SIGINT', shutdown);
+      })();
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+      plc:
+        condition: service_healthy
+      bsky-migrate:
+        condition: service_completed_successfully
+    networks:
+      - dev
+    restart: unless-stopped
+
+  bsync:
+    image: f1r3flyindustries/f1r3sky-bsync:latest
+    container_name: dev-bsync
+    ports:
+      - "3100:3000"
+    env_file:
+      - .env.dev
+    environment:
+      PORT: 3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bsync-migrate:
+        condition: service_completed_successfully
+    networks:
+      - dev
+    restart: unless-stopped
+
+  bsky:
+    image: f1r3flyindustries/f1r3sky-bsky:latest
+    container_name: dev-bsky
+    ports:
+      - "2584:2584"
+    env_file:
+      - .env.dev
+    environment:
+      PORT: 2584
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      plc:
+        condition: service_healthy
+      bsky-migrate:
+        condition: service_completed_successfully
+      dataplane:
+        condition: service_started
+      bsync:
+        condition: service_started
+    networks:
+      - dev
+    restart: unless-stopped
+
+  pds:
+    image: f1r3flyindustries/f1r3sky-pds:latest
+    container_name: dev-pds
+    user: root
+    ports:
+      - "2583:2583"
+    env_file:
+      - .env.dev
+    volumes:
+      - pds_blocks:/pds/blocks
+      - pds_tmp:/pds/tmp
+      - pds_data:/pds
+    environment:
+      PORT: 2583
+      # No blockchain integration in dev mode
+    depends_on:
+      postgres:
+        condition: service_healthy
+      plc:
+        condition: service_healthy
+      bsky:
+        condition: service_started
+    networks:
+      - dev
+    restart: unless-stopped
+
+  ozone:
+    image: f1r3flyindustries/f1r3sky-ozone:latest
+    container_name: dev-ozone
+    ports:
+      - "2587:3001"
+    env_file:
+      - .env.dev
+    environment:
+      PORT: 3001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      plc:
+        condition: service_healthy
+      bsky:
+        condition: service_started
+      pds:
+        condition: service_started
+      ozone-migrate:
+        condition: service_completed_successfully
+    networks:
+      - dev
+    restart: unless-stopped
+
+  # ============================================================
+  # Embers (Blockchain API Bridge)
+  # ============================================================
+
+  embers:
+    build:
+      context: ./services/embers
+      dockerfile: docker/embers.dev.dockerfile
+    image: f1r3flyindustries/embers:dev
+    container_name: dev-embers
+    # Shard needs ~30s after genesis before it can accept deploys
+    entrypoint: ["sh", "-c", "echo 'Waiting 30s for shard genesis...' && sleep 30 && /app/embers"]
+    ports:
+      - "8080:3000"
+    env_file:
+      - .env.dev
+    environment:
+      EMBERS__PORT: 3000
+      EMBERS__ADDRESS: "::"
+      EMBERS__LOG_LEVEL: debug
+      EMBERS__MAINNET__DEPLOY_SERVICE_URL: http://firefly:40401
+      EMBERS__MAINNET__PROPOSE_SERVICE_URL: http://firefly:40402
+      EMBERS__MAINNET__OBSERVER_URL: http://firefly-read:40403
+      EMBERS__MAINNET__OBSERVER_WS_API_URL: ws://firefly-read:40403
+      EMBERS__MAINNET__VALIDATOR_WS_API_URL: ws://firefly:40403
+      EMBERS__TESTNET__DEPLOY_SERVICE_URL: http://firefly-testnet:40401
+      EMBERS__TESTNET__PROPOSE_SERVICE_URL: http://firefly-testnet:40402
+      EMBERS__TESTNET__OBSERVER_URL: http://firefly-read-testnet:40403
+      EMBERS__TESTNET__OBSERVER_WS_API_URL: ws://firefly-read-testnet:40403
+      EMBERS__TESTNET__VALIDATOR_WS_API_URL: ws://firefly-testnet:40403
+    depends_on:
+      firefly:
+        condition: service_healthy
+      firefly-read:
+        condition: service_healthy
+    networks:
+      - dev
+    restart: on-failure:5
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/api/service/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # ============================================================
+  # Embers Frontend (React 19 Web UI)
+  # ============================================================
+
+  embers-frontend:
+    build:
+      context: ./services/embers-frontend
+      dockerfile: ../../backups/embers-frontend/Dockerfile.dev
+      secrets:
+        - npm_token
+    image: f1r3flyindustries/embers-frontend:dev
+    container_name: dev-embers-frontend
+    ports:
+      - "5173:80"
+    environment:
+      # Browser-side URL: must be accessible from the user's browser (host ports)
+      API_URL: "http://localhost:8080"
+    depends_on:
+      embers:
+        condition: service_healthy
+    networks:
+      - dev
+    restart: unless-stopped
+
+  # ============================================================
+  # F1R3Sky Frontend (Expo Dev Server)
+  # ============================================================
+
+  f1r3sky:
+    build:
+      context: ./services/f1r3sky
+      dockerfile: Dockerfile.dev
+      secrets:
+        - npm_token
+    container_name: dev-f1r3sky
+    ports:
+      - "8100:19006"
+    environment:
+      # These are read by webpack DefinePlugin at transpile time (Expo dev server)
+      EXPO_PUBLIC_ENV: development
+      EXPO_PUBLIC_EMBERS_API_URL: "http://localhost:8080"
+      EXPO_PUBLIC_EMBERS_URL: "http://localhost:5173"
+      # Tell webpack dev server client to use the host-mapped port for HMR WebSocket
+      WDS_SOCKET_PORT: 8100
+    depends_on:
+      bsky:
+        condition: service_started
+      pds:
+        condition: service_started
+      embers:
+        condition: service_healthy
+    networks:
+      - dev
+    restart: unless-stopped
+
+secrets:
+  npm_token:
+    environment: NPM_TOKEN
 
 networks:
-  f1r3fly:
-    name: f1r3fly
-    external: true
+  dev:
+    name: dev
+    driver: bridge
 
+volumes:
+  pds_blocks:
+  pds_tmp:
+  pds_data:

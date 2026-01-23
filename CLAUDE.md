@@ -6,7 +6,7 @@ This is a microservices integration repository for the F1R3FLY blockchain ecosys
 
 ## Key Concepts
 
-- **Services are git-ignored**: Each service repository (f1r3node, embers, f1r3sky-backend, etc.) is cloned into `services/` and completely ignored by the parent system-integration repository
+
 - **Independent development**: Work in each service directory normally with full git functionality - changes are isolated to each service repo
 - **Docker Compose orchestration**: Multiple compose files layer configurations for different services and environments
 - **shardctl CLI**: Python CLI tool (installed via Poetry) that wraps docker-compose operations and service management
@@ -81,9 +81,9 @@ Services are defined in `services.yml` with their git URLs and branches:
    - `docker-compose.f1r3sky.yml` - F1R3Sky AT Protocol services
 4. **Services communicate via Docker network** - `system-integration_f1r3fly` network
 5. **Always use shardctl commands** - Don't run builds manually (cargo, sbt, etc.). Use:
-   - `poetry run shardctl build-service <service>` for regular builds
-   - `poetry run shardctl build-service <service> --docker` for Docker image builds
-   - `poetry run shardctl build-service --list` to see available services
+   - `poetry run shardctl build <service>` for source builds (and Docker image build when configured)
+   - `poetry run shardctl build --no-docker` to skip Docker image building
+   - `poetry run shardctl build --list` to see available services
 6. **Read README.md** for complete documentation and best practices
 
 ## Testing After Shard Restart

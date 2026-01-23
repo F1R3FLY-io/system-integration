@@ -217,11 +217,11 @@ Build all services from source (optional - you can skip to Docker builds):
 
 ```bash
 # Build all enabled services from source
-poetry run shardctl build-service -a --no-docker
+poetry run shardctl build --no-docker
 
 # Or build specific services
-poetry run shardctl build-service f1r3node --no-docker
-poetry run shardctl build-service embers --no-docker
+poetry run shardctl build f1r3node --no-docker
+poetry run shardctl build embers --no-docker
 ```
 
 **Note:** Source builds are useful for development. For production, you only need Docker images.
@@ -232,7 +232,7 @@ Build Docker images for all services:
 
 ```bash
 # Build all Docker images (source + Docker build)
-poetry run shardctl build-service -a
+poetry run shardctl build
 
 # This builds images for:
 # - f1r3flyindustries/f1r3fly-scala-node:latest (f1r3node)
@@ -332,13 +332,13 @@ poetry run shardctl down
 
 ```bash
 # List available services
-poetry run shardctl build-service --list
+poetry run shardctl build --list
 
 # Build specific service (source only)
-poetry run shardctl build-service f1r3node --no-docker
+poetry run shardctl build f1r3node --no-docker
 
 # Build Docker image only
-poetry run shardctl build-service embers
+poetry run shardctl build embers
 
 # View service status
 poetry run shardctl status
@@ -399,10 +399,11 @@ shardctl logs [SERVICES...] [OPTIONS]
 ### Build and Images
 
 ```bash
-# Build services
-shardctl build [SERVICES...] [OPTIONS]
-  --profile, -p TEXT    Profile (dev/prod)
-  --no-cache           Build without cache
+# Build services from their configured build commands in services.yml
+shardctl build [SERVICE] [OPTIONS]
+  --no-docker                  Skip Docker image building (source build only)
+  --list, -l                   List services with build configurations
+  --include-disabled            Include disabled services (default: enabled only)
 
 # Pull service images
 shardctl pull [SERVICES...] [OPTIONS]
@@ -599,14 +600,11 @@ shardctl down
 ### Rebuilding After Changes
 
 ```bash
-# Rebuild specific service
-shardctl build service-1
+# Rebuild a specific docker-compose service image
+shardctl compose build service-1
 
-# Rebuild without cache
-shardctl build service-1 --no-cache
-
-# Rebuild and restart
-shardctl build service-1 && shardctl restart service-1
+# Rebuild and restart the container
+shardctl compose build service-1 && shardctl restart service-1
 
 # Or rebuild and start
 shardctl up service-1 --build
@@ -629,7 +627,7 @@ shardctl up service-1 --build
    ```
 2. Use Docker builds instead of source builds (Docker uses Node 20.11):
    ```bash
-   poetry run shardctl build-service f1r3sky-backend-bsky  # Builds Docker image
+   poetry run shardctl build f1r3sky-backend-bsky  # Builds Docker image (when configured)
    ```
 3. The Docker build will succeed even if source build fails
 
@@ -783,7 +781,7 @@ rm -rf services/*
 poetry run shardctl clone
 
 # Rebuild all Docker images
-poetry run shardctl build-service -a
+poetry run shardctl build
 
 # Start fresh
 poetry run shardctl up

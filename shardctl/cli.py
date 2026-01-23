@@ -256,22 +256,6 @@ def restart(
 
 
 @app.command()
-def build(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to build"),
-    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
-    no_cache: bool = typer.Option(False, "--no-cache", help="Do not use cache when building"),
-):
-    """Build or rebuild service images."""
-    if not validate_environment():
-        raise typer.Exit(1)
-
-    manager = get_manager(profile)
-    console.print("[bold blue]Building services...[/bold blue]")
-    manager.build(services=services, no_cache=no_cache)
-    console.print("[green]✓[/green] Build completed successfully")
-
-
-@app.command()
 def pull(
     services: Optional[List[str]] = typer.Argument(None, help="Services to pull"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
@@ -422,7 +406,7 @@ def setup(
     console.print("\n[green]✓[/green] Setup completed")
 
 
-@app.command(name="build-service")
+@app.command(name="build")
 def build_service_cmd(
     service: Optional[str] = typer.Argument(None, help="Specific service name to build"),
     no_docker: bool = typer.Option(
@@ -453,13 +437,13 @@ def build_service_cmd(
     the appropriate build commands for the specified service(s).
 
     Examples:
-        shardctl build-service                              # Build all enabled services (source + Docker)
-        shardctl build-service --no-docker                  # Build all enabled services (source only)
-        shardctl build-service --include-disabled           # Build all services including disabled (source + Docker)
-        shardctl build-service f1r3node                     # Build only f1r3node (source + Docker)
-        shardctl build-service f1r3node --no-docker         # Build only f1r3node (source only)
-        shardctl build-service --list                       # List enabled services
-        shardctl build-service --list --include-disabled    # List all services (including disabled)
+        shardctl build                              # Build all enabled services (source + Docker)
+        shardctl build --no-docker                  # Build all enabled services (source only)
+        shardctl build --include-disabled           # Build all services including disabled (source + Docker)
+        shardctl build f1r3node                     # Build only f1r3node (source + Docker)
+        shardctl build f1r3node --no-docker         # Build only f1r3node (source only)
+        shardctl build --list                       # List enabled services
+        shardctl build --list --include-disabled    # List all services (including disabled)
     """
     config = Config()
 

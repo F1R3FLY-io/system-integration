@@ -8,8 +8,8 @@
 # Examples:
 #   shardctl clone              # Clones only enabled services
 #   shardctl clone --all        # Clones all services (including disabled)
-#   shardctl build-service -a   # Builds all enabled services
-#   shardctl build-service my-disabled-service --docker  # Builds specific service even if disabled
+#   shardctl build              # Builds all enabled services (source + Docker)
+#   shardctl build my-disabled-service --include-disabled  # Builds a disabled service explicitly
 
 # Startup order for compose files
 # The 'up' command brings up each compose file in order, waiting for each to succeed.
@@ -31,14 +31,14 @@ repositories:
     url: git@github.com:nashef/rust-client.git
     branch: main
   f1r3sky-backend:
-    url: git@github.com:nashef/f1r3sky-backend.git
+    url: git@github.com:F1R3FLY-io/f1r3sky-backend.git
     branch: main
   f1r3sky:
     url: git@github.com:F1R3FLY-io/f1r3sky.git
     branch: main
     enabled: true  # Frontend demo
   embers:
-    url: git@github.com:nashef/firefly-embers.git
+    url: git@github.com:F1R3FLY-io/embers.git
     branch: main
   embers-frontend:
     url: git@github.com:F1R3FLY-io/embers-frontend.git

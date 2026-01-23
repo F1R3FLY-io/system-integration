@@ -1,0 +1,45 @@
+# F1R3Sky Frontend - Development Dockerfile
+#
+# Runs the Expo web dev server instead of the production bskyweb Go binary.
+# EXPO_PUBLIC_* env vars are read at runtime by webpack DefinePlugin during
+# transpilation, so they can be passed as container environment variables.
+#
+# Usage:
+#   docker build -f Dockerfile.dev --build-arg NPM_TOKEN=$NPM_TOKEN -t f1r3sky-dev .
+#   docker run -p 19006:19006 -e EXPO_PUBLIC_EMBERS_API_URL=http://localhost:8080 f1r3sky-dev
+
+FROM node:20-bullseye
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy package files + project .npmrc for registry config and layer caching
+COPY package.json yarn.lock .npmrc ./
+
+# Install dependencies without postinstall (postinstall needs lingui.config.js which isn't copied yet)
+# NPM_TOKEN secret is read from /run/secrets/npm_token to satisfy project .npmrc's ${NPM_TOKEN}
+RUN --mount=type=secret,id=npm_token \
+    NPM_TOKEN=$(cat /run/secrets/npm_token) \
+    yarn install --frozen-lockfile --ignore-scripts && \
+    rm -f .npmrc
+
+# Copy source
+COPY . .
+RUN rm -f .npmrc
+
+# Run patch-package (ok to fail on some patches)
+RUN npx patch-package || true
+
+# Compile i18n locale files (.po → .js) — must succeed for webpack to resolve imports
+RUN yarn intl:compile
+
+EXPOSE 19006
+
+# CI=1 disables interactive prompts (replaces deprecated --non-interactive)
+# No --port flag: Metro uses 8081, webpack uses 19006 (avoids port conflict)
+ENV CI=1
+CMD ["yarn", "web"]
