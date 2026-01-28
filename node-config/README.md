@@ -33,6 +33,7 @@ Unified Docker configuration for both Scala and Rust node implementations.
 | `./run.sh logs`                 | Follow container logs             |
 | `./run.sh status`               | Show container status             |
 | `./run.sh wait`                 | Wait for all nodes ready (timed)  |
+| `./run.sh pull`                 | Pull latest images (Scala + Rust) |
 | `./run.sh --help`               | Show all options                  |
 
 ## Standalone Node (Recommended for Development)

@@ -55,6 +55,7 @@ Actions:
   logs           Follow container logs
   status         Show container status
   wait           Wait for all nodes to be ready (timed)
+  pull           Pull latest images for all configurations
 
 Flags:
   -y, --yes      Skip confirmation prompts (for reset)
@@ -106,6 +107,9 @@ while [[ $# -gt 0 ]]; do
             ;;
         wait)
             ACTION="wait"
+            ;;
+        pull)
+            ACTION="pull"
             ;;
         -y|--yes)
             AUTO_YES=true
@@ -393,5 +397,23 @@ case $ACTION in
         else
             echo -e "${YELLOW}No data directory found${NC}"
         fi
+        ;;
+    pull)
+        echo -e "${BLUE}Pulling latest images for all configurations...${NC}"
+        echo ""
+        
+        # Pull Scala images
+        echo -e "${GREEN}Pulling Scala node image...${NC}"
+        docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+        
+        # Pull Rust images
+        echo -e "${GREEN}Pulling Rust node image...${NC}"
+        docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+        
+        echo ""
+        echo -e "${GREEN}All images pulled successfully!${NC}"
+        echo ""
+        echo "Available images:"
+        docker images | grep -E "f1r3fly.*node" | head -10
         ;;
 esac
