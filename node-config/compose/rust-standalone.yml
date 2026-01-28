@@ -1,0 +1,70 @@
+# =================================================================
+# F1R3FLY RUST NODE - STANDALONE DOCKER COMPOSE
+# =================================================================
+# Runs a single standalone Rust node for development and testing.
+#
+# Usage:
+#   ./run.sh --rust --standalone
+#
+# Or directly:
+#   docker-compose -f compose/rust-standalone.yml up -d
+#
+# NOTE: The Rust node has a different CLI than the Scala node.
+#       Use standalone.yml for Scala nodes.
+
+services:
+  standalone:
+    image: f1r3flyindustries/f1r3fly-rust-node:latest
+    user: root
+    restart: always
+    networks:
+      - f1r3fly-standalone
+    container_name: rnode.standalone
+    command:
+      [
+        "run",
+        "--standalone",
+        "--host=rnode.standalone",
+        "--config-file=/var/lib/rnode/rnode.conf",
+        "--data-dir=/var/lib/rnode",
+        "--bonds-file=/var/lib/rnode/genesis/bonds.txt",
+        "--wallets-file=/var/lib/rnode/genesis/wallets.txt",
+        "--validator-private-key-path=/var/lib/rnode/validator.key",
+        "--dev-mode",
+        "--no-upnp",
+      ]
+    ports:
+      # Protocol server port
+      - "40400:40400"
+      # External gRPC API port
+      - "40401:40401"
+      # Internal gRPC API port
+      - "40402:40402"
+      # HTTP API port
+      - "40403:40403"
+      # Kademlia discovery port
+      - "40404:40404"
+      # Admin HTTP API port
+      - "40405:40405"
+    volumes:
+      # Standalone configuration file
+      - ../conf/standalone-dev.conf:/var/lib/rnode/rnode.conf
+      # Standalone genesis files (single validator)
+      - ../genesis/standalone-wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ../genesis/standalone-bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      # Validator private key file (Rust requires key in file, not inline)
+      - ../keys/standalone-validator.key:/var/lib/rnode/validator.key
+      # Data directory for blockchain state
+      - ../data/rnode.standalone:/var/lib/rnode/
+    environment:
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+networks:
+  f1r3fly-standalone:
+    driver: bridge

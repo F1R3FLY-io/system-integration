@@ -1,0 +1,249 @@
+# =================================================================
+# F1R3FLY RUST NODE - SHARD DOCKER COMPOSE
+# =================================================================
+# Runs a multi-node shard with bootstrap + 3 validators + observer.
+#
+# Usage:
+#   ./run.sh --rust --shard
+#
+# Or directly:
+#   docker-compose -f compose/rust-shard.yml up -d
+#
+# NOTE: The Rust node has a different CLI than the Scala node.
+#       Use scala-shard.yml for Scala nodes.
+#
+# Port Mapping:
+#   Bootstrap:   40400-40405
+#   Validator1:  40410-40415
+#   Validator2:  40420-40425
+#   Validator3:  40430-40435
+#   Observer:    40450-40455
+
+x-rnode: &default-rnode
+  image: f1r3flyindustries/f1r3fly-rust-node:latest
+  user: root
+  restart: always
+  networks:
+    - f1r3fly-shard
+  environment:
+    - RUST_LOG=info
+
+services:
+  # =================================================================
+  # BOOTSTRAP NODE (Ceremony Master)
+  # =================================================================
+  # The bootstrap node coordinates genesis ceremony but is NOT a validator.
+  # It does not propose blocks or participate in consensus.
+  boot:
+    <<: *default-rnode
+    container_name: ${BOOTSTRAP_HOST:-rnode.bootstrap}
+    command:
+      [
+        "run",
+        "--host=${BOOTSTRAP_HOST:-rnode.bootstrap}",
+        "--config-file=/var/lib/rnode/rnode.conf",
+        "--data-dir=/var/lib/rnode",
+        "--bonds-file=/var/lib/rnode/genesis/bonds.txt",
+        "--wallets-file=/var/lib/rnode/genesis/wallets.txt",
+        "--bootstrap=rnode://${BOOTSTRAP_NODE_ID:-1e780e5dfbe0a3d9470a2b414f502d59402e09c2}@${BOOTSTRAP_HOST:-rnode.bootstrap}?protocol=40400&discovery=40404",
+        "--validator-private-key-path=/var/lib/rnode/validator.key",
+        "--allow-private-addresses",
+        "--no-upnp",
+      ]
+    ports:
+      - "40400:40400"
+      - "40401:40401"
+      - "40402:40402"
+      - "40403:40403"
+      - "40404:40404"
+      - "40405:40405"
+    volumes:
+      - ../conf/bootstrap-ceremony.conf:/var/lib/rnode/rnode.conf
+      - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      - ../keys/bootstrap.key:/var/lib/rnode/validator.key:ro
+      - ../data/${BOOTSTRAP_HOST:-rnode.bootstrap}:/var/lib/rnode/
+      - ../certs/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ../certs/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # =================================================================
+  # VALIDATOR 1
+  # =================================================================
+  validator1:
+    <<: *default-rnode
+    container_name: ${VALIDATOR1_HOST:-rnode.validator1}
+    depends_on:
+      - boot
+    command:
+      [
+        "run",
+        "--host=${VALIDATOR1_HOST:-rnode.validator1}",
+        "--config-file=/var/lib/rnode/rnode.conf",
+        "--data-dir=/var/lib/rnode",
+        "--bonds-file=/var/lib/rnode/genesis/bonds.txt",
+        "--wallets-file=/var/lib/rnode/genesis/wallets.txt",
+        "--bootstrap=rnode://${BOOTSTRAP_NODE_ID:-1e780e5dfbe0a3d9470a2b414f502d59402e09c2}@${BOOTSTRAP_HOST:-rnode.bootstrap}?protocol=40400&discovery=40404",
+        "--validator-private-key-path=/var/lib/rnode/validator.key",
+        "--genesis-validator",
+        "--allow-private-addresses",
+        "--no-upnp",
+      ]
+    ports:
+      - "40410:40400"
+      - "40411:40401"
+      - "40412:40402"
+      - "40413:40403"
+      - "40414:40404"
+      - "40415:40405"
+    volumes:
+      - ../conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
+      - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      - ../keys/validator1.key:/var/lib/rnode/validator.key:ro
+      - ../data/${VALIDATOR1_HOST:-rnode.validator1}:/var/lib/rnode/
+      - ../certs/validator1/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ../certs/validator1/node.key.pem:/var/lib/rnode/node.key.pem:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  # =================================================================
+  # VALIDATOR 2
+  # =================================================================
+  validator2:
+    <<: *default-rnode
+    container_name: ${VALIDATOR2_HOST:-rnode.validator2}
+    depends_on:
+      - boot
+    command:
+      [
+        "run",
+        "--host=${VALIDATOR2_HOST:-rnode.validator2}",
+        "--config-file=/var/lib/rnode/rnode.conf",
+        "--data-dir=/var/lib/rnode",
+        "--bonds-file=/var/lib/rnode/genesis/bonds.txt",
+        "--wallets-file=/var/lib/rnode/genesis/wallets.txt",
+        "--bootstrap=rnode://${BOOTSTRAP_NODE_ID:-1e780e5dfbe0a3d9470a2b414f502d59402e09c2}@${BOOTSTRAP_HOST:-rnode.bootstrap}?protocol=40400&discovery=40404",
+        "--validator-private-key-path=/var/lib/rnode/validator.key",
+        "--genesis-validator",
+        "--allow-private-addresses",
+        "--no-upnp",
+      ]
+    ports:
+      - "40420:40400"
+      - "40421:40401"
+      - "40422:40402"
+      - "40423:40403"
+      - "40424:40404"
+      - "40425:40405"
+    volumes:
+      - ../conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
+      - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      - ../keys/validator2.key:/var/lib/rnode/validator.key:ro
+      - ../data/${VALIDATOR2_HOST:-rnode.validator2}:/var/lib/rnode/
+      - ../certs/validator2/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ../certs/validator2/node.key.pem:/var/lib/rnode/node.key.pem:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  # =================================================================
+  # VALIDATOR 3
+  # =================================================================
+  validator3:
+    <<: *default-rnode
+    container_name: ${VALIDATOR3_HOST:-rnode.validator3}
+    depends_on:
+      - boot
+    command:
+      [
+        "run",
+        "--host=${VALIDATOR3_HOST:-rnode.validator3}",
+        "--config-file=/var/lib/rnode/rnode.conf",
+        "--data-dir=/var/lib/rnode",
+        "--bonds-file=/var/lib/rnode/genesis/bonds.txt",
+        "--wallets-file=/var/lib/rnode/genesis/wallets.txt",
+        "--bootstrap=rnode://${BOOTSTRAP_NODE_ID:-1e780e5dfbe0a3d9470a2b414f502d59402e09c2}@${BOOTSTRAP_HOST:-rnode.bootstrap}?protocol=40400&discovery=40404",
+        "--validator-private-key-path=/var/lib/rnode/validator.key",
+        "--genesis-validator",
+        "--allow-private-addresses",
+        "--no-upnp",
+      ]
+    ports:
+      - "40430:40400"
+      - "40431:40401"
+      - "40432:40402"
+      - "40433:40403"
+      - "40434:40404"
+      - "40435:40405"
+    volumes:
+      - ../conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
+      - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      - ../keys/validator3.key:/var/lib/rnode/validator.key:ro
+      - ../data/${VALIDATOR3_HOST:-rnode.validator3}:/var/lib/rnode/
+      - ../certs/validator3/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ../certs/validator3/node.key.pem:/var/lib/rnode/node.key.pem:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  # =================================================================
+  # OBSERVER (Read-Only Node)
+  # =================================================================
+  # Observer syncs from validators but does not participate in consensus.
+  readonly:
+    <<: *default-rnode
+    container_name: ${READONLY_HOST:-rnode.readonly}
+    depends_on:
+      - boot
+    command:
+      [
+        "run",
+        "--host=${READONLY_HOST:-rnode.readonly}",
+        "--config-file=/var/lib/rnode/rnode.conf",
+        "--data-dir=/var/lib/rnode",
+        "--bonds-file=/var/lib/rnode/genesis/bonds.txt",
+        "--wallets-file=/var/lib/rnode/genesis/wallets.txt",
+        "--bootstrap=rnode://${BOOTSTRAP_NODE_ID:-1e780e5dfbe0a3d9470a2b414f502d59402e09c2}@${BOOTSTRAP_HOST:-rnode.bootstrap}?protocol=40400&discovery=40404",
+        "--allow-private-addresses",
+        "--no-upnp",
+      ]
+    ports:
+      - "40450:40400"
+      - "40451:40401"
+      - "40452:40402"
+      - "40453:40403"
+      - "40454:40404"
+      - "40455:40405"
+    volumes:
+      - ../conf/observer.conf:/var/lib/rnode/rnode.conf
+      - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ../data/${READONLY_HOST:-rnode.readonly}:/var/lib/rnode/
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+networks:
+  f1r3fly-shard:
+    driver: bridge
