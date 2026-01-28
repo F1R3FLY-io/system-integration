@@ -19,19 +19,13 @@ services:
     restart: always
     networks:
       - f1r3fly-standalone
-    container_name: rnode.standalone
+    container_name: ${STANDALONE_HOST:-rnode.standalone}
     command:
       [
         "run",
-        "--standalone",
-        "--host=rnode.standalone",
-        "--config-file=/var/lib/rnode/rnode.conf",
-        "--data-dir=/var/lib/rnode",
-        "--bonds-file=/var/lib/rnode/genesis/bonds.txt",
-        "--wallets-file=/var/lib/rnode/genesis/wallets.txt",
-        "--validator-private-key-path=/var/lib/rnode/validator.key",
-        "--dev-mode",
-        "--no-upnp",
+        "-s",
+        "--host=${STANDALONE_HOST:-rnode.standalone}",
+        "--validator-private-key=${STANDALONE_PRIVATE_KEY:-5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657}",
       ]
     ports:
       # Protocol server port
@@ -52,12 +46,11 @@ services:
       # Standalone genesis files (single validator)
       - ../genesis/standalone-wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/standalone-bonds.txt:/var/lib/rnode/genesis/bonds.txt
-      # Validator private key file (Rust requires key in file, not inline)
-      - ../keys/standalone-validator.key:/var/lib/rnode/validator.key
       # Data directory for blockchain state
-      - ../data/rnode.standalone:/var/lib/rnode/
+      - ../data/${STANDALONE_HOST:-rnode.standalone}:/var/lib/rnode/
     environment:
-      - RUST_LOG=info
+      - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
+      - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
       interval: 30s

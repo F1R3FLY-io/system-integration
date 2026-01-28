@@ -8,7 +8,7 @@
 #
 # PREREQUISITES:
 #   - A running shard network to connect to
-#   - Must use the same network as the shard (shared-docker-config_f1r3fly-shard)
+#   - Must use the same network as the shard (node-config_f1r3fly-shard)
 #
 # NOTE: For Scala nodes, use scala-observer.yml instead.
 
@@ -21,17 +21,11 @@ services:
       - f1r3fly-shard
     container_name: ${READONLY_HOST:-rnode.readonly}
     command:
-      [
-        "run",
-        "--host=${READONLY_HOST:-rnode.readonly}",
-        "--config-file=/var/lib/rnode/rnode.conf",
-        "--data-dir=/var/lib/rnode",
-        "--bonds-file=/var/lib/rnode/genesis/bonds.txt",
-        "--wallets-file=/var/lib/rnode/genesis/wallets.txt",
-        "--bootstrap=rnode://${BOOTSTRAP_NODE_ID:-1e780e5dfbe0a3d9470a2b414f502d59402e09c2}@${BOOTSTRAP_HOST:-rnode.bootstrap}?protocol=40400&discovery=40404",
-        "--allow-private-addresses",
-        "--no-upnp",
-      ]
+      - run
+      - --host=${READONLY_HOST:-rnode.readonly}
+      - --bootstrap=rnode://${BOOTSTRAP_NODE_ID:-1e780e5dfbe0a3d9470a2b414f502d59402e09c2}@${BOOTSTRAP_HOST:-rnode.bootstrap}?protocol=40400&discovery=40404
+      - --no-upnp
+      - --allow-private-addresses
     ports:
       - "40450:40400"
       - "40451:40401"
@@ -45,7 +39,8 @@ services:
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../data/${READONLY_HOST:-rnode.readonly}:/var/lib/rnode/
     environment:
-      - RUST_LOG=info
+      - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
+      - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
       interval: 30s
@@ -56,4 +51,4 @@ services:
 networks:
   f1r3fly-shard:
     external: true
-    name: shared-docker-config_f1r3fly-shard
+    name: node-config_f1r3fly-shard

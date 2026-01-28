@@ -189,24 +189,6 @@ All compose files are in the `compose/` directory.
 | `compose/scala-observer.yml`   | `compose/rust-observer.yml`   | Read-only observer node (ports 40450-40455)         |
 | `compose/scala-validator4.yml` | `compose/rust-validator4.yml` | 4th validator for bonding tests (ports 40440-40445) |
 
-## Key Files
-
-The `keys/` directory contains validator private keys for Rust nodes:
-
-| File                       | Purpose                                |
-| -------------------------- | -------------------------------------- |
-| `standalone-validator.key` | Private key for Rust standalone node   |
-| `bootstrap.key`            | Private key for bootstrap node (shard) |
-| `validator1.key`           | Private key for validator 1 (shard)    |
-| `validator2.key`           | Private key for validator 2 (shard)    |
-| `validator3.key`           | Private key for validator 3 (shard)    |
-| `validator4.key`           | Private key for validator 4 (optional) |
-
-**Why key files?** The Rust node requires the validator private key to be read from a file
-(via `--validator-private-key-path`), while the Scala node accepts it inline on the command
-line (via `--validator-private-key`). The key files contain the same 64-character hex private
-keys defined in `.env` - just in file format for Rust compatibility.
-
 ## Genesis Configuration
 
 ### Wallets (genesis/wallets.txt)

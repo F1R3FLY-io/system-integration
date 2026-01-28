@@ -4,7 +4,7 @@
 # Runs Validator 4 as an additional node to join an existing shard network.
 #
 # Usage:
-#   docker-compose -f rust-validator4.yml up -d
+#   docker-compose -f compose/rust-validator4.yml up -d
 #
 # PREREQUISITES:
 #   - A running shard network (bootstrap + validators)
@@ -26,14 +26,10 @@ services:
       [
         "run",
         "--host=${VALIDATOR4_HOST:-rnode.validator4}",
-        "--config-file=/var/lib/rnode/rnode.conf",
-        "--data-dir=/var/lib/rnode",
-        "--bonds-file=/var/lib/rnode/genesis/bonds.txt",
-        "--wallets-file=/var/lib/rnode/genesis/wallets.txt",
-        "--bootstrap=rnode://${BOOTSTRAP_NODE_ID:-1e780e5dfbe0a3d9470a2b414f502d59402e09c2}@${BOOTSTRAP_HOST:-rnode.bootstrap}?protocol=40400&discovery=40404",
-        "--validator-private-key-path=/var/lib/rnode/validator.key",
         "--allow-private-addresses",
-        "--no-upnp",
+        "--bootstrap=rnode://${BOOTSTRAP_NODE_ID:-1e780e5dfbe0a3d9470a2b414f502d59402e09c2}@${BOOTSTRAP_HOST:-rnode.bootstrap}?protocol=40400&discovery=40404",
+        "--validator-public-key=${VALIDATOR4_PUBLIC_KEY:-04d26c6103d7269773b943d7a9c456f9eb227e0d8b1fe30bccee4fca963f4446e3385d99f6386317f2c1ad36b9e6b0d5f97bb0a0041f05781c60a5ebca124a251d}",
+        "--validator-private-key=${VALIDATOR4_PRIVATE_KEY:-5ff3514bf79a7d18e8dd974c699678ba63b7762ce8d78c532346e52f0ad219cd}",
       ]
     ports:
       - "40440:40400"
@@ -46,10 +42,10 @@ services:
       - ../conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
-      - ../keys/validator4.key:/var/lib/rnode/validator.key:ro
       - ../data/${VALIDATOR4_HOST:-rnode.validator4}:/var/lib/rnode/
     environment:
-      - RUST_LOG=info
+      - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
+      - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
       interval: 30s
@@ -60,4 +56,4 @@ services:
 networks:
   f1r3fly-shard:
     external: true
-    name: shared-docker-config_f1r3fly-shard
+    name: node-config_f1r3fly-shard
