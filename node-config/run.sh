@@ -315,6 +315,28 @@ case $ACTION in
                 esac
             fi
         }
+        # Parse ISO timestamp (UTC) to Unix epoch (portable: GNU date on Linux, BSD date on macOS)
+        parse_iso_to_epoch() {
+            local s="$1"
+            date -d "$s" +%s 2>/dev/null || TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "${s:0:19}" +%s 2>/dev/null
+        }
+        # Seconds from container start until node became ready (first "Making a transition to Running state" in logs)
+        get_time_to_ready() {
+            local container="$1"
+            local started_at
+            started_at=$(docker inspect --format '{{.State.StartedAt}}' "$container" 2>/dev/null)
+            if [[ -z "$started_at" ]]; then echo "?"; return; fi
+            local ready_line
+            ready_line=$(docker logs --timestamps "$container" 2>&1 | grep "Making a transition to Running state" | head -1)
+            if [[ -z "$ready_line" ]]; then echo "?"; return; fi
+            local ready_at="${ready_line%% *}"
+            local started_epoch
+            started_epoch=$(parse_iso_to_epoch "$started_at")
+            local ready_epoch
+            ready_epoch=$(parse_iso_to_epoch "$ready_at")
+            if [[ -z "$started_epoch" || -z "$ready_epoch" ]]; then echo "?"; return; fi
+            echo $((ready_epoch - started_epoch))
+        }
         
         # Create temp file to track ready nodes
         READY_FILE=$(mktemp)
@@ -327,7 +349,8 @@ case $ACTION in
             if docker logs "$container" 2>&1 | grep "Making a transition to Running state" > /dev/null 2>&1; then
                 echo "$node" >> "$READY_FILE"
                 ALREADY_READY=$((ALREADY_READY + 1))
-                echo -e "${GREEN}[0s] ✓ ${node} already ready${NC} (${ALREADY_READY}/${TOTAL_NODES})"
+                node_elapsed=$(get_time_to_ready "$container")
+                echo -e "${GREEN}[${node_elapsed}s] ✓ ${node} already ready${NC} (${ALREADY_READY}/${TOTAL_NODES})"
             fi
         done
         
@@ -342,7 +365,8 @@ case $ACTION in
                 echo ""
             fi
             
-            # Poll for remaining nodes
+            # Poll for remaining nodes (timeout 5 minutes, poll every 1s)
+            WAIT_TIMEOUT=300
             while true; do
                 READY_COUNT=0
                 for node in $EXPECTED_NODES; do
@@ -356,21 +380,25 @@ case $ACTION in
                     # Note: Use "grep ... > /dev/null" instead of "grep -q" to avoid SIGPIPE issues
                     container=$(get_container_name "$node")
                     if docker logs "$container" 2>&1 | grep "Making a transition to Running state" > /dev/null 2>&1; then
-                        ELAPSED=$(($(date +%s) - START_TIME))
                         echo "$node" >> "$READY_FILE"
                         READY_COUNT=$((READY_COUNT + 1))
-                        echo -e "${GREEN}[${ELAPSED}s] ✓ ${node} is ready${NC} (${READY_COUNT}/${TOTAL_NODES})"
+                        node_elapsed=$(get_time_to_ready "$container")
+                        echo -e "${GREEN}[${node_elapsed}s] ✓ ${node} is ready${NC} (${READY_COUNT}/${TOTAL_NODES})"
                     fi
                 done
                 
+                ELAPSED=$(($(date +%s) - START_TIME))
                 if [[ $READY_COUNT -eq $TOTAL_NODES ]]; then
-                    ELAPSED=$(($(date +%s) - START_TIME))
                     echo ""
-                    echo -e "${GREEN}All ${TOTAL_NODES} node(s) ready in ${ELAPSED} seconds!${NC}"
+                    echo -e "${GREEN}All ${TOTAL_NODES} node(s) ready (last node in ${node_elapsed}s)!${NC}"
                     break
                 fi
-                
-                sleep 2
+                if [[ $ELAPSED -ge $WAIT_TIMEOUT ]]; then
+                    echo ""
+                    echo -e "${RED}Timeout after ${WAIT_TIMEOUT}s: not all nodes ready (${READY_COUNT}/${TOTAL_NODES})${NC}"
+                    exit 1
+                fi
+                sleep 1
             done
         fi
         ;;
