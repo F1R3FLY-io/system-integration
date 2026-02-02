@@ -299,17 +299,22 @@ case $ACTION in
         echo "Checking for 'Making a transition to Running state' from ${TOTAL_NODES} node(s)..."
         echo ""
         
-        # Map service names to container names
-        declare -A CONTAINER_MAP
-        if [[ "$COMPOSE_FILE" == *"standalone"* ]]; then
-            CONTAINER_MAP["standalone"]="rnode.standalone"
-        else
-            CONTAINER_MAP["boot"]="rnode.bootstrap"
-            CONTAINER_MAP["validator1"]="rnode.validator1"
-            CONTAINER_MAP["validator2"]="rnode.validator2"
-            CONTAINER_MAP["validator3"]="rnode.validator3"
-            CONTAINER_MAP["readonly"]="rnode.readonly"
-        fi
+        # Map service names to container names (Bash 3 portable; no associative arrays)
+        get_container_name() {
+            local n="$1"
+            if [[ "$COMPOSE_FILE" == *"standalone"* ]]; then
+                case "$n" in standalone) echo "rnode.standalone" ;; *) echo "" ;; esac
+            else
+                case "$n" in
+                    boot) echo "rnode.bootstrap" ;;
+                    validator1) echo "rnode.validator1" ;;
+                    validator2) echo "rnode.validator2" ;;
+                    validator3) echo "rnode.validator3" ;;
+                    readonly) echo "rnode.readonly" ;;
+                    *) echo "" ;;
+                esac
+            fi
+        }
         
         # Create temp file to track ready nodes
         READY_FILE=$(mktemp)
@@ -318,7 +323,7 @@ case $ACTION in
         # First pass: check which nodes are already ready (using docker logs directly - much faster)
         ALREADY_READY=0
         for node in $EXPECTED_NODES; do
-            container="${CONTAINER_MAP[$node]}"
+            container=$(get_container_name "$node")
             if docker logs "$container" 2>&1 | grep "Making a transition to Running state" > /dev/null 2>&1; then
                 echo "$node" >> "$READY_FILE"
                 ALREADY_READY=$((ALREADY_READY + 1))
@@ -349,7 +354,7 @@ case $ACTION in
                     
                     # Check if node has transitioned to running
                     # Note: Use "grep ... > /dev/null" instead of "grep -q" to avoid SIGPIPE issues
-                    container="${CONTAINER_MAP[$node]}"
+                    container=$(get_container_name "$node")
                     if docker logs "$container" 2>&1 | grep "Making a transition to Running state" > /dev/null 2>&1; then
                         ELAPSED=$(($(date +%s) - START_TIME))
                         echo "$node" >> "$READY_FILE"
@@ -385,7 +390,8 @@ case $ACTION in
                 read -p "Are you sure? [y/N]: " confirm
             fi
             
-            if [[ "${confirm,,}" == "y" || "${confirm,,}" == "yes" ]]; then
+            confirm_lower=$(echo "${confirm:-}" | tr '[:upper:]' '[:lower:]')
+            if [[ "$confirm_lower" == "y" || "$confirm_lower" == "yes" ]]; then
                 echo -e "${YELLOW}Deleting data directory...${NC}"
                 echo "(Using Docker container to delete root-owned files without sudo)"
                 docker run --rm -v "$(pwd)/data:/data" alpine sh -c "rm -rf /data/*"

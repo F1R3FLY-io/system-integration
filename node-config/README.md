@@ -15,6 +15,10 @@ Unified Docker configuration for both Scala and Rust node implementations.
 ./run.sh --scala --standalone    # Scala standalone (fastest for dev)
 ./run.sh --rust --standalone     # Rust standalone (experimental)
 ./run.sh --scala --shard         # Scala multi-node network
+./run.sh --rust --shard         # Rust multi-node network
+
+# After starting a shard, wait for all nodes to be ready
+./run.sh wait
 ```
 
 ## Commands
@@ -62,8 +66,8 @@ For testing multi-node consensus with bootstrap, 3 validators, and observer.
 # Start shard
 ./run.sh --scala --shard
 
-# Wait for genesis (2-3 minutes) - watch for 'Making a transition to Running state.'
-docker-compose -f compose/scala-shard.yml logs -f | grep "Making a transition to Running state"
+# Wait for all nodes to be ready (2-3 minutes)
+./run.sh wait
 
 # Follow logs (all services)
 ./run.sh logs
@@ -87,6 +91,9 @@ When the network runs, a `data/` directory is created to store blockchain state.
 # Stop and delete data (with confirmation prompt)
 ./run.sh reset
 
+# Skip confirmation prompt
+./run.sh reset -y
+
 # Or manually:
 ./run.sh down
 rm -rf data/
@@ -99,14 +106,20 @@ rm -rf data/
 By default, `./run.sh` uses cached local images. To get the latest node versions:
 
 ```bash
-# Pull latest for specific configuration
+# Pull latest for all configurations (Scala + Rust)
+./run.sh pull
+
+# Then start normally
+./run.sh --scala --standalone
+```
+
+To pull only a specific configuration:
+
+```bash
 docker-compose -f compose/scala-standalone.yml pull
 docker-compose -f compose/rust-standalone.yml pull
 docker-compose -f compose/scala-shard.yml pull
 docker-compose -f compose/rust-shard.yml pull
-
-# Then start normally
-./run.sh --scala --standalone
 ```
 
 Or pull and start in one command:
@@ -162,10 +175,12 @@ docker-compose -f compose/rust-standalone.yml down
 
 # Scala shard
 docker-compose -f compose/scala-shard.yml up -d
+./run.sh wait
 docker-compose -f compose/scala-shard.yml down
 
 # Rust shard
 docker-compose -f compose/rust-shard.yml up -d
+./run.sh wait
 docker-compose -f compose/rust-shard.yml down
 ```
 
