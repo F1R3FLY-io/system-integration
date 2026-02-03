@@ -4,10 +4,10 @@
 # Runs a single standalone Rust node for development and testing.
 #
 # Usage:
-#   ./run.sh --rust --standalone
+#   poetry run shardctl up f1r3node --rust --standalone
 #
 # Or directly:
-#   docker-compose -f compose/rust-standalone.yml up -d
+#   docker-compose --env-file ../.env.node -f compose/rust-standalone.yml up -d
 #
 # NOTE: The Rust node has a different CLI than the Scala node.
 #       Use standalone.yml for Scala nodes.
@@ -42,12 +42,12 @@ services:
       - "40405:40405"
     volumes:
       # Standalone configuration file
-      - ./conf/standalone-dev.conf:/var/lib/rnode/rnode.conf
+      - ../conf/standalone-dev.conf:/var/lib/rnode/rnode.conf
       # Standalone genesis files (single validator)
-      - ./genesis/standalone-wallets.txt:/var/lib/rnode/genesis/wallets.txt
-      - ./genesis/standalone-bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      - ../genesis/standalone-wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ../genesis/standalone-bonds.txt:/var/lib/rnode/genesis/bonds.txt
       # Data directory for blockchain state
-      - ./data/${STANDALONE_HOST:-rnode.standalone}:/var/lib/rnode/
+      - ../data/${STANDALONE_HOST:-rnode.standalone}:/var/lib/rnode/
     environment:
       - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
       - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}

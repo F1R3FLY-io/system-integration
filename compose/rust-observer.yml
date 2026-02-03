@@ -8,7 +8,7 @@
 #
 # PREREQUISITES:
 #   - A running shard network to connect to
-#   - Must use the same network as the shard (node-config_f1r3fly-shard)
+#   - Must use the same network as the shard (compose_f1r3fly-shard)
 #
 # NOTE: For Scala nodes, use scala-observer.yml instead.
 
@@ -34,10 +34,10 @@ services:
       - "40454:40404"
       - "40455:40405"
     volumes:
-      - ./conf/observer.conf:/var/lib/rnode/rnode.conf
-      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
-      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
-      - ./data/${READONLY_HOST:-rnode.readonly}:/var/lib/rnode/
+      - ../conf/observer.conf:/var/lib/rnode/rnode.conf
+      - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      - ../data/${READONLY_HOST:-rnode.readonly}:/var/lib/rnode/
     environment:
       - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
       - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
@@ -51,4 +51,4 @@ services:
 networks:
   f1r3fly-shard:
     external: true
-    name: node-config_f1r3fly-shard
+    name: compose_f1r3fly-shard

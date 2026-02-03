@@ -39,10 +39,10 @@ services:
       - "40444:40404"
       - "40445:40405"
     volumes:
-      - ./conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
-      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
-      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
-      - ./data/${VALIDATOR4_HOST:-rnode.validator4}:/var/lib/rnode/
+      - ../conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
+      - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      - ../data/${VALIDATOR4_HOST:-rnode.validator4}:/var/lib/rnode/
     environment:
       - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
       - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
@@ -56,4 +56,4 @@ services:
 networks:
   f1r3fly-shard:
     external: true
-    name: node-config_f1r3fly-shard
+    name: compose_f1r3fly-shard

@@ -29,20 +29,20 @@ repositories:
   rust-client:
     url: git@github.com:F1R3FLY-io/rust-client.git
     branch: main
-  f1r3sky-backend:
-    url: git@github.com:F1R3FLY-io/f1r3sky-backend.git
-    branch: main
-  f1r3sky:
-    url: git@github.com:F1R3FLY-io/f1r3sky.git
-    branch: main
-    enabled: true  # Frontend demo
-  embers:
-    url: git@github.com:nashef/firefly-embers.git
-    branch: main
-  embers-frontend:
-    url: git@github.com:F1R3FLY-io/embers-frontend.git
-    branch: main
-    enabled: true  # Web UI frontend (requires ~/.npmrc with GitHub token)
+  # f1r3sky-backend:
+  #   url: git@github.com:F1R3FLY-io/f1r3sky-backend.git
+  #   branch: main
+  # f1r3sky:
+  #   url: git@github.com:F1R3FLY-io/f1r3sky.git
+  #   branch: main
+  #   enabled: true  # Frontend demo
+  # embers:
+  #   url: git@github.com:nashef/firefly-embers.git
+  #   branch: main
+  # embers-frontend:
+  #   url: git@github.com:F1R3FLY-io/embers-frontend.git
+  #   branch: main
+  #   enabled: true  # Web UI frontend (requires ~/.npmrc with GitHub token)
 
 # Build configuration for services
 builds:
@@ -68,7 +68,6 @@ builds:
     # Notes:
     # - Scala-based node implementation on chosen branch
     # - Uses SBT (Scala Build Tool) as primary build system
-    # - Requires Rust for native libraries (rspace, rholang)
     # - Nix flake provides complete dev environment
 
   f1r3node-rust:
@@ -81,10 +80,6 @@ builds:
 
     # Build environment
     environment: "nix"  # Uses nix develop shell
-
-    # Pre-build steps for regular builds
-    # pre_build_steps:
-    #   - "./scripts/build_rust_libraries.sh"  # Native build
 
     # Pre-build steps for Docker builds (runs in Nix environment)
     docker_pre_build_steps:
@@ -100,7 +95,6 @@ builds:
       - "nix (optional but recommended)"
 
     # Notes:
-    # - Uses SBT (Scala Build Tool) as primary build system
     # - Requires Rust for native libraries (rspace, rholang)
     # - Nix flake provides complete dev environment: nix develop
     # - Multi-architecture support: AMD64 and AARCH64

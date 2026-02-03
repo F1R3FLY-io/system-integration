@@ -52,4 +52,3 @@ Thumbs.db
 
 # Blockchain data (created at runtime)
 data/
-node-config/data/

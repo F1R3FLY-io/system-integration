@@ -1,8 +1,10 @@
-"""Node management commands for F1R3FLY nodes (Scala/Rust, standalone/shard)."""
+"""Node management utilities for F1R3FLY nodes (Scala/Rust, standalone/shard).
+
+This module provides utility functions and classes for managing F1R3FLY blockchain nodes.
+It is used by the main CLI (cli.py) when handling 'f1r3node' as a service.
+"""
 
 import subprocess
-import sys
-import tempfile
 import time
 from datetime import datetime
 from enum import Enum
@@ -11,13 +13,7 @@ from typing import List, Optional, Tuple
 
 import typer
 from rich.console import Console
-from rich.prompt import Confirm, Prompt
 
-app = typer.Typer(
-    name="node",
-    help="F1R3FLY node management (Scala/Rust, standalone/shard)",
-    add_completion=False,
-)
 console = Console()
 
 
@@ -235,7 +231,7 @@ def run_compose_command(
         return subprocess.run(cmd, cwd=config.root_dir)
 
 
-@app.command()
+
 def up(
     node_type: Optional[NodeType] = typer.Option(
         None,
@@ -344,15 +340,15 @@ def up(
         console.print("[green]Started successfully![/green]")
         console.print()
         console.print("Useful commands:")
-        console.print("  shardctl node wait   - Wait for all nodes to be ready (timed)")
-        console.print("  shardctl node logs   - Follow container logs")
-        console.print("  shardctl node status - Show container status")
-        console.print("  shardctl node down   - Stop containers")
+        console.print("  poetry run shardctl node wait   - Wait for all nodes to be ready (timed)")
+        console.print("  poetry run shardctl node logs   - Follow container logs")
+        console.print("  poetry run shardctl node status - Show container status")
+        console.print("  poetry run shardctl node down   - Stop containers")
     else:
         raise typer.Exit(result.returncode)
 
 
-@app.command()
+
 def down():
     """Stop F1R3FLY node containers."""
     config = NodeConfig()
@@ -373,7 +369,7 @@ def down():
         console.print("[green]Stopped successfully![/green]")
 
 
-@app.command()
+
 def logs(
     services: Optional[List[str]] = typer.Argument(
         None, help="Services to show logs for"
@@ -406,7 +402,7 @@ def logs(
     run_compose_command(config, compose_file, args)
 
 
-@app.command()
+
 def status():
     """Show F1R3FLY node container status."""
     config = NodeConfig()
@@ -423,7 +419,7 @@ def status():
     run_compose_command(config, compose_file, ["ps"])
 
 
-@app.command(name="wait")
+
 def wait_for_ready(
     timeout: int = typer.Option(
         300, "--timeout", "-t", help="Timeout in seconds (default: 300)"
@@ -521,7 +517,7 @@ def wait_for_ready(
         console.print(f"[green]All {total_nodes} node(s) ready![/green]")
 
 
-@app.command()
+
 def reset(
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip confirmation prompt"
@@ -578,7 +574,7 @@ def reset(
         console.print("[yellow]No data directory found[/yellow]")
 
 
-@app.command()
+
 def pull():
     """Pull latest node images for all configurations."""
     console.print("[blue]Pulling latest images for all configurations...[/blue]")
@@ -610,7 +606,7 @@ def pull():
             console.print(line)
 
 
-@app.command()
+
 def info():
     """Show information about currently running node configuration."""
     config = NodeConfig()

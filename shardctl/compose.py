@@ -86,11 +86,11 @@ class ComposeManager:
             if "already in use by container" in error_output:
                 console.print("\n[red]Error: Container name conflict[/red]")
                 console.print("[yellow]Some containers with the same names already exist.[/yellow]")
-                console.print("Try running: [bold]shardctl down[/bold] first to clean up existing containers.")
+                console.print("Try running: [bold]poetry run shardctl down[/bold] first to clean up existing containers.")
             elif "address already in use" in error_output:
                 console.print("\n[red]Error: Port conflict[/red]")
                 console.print("[yellow]One or more ports are already in use.[/yellow]")
-                console.print("Try running: [bold]shardctl down[/bold] first, or check for other services using the same ports.")
+                console.print("Try running: [bold]poetry run shardctl down[/bold] first, or check for other services using the same ports.")
             elif "no such service" in error_output:
                 console.print("\n[red]Error: Unknown service[/red]")
                 console.print("[yellow]The specified service was not found in the compose files.[/yellow]")
