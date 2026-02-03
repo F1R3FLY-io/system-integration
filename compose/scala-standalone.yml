@@ -1,0 +1,65 @@
+# =================================================================
+# F1R3FLY SCALA NODE - STANDALONE DOCKER COMPOSE
+# =================================================================
+# Runs a single standalone Scala node for development and testing.
+#
+# Usage:
+#   ./run.sh --scala --standalone
+#
+# Or directly:
+#   docker-compose -f compose/scala-standalone.yml up -d
+#
+# NOTE: For Rust nodes, use rust-standalone.yml instead.
+
+services:
+  standalone:
+    image: f1r3flyindustries/f1r3fly-scala-node
+    user: root
+    restart: always
+    networks:
+      - f1r3fly-standalone
+    container_name: ${STANDALONE_HOST:-rnode.standalone}
+    command:
+      [
+        "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
+        "run",
+        "-s",
+        "--host=${STANDALONE_HOST:-rnode.standalone}",
+        "--validator-private-key=${STANDALONE_PRIVATE_KEY:-5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657}",
+      ]
+    ports:
+      # Protocol server port
+      - "40400:40400"
+      # External gRPC API port
+      - "40401:40401"
+      # Internal gRPC API port
+      - "40402:40402"
+      # HTTP API port
+      - "40403:40403"
+      # Kademlia discovery port
+      - "40404:40404"
+      # Admin HTTP API port
+      - "40405:40405"
+    volumes:
+      # Standalone configuration file
+      - ./conf/standalone-dev.conf:/var/lib/rnode/rnode.conf
+      # Standalone genesis files (single validator)
+      - ./genesis/standalone-wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ./genesis/standalone-bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      # Logging configuration (used by Scala, ignored by Rust)
+      - ./conf/logback.xml:/var/lib/rnode/logback.xml
+      # Data directory for blockchain state
+      - ./data/${STANDALONE_HOST:-rnode.standalone}:/var/lib/rnode/
+    environment:
+      - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
+      - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+networks:
+  f1r3fly-standalone:
+    driver: bridge

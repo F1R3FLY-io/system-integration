@@ -5,6 +5,7 @@ from typing import List, Optional
 
 import typer
 from rich.console import Console
+from rich.prompt import Confirm
 
 from .compose import ComposeManager
 from .config import Config
@@ -16,12 +17,16 @@ from .utils import (
     format_service_status,
     validate_environment,
 )
+from . import node as node_module
 
 app = typer.Typer(
     name="shardctl",
     help="A CLI tool for managing microservices with docker-compose",
     add_completion=False,
 )
+
+# Register node subcommand group
+app.add_typer(node_module.app, name="node")
 
 console = Console()
 
@@ -582,6 +587,111 @@ def compose(
     manager.run_custom_command(args)
 
 
+@app.command(name="wait")
+def wait_cmd(
+    timeout: int = typer.Option(
+        300, "--timeout", "-t", help="Timeout in seconds (default: 300)"
+    ),
+):
+    """Wait for all nodes to reach Running state (with timing).
+
+    This command polls container logs for the 'Making a transition to Running state'
+    message and reports per-node timing. Useful after starting a shard network.
+
+    Example:
+        shardctl up          # Start services (includes scala-shard by default)
+        shardctl wait        # Wait for all nodes to be ready
+    """
+    # Delegate to node module's wait implementation
+    node_config = node_module.NodeConfig()
+    running = node_config.detect_running_config()
+
+    if not running:
+        console.print("[yellow]No F1R3FLY containers found[/yellow]")
+        return
+
+    # Call the node wait command directly
+    ctx = typer.Context(node_module.wait_for_ready)
+    node_module.wait_for_ready(timeout=timeout)
+
+
+@app.command(name="reset")
+def reset_cmd(
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip confirmation prompt"
+    ),
+    volumes: bool = typer.Option(
+        False, "--volumes", "-v", help="Also remove Docker volumes"
+    ),
+):
+    """Stop containers and delete blockchain data.
+
+    This command stops any running F1R3FLY containers and deletes the blockchain
+    data directory. Uses a Docker container to delete root-owned files without sudo.
+
+    Example:
+        shardctl reset       # Stop and delete data (with confirmation)
+        shardctl reset -y    # Skip confirmation prompt
+    """
+    node_config = node_module.NodeConfig()
+
+    # Stop any running containers first
+    running = node_config.detect_running_config()
+    if running:
+        node_type, topology, compose_file = running
+        console.print(
+            f"[yellow]Stopping containers using {compose_file.name}...[/yellow]"
+        )
+        node_module.run_compose_command(node_config, compose_file, ["down"])
+
+    # Also run normal compose down if volumes requested
+    if volumes:
+        manager = get_manager()
+        try:
+            manager.down(volumes=True, remove_orphans=True)
+        except SystemExit:
+            pass  # Ignore errors from compose down
+
+    # Delete data directory
+    if node_config.data_dir.exists():
+        if not yes:
+            console.print()
+            console.print(
+                f"[red]This will permanently delete all blockchain data in {node_config.data_dir}/[/red]"
+            )
+            if not Confirm.ask("Are you sure?"):
+                console.print("[yellow]Cancelled[/yellow]")
+                return
+
+        console.print("[yellow]Deleting data directory...[/yellow]")
+        console.print("(Using Docker container to delete root-owned files without sudo)")
+
+        import subprocess
+        # Use Docker to delete root-owned files
+        cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{node_config.data_dir}:/data",
+            "alpine",
+            "sh",
+            "-c",
+            "rm -rf /data/*",
+        ]
+        subprocess.run(cmd)
+
+        # Try to remove empty directory
+        try:
+            node_config.data_dir.rmdir()
+        except OSError:
+            pass
+
+        console.print("[green]Data directory deleted[/green]")
+    else:
+        console.print("[dim]No data directory to delete[/dim]")
+
+
 @app.callback()
 def main():
     """
@@ -589,6 +699,9 @@ def main():
 
     A convenience wrapper around docker-compose for managing multiple
     microservices with support for profiles and streamlined workflows.
+
+    Use 'shardctl node' for F1R3FLY node-specific operations (Scala/Rust,
+    standalone/shard selection).
     """
     pass
 

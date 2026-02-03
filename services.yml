@@ -21,12 +21,11 @@ startup_order:
 
 repositories:
   f1r3node:
-    url: git@github.com:nashef/f1r3fly.git
-    branch: casper-bugs  # Working branch for bug fixes
+    url: git@github.com:F1R3FLY-io/f1r3node.git
+    branch: fix/genesis-validator-race-condition  # Working branch for bug fixes
   f1r3node-rust:
     url: git@github.com:F1R3FLY-io/f1r3node.git
-    branch: rust-dev  # Rust node on rust-dev branch
-    enabled: false  # rust-dev branch doesn't exist yet
+    branch: rust/backport-pr261-pr320-status-and-peer-discovery  # Rust node on rust-dev branch
   rust-client:
     url: git@github.com:F1R3FLY-io/rust-client.git
     branch: main
@@ -48,7 +47,7 @@ repositories:
 # Build configuration for services
 builds:
   f1r3node:
-    # Scala node build configuration (main branch)
+    # Scala node build configuration 
     # Main build command (compiles Scala and stages executable)
     build_command: "sbt stage"
 
@@ -64,30 +63,28 @@ builds:
     # Build dependencies
     dependencies:
       - "sbt"
-      - "cargo"
-      - "rustc"
       - "nix (optional but recommended)"
 
     # Notes:
-    # - Scala-based node implementation on main branch
+    # - Scala-based node implementation on chosen branch
     # - Uses SBT (Scala Build Tool) as primary build system
     # - Requires Rust for native libraries (rspace, rholang)
     # - Nix flake provides complete dev environment
 
   f1r3node-rust:
-    # Rust node build configuration (rust-dev branch)
+    # Rust node build configuration (chosen branch)
     # Main build command (compiles Scala and stages executable)
-    build_command: "sbt stage"
+    build_command: "cargo build --release -p node"
 
     # Docker build command (includes Rust library compilation)
-    docker_build_command: "sbt node/docker:publishLocal"
+    docker_build_command: "./node/docker-commands.sh build-local"
 
     # Build environment
     environment: "nix"  # Uses nix develop shell
 
     # Pre-build steps for regular builds
-    pre_build_steps:
-      - "./scripts/build_rust_libraries.sh"  # Native build
+    # pre_build_steps:
+    #   - "./scripts/build_rust_libraries.sh"  # Native build
 
     # Pre-build steps for Docker builds (runs in Nix environment)
     docker_pre_build_steps:
@@ -98,7 +95,6 @@ builds:
 
     # Build dependencies
     dependencies:
-      - "sbt"
       - "cargo"
       - "rustc"
       - "nix (optional but recommended)"

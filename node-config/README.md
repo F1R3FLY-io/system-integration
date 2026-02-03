@@ -1,6 +1,11 @@
-# F1R3FLY Docker Network
+# F1R3FLY Docker Network (DEPRECATED)
 
-Unified Docker configuration for both Scala and Rust node implementations.
+> **DEPRECATED**: This directory has been migrated to the repository root.
+> Use `./run.sh` from the repository root instead.
+>
+> See the main README.md for usage instructions.
+
+---
 
 ## Quick Start
 

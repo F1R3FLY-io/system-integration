@@ -142,7 +142,15 @@ class ComposeManager:
             detached: Run in detached mode.
             build: Build images before starting.
         """
-        cmd = ["docker", "compose", "-f", str(compose_file), "up"]
+        cmd = ["docker", "compose"]
+
+        # Use .env.node for node compose files (in compose/ directory)
+        if "compose/" in str(compose_file) or compose_file.parent.name == "compose":
+            env_file = self.config.root_dir / ".env.node"
+            if env_file.exists():
+                cmd.extend(["--env-file", str(env_file)])
+
+        cmd.extend(["-f", str(compose_file), "up"])
 
         if detached:
             cmd.append("-d")

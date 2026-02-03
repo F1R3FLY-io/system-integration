@@ -19,21 +19,29 @@ This repository provides a clean structure for managing multiple microservice re
 
 ```
 .
+├── compose/                     # Node compose files (Scala/Rust, Standalone/Shard)
+│   ├── scala-standalone.yml
+│   ├── rust-standalone.yml
+│   ├── scala-shard.yml
+│   ├── rust-shard.yml
+│   ├── scala-observer.yml
+│   ├── rust-observer.yml
+│   ├── scala-validator4.yml
+│   └── rust-validator4.yml
+├── conf/                        # Node configuration files
+├── certs/                       # TLS certificates for nodes
+├── genesis/                     # Genesis wallets and bonds
+├── run.sh                       # Node management CLI (start/stop/reset)
+├── .env.node                    # Node environment variables
+├── .env.embers                  # Embers environment variables
+├── .env.f1r3sky                 # F1R3SKY environment variables
 ├── services/                    # Service repositories (git-ignored)
-│   ├── .gitkeep                # Tracked to maintain directory
-│   ├── service-1/              # Independent git repo (ignored)
-│   └── service-2/              # Independent git repo (ignored)
+│   └── .gitkeep                # Tracked to maintain directory
 ├── shardctl/                   # CLI tool package
-│   ├── __init__.py
-│   ├── cli.py                  # Typer CLI commands
-│   ├── compose.py              # ComposeManager class
-│   ├── config.py               # Configuration management
-│   └── utils.py                # Helper functions
-├── docker-compose.yml          # Base compose configuration
+├── docker-compose.yml          # Legacy compose (shardctl)
 ├── docker-compose.dev.yml      # Development overrides
 ├── services.yml                # Service repository URLs (optional)
 ├── pyproject.toml              # Python package configuration
-├── .gitignore                  # Ignores services/*/ subdirectories
 └── README.md                   # This file
 ```
 
@@ -357,6 +365,68 @@ poetry shell
 shardctl up
 shardctl status
 ```
+
+## F1R3FLY Node Operations
+
+The `run.sh` script provides a unified interface for running F1R3FLY nodes (Scala or Rust, Standalone or Shard).
+
+### Quick Start
+
+```bash
+# Interactive mode - prompts for Scala/Rust and Standalone/Shard
+./run.sh
+
+# Default: Scala shard network (production-like)
+./run.sh --default
+
+# Specific configurations
+./run.sh --scala --standalone    # Scala standalone (fastest for dev)
+./run.sh --rust --standalone     # Rust standalone (experimental)
+./run.sh --scala --shard         # Scala multi-node network
+./run.sh --rust --shard          # Rust multi-node network
+
+# After starting a shard, wait for all nodes to be ready
+./run.sh wait
+```
+
+### Node Commands
+
+| Command                         | Description                       |
+| ------------------------------- | --------------------------------- |
+| `./run.sh`                      | Interactive mode - choose options |
+| `./run.sh --default`            | Quick start: Scala + Shard        |
+| `./run.sh --scala --standalone` | Scala standalone node             |
+| `./run.sh --rust --standalone`  | Rust standalone node              |
+| `./run.sh --scala --shard`      | Scala multi-node shard            |
+| `./run.sh --rust --shard`       | Rust multi-node shard             |
+| `./run.sh down`                 | Stop running containers           |
+| `./run.sh reset`                | Stop and delete blockchain data   |
+| `./run.sh reset -y`             | Reset without confirmation prompt |
+| `./run.sh logs`                 | Follow container logs             |
+| `./run.sh status`               | Show container status             |
+| `./run.sh wait`                 | Wait for all nodes ready (timed)  |
+| `./run.sh pull`                 | Pull latest images (Scala + Rust) |
+| `./run.sh --help`               | Show all options                  |
+
+### Compose Files
+
+| File                           | Description                                                    |
+| ------------------------------ | -------------------------------------------------------------- |
+| `compose/scala-standalone.yml` | Single Scala node for development                              |
+| `compose/rust-standalone.yml`  | Single Rust node for development                               |
+| `compose/scala-shard.yml`      | Multi-node Scala network (bootstrap + 3 validators + observer) |
+| `compose/rust-shard.yml`       | Multi-node Rust network (bootstrap + 3 validators + observer)  |
+| `compose/scala-observer.yml`   | Read-only Scala observer node (ports 40450-40455)              |
+| `compose/rust-observer.yml`    | Read-only Rust observer node (ports 40450-40455)               |
+| `compose/scala-validator4.yml` | 4th Scala validator for bonding tests (ports 40440-40445)      |
+| `compose/rust-validator4.yml`  | 4th Rust validator for bonding tests (ports 40440-40445)       |
+
+### Configuration
+
+- **`.env.node`** - Node environment variables (validator keys, hostnames)
+- **`conf/`** - Node configuration files (rnode.conf, logback.xml)
+- **`genesis/`** - Genesis wallets and bonds files
+- **`certs/`** - TLS certificates for multi-node networks
 
 ## CLI Commands
 
