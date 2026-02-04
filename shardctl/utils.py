@@ -511,3 +511,70 @@ repositories:
         console.print(f"[green]Created example configuration at {config_path}[/green]")
     except Exception as e:
         console.print(f"[red]Error creating configuration file: {e}[/red]")
+
+
+def sync_service_branch(service_name: str, service_path: Path, branch: str) -> bool:
+    """Fetch and checkout the specified branch for a service.
+
+    Args:
+        service_name: Name of the service.
+        service_path: Path to the service directory.
+        branch: Branch name to checkout.
+
+    Returns:
+        True if sync succeeded, False otherwise.
+    """
+    if not service_path.exists():
+        console.print(f"[red]Error: Service directory {service_path} does not exist[/red]")
+        return False
+
+    try:
+        # Fetch latest from all remotes
+        result = subprocess.run(
+            ["git", "fetch", "--all"],
+            cwd=service_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            console.print(f"[red]git fetch failed: {result.stderr}[/red]")
+            return False
+
+        # Check current branch
+        current_branch_result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=service_path,
+            capture_output=True,
+            text=True,
+        )
+        current_branch = current_branch_result.stdout.strip() if current_branch_result.returncode == 0 else ""
+
+        # Checkout the branch if not already on it
+        if current_branch != branch:
+            result = subprocess.run(
+                ["git", "checkout", branch],
+                cwd=service_path,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                console.print(f"[red]git checkout {branch} failed: {result.stderr}[/red]")
+                return False
+
+        # Pull latest
+        result = subprocess.run(
+            ["git", "pull"],
+            cwd=service_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            console.print(f"[red]git pull failed: {result.stderr}[/red]")
+            return False
+
+        console.print(f"[green]Synced {service_name} to {branch}[/green]")
+        return True
+
+    except Exception as e:
+        console.print(f"[red]Error syncing branch: {e}[/red]")
+        return False

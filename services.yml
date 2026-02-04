@@ -22,10 +22,10 @@ startup_order:
 repositories:
   f1r3node:
     url: git@github.com:F1R3FLY-io/f1r3node.git
-    branch: fix/genesis-validator-race-condition  # Working branch for bug fixes
+    branch: fix/expired-deploy-cleanup  # Working branch for bug fixes
   f1r3node-rust:
     url: git@github.com:F1R3FLY-io/f1r3node.git
-    branch: rust/backport-pr261-pr320-status-and-peer-discovery  # Rust node on rust-dev branch
+    branch: fix/genesis-validator-race-condition  # Rust node on rust-dev branch
   rust-client:
     url: git@github.com:F1R3FLY-io/rust-client.git
     branch: main

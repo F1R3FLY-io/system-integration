@@ -257,7 +257,13 @@ poetry run shardctl build-service --docker-only
 
 # Build a single service's Docker image only
 poetry run shardctl build-service f1r3node --docker-only
+
+# Sync branches from services.yml before building (fetch + checkout + pull)
+poetry run shardctl build-service --docker-only --sync
 ```
+
+The `--sync` flag fetches and checks out the branch configured in `services.yml` before building.
+This is useful when you've updated branch names in `services.yml` and want to build from those branches.
 
 This produces images such as:
 - f1r3flyindustries/f1r3fly-scala-node:latest (f1r3node)
@@ -363,6 +369,9 @@ poetry run shardctl build-service f1r3node --no-docker
 
 # Build Docker image only
 poetry run shardctl build-service embers
+
+# Sync to configured branches and build Docker images
+poetry run shardctl build-service --docker-only --sync
 
 # View service status
 poetry run shardctl status

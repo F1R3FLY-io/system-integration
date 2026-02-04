@@ -15,6 +15,7 @@ from .utils import (
     clean_services,
     clone_services,
     create_services_config_example,
+    sync_service_branch,
     format_service_status,
     validate_environment,
 )
@@ -682,6 +683,12 @@ def build_service_cmd(
         "--docker-only",
         help="Only build Docker images (skip source build)"
     ),
+    sync: bool = typer.Option(
+        False,
+        "--sync",
+        "-s",
+        help="Fetch and checkout the branch configured in services.yml before building"
+    ),
     list_services: bool = typer.Option(
         False,
         "--list",
@@ -699,6 +706,7 @@ def build_service_cmd(
     By default, this command builds all ENABLED services (both from source AND creates Docker images).
     Use --no-docker to skip Docker image building.
     Use --docker-only to skip source build and only build Docker images.
+    Use --sync to fetch and checkout the branch from services.yml before building.
     Specify a service name to build only that service.
     Use --include-disabled to also build disabled services.
 
@@ -709,10 +717,13 @@ def build_service_cmd(
         shardctl build-service                              # Build all enabled services (source + Docker)
         shardctl build-service --no-docker                  # Build all enabled services (source only)
         shardctl build-service --docker-only                # Build all enabled services (Docker only)
+        shardctl build-service --sync                       # Sync branches from services.yml, then build
+        shardctl build-service --docker-only --sync         # Sync branches, then build Docker only
         shardctl build-service --include-disabled           # Build all services including disabled (source + Docker)
         shardctl build-service f1r3node                     # Build only f1r3node (source + Docker)
         shardctl build-service f1r3node --no-docker         # Build only f1r3node (source only)
         shardctl build-service f1r3node --docker-only       # Build only f1r3node (Docker only)
+        shardctl build-service f1r3node --sync              # Sync f1r3node branch, then build
         shardctl build-service --list                       # List enabled services
         shardctl build-service --list --include-disabled    # List all services (including disabled)
     """
@@ -765,6 +776,9 @@ def build_service_cmd(
         else:
             console.print(f"[bold blue]Building {len(build_configs)} enabled service(s) (source + Docker)...[/bold blue]\n")
 
+        # Get repository configs for branch info if syncing
+        repos = config.get_service_repos() if sync else {}
+
         for svc_name, build_config in build_configs.items():
             console.print(f"[cyan]Building {svc_name}...[/cyan]")
 
@@ -774,6 +788,18 @@ def build_service_cmd(
                 service_path = config.services_dir / working_dir
             else:
                 service_path = config.services_dir / svc_name
+
+            # Sync branch if requested
+            if sync:
+                repo_config = repos.get(svc_name)
+                if repo_config and isinstance(repo_config, dict):
+                    branch = repo_config.get("branch", "main")
+                    console.print(f"[dim]Syncing to branch {branch}...[/dim]")
+                    if not sync_service_branch(svc_name, service_path, branch):
+                        console.print(f"[red]Failed to sync branch for {svc_name}[/red]")
+                        raise typer.Exit(1)
+                else:
+                    console.print(f"[dim]No repository config for {svc_name}, skipping sync[/dim]")
 
             # Build from source first (unless docker-only)
             if not docker_only:
@@ -823,6 +849,19 @@ def build_service_cmd(
         service_path = config.services_dir / working_dir
     else:
         service_path = config.services_dir / service
+
+    # Sync branch if requested
+    if sync:
+        repos = config.get_service_repos()
+        repo_config = repos.get(service)
+        if repo_config and isinstance(repo_config, dict):
+            branch = repo_config.get("branch", "main")
+            console.print(f"[dim]Syncing to branch {branch}...[/dim]")
+            if not sync_service_branch(service, service_path, branch):
+                console.print(f"[red]Failed to sync branch for {service}[/red]")
+                raise typer.Exit(1)
+        else:
+            console.print(f"[dim]No repository config for {service}, skipping sync[/dim]")
 
     # Build from source first (unless docker-only)
     if not docker_only:

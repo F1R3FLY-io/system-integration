@@ -50,5 +50,5 @@ Thumbs.db
 .token
 .token.classic
 
-# Blockchain data (created at runtime)
+# Blockchain data
 data/
