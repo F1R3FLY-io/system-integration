@@ -607,27 +607,31 @@ def reset(
 
 
 
-def pull():
-    """Pull latest node images for all configurations."""
-    console.print("[blue]Pulling latest images for all configurations...[/blue]")
+def pull(node_type: Optional[NodeType] = None):
+    """Pull latest node images.
+
+    Args:
+        node_type: If specified, pull only that node type's image. If None, pull both.
+    """
+    images_to_pull = []
+
+    if node_type is None or node_type == NodeType.SCALA:
+        images_to_pull.append(("Scala", "f1r3flyindustries/f1r3fly-scala-node:latest"))
+    if node_type is None or node_type == NodeType.RUST:
+        images_to_pull.append(("Rust", "f1r3flyindustries/f1r3fly-rust-node:latest"))
+
+    label = images_to_pull[0][0] if len(images_to_pull) == 1 else "all"
+    console.print(f"[blue]Pulling latest {label} node image(s)...[/blue]")
     console.print()
 
-    # Pull Scala images
-    console.print("[green]Pulling Scala node image...[/green]")
-    subprocess.run(
-        ["docker", "pull", "f1r3flyindustries/f1r3fly-scala-node:latest"]
-    )
-
-    # Pull Rust images
-    console.print("[green]Pulling Rust node image...[/green]")
-    subprocess.run(
-        ["docker", "pull", "f1r3flyindustries/f1r3fly-rust-node:latest"]
-    )
+    for name, image in images_to_pull:
+        console.print(f"[green]Pulling {name} node image...[/green]")
+        subprocess.run(["docker", "pull", image])
 
     console.print()
-    console.print("[green]All images pulled successfully![/green]")
+    console.print("[green]Image(s) pulled successfully![/green]")
     console.print()
-    console.print("Available images:")
+    console.print("Available node images:")
     result = subprocess.run(
         ["docker", "images"],
         capture_output=True,

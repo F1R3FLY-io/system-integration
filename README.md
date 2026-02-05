@@ -379,8 +379,8 @@ poetry run shardctl status
 # Follow all logs
 poetry run shardctl logs --follow
 
-# Restart blockchain after data cleanup
-sudo rm -rf services/f1r3node/docker/data
+# Reset blockchain (stop containers and delete data)
+poetry run shardctl reset
 poetry run shardctl up
 ```
 
@@ -432,6 +432,9 @@ All commands require `poetry run` prefix (or activate shell with `poetry shell` 
 | `poetry run shardctl status f1r3node`                  | Show node container status                                       |
 | `poetry run shardctl wait`                             | Wait for all nodes to be ready (timed)                           |
 | `poetry run shardctl wait --timeout 120`               | Wait with custom timeout (seconds)                               |
+| `poetry run shardctl pull f1r3node`                    | Pull latest Scala and Rust node images                           |
+| `poetry run shardctl pull f1r3node --scala`            | Pull Scala node image only                                       |
+| `poetry run shardctl pull f1r3node --rust`             | Pull Rust node image only                                        |
 | `poetry run shardctl reset`                            | Stop nodes and delete blockchain data (prompts for confirmation) |
 | `poetry run shardctl reset -y`                         | Reset without confirmation prompt                                |
 

@@ -519,12 +519,30 @@ def build(
 
 @app.command()
 def pull(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to pull"),
+    services: Optional[List[str]] = typer.Argument(None, help="Services to pull (use 'f1r3node' for blockchain node images)"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
+    scala: bool = typer.Option(False, "--scala", help="Pull Scala node image only (f1r3node)"),
+    rust: bool = typer.Option(False, "--rust", help="Pull Rust node image only (f1r3node)"),
 ):
-    """Pull service images."""
+    """Pull service images.
+
+    For f1r3node, pulls node images:
+
+        poetry run shardctl pull f1r3node           # Pull both Scala and Rust images
+        poetry run shardctl pull f1r3node --scala   # Pull Scala image only
+        poetry run shardctl pull f1r3node --rust    # Pull Rust image only
+    """
     if not validate_environment():
         raise typer.Exit(1)
+
+    if is_f1r3node_service(services):
+        node_type = None
+        if scala:
+            node_type = node_module.NodeType.SCALA
+        elif rust:
+            node_type = node_module.NodeType.RUST
+        node_module.pull(node_type=node_type)
+        return
 
     manager = get_manager(profile)
     console.print("[bold blue]Pulling service images...[/bold blue]")
