@@ -71,13 +71,12 @@ class NodeConfig:
             return VALIDATOR4_CONTAINERS
         return {}
 
-    def detect_running_config(self) -> Optional[Tuple[NodeType, Topology, Path]]:
-        """Detect which node configuration is currently running.
-        
-        Checks running containers first, then stopped containers.
-        Returns (node_type, topology, compose_file) or None.
+    def _get_rnode_containers(self, include_stopped: bool = True) -> List[str]:
+        """Get list of rnode container names.
+
+        Checks running containers first. If none found and include_stopped is True,
+        also checks stopped containers.
         """
-        # Check running containers first
         result = subprocess.run(
             ["docker", "ps", "--format", "{{.Names}}"],
             capture_output=True,
@@ -85,8 +84,7 @@ class NodeConfig:
         )
         containers = result.stdout.strip().split("\n") if result.stdout.strip() else []
 
-        # Check stopped containers if nothing running
-        if not any(c.startswith("rnode.") for c in containers):
+        if include_stopped and not any(c.startswith("rnode.") for c in containers):
             result = subprocess.run(
                 ["docker", "ps", "-a", "--format", "{{.Names}}"],
                 capture_output=True,
@@ -94,41 +92,59 @@ class NodeConfig:
             )
             containers = result.stdout.strip().split("\n") if result.stdout.strip() else []
 
-        # Determine topology from container names
-        topology = None
-        check_container = None
+        return [c for c in containers if c.startswith("rnode.")]
 
-        if "rnode.standalone" in containers:
-            topology = Topology.STANDALONE
-            check_container = "rnode.standalone"
-        elif "rnode.bootstrap" in containers:
-            topology = Topology.SHARD
-            check_container = "rnode.bootstrap"
-        elif "rnode.observer" in containers:
-            topology = Topology.OBSERVER
-            check_container = "rnode.observer"
-        elif "rnode.validator4" in containers:
-            topology = Topology.VALIDATOR4
-            check_container = "rnode.validator4"
-
-        if not topology or not check_container:
-            return None
-
-        # Determine node type from image
+    def _detect_node_type_from_container(self, container: str) -> NodeType:
+        """Determine node type (Scala/Rust) from a container's image."""
         result = subprocess.run(
-            ["docker", "inspect", "--format", "{{.Config.Image}}", check_container],
+            ["docker", "inspect", "--format", "{{.Config.Image}}", container],
             capture_output=True,
             text=True,
         )
         image = result.stdout.strip()
-
         if "rust" in image.lower():
-            node_type = NodeType.RUST
-        else:
-            node_type = NodeType.SCALA
+            return NodeType.RUST
+        return NodeType.SCALA
 
-        compose_file = self.get_compose_file(node_type, topology)
-        return (node_type, topology, compose_file)
+    def detect_all_running_configs(self) -> List[Tuple[NodeType, Topology, Path]]:
+        """Detect all node configurations currently running.
+
+        Checks for each topology independently, so multiple configs can be
+        detected simultaneously (e.g., shard + validator4 + observer).
+
+        Returns list of (node_type, topology, compose_file) tuples.
+        """
+        containers = self._get_rnode_containers()
+        if not containers:
+            return []
+
+        configs = []
+
+        # Each topology check is independent - multiple can match
+        topology_checks = [
+            (Topology.STANDALONE, "rnode.standalone"),
+            (Topology.SHARD, "rnode.bootstrap"),
+            (Topology.OBSERVER, "rnode.observer"),
+            (Topology.VALIDATOR4, "rnode.validator4"),
+        ]
+
+        for topology, marker_container in topology_checks:
+            if marker_container in containers:
+                node_type = self._detect_node_type_from_container(marker_container)
+                compose_file = self.get_compose_file(node_type, topology)
+                configs.append((node_type, topology, compose_file))
+
+        return configs
+
+    def detect_running_config(self) -> Optional[Tuple[NodeType, Topology, Path]]:
+        """Detect the primary node configuration currently running.
+
+        Convenience wrapper around detect_all_running_configs() that returns
+        the first detected config (typically shard or standalone).
+        Returns (node_type, topology, compose_file) or None.
+        """
+        configs = self.detect_all_running_configs()
+        return configs[0] if configs else None
 
 
 def parse_iso_to_epoch(timestamp: str) -> Optional[int]:
@@ -350,23 +366,25 @@ def up(
 
 
 def down():
-    """Stop F1R3FLY node containers."""
+    """Stop all F1R3FLY node containers."""
     config = NodeConfig()
 
-    running = config.detect_running_config()
-    if not running:
+    all_configs = config.detect_all_running_configs()
+    if not all_configs:
         console.print("[yellow]No F1R3FLY containers found[/yellow]")
         return
 
-    node_type, topology, compose_file = running
-    console.print(
-        f"[yellow]Stopping containers using {compose_file.name}...[/yellow]"
-    )
+    all_ok = True
+    for node_type, topology, compose_file in all_configs:
+        console.print(
+            f"[yellow]Stopping {node_type.value} {topology.value} using {compose_file.name}...[/yellow]"
+        )
+        result = run_compose_command(config, compose_file, ["down"])
+        if result.returncode != 0:
+            all_ok = False
 
-    result = run_compose_command(config, compose_file, ["down"])
-
-    if result.returncode == 0:
-        console.print("[green]Stopped successfully![/green]")
+    if all_ok:
+        console.print("[green]All containers stopped successfully![/green]")
 
 
 
@@ -381,15 +399,22 @@ def logs(
         None, "--tail", "-n", help="Number of lines to show"
     ),
 ):
-    """View F1R3FLY node logs."""
+    """View F1R3FLY node logs.
+
+    When multiple configurations are running (e.g., shard + validator4),
+    combines all compose files into a single logs command.
+    """
     config = NodeConfig()
 
-    running = config.detect_running_config()
-    if not running:
+    all_configs = config.detect_all_running_configs()
+    if not all_configs:
         console.print("[yellow]No F1R3FLY containers found[/yellow]")
         return
 
-    node_type, topology, compose_file = running
+    # Build command with all compose files
+    cmd = ["docker-compose", "--env-file", str(config.env_file)]
+    for node_type, topology, compose_file in all_configs:
+        cmd.extend(["-f", str(compose_file)])
 
     args = ["logs"]
     if follow:
@@ -399,7 +424,9 @@ def logs(
     if services:
         args.extend(services)
 
-    run_compose_command(config, compose_file, args)
+    cmd.extend(args)
+    console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+    subprocess.run(cmd, cwd=config.root_dir)
 
 
 
@@ -407,16 +434,16 @@ def status():
     """Show F1R3FLY node container status."""
     config = NodeConfig()
 
-    running = config.detect_running_config()
-    if not running:
+    all_configs = config.detect_all_running_configs()
+    if not all_configs:
         console.print("[yellow]No F1R3FLY containers found[/yellow]")
         return
 
-    node_type, topology, compose_file = running
-    console.print(f"[blue]Configuration: {compose_file.name}[/blue]")
-    console.print()
-
-    run_compose_command(config, compose_file, ["ps"])
+    for node_type, topology, compose_file in all_configs:
+        console.print(f"[blue]Configuration: {node_type.value} {topology.value} ({compose_file.name})[/blue]")
+        console.print()
+        run_compose_command(config, compose_file, ["ps"])
+        console.print()
 
 
 
@@ -425,24 +452,30 @@ def wait_for_ready(
         300, "--timeout", "-t", help="Timeout in seconds (default: 300)"
     ),
 ):
-    """Wait for all nodes to reach Running state (with timing)."""
+    """Wait for all nodes to reach Running state (with timing).
+
+    Detects all running configurations (shard, validator4, observer, standalone)
+    and waits for every node across all of them.
+    """
     config = NodeConfig()
 
-    running = config.detect_running_config()
-    if not running:
+    all_configs = config.detect_all_running_configs()
+    if not all_configs:
         console.print("[yellow]No F1R3FLY containers found[/yellow]")
         return
 
-    node_type, topology, compose_file = running
-
     console.print("[blue]Waiting for nodes to be ready...[/blue]")
-    console.print(f"Configuration: {compose_file.name}")
+    for node_type, topology, compose_file in all_configs:
+        console.print(f"  Detected: {node_type.value} {topology.value} ({compose_file.name})")
     console.print()
 
     start_time = time.time()
 
-    # Get service-to-container mapping
-    service_containers = config.get_services_for_topology(topology)
+    # Collect containers from ALL detected topologies
+    service_containers = {}
+    for node_type, topology, compose_file in all_configs:
+        service_containers.update(config.get_services_for_topology(topology))
+
     total_nodes = len(service_containers)
 
     console.print(
@@ -526,12 +559,11 @@ def reset(
     """Stop containers and delete blockchain data."""
     config = NodeConfig()
 
-    # Stop any running containers first
-    running = config.detect_running_config()
-    if running:
-        node_type, topology, compose_file = running
+    # Stop all running configurations
+    all_configs = config.detect_all_running_configs()
+    for node_type, topology, compose_file in all_configs:
         console.print(
-            f"[yellow]Stopping containers using {compose_file.name}...[/yellow]"
+            f"[yellow]Stopping {node_type.value} {topology.value} using {compose_file.name}...[/yellow]"
         )
         run_compose_command(config, compose_file, ["down"])
 
@@ -608,29 +640,36 @@ def pull():
 
 
 def info():
-    """Show information about currently running node configuration."""
+    """Show information about currently running node configuration(s)."""
     config = NodeConfig()
 
-    running = config.detect_running_config()
-    if not running:
+    all_configs = config.detect_all_running_configs()
+    if not all_configs:
         console.print("[yellow]No F1R3FLY containers currently running[/yellow]")
         return
 
-    node_type, topology, compose_file = running
-
-    console.print("[bold]Current Node Configuration[/bold]")
-    console.print(f"  Node Type: [cyan]{node_type.value}[/cyan]")
-    console.print(f"  Topology:  [cyan]{topology.value}[/cyan]")
-    console.print(f"  Compose:   [dim]{compose_file}[/dim]")
+    console.print("[bold]Current Node Configuration(s)[/bold]")
+    for node_type, topology, compose_file in all_configs:
+        console.print(f"  Node Type: [cyan]{node_type.value}[/cyan]")
+        console.print(f"  Topology:  [cyan]{topology.value}[/cyan]")
+        console.print(f"  Compose:   [dim]{compose_file}[/dim]")
+        if all_configs.index((node_type, topology, compose_file)) < len(all_configs) - 1:
+            console.print()
     console.print(f"  Env File:  [dim]{config.env_file}[/dim]")
     console.print(f"  Data Dir:  [dim]{config.data_dir}[/dim]")
 
 
 # Export for use in main CLI
 def detect_running_node_config() -> Optional[Tuple[NodeType, Topology, Path]]:
-    """Utility function to detect running node config from outside this module."""
+    """Utility function to detect primary running node config from outside this module."""
     config = NodeConfig()
     return config.detect_running_config()
+
+
+def detect_all_running_node_configs() -> List[Tuple[NodeType, Topology, Path]]:
+    """Utility function to detect all running node configs from outside this module."""
+    config = NodeConfig()
+    return config.detect_all_running_configs()
 
 
 def get_default_node_compose_file() -> Path:

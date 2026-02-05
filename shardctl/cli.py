@@ -142,35 +142,40 @@ def handle_f1r3node_up(
 
 
 def handle_f1r3node_down() -> None:
-    """Handle stopping f1r3node with auto-detection."""
+    """Handle stopping f1r3node with auto-detection of all running configs."""
     config = node_module.NodeConfig()
 
-    running = config.detect_running_config()
-    if not running:
+    all_configs = config.detect_all_running_configs()
+    if not all_configs:
         console.print("[yellow]No F1R3FLY containers found[/yellow]")
         return
 
-    node_type, topology, compose_file = running
-    console.print(
-        f"[yellow]Stopping {node_type.value} {topology.value} using {compose_file.name}...[/yellow]"
-    )
+    all_ok = True
+    for node_type, topology, compose_file in all_configs:
+        console.print(
+            f"[yellow]Stopping {node_type.value} {topology.value} using {compose_file.name}...[/yellow]"
+        )
+        result = node_module.run_compose_command(config, compose_file, ["down"])
+        if result.returncode != 0:
+            all_ok = False
 
-    result = node_module.run_compose_command(config, compose_file, ["down"])
-
-    if result.returncode == 0:
-        console.print("[green]Stopped successfully![/green]")
+    if all_ok:
+        console.print("[green]All containers stopped successfully![/green]")
 
 
 def handle_f1r3node_logs(follow: bool, tail: Optional[int]) -> None:
-    """Handle f1r3node logs with auto-detection."""
+    """Handle f1r3node logs with auto-detection of all running configs."""
     config = node_module.NodeConfig()
 
-    running = config.detect_running_config()
-    if not running:
+    all_configs = config.detect_all_running_configs()
+    if not all_configs:
         console.print("[yellow]No F1R3FLY containers found[/yellow]")
         return
 
-    node_type, topology, compose_file = running
+    # Build command with all compose files for combined logs
+    cmd = ["docker-compose", "--env-file", str(config.env_file)]
+    for node_type, topology, compose_file in all_configs:
+        cmd.extend(["-f", str(compose_file)])
 
     args = ["logs"]
     if follow:
@@ -178,42 +183,46 @@ def handle_f1r3node_logs(follow: bool, tail: Optional[int]) -> None:
     if tail:
         args.extend(["--tail", str(tail)])
 
-    node_module.run_compose_command(config, compose_file, args)
+    cmd.extend(args)
+    console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+    subprocess.run(cmd, cwd=config.root_dir)
 
 
 def handle_f1r3node_ps() -> None:
-    """Handle f1r3node ps with auto-detection."""
+    """Handle f1r3node ps with auto-detection of all running configs."""
     config = node_module.NodeConfig()
 
-    running = config.detect_running_config()
-    if not running:
+    all_configs = config.detect_all_running_configs()
+    if not all_configs:
         console.print("[yellow]No F1R3FLY containers found[/yellow]")
         return
 
-    node_type, topology, compose_file = running
-    console.print(f"[blue]Configuration: {node_type.value} {topology.value}[/blue]")
-    console.print()
-
-    node_module.run_compose_command(config, compose_file, ["ps"])
+    for node_type, topology, compose_file in all_configs:
+        console.print(f"[blue]Configuration: {node_type.value} {topology.value} ({compose_file.name})[/blue]")
+        console.print()
+        node_module.run_compose_command(config, compose_file, ["ps"])
+        console.print()
 
 
 def handle_f1r3node_status() -> None:
-    """Handle f1r3node status with auto-detection."""
+    """Handle f1r3node status with auto-detection of all running configs."""
     config = node_module.NodeConfig()
 
-    running = config.detect_running_config()
-    if not running:
+    all_configs = config.detect_all_running_configs()
+    if not all_configs:
         console.print("[yellow]No F1R3FLY containers found[/yellow]")
         return
 
-    node_type, topology, compose_file = running
     console.print(f"[bold]F1R3FLY Node Status[/bold]")
-    console.print(f"  Node Type: [cyan]{node_type.value}[/cyan]")
-    console.print(f"  Topology:  [cyan]{topology.value}[/cyan]")
-    console.print(f"  Compose:   [dim]{compose_file.name}[/dim]")
+    for node_type, topology, compose_file in all_configs:
+        console.print(f"  Node Type: [cyan]{node_type.value}[/cyan]")
+        console.print(f"  Topology:  [cyan]{topology.value}[/cyan]")
+        console.print(f"  Compose:   [dim]{compose_file.name}[/dim]")
     console.print()
 
-    node_module.run_compose_command(config, compose_file, ["ps"])
+    for _node_type, _topology, compose_file in all_configs:
+        node_module.run_compose_command(config, compose_file, ["ps"])
+        console.print()
 
 
 def get_manager(profile: Optional[str] = None) -> ComposeManager:
@@ -909,21 +918,24 @@ def wait_cmd(
 ):
     """Wait for all F1R3FLY nodes to reach Running state (with timing).
 
+    Detects all running configurations (shard, validator4, observer, standalone)
+    and waits for every node across all of them.
+
     This command polls container logs for the 'Making a transition to Running state'
     message and reports per-node timing. Useful after starting a shard network.
 
     Example:
-        shardctl up f1r3node --default    # Start scala shard
-        shardctl wait                     # Wait for all nodes to be ready
+        poetry run shardctl up f1r3node --default    # Start scala shard
+        poetry run shardctl wait                     # Wait for all nodes to be ready
     """
     node_config = node_module.NodeConfig()
-    running = node_config.detect_running_config()
+    all_configs = node_config.detect_all_running_configs()
 
-    if not running:
+    if not all_configs:
         console.print("[yellow]No F1R3FLY containers found[/yellow]")
         return
 
-    # Call the node wait function directly
+    # Call the node wait function directly (it handles multi-config internally)
     node_module.wait_for_ready(timeout=timeout)
 
 
@@ -938,19 +950,19 @@ def reset_cmd(
 ):
     """Stop F1R3FLY containers and delete blockchain data.
 
-    This command stops any running F1R3FLY containers and deletes the blockchain
-    data directory. Uses a Docker container to delete root-owned files without sudo.
+    This command stops all running F1R3FLY containers (including validator4, observer)
+    and deletes the blockchain data directory. Uses a Docker container to delete
+    root-owned files without sudo.
 
     Example:
-        shardctl reset       # Stop and delete data (with confirmation)
-        shardctl reset -y    # Skip confirmation prompt
+        poetry run shardctl reset       # Stop and delete data (with confirmation)
+        poetry run shardctl reset -y    # Skip confirmation prompt
     """
     node_config = node_module.NodeConfig()
 
-    # Stop any running containers first
-    running = node_config.detect_running_config()
-    if running:
-        node_type, topology, compose_file = running
+    # Stop all running configurations
+    all_configs = node_config.detect_all_running_configs()
+    for node_type, topology, compose_file in all_configs:
         console.print(
             f"[yellow]Stopping {node_type.value} {topology.value} using {compose_file.name}...[/yellow]"
         )
