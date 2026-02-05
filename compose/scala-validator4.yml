@@ -56,4 +56,4 @@ services:
 networks:
   f1r3fly-shard:
     external: true
-    name: shared-docker-config_f1r3fly-shard
+    name: compose_f1r3fly-shard
