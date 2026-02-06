@@ -15,14 +15,14 @@
 # The 'up' command brings up each compose file in order, waiting for each to succeed.
 # This ensures dependencies (like networks) are created before dependent services start.
 startup_order:
-  - docker-compose.yml           # Base f1r3node - creates the f1r3fly network
-  - docker-compose.embers.yml    # Embers API - depends on f1r3fly network
-  - docker-compose.f1r3sky.yml   # F1R3Sky services - depends on f1r3fly network
+  - docker-compose.yml # Base f1r3node - creates the f1r3fly network
+  - docker-compose.embers.yml # Embers API - depends on f1r3fly network
+  - docker-compose.f1r3sky.yml # F1R3Sky services - depends on f1r3fly network
 
 repositories:
   f1r3node:
     url: git@github.com:F1R3FLY-io/f1r3node.git
-    branch: main 
+    branch: main
   f1r3node-rust:
     url: git@github.com:F1R3FLY-io/f1r3node.git
     branch: rust/dev
@@ -44,12 +44,12 @@ repositories:
   embers-frontend:
     url: git@github.com:F1R3FLY-io/embers-frontend.git
     branch: main
-    enabled: false  # Web UI frontend (requires ~/.npmrc with GitHub token)
+    enabled: false # Web UI frontend (requires ~/.npmrc with GitHub token)
 
 # Build configuration for services
 builds:
   f1r3node:
-    # Scala node build configuration 
+    # Scala node build configuration
     # Main build command (compiles Scala and stages executable)
     build_command: "sbt stage"
 
@@ -57,7 +57,7 @@ builds:
     docker_build_command: "sbt node/docker:publishLocal"
 
     # Build environment
-    environment: "nix"  # Uses nix develop shell
+    environment: "nix" # Uses nix develop shell
 
     # Docker image produced
     docker_image: "f1r3flyindustries/f1r3fly-scala-node:latest"
@@ -81,11 +81,11 @@ builds:
     docker_build_command: "./node/docker-commands.sh build-local"
 
     # Build environment
-    environment: "nix"  # Uses nix develop shell
+    environment: "nix" # Uses nix develop shell
 
     # Pre-build steps for Docker builds (runs in Nix environment)
     docker_pre_build_steps:
-      - "rustup default stable"  # Configure Rust toolchain
+      - "rustup default stable" # Configure Rust toolchain
 
     # Docker image produced
     docker_image: "f1r3flyindustries/f1r3fly-rust-node:latest"
