@@ -22,27 +22,29 @@ startup_order:
 repositories:
   f1r3node:
     url: git@github.com:F1R3FLY-io/f1r3node.git
-    branch: main  # Working branch for bug fixes
+    branch: main 
   f1r3node-rust:
     url: git@github.com:F1R3FLY-io/f1r3node.git
-    branch: rust/backport-pr261-pr320-status-and-peer-discovery  # Rust node on rust-dev branch
+    branch: rust/dev
   rust-client:
     url: git@github.com:F1R3FLY-io/rust-client.git
     branch: main
-  # f1r3sky-backend:
-  #   url: git@github.com:F1R3FLY-io/f1r3sky-backend.git
-  #   branch: main
-  # f1r3sky:
-  #   url: git@github.com:F1R3FLY-io/f1r3sky.git
-  #   branch: main
-  #   enabled: true  # Frontend demo
-  # embers:
-  #   url: git@github.com:nashef/firefly-embers.git
-  #   branch: main
-  # embers-frontend:
-  #   url: git@github.com:F1R3FLY-io/embers-frontend.git
-  #   branch: main
-  #   enabled: true  # Web UI frontend (requires ~/.npmrc with GitHub token)
+  f1r3sky-backend:
+    url: git@github.com:F1R3FLY-io/f1r3sky-backend.git
+    branch: main
+    enabled: false
+  f1r3sky:
+    url: git@github.com:F1R3FLY-io/f1r3sky.git
+    branch: main
+    enabled: false
+  embers:
+    url: git@github.com:F1R3FLY-io/firefly-embers.git
+    branch: main
+    enabled: false
+  embers-frontend:
+    url: git@github.com:F1R3FLY-io/embers-frontend.git
+    branch: main
+    enabled: false  # Web UI frontend (requires ~/.npmrc with GitHub token)
 
 # Build configuration for services
 builds:
