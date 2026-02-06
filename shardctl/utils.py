@@ -1,6 +1,7 @@
 """Utility functions for shardctl."""
 
 import os
+import platform
 import signal
 import subprocess
 from pathlib import Path
@@ -203,6 +204,18 @@ def format_ports(publishers: list) -> str:
     return ", ".join(port_strs) if port_strs else "N/A"
 
 
+def _docker_platform_for_f1r3node() -> str:
+    """Resolve PLATFORM for f1r3node (Scala) Docker build: env override or host arch."""
+    if os.environ.get("PLATFORM"):
+        return os.environ["PLATFORM"]
+    machine = platform.machine().lower()
+    if machine in ("aarch64", "arm64"):
+        return "linux/arm64"
+    if machine in ("x86_64", "amd64"):
+        return "linux/amd64"
+    return "linux/amd64"
+
+
 def build_service(
     service_name: str,
     service_path: Path,
@@ -244,6 +257,14 @@ def build_service(
             )
             return False
         console.print(f"[bold blue]Building {service_name}...[/bold blue]")
+
+    run_env = os.environ.copy()
+    if docker and service_name == "f1r3node":
+        run_env["PLATFORM"] = _docker_platform_for_f1r3node()
+        console.print(
+            f"[dim]Building f1r3node Docker for PLATFORM={run_env['PLATFORM']} "
+            f"(host: {platform.machine()})[/dim]"
+        )
 
     # Check if we need to wrap commands with nix develop
     environment = build_config.get("environment")
@@ -324,7 +345,7 @@ def build_service(
                     step_cmd,
                     shell=True,
                     cwd=service_path,
-                    env=os.environ.copy(),
+                    env=run_env,
                     preexec_fn=os.setpgrp,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
@@ -384,7 +405,7 @@ def build_service(
             build_command,
             shell=True,
             cwd=service_path,
-            env=os.environ.copy(),
+            env=run_env,
             preexec_fn=os.setpgrp,  # Create new process group
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
