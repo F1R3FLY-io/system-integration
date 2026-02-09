@@ -1,6 +1,7 @@
 """Utility functions for shardctl."""
 
 import os
+import platform
 import signal
 import subprocess
 from pathlib import Path
@@ -203,6 +204,18 @@ def format_ports(publishers: list) -> str:
     return ", ".join(port_strs) if port_strs else "N/A"
 
 
+def _docker_platform_for_f1r3node() -> str:
+    """Resolve PLATFORM for f1r3node (Scala) Docker build: env override or host arch."""
+    if os.environ.get("PLATFORM"):
+        return os.environ["PLATFORM"]
+    machine = platform.machine().lower()
+    if machine in ("aarch64", "arm64"):
+        return "linux/arm64"
+    if machine in ("x86_64", "amd64"):
+        return "linux/amd64"
+    return "linux/amd64"
+
+
 def build_service(
     service_name: str,
     service_path: Path,
@@ -244,6 +257,14 @@ def build_service(
             )
             return False
         console.print(f"[bold blue]Building {service_name}...[/bold blue]")
+
+    run_env = os.environ.copy()
+    if docker and service_name == "f1r3node":
+        run_env["PLATFORM"] = _docker_platform_for_f1r3node()
+        console.print(
+            f"[dim]Building f1r3node Docker for PLATFORM={run_env['PLATFORM']} "
+            f"(host: {platform.machine()})[/dim]"
+        )
 
     # Check if we need to wrap commands with nix develop
     environment = build_config.get("environment")
@@ -324,7 +345,7 @@ def build_service(
                     step_cmd,
                     shell=True,
                     cwd=service_path,
-                    env=os.environ.copy(),
+                    env=run_env,
                     preexec_fn=os.setpgrp,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
@@ -384,7 +405,7 @@ def build_service(
             build_command,
             shell=True,
             cwd=service_path,
-            env=os.environ.copy(),
+            env=run_env,
             preexec_fn=os.setpgrp,  # Create new process group
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -511,3 +532,70 @@ repositories:
         console.print(f"[green]Created example configuration at {config_path}[/green]")
     except Exception as e:
         console.print(f"[red]Error creating configuration file: {e}[/red]")
+
+
+def sync_service_branch(service_name: str, service_path: Path, branch: str) -> bool:
+    """Fetch and checkout the specified branch for a service.
+
+    Args:
+        service_name: Name of the service.
+        service_path: Path to the service directory.
+        branch: Branch name to checkout.
+
+    Returns:
+        True if sync succeeded, False otherwise.
+    """
+    if not service_path.exists():
+        console.print(f"[red]Error: Service directory {service_path} does not exist[/red]")
+        return False
+
+    try:
+        # Fetch latest from all remotes
+        result = subprocess.run(
+            ["git", "fetch", "--all"],
+            cwd=service_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            console.print(f"[red]git fetch failed: {result.stderr}[/red]")
+            return False
+
+        # Check current branch
+        current_branch_result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=service_path,
+            capture_output=True,
+            text=True,
+        )
+        current_branch = current_branch_result.stdout.strip() if current_branch_result.returncode == 0 else ""
+
+        # Checkout the branch if not already on it
+        if current_branch != branch:
+            result = subprocess.run(
+                ["git", "checkout", branch],
+                cwd=service_path,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                console.print(f"[red]git checkout {branch} failed: {result.stderr}[/red]")
+                return False
+
+        # Pull latest
+        result = subprocess.run(
+            ["git", "pull"],
+            cwd=service_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            console.print(f"[red]git pull failed: {result.stderr}[/red]")
+            return False
+
+        console.print(f"[green]Synced {service_name} to {branch}[/green]")
+        return True
+
+    except Exception as e:
+        console.print(f"[red]Error syncing branch: {e}[/red]")
+        return False

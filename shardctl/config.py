@@ -254,7 +254,8 @@ class Config:
         """Get ordered list of compose files for startup.
 
         Reads the startup_order from services.yml. If not defined, falls back
-        to the default compose file list.
+        to scala-shard as the default node configuration, plus any other
+        compose files found.
 
         Returns:
             List of compose file paths in startup order.
@@ -275,5 +276,17 @@ class Config:
                             compose_files.append(filepath)
                     return compose_files
 
-        # Fallback: return all compose files (original behavior)
-        return self.get_compose_files_for_profile(None)
+        # Fallback: start with scala-shard (default node config), then other compose files
+        compose_files = []
+
+        # Default to scala-shard for node operations
+        scala_shard = self.root_dir / "compose" / "scala-shard.yml"
+        if scala_shard.exists():
+            compose_files.append(scala_shard)
+
+        # Add other compose files (embers, f1r3sky, etc.)
+        for f in self.get_compose_files_for_profile(None):
+            if f not in compose_files:
+                compose_files.append(f)
+
+        return compose_files

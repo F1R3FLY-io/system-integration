@@ -19,21 +19,28 @@ This repository provides a clean structure for managing multiple microservice re
 
 ```
 .
+├── compose/                     # Node compose files (Scala/Rust, Standalone/Shard)
+│   ├── scala-standalone.yml
+│   ├── rust-standalone.yml
+│   ├── scala-shard.yml
+│   ├── rust-shard.yml
+│   ├── scala-observer.yml
+│   ├── rust-observer.yml
+│   ├── scala-validator4.yml
+│   └── rust-validator4.yml
+├── conf/                        # Node configuration files
+├── certs/                       # TLS certificates for nodes
+├── genesis/                     # Genesis wallets and bonds
+├── .env.node                    # Node environment variables
+├── .env.embers                  # Embers environment variables
+├── .env.f1r3sky                 # F1R3SKY environment variables
 ├── services/                    # Service repositories (git-ignored)
-│   ├── .gitkeep                # Tracked to maintain directory
-│   ├── service-1/              # Independent git repo (ignored)
-│   └── service-2/              # Independent git repo (ignored)
+│   └── .gitkeep                # Tracked to maintain directory
 ├── shardctl/                   # CLI tool package
-│   ├── __init__.py
-│   ├── cli.py                  # Typer CLI commands
-│   ├── compose.py              # ComposeManager class
-│   ├── config.py               # Configuration management
-│   └── utils.py                # Helper functions
-├── docker-compose.yml          # Base compose configuration
+├── docker-compose.yml          # Legacy compose (shardctl)
 ├── docker-compose.dev.yml      # Development overrides
 ├── services.yml                # Service repository URLs (optional)
 ├── pyproject.toml              # Python package configuration
-├── .gitignore                  # Ignores services/*/ subdirectories
 └── README.md                   # This file
 ```
 
@@ -58,6 +65,14 @@ This repository provides a clean structure for managing multiple microservice re
   eval "$(pyenv init -)"
 
   # Restart shell, then install Python 3.10
+
+  # Linux/WSL: install build dependencies first so pyenv can compile Python with bz2, readline, sqlite3, lzma
+  # (Ubuntu/Debian; adjust for your distro)
+  sudo apt-get update
+  sudo apt-get install -y make build-essential libssl-dev zlib1g-dev \
+    libbz2-dev libreadline-dev libsqlite3-dev libncursesw5-dev \
+    xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev
+
   pyenv install 3.10
   pyenv local 3.10  # Sets Python 3.10 for this project
   ```
@@ -123,6 +138,9 @@ If you don't have Poetry installed:
 
 ```bash
 # Using pipx (recommended)
+# Linux: install pipx first if needed (e.g. sudo apt install pipx), then ensurepath
+sudo apt install pipx   # if not already installed
+pipx ensurepath         # add pipx bin to PATH; restart shell if needed
 pipx install poetry
 
 # Or using pip
@@ -232,16 +250,28 @@ Build Docker images for all services:
 
 ```bash
 # Build all Docker images (source + Docker build)
-poetry run shardctl build-service -a
+poetry run shardctl build-service
 
-# This builds images for:
-# - f1r3flyindustries/f1r3fly-scala-node:latest (f1r3node)
-# - f1r3flyindustries/embers:latest
-# - f1r3flyindustries/f1r3sky-bsky:latest
-# - f1r3flyindustries/f1r3sky-pds:latest
-# - f1r3flyindustries/f1r3sky-bsync:latest
-# - f1r3flyindustries/f1r3sky-ozone:latest
+# Build Docker images only (skip source build; Dockerfiles build inside the image)
+poetry run shardctl build-service --docker-only
+
+# Build a single service's Docker image only
+poetry run shardctl build-service f1r3node --docker-only
+
+# Sync branches from services.yml before building (fetch + checkout + pull)
+poetry run shardctl build-service --docker-only --sync
 ```
+
+The `--sync` flag fetches and checks out the branch configured in `services.yml` before building.
+This is useful when you've updated branch names in `services.yml` and want to build from those branches.
+
+This produces images such as:
+- f1r3flyindustries/f1r3fly-scala-node:latest (f1r3node)
+- f1r3flyindustries/embers:latest
+- f1r3flyindustries/f1r3sky-bsky:latest
+- f1r3flyindustries/f1r3sky-pds:latest
+- f1r3flyindustries/f1r3sky-bsync:latest
+- f1r3flyindustries/f1r3sky-ozone:latest
 
 **Expected build times:**
 - F1R3node: ~10-15 minutes (first build)
@@ -340,14 +370,17 @@ poetry run shardctl build-service f1r3node --no-docker
 # Build Docker image only
 poetry run shardctl build-service embers
 
+# Sync to configured branches and build Docker images
+poetry run shardctl build-service --docker-only --sync
+
 # View service status
 poetry run shardctl status
 
 # Follow all logs
 poetry run shardctl logs --follow
 
-# Restart blockchain after data cleanup
-sudo rm -rf services/f1r3node/docker/data
+# Reset blockchain (stop containers and delete data)
+poetry run shardctl reset
 poetry run shardctl up
 ```
 
@@ -358,9 +391,76 @@ shardctl up
 shardctl status
 ```
 
+## F1R3FLY Node Operations
+
+Use `shardctl` with `f1r3node` as the service name to run F1R3FLY blockchain nodes.
+
+### Quick Start
+
+```bash
+# Interactive mode - prompts for Scala/Rust and Standalone/Shard
+poetry run shardctl up f1r3node
+
+# Default: Scala shard network (production-like)
+poetry run shardctl up f1r3node --default
+
+# Specific configurations
+poetry run shardctl up f1r3node --scala --standalone    # Scala standalone (fastest for dev)
+poetry run shardctl up f1r3node --rust --standalone     # Rust standalone (experimental)
+poetry run shardctl up f1r3node --scala --shard         # Scala multi-node network
+poetry run shardctl up f1r3node --rust --shard          # Rust multi-node network
+
+# After starting a shard, wait for all nodes to be ready
+poetry run shardctl wait
+```
+
+### Node Commands
+
+All commands require `poetry run` prefix (or activate shell with `poetry shell` first).
+
+| Command                                                | Description                                                      |
+| ------------------------------------------------------ | ---------------------------------------------------------------- |
+| `poetry run shardctl up f1r3node`                      | Start nodes (interactive mode)                                   |
+| `poetry run shardctl up f1r3node --default`            | Start Scala shard (default)                                      |
+| `poetry run shardctl up f1r3node --scala --standalone` | Start Scala standalone node                                      |
+| `poetry run shardctl up f1r3node --rust --standalone`  | Start Rust standalone node                                       |
+| `poetry run shardctl up f1r3node --scala --shard`      | Start Scala multi-node shard                                     |
+| `poetry run shardctl up f1r3node --rust --shard`       | Start Rust multi-node shard                                      |
+| `poetry run shardctl down f1r3node`                    | Stop and remove node containers                                  |
+| `poetry run shardctl logs f1r3node`                    | View node container logs                                         |
+| `poetry run shardctl logs f1r3node -f`                 | Follow node logs                                                 |
+| `poetry run shardctl status f1r3node`                  | Show node container status                                       |
+| `poetry run shardctl wait`                             | Wait for all nodes to be ready (timed)                           |
+| `poetry run shardctl wait --timeout 120`               | Wait with custom timeout (seconds)                               |
+| `poetry run shardctl pull f1r3node`                    | Pull latest Scala and Rust node images                           |
+| `poetry run shardctl pull f1r3node --scala`            | Pull Scala node image only                                       |
+| `poetry run shardctl pull f1r3node --rust`             | Pull Rust node image only                                        |
+| `poetry run shardctl reset`                            | Stop nodes and delete blockchain data (prompts for confirmation) |
+| `poetry run shardctl reset -y`                         | Reset without confirmation prompt                                |
+
+### Compose Files
+
+| File                           | Description                                                    |
+| ------------------------------ | -------------------------------------------------------------- |
+| `compose/scala-standalone.yml` | Single Scala node for development                              |
+| `compose/rust-standalone.yml`  | Single Rust node for development                               |
+| `compose/scala-shard.yml`      | Multi-node Scala network (bootstrap + 3 validators + observer) |
+| `compose/rust-shard.yml`       | Multi-node Rust network (bootstrap + 3 validators + observer)  |
+| `compose/scala-observer.yml`   | Read-only Scala observer node (ports 40450-40455)              |
+| `compose/rust-observer.yml`    | Read-only Rust observer node (ports 40450-40455)               |
+| `compose/scala-validator4.yml` | 4th Scala validator for bonding tests (ports 40440-40445)      |
+| `compose/rust-validator4.yml`  | 4th Rust validator for bonding tests (ports 40440-40445)       |
+
+### Configuration
+
+- **`.env.node`** - Node environment variables (validator keys, hostnames)
+- **`conf/`** - Node configuration files (rnode.conf, logback.xml)
+- **`genesis/`** - Genesis wallets and bonds files
+- **`certs/`** - TLS certificates for multi-node networks
+
 ## CLI Commands
 
-**Note:** All commands below assume you're either using `poetry run shardctl` or have activated the Poetry shell with `poetry shell`. Examples show commands without the `poetry run` prefix for brevity.
+**Note:** All commands below assume you're either using `poetry run shardctl` or have activated the Poetry shell with `poetry shell`. For F1R3FLY node-only commands (wait, reset, logs, status, down, up, pull), see [Node commands](#node-commands) above; examples there use the full `poetry run shardctl` form.
 
 ### Service Management
 
@@ -370,9 +470,17 @@ shardctl up [SERVICES...] [OPTIONS]
   --profile, -p TEXT    Profile (dev/prod)
   --foreground, -f      Run in foreground
   --build, -b           Build images first
+  # F1R3NODE-specific options (when SERVICES includes 'f1r3node'):
+  --scala               Use Scala node implementation
+  --rust                Use Rust node implementation
+  --standalone          Standalone topology (single node)
+  --shard               Shard topology (multi-node network)
+  --default             Use defaults (scala + shard)
+  --node-type, -n TEXT  Node type: scala or rust
+  --topology, -t TEXT   Topology: standalone or shard
 
 # Stop services
-shardctl down [OPTIONS]
+shardctl down [SERVICES...] [OPTIONS]
   --profile, -p TEXT    Profile (dev/prod)
   --volumes, -v         Remove volumes
   --keep-orphans        Keep orphan containers
@@ -382,7 +490,7 @@ shardctl restart [SERVICES...] [OPTIONS]
   --profile, -p TEXT    Profile (dev/prod)
 
 # View status in formatted table
-shardctl status [OPTIONS]
+shardctl status [SERVICES...] [OPTIONS]
   --profile, -p TEXT    Profile (dev/prod)
 
 # List containers
@@ -394,6 +502,15 @@ shardctl logs [SERVICES...] [OPTIONS]
   --profile, -p TEXT    Profile (dev/prod)
   --follow, -f          Follow output
   --tail, -n INTEGER    Number of lines
+
+# Wait for F1R3FLY nodes to be ready (after starting a shard)
+poetry run shardctl wait [OPTIONS]
+  --timeout, -t INTEGER  Timeout in seconds (default: 300)
+
+# Reset F1R3FLY nodes: stop containers and delete blockchain data
+poetry run shardctl reset [OPTIONS]
+  --yes, -y             Skip confirmation prompt
+  --volumes, -v         Also remove Docker volumes
 ```
 
 ### Build and Images

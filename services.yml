@@ -15,40 +15,41 @@
 # The 'up' command brings up each compose file in order, waiting for each to succeed.
 # This ensures dependencies (like networks) are created before dependent services start.
 startup_order:
-  - docker-compose.yml           # Base f1r3node - creates the f1r3fly network
-  - docker-compose.embers.yml    # Embers API - depends on f1r3fly network
-  - docker-compose.f1r3sky.yml   # F1R3Sky services - depends on f1r3fly network
+  - docker-compose.yml # Base f1r3node - creates the f1r3fly network
+  - docker-compose.embers.yml # Embers API - depends on f1r3fly network
+  - docker-compose.f1r3sky.yml # F1R3Sky services - depends on f1r3fly network
 
 repositories:
   f1r3node:
-    url: git@github.com:nashef/f1r3fly.git
-    branch: casper-bugs  # Working branch for bug fixes
+    url: git@github.com:F1R3FLY-io/f1r3node.git
+    branch: main
   f1r3node-rust:
     url: git@github.com:F1R3FLY-io/f1r3node.git
-    branch: rust-dev  # Rust node on rust-dev branch
-    enabled: false  # rust-dev branch doesn't exist yet
+    branch: rust/dev
   rust-client:
     url: git@github.com:F1R3FLY-io/rust-client.git
     branch: main
   f1r3sky-backend:
     url: git@github.com:F1R3FLY-io/f1r3sky-backend.git
     branch: main
+    enabled: false
   f1r3sky:
     url: git@github.com:F1R3FLY-io/f1r3sky.git
     branch: main
-    enabled: true  # Frontend demo
+    enabled: false
   embers:
-    url: git@github.com:nashef/firefly-embers.git
+    url: git@github.com:F1R3FLY-io/firefly-embers.git
     branch: main
+    enabled: false
   embers-frontend:
     url: git@github.com:F1R3FLY-io/embers-frontend.git
     branch: main
-    enabled: true  # Web UI frontend (requires ~/.npmrc with GitHub token)
+    enabled: false # Web UI frontend (requires ~/.npmrc with GitHub token)
 
 # Build configuration for services
 builds:
   f1r3node:
-    # Scala node build configuration (main branch)
+    # Scala node build configuration
     # Main build command (compiles Scala and stages executable)
     build_command: "sbt stage"
 
@@ -56,7 +57,7 @@ builds:
     docker_build_command: "sbt node/docker:publishLocal"
 
     # Build environment
-    environment: "nix"  # Uses nix develop shell
+    environment: "nix" # Uses nix develop shell
 
     # Docker image produced
     docker_image: "f1r3flyindustries/f1r3fly-scala-node:latest"
@@ -64,47 +65,38 @@ builds:
     # Build dependencies
     dependencies:
       - "sbt"
-      - "cargo"
-      - "rustc"
       - "nix (optional but recommended)"
 
     # Notes:
-    # - Scala-based node implementation on main branch
+    # - Scala-based node implementation on chosen branch
     # - Uses SBT (Scala Build Tool) as primary build system
-    # - Requires Rust for native libraries (rspace, rholang)
     # - Nix flake provides complete dev environment
 
   f1r3node-rust:
-    # Rust node build configuration (rust-dev branch)
+    # Rust node build configuration (chosen branch)
     # Main build command (compiles Scala and stages executable)
-    build_command: "sbt stage"
+    build_command: "cargo build --release -p node"
 
     # Docker build command (includes Rust library compilation)
-    docker_build_command: "sbt node/docker:publishLocal"
+    docker_build_command: "./node/docker-commands.sh build-local"
 
     # Build environment
-    environment: "nix"  # Uses nix develop shell
-
-    # Pre-build steps for regular builds
-    pre_build_steps:
-      - "./scripts/build_rust_libraries.sh"  # Native build
+    environment: "nix" # Uses nix develop shell
 
     # Pre-build steps for Docker builds (runs in Nix environment)
     docker_pre_build_steps:
-      - "rustup default stable"  # Configure Rust toolchain
+      - "rustup default stable" # Configure Rust toolchain
 
     # Docker image produced
     docker_image: "f1r3flyindustries/f1r3fly-rust-node:latest"
 
     # Build dependencies
     dependencies:
-      - "sbt"
       - "cargo"
       - "rustc"
       - "nix (optional but recommended)"
 
     # Notes:
-    # - Uses SBT (Scala Build Tool) as primary build system
     # - Requires Rust for native libraries (rspace, rholang)
     # - Nix flake provides complete dev environment: nix develop
     # - Multi-architecture support: AMD64 and AARCH64

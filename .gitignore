@@ -49,3 +49,6 @@ Thumbs.db
 
 .token
 .token.classic
+
+# Blockchain data
+data/

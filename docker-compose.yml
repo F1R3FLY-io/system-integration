@@ -30,14 +30,14 @@ services:
       - "40405:40405"
     volumes:
       # Bootstrap-specific configuration (ceremony master)
-      - ./services/f1r3node/docker/conf/bootstrap-ceremony.conf:/var/lib/rnode/rnode.conf
-      - ./services/f1r3node/docker/genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
-      - ./services/f1r3node/docker/genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
-      - ./services/f1r3node/docker/conf/logback.xml:/var/lib/rnode/logback.xml
+      - ./conf/bootstrap-ceremony.conf:/var/lib/rnode/rnode.conf
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      - ./conf/logback.xml:/var/lib/rnode/logback.xml
       # Node-specific volumes
-      - ./services/f1r3node/docker/data/${BOOTSTRAP_HOST:-rnode.bootstrap}:/var/lib/rnode/
-      - ./services/f1r3node/docker/certs/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
-      - ./services/f1r3node/docker/certs/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro
+      - ./data/${BOOTSTRAP_HOST:-rnode.bootstrap}:/var/lib/rnode/
+      - ./certs/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ./certs/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro
 
   validator1:
     <<: *default-rnode
@@ -62,13 +62,13 @@ services:
       - "40414:40404"
       - "40415:40405"
     volumes:
-      - ./services/f1r3node/docker/conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
-      - ./services/f1r3node/docker/genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
-      - ./services/f1r3node/docker/genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
-      - ./services/f1r3node/docker/conf/logback.xml:/var/lib/rnode/logback.xml
-      - ./services/f1r3node/docker/data/${VALIDATOR1_HOST:-rnode.validator1}:/var/lib/rnode/
-      - ./services/f1r3node/docker/certs/validator1/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
-      - ./services/f1r3node/docker/certs/validator1/node.key.pem:/var/lib/rnode/node.key.pem:ro
+      - ./conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      - ./conf/logback.xml:/var/lib/rnode/logback.xml
+      - ./data/${VALIDATOR1_HOST:-rnode.validator1}:/var/lib/rnode/
+      - ./certs/validator1/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ./certs/validator1/node.key.pem:/var/lib/rnode/node.key.pem:ro
 
   validator2:
     <<: *default-rnode
@@ -93,13 +93,13 @@ services:
       - "40424:40404"
       - "40425:40405"
     volumes:
-      - ./services/f1r3node/docker/conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
-      - ./services/f1r3node/docker/genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
-      - ./services/f1r3node/docker/genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
-      - ./services/f1r3node/docker/conf/logback.xml:/var/lib/rnode/logback.xml
-      - ./services/f1r3node/docker/data/${VALIDATOR2_HOST:-rnode.validator2}:/var/lib/rnode/
-      - ./services/f1r3node/docker/certs/validator2/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
-      - ./services/f1r3node/docker/certs/validator2/node.key.pem:/var/lib/rnode/node.key.pem:ro
+      - ./conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      - ./conf/logback.xml:/var/lib/rnode/logback.xml
+      - ./data/${VALIDATOR2_HOST:-rnode.validator2}:/var/lib/rnode/
+      - ./certs/validator2/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ./certs/validator2/node.key.pem:/var/lib/rnode/node.key.pem:ro
 
   validator3:
     <<: *default-rnode
@@ -124,13 +124,13 @@ services:
       - "40434:40404"
       - "40435:40405"
     volumes:
-      - ./services/f1r3node/docker/conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
-      - ./services/f1r3node/docker/genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
-      - ./services/f1r3node/docker/genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
-      - ./services/f1r3node/docker/conf/logback.xml:/var/lib/rnode/logback.xml
-      - ./services/f1r3node/docker/data/${VALIDATOR3_HOST:-rnode.validator3}:/var/lib/rnode/
-      - ./services/f1r3node/docker/certs/validator3/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
-      - ./services/f1r3node/docker/certs/validator3/node.key.pem:/var/lib/rnode/node.key.pem:ro
+      - ./conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
+      - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      - ./conf/logback.xml:/var/lib/rnode/logback.xml
+      - ./data/${VALIDATOR3_HOST:-rnode.validator3}:/var/lib/rnode/
+      - ./certs/validator3/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
+      - ./certs/validator3/node.key.pem:/var/lib/rnode/node.key.pem:ro
 
   readonly:
     <<: *default-rnode
@@ -148,7 +148,7 @@ services:
       - --allow-private-addresses
       - -Dlogback.configurationFile=/var/lib/rnode/logback.xml
     volumes:
-      - ./services/f1r3node/docker/conf/logback.xml:/var/lib/rnode/logback.xml
+      - ./conf/logback.xml:/var/lib/rnode/logback.xml
 
   prometheus:
     image: prom/prometheus:latest
@@ -159,7 +159,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./services/f1r3node/docker/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     command:
       - --config.file=/etc/prometheus/prometheus.yml
 
@@ -177,7 +177,7 @@ services:
       - GF_USERS_DEFAULT_THEME=light
       # Note: grafana-piechart-panel is built into Grafana 8.x+, no need to install
     volumes:
-      - ./services/f1r3node/docker/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
 
 networks:
   f1r3fly:
