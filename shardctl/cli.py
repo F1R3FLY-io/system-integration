@@ -48,6 +48,7 @@ def handle_f1r3node_up(
     rust: bool,
     standalone: bool,
     shard: bool,
+    shard_light: bool,
     default: bool,
     build: bool,
     foreground: bool,
@@ -68,6 +69,8 @@ def handle_f1r3node_up(
     resolved_topology = None
     if standalone:
         resolved_topology = node_module.Topology.STANDALONE
+    elif shard_light:
+        resolved_topology = node_module.Topology.SHARD_LIGHT
     elif shard:
         resolved_topology = node_module.Topology.SHARD
     elif topology:
@@ -332,20 +335,22 @@ def up(
     rust: bool = typer.Option(False, "--rust", help="[f1r3node] Use Rust node"),
     standalone: bool = typer.Option(False, "--standalone", help="[f1r3node] Standalone topology"),
     shard: bool = typer.Option(False, "--shard", help="[f1r3node] Shard topology (multi-node)"),
+    shard_light: bool = typer.Option(False, "--shard-light", help="[f1r3node] Light shard (boot + 2 validators, ~6 GB RAM)"),
     default: bool = typer.Option(False, "--default", help="[f1r3node] Use defaults (scala + shard)"),
     node_type: Optional[str] = typer.Option(None, "--node-type", "-n", help="[f1r3node] Node type: scala or rust"),
-    topology: Optional[str] = typer.Option(None, "--topology", "-t", help="[f1r3node] Topology: standalone or shard"),
+    topology: Optional[str] = typer.Option(None, "--topology", "-t", help="[f1r3node] Topology: standalone, shard, or shard-light"),
 ):
     """Start services (detached by default).
 
     For regular services, starts in order defined in services.yml startup_order.
-    
+
     For f1r3node (blockchain nodes), use node-specific flags:
-    
-        poetry run shardctl up f1r3node --scala --standalone   # Scala standalone
-        poetry run shardctl up f1r3node --rust --shard         # Rust multi-node
-        poetry run shardctl up f1r3node --default              # Scala shard (default)
-        poetry run shardctl up f1r3node                        # Interactive mode
+
+        poetry run shardctl up f1r3node --scala --standalone    # Scala standalone
+        poetry run shardctl up f1r3node --rust --shard          # Rust multi-node
+        poetry run shardctl up f1r3node --scala --shard-light   # Light shard (boot + 2 validators)
+        poetry run shardctl up f1r3node --default               # Scala shard (default)
+        poetry run shardctl up f1r3node                         # Interactive mode
     """
     if not validate_environment():
         raise typer.Exit(1)
@@ -359,6 +364,7 @@ def up(
             rust=rust,
             standalone=standalone,
             shard=shard,
+            shard_light=shard_light,
             default=default,
             build=build,
             foreground=foreground,
