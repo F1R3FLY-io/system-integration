@@ -146,6 +146,19 @@ def _compose_down() -> None:
     )
 
 
+def _ensure_data_dirs(container_names: List[str]) -> None:
+    """Create bind-mount data directories so docker-compose up succeeds.
+
+    Docker requires bind-mount source paths to exist. On fresh CI runs the
+    data/ hierarchy does not exist; create it before compose up.
+    """
+    tests_dir = _get_tests_dir()
+    data_root = os.path.join(tests_dir, "data")
+    for name in container_names:
+        path = os.path.join(data_root, name)
+        os.makedirs(path, exist_ok=True)
+
+
 def _reset_data() -> None:
     """Delete the test data directory (may contain root-owned files from Docker)."""
     tests_dir = _get_tests_dir()
@@ -304,6 +317,7 @@ def start_standalone_node(
         # Clean state
         _standalone_compose_down(override_file=override_file)
         _reset_standalone_data()
+        _ensure_data_dirs([STANDALONE_CONTAINER])
 
         # Start
         _standalone_compose_up(override_file=override_file)
@@ -564,6 +578,7 @@ def shard(request, command_line_options: CommandLineOptions,
     if not skip_setup:
         _compose_down()
         _reset_data()
+        _ensure_data_dirs(ALL_CONTAINERS)
         _compose_up()
 
     try:
@@ -1125,6 +1140,7 @@ def start_custom_shard(
         # Clean any leftover state from a previous run
         _custom_compose_down(compose_file)
         _reset_custom_data(container_names)
+        _ensure_data_dirs(container_names)
 
         _custom_compose_up(compose_file)
 
