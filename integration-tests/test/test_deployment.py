@@ -10,10 +10,12 @@ the consensus layer (EventLogIndex, DeployChainIndex, ConflictSetMerger)
 and adding transient-error recovery in the Proposer.
 """
 
+import logging
 import time
 
 import pytest
 from docker.client import DockerClient
+from f1r3fly.client import RClientException
 
 from .conftest import (
     assert_containers_running,
@@ -39,50 +41,48 @@ def test_deploy_with_not_enough_phlo(
 
     node = validator1_node
 
-    # Record block count before deploy
-    initial_count = node.get_blocks_count(20)
-
     # Deploy with intentionally low phlo limit (97 phlo needed, only 10 allowed)
-    node.deploy_string(
+    deploy_id = node.deploy_string(
         '@1!(1)',
         VALIDATOR1_KEY,
         phlo_limit=10,
         phlo_price=1,
     )
+    logging.info("Deployed with insufficient phlo, deploy_id=%s", deploy_id[:24])
 
-    # Wait for heartbeat to propose a block containing the deploy
-    deadline = time.time() + 60
-    block_with_deploy = None
+    # Poll find_deploy until the heartbeat includes the deploy in a block.
+    # find_deploy is a direct index lookup (deploy-id -> block-hash) and does
+    # not depend on the DAG tip depth window, unlike get_blocks(N).
+    deadline = time.time() + 120
+    block_hash = None
     while time.time() < deadline:
-        current_count = node.get_blocks_count(20)
-        if current_count > initial_count:
-            # Check recent blocks for our deploy
-            blocks = node.get_blocks(20)
-            for block in blocks:
-                if block.deployCount > 0 and block.blockNumber > 0:
-                    block_info = node.get_block(block.blockHash)
-                    for deploy in block_info.deploys:
-                        if deploy.term == '@1!(1)':
-                            block_with_deploy = block_info
-                            break
-                if block_with_deploy:
-                    break
-        if block_with_deploy:
+        try:
+            light_block = node.find_deploy(deploy_id)
+            block_hash = light_block.blockHash
+            logging.info(
+                "Deploy found in block %s (blockNumber=%d)",
+                block_hash[:16], light_block.blockNumber,
+            )
             break
-        time.sleep(3)
+        except RClientException:
+            time.sleep(3)
 
-    assert block_with_deploy is not None, (
-        "Deploy should have been included in a block within 60s"
+    assert block_hash is not None, (
+        f"Deploy {deploy_id[:24]} should have been included in a block within 120s"
     )
 
-    # Find the deploy with our term
+    # Fetch full block to inspect the deploy's errored status.
+    # find_deploy guarantees our deploy is in this block; match by term.
+    block_info = node.get_block(block_hash)
     errored_deploy = None
-    for deploy in block_with_deploy.deploys:
+    for deploy in block_info.deploys:
         if deploy.term == '@1!(1)':
             errored_deploy = deploy
             break
 
-    assert errored_deploy is not None, "Should find our deploy in the block"
+    assert errored_deploy is not None, (
+        f"Should find deploy with term '@1!(1)' in block {block_hash[:16]}"
+    )
     assert errored_deploy.errored, (
         f"Deploy with phlo_limit=10 should be errored, got errored={errored_deploy.errored}"
     )

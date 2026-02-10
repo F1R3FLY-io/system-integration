@@ -199,18 +199,37 @@ def test_bonding_validators(
             # Wait for joiner to see the epoch change block
             _poll_block_visible(joiner, b4)
 
-            # ── Block 5: Joiner can now propose ──
-            logging.info("Block 5: Joiner proposes after epoch activation")
+            # ── Block 5: V2 filler after epoch boundary ──
+            # The joiner's earlier (rejected) propose attempt left a
+            # "previous block" context.  If the joiner tries to propose
+            # immediately, its parent set is all ancestors of that previous
+            # context and the self-validation check rejects with
+            # InvalidParents ("validator has not made progress").
+            # Having another validator propose first gives the joiner a
+            # fresh parent that breaks the no-progress condition.
+            logging.info("Block 5: V2 filler to advance DAG for joiner")
+            v2.deploy_string(
+                '@"post-epoch-filler"!(5)',
+                VALIDATOR2_KEY,
+                phlo_limit=100_000_000,
+                phlo_price=1,
+            )
+            b5 = v2.propose()
+            logging.info("Block 5 (V2 filler): %s", b5[:16])
+            _poll_block_visible(joiner, b5)
+
+            # ── Block 6: Joiner can now propose ──
+            logging.info("Block 6: Joiner proposes after epoch activation")
             joiner.deploy_string(
-                '@"joiner-active"!(5)',
+                '@"joiner-active"!(6)',
                 VALIDATOR4_KEY,
                 phlo_limit=100_000_000,
                 phlo_price=1,
             )
-            b5 = joiner.propose()
-            logging.info("Block 5 (joiner): %s", b5[:16])
+            b6 = joiner.propose()
+            logging.info("Block 6 (joiner): %s", b6[:16])
 
             # Verify the joiner's block is visible on V1
-            _poll_block_visible(v1, b5)
+            _poll_block_visible(v1, b6)
 
             logging.info("Bonding test passed -- joiner activated at epoch boundary")

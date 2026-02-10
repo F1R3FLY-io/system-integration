@@ -1,6 +1,7 @@
 import dataclasses
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -1028,6 +1029,57 @@ def _custom_compose_up(compose_file: str) -> None:
     )
 
 
+def _force_cleanup_custom_containers() -> None:
+    """Force-remove all custom shard containers and network by name.
+
+    docker-compose down only removes containers it knows about from the
+    compose file's project context.  Leftover containers from a previous
+    test or CI run (started from a different compose file) are invisible
+    to it.  This function removes them by their fixed container names,
+    ensuring ports are released before the next custom shard starts.
+    """
+    all_custom = [
+        CUSTOM_BOOT_CONTAINER,
+        "rnode.custom.validator1",
+        "rnode.custom.validator2",
+        "rnode.custom.validator3",
+        CUSTOM_JOINER_CONTAINER,
+    ]
+    for name in all_custom:
+        subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True,
+            check=False,
+        )
+    subprocess.run(
+        ["docker", "network", "rm", CUSTOM_NETWORK],
+        capture_output=True,
+        check=False,
+    )
+
+
+def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
+    """Wait until a TCP port is available for binding.
+
+    After stopping containers, the kernel may hold ports in TIME_WAIT
+    state for a few seconds.  This function polls until the port is free
+    or raises RuntimeError after the timeout.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("0.0.0.0", port))
+                return
+            except OSError:
+                time.sleep(1)
+    raise RuntimeError(
+        f"Port {port} still in use after {timeout}s -- "
+        "leftover container or TIME_WAIT?"
+    )
+
+
 def _custom_compose_down(compose_file: str) -> None:
     """Tear down the custom shard via docker-compose."""
     tests_dir = _get_tests_dir()
@@ -1185,10 +1237,17 @@ def start_custom_shard(
             per_node_cli_options=per_node_cli_options,
         )
 
-        # Clean any leftover state from a previous run
+        # Clean any leftover state from a previous run.
+        # Force-remove containers by name first -- docker-compose down only
+        # removes containers from its own project context and misses
+        # leftovers from a previous test or CI job.
+        _force_cleanup_custom_containers()
         _custom_compose_down(compose_file)
         _reset_custom_data(container_names)
         _ensure_data_dirs(container_names)
+
+        # Wait for the bootstrap port to be released (kernel TIME_WAIT)
+        _wait_for_port_free(_CUSTOM_PORT_BASES['boot'])
 
         _custom_compose_up(compose_file)
 

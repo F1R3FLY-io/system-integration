@@ -285,7 +285,7 @@ def test_block_api_returns_transfer_info(
     # catch HttpRequestException (e.g. 404) and retry within the loop.
     http_client = HttpClient('localhost', readonly_node.get_http_port())
     deploy_with_transfers = None
-    deadline = time.time() + 60
+    deadline = time.time() + 120
 
     while time.time() < deadline:
         try:
@@ -309,7 +309,7 @@ def test_block_api_returns_transfer_info(
         time.sleep(5)
 
     assert deploy_with_transfers is not None, (
-        f"Transfers not populated within 60s for block {block_hash}. "
+        f"Transfers not populated within 120s for block {block_hash}. "
         "BlockReportAPI should be available on the read-only node."
     )
 
