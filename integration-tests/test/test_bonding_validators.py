@@ -123,6 +123,7 @@ def test_bonding_validators(
                 "--epoch-length": "4",
                 "--quarantine-length": "20",
                 "--synchrony-constraint-threshold": "0",
+                "--heartbeat-disabled": "",
             },
         ) as joiner:
             # Wait for joiner to see the latest block

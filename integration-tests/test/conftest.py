@@ -1358,7 +1358,10 @@ def add_peer_to_shard(
     ]
     if cli_options:
         for k, v in sorted(cli_options.items()):
-            command.append(f"{k}={v}")
+            if v:
+                command.append(f"{k}={v}")
+            else:
+                command.append(k)
 
     base_port = _CUSTOM_PORT_BASES['joiner']
     ports = {f"4040{p}/tcp": base_port + p for p in range(6)}
