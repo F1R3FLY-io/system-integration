@@ -507,14 +507,126 @@ def build(
     services: Optional[List[str]] = typer.Argument(None, help="Services to build"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
     no_cache: bool = typer.Option(False, "--no-cache", help="Do not use cache when building"),
+    no_docker: bool = typer.Option(
+        False,
+        "--no-docker",
+        help="Skip building Docker images (only build from source)"
+    ),
+    docker_only: bool = typer.Option(
+        False,
+        "--docker-only",
+        help="Only build Docker images (skip source build)"
+    ),
 ):
-    """Build or rebuild service images."""
+    """Build services using build commands from services.yml.
+
+    By default, builds all enabled services (both from source and Docker images).
+    Specify service names to build specific services regardless of enabled status.
+
+    Examples:
+        shardctl build                    # Build all enabled services
+        shardctl build --no-docker        # Build all enabled services (source only)
+        shardctl build --docker-only      # Build all enabled services (Docker only)
+        shardctl build f1r3node embers    # Build specific services
+    """
     if not validate_environment():
         raise typer.Exit(1)
 
-    manager = get_manager(profile)
-    console.print("[bold blue]Building services...[/bold blue]")
-    manager.build(services=services, no_cache=no_cache)
+    if no_docker and docker_only:
+        console.print("[red]Error: --no-docker and --docker-only cannot be used together[/red]")
+        raise typer.Exit(1)
+
+    config = Config()
+
+    # Build all enabled services if no services specified
+    if not services:
+        build_configs = config.get_all_build_configs(only_enabled=True)
+        if not build_configs:
+            console.print("[yellow]No enabled services with build configurations found[/yellow]")
+            return
+
+        if no_docker:
+            console.print(f"[bold blue]Building {len(build_configs)} enabled service(s) from source...[/bold blue]\n")
+        elif docker_only:
+            console.print(f"[bold blue]Building Docker images for {len(build_configs)} enabled service(s)...[/bold blue]\n")
+        else:
+            console.print(f"[bold blue]Building {len(build_configs)} enabled service(s) (source + Docker)...[/bold blue]\n")
+
+        for svc_name, build_config in build_configs.items():
+            console.print(f"[cyan]Building {svc_name}...[/cyan]")
+
+            # Get service path
+            working_dir = build_config.get("working_directory")
+            if working_dir:
+                service_path = config.services_dir / working_dir
+            else:
+                service_path = config.services_dir / svc_name
+
+            # Build from source first (unless docker-only)
+            if not docker_only:
+                success = build_service(svc_name, service_path, build_config, docker=False)
+                if not success:
+                    console.print(f"[red]✗[/red] Build failed, stopping")
+                    raise typer.Exit(1)
+
+            # Build Docker image if not skipped
+            if not no_docker:
+                if build_config.get("docker_build_command"):
+                    success_docker = build_service(svc_name, service_path, build_config, docker=True)
+                    if not success_docker:
+                        console.print(f"[red]✗[/red] Docker build failed, stopping")
+                        raise typer.Exit(1)
+                elif not docker_only:
+                    pass  # No docker build command, that's okay
+                else:
+                    console.print(f"[dim]No Docker build command configured for {svc_name}, skipping[/dim]")
+
+            console.print()  # Empty line between services
+
+        console.print(f"[green]✓[/green] All {len(build_configs)} service(s) built successfully")
+        return
+
+    # Build specific services
+    console.print("[bold blue]Building specified services...[/bold blue]\n")
+
+    for svc_name in services:
+        build_config = config.get_service_build_config(svc_name)
+
+        if not build_config:
+            console.print(
+                f"[red]No build configuration found for service '{svc_name}'[/red]\n"
+                f"[dim]Add build configuration to services.yml[/dim]"
+            )
+            raise typer.Exit(1)
+
+        console.print(f"[cyan]Building {svc_name}...[/cyan]")
+
+        # Get service path
+        working_dir = build_config.get("working_directory")
+        if working_dir:
+            service_path = config.services_dir / working_dir
+        else:
+            service_path = config.services_dir / svc_name
+
+        # Build from source first (unless docker-only)
+        if not docker_only:
+            success = build_service(svc_name, service_path, build_config, docker=False)
+            if not success:
+                raise typer.Exit(1)
+
+        # Build Docker image if not skipped
+        if not no_docker:
+            if build_config.get("docker_build_command"):
+                success_docker = build_service(svc_name, service_path, build_config, docker=True)
+                if not success_docker:
+                    raise typer.Exit(1)
+            elif docker_only:
+                console.print(f"[dim]No Docker build command configured for {svc_name}, skipping[/dim]")
+            else:
+                console.print(f"[dim]No Docker build command configured for {svc_name}, skipping Docker build[/dim]")
+
+        console.print()
+
     console.print("[green]✓[/green] Build completed successfully")
 
 

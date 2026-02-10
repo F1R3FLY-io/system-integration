@@ -201,47 +201,76 @@ class Config:
     def get_all_build_configs(self, only_enabled: bool = True) -> Dict[str, Dict]:
         """Get all service build configurations.
 
+        If only_enabled=True, returns only builds where:
+        - The parent service is enabled (defaults to True if service not in repositories)
+        - The build itself is enabled (enabled field in builds section, defaults to True)
+
         Args:
-            only_enabled: If True, only return build configs for enabled services. If False, return all.
+            only_enabled: If True, only return enabled builds. If False, return all.
 
         Returns:
-            Dictionary mapping service names to their build configurations.
+            Dictionary mapping build names to their build configurations.
         """
         services_config_file = self.root_dir / "services.yml"
 
-        if services_config_file.exists():
-            with open(services_config_file, 'r') as f:
-                services_config = yaml.safe_load(f)
-                builds = services_config.get('builds', {})
+        if not services_config_file.exists():
+            return {}
 
-                # Filter by enabled status if requested
-                if only_enabled:
-                    # Get repositories to check enabled status
-                    repos = services_config.get('repositories', {})
-                    filtered_builds = {}
+        with open(services_config_file, 'r') as f:
+            services_config = yaml.safe_load(f)
+            builds = services_config.get('builds', {})
+            repos = services_config.get('repositories', {})
 
-                    for service_name, build_config in builds.items():
-                        # Check if service exists in repositories
-                        if service_name in repos:
-                            repo_config = repos[service_name]
-                            # Handle old format (string URL)
-                            if isinstance(repo_config, str):
-                                is_enabled = True
-                            else:
-                                # Handle new format (dict) - default to True
-                                is_enabled = repo_config.get('enabled', True)
+        if not only_enabled:
+            return builds
 
-                            if is_enabled:
-                                filtered_builds[service_name] = build_config
-                        else:
-                            # Service not in repositories - include it (for services that only have builds)
-                            filtered_builds[service_name] = build_config
+        # Build a mapping of which builds belong to which services
+        # Also track which services are enabled
+        service_to_builds = {}
+        service_enabled = {}
 
-                    return filtered_builds
+        for service_name, repo_config in repos.items():
+            # Determine if service is enabled
+            if isinstance(repo_config, str):
+                is_enabled = True
+            else:
+                is_enabled = repo_config.get('enabled', True)
 
-                return builds
+            service_enabled[service_name] = is_enabled
 
-        return {}
+            # Get builds list for this service (default to [service_name])
+            if isinstance(repo_config, dict):
+                builds_list = repo_config.get('builds', [service_name])
+            else:
+                builds_list = [service_name]
+
+            service_to_builds[service_name] = builds_list
+
+        # Now filter builds
+        filtered_builds = {}
+
+        for build_name, build_config in builds.items():
+            # Check if this build's parent service is enabled
+            parent_service = None
+            parent_enabled = True  # Default to True if no parent found
+
+            for service_name, builds_list in service_to_builds.items():
+                if build_name in builds_list:
+                    parent_service = service_name
+                    parent_enabled = service_enabled.get(service_name, True)
+                    break
+
+            # If parent service is disabled, skip this build
+            if not parent_enabled:
+                continue
+
+            # Check if build itself is enabled (defaults to True)
+            build_enabled = build_config.get('enabled', True)
+
+            if build_enabled:
+                filtered_builds[build_name] = build_config
+
+        return filtered_builds
 
     def ensure_services_dir(self):
         """Ensure services directory exists."""
