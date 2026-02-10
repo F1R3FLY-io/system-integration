@@ -1,0 +1,53 @@
+# =================================================================
+# F1R3FLY RUST NODE - STANDALONE INTEGRATION TEST
+# =================================================================
+# Runs a single standalone Rust node for integration tests.
+# Adapted from compose/rust-standalone.yml with test-specific ports
+# (40460-40465) to avoid conflict with the shard topology (40400-40455).
+#
+# Usage (from integration-tests/ directory):
+#   docker-compose --env-file .env.node -f docker-compose.standalone-rust.yml up -d
+#
+# Port Mapping:
+#   Standalone: 40460-40465 (host) -> 40400-40405 (container)
+
+services:
+  standalone:
+    image: f1r3flyindustries/f1r3fly-rust-node:latest
+    user: root
+    restart: "no"
+    networks:
+      - f1r3fly-test-standalone
+    container_name: ${STANDALONE_HOST:-rnode.standalone}
+    command:
+      [
+        "run",
+        "-s",
+        "--host=${STANDALONE_HOST:-rnode.standalone}",
+        "--validator-private-key=${STANDALONE_PRIVATE_KEY:-5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657}",
+      ]
+    ports:
+      - "40460:40400"
+      - "40461:40401"
+      - "40462:40402"
+      - "40463:40403"
+      - "40464:40404"
+      - "40465:40405"
+    volumes:
+      - ./conf/standalone-dev.conf:/var/lib/rnode/rnode.conf
+      - ./genesis/standalone-wallets.txt:/var/lib/rnode/genesis/wallets.txt
+      - ./genesis/standalone-bonds.txt:/var/lib/rnode/genesis/bonds.txt
+      - ./data/${STANDALONE_HOST:-rnode.standalone}:/var/lib/rnode/
+    environment:
+      - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
+      - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+networks:
+  f1r3fly-test-standalone:
+    driver: bridge

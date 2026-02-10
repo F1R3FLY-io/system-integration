@@ -22,7 +22,7 @@ startup_order:
 repositories:
   f1r3node:
     url: git@github.com:F1R3FLY-io/f1r3node.git
-    branch: main
+    branch: dev
   f1r3node-rust:
     url: git@github.com:F1R3FLY-io/f1r3node.git
     branch: rust/dev
