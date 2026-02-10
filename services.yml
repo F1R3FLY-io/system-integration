@@ -33,6 +33,11 @@ repositories:
     url: git@github.com:F1R3FLY-io/f1r3sky-backend.git
     branch: main
     enabled: false
+    builds:
+      - f1r3sky-backend-bsky
+      - f1r3sky-backend-pds
+      - f1r3sky-backend-bsync
+      - f1r3sky-backend-ozone
   f1r3sky:
     url: git@github.com:F1R3FLY-io/f1r3sky.git
     branch: main
