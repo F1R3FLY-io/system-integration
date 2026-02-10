@@ -19,29 +19,40 @@ This repository provides a clean structure for managing multiple microservice re
 
 ```
 .
-├── compose/                     # Node compose files (Scala/Rust, Standalone/Shard)
+├── compose/                        # Node compose files (Scala/Rust, Standalone/Shard)
 │   ├── scala-standalone.yml
-│   ├── rust-standalone.yml
 │   ├── scala-shard.yml
-│   ├── rust-shard.yml
 │   ├── scala-observer.yml
-│   ├── rust-observer.yml
 │   ├── scala-validator4.yml
+│   ├── rust-standalone.yml
+│   ├── rust-shard.yml
+│   ├── rust-observer.yml
 │   └── rust-validator4.yml
-├── conf/                        # Node configuration files
-├── certs/                       # TLS certificates for nodes
-├── genesis/                     # Genesis wallets and bonds
-├── .env.node                    # Node environment variables
-├── .env.embers                  # Embers environment variables
-├── .env.f1r3sky                 # F1R3SKY environment variables
-├── services/                    # Service repositories (git-ignored)
-│   └── .gitkeep                # Tracked to maintain directory
-├── shardctl/                   # CLI tool package
-├── docker-compose.yml          # Legacy compose (shardctl)
-├── docker-compose.dev.yml      # Development overrides
-├── services.yml                # Service repository URLs (optional)
-├── pyproject.toml              # Python package configuration
-└── README.md                   # This file
+├── conf/                           # Node configuration files
+├── certs/                          # TLS certificates for nodes
+├── genesis/                        # Genesis wallets and bonds
+├── integration-tests/              # Integration test suite (see integration-tests/README.md)
+│   ├── test/                       #   Test modules
+│   ├── resources/                  #   Rholang contracts and test data
+│   ├── conf/                       #   Test-specific node configuration
+│   ├── certs/                      #   Test-specific TLS certificates
+│   ├── genesis/                    #   Test-specific genesis files
+│   ├── docker-compose.scala.yml    #   Shard compose (Scala)
+│   ├── docker-compose.rust.yml     #   Shard compose (Rust)
+│   ├── docker-compose.standalone-scala.yml
+│   ├── docker-compose.standalone-rust.yml
+│   └── README.md                   #   Test documentation
+├── shardctl/                       # CLI tool package
+├── services/                       # Service repositories (git-ignored)
+│   └── .gitkeep
+├── .env.node                       # Node environment variables
+├── .env.embers                     # Embers environment variables
+├── .env.f1r3sky                    # F1R3SKY environment variables
+├── docker-compose.yml              # Legacy compose (shardctl)
+├── docker-compose.dev.yml          # Development overrides
+├── services.yml                    # Service repository URLs (optional)
+├── pyproject.toml                  # Python package and pytest configuration
+└── README.md                       # This file
 ```
 
 ## Installation
@@ -155,8 +166,11 @@ curl -sSL https://install.python-poetry.org | python3 -
 From the repository root:
 
 ```bash
-# Install dependencies and create virtual environment
+# Install core dependencies (shardctl CLI only)
 poetry install
+
+# Install with integration test dependencies
+poetry install --with integration
 
 # Run shardctl commands using poetry run
 poetry run shardctl --help
@@ -166,7 +180,7 @@ poetry shell
 shardctl --help
 ```
 
-Poetry automatically manages a virtual environment and installs all dependencies.
+Poetry automatically manages a virtual environment and installs all dependencies. The `--with integration` flag adds pytest, Docker SDK, gRPC client, and other packages needed to run the integration test suite.
 
 ## Quick Start
 
@@ -182,8 +196,11 @@ First, ensure you have the core requirements:
 # Install Poetry (if not already installed)
 curl -sSL https://install.python-poetry.org | python3 -
 
-# Install shardctl
+# Install shardctl (core CLI only)
 poetry install
+
+# Or install with integration test dependencies
+poetry install --with integration
 
 # Verify installation
 poetry run shardctl --help
@@ -205,11 +222,8 @@ pnpm add -g node-gyp
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 
-# For F1R3node (Scala) - Option 1: Use Nix (recommended)
+# For F1R3node - Option 1: Use Nix (recommended)
 sh <(curl -L https://nixos.org/nix/install) --daemon
-
-# For F1R3node (Scala) - Option 2: Install manually
-# Install SBT, Java 11, and Rust (see Prerequisites section)
 ```
 
 #### 3. Clone Service Repositories
@@ -223,6 +237,7 @@ poetry run shardctl clone
 
 This will clone:
 - `f1r3node` (main branch) - Scala blockchain node
+- `f1r3node-rust` (rust/main branch) - Rust blockchain node
 - `rust-client` (main branch) - Rust CLI client
 - `f1r3sky-backend` (main branch) - AT Protocol services
 - `embers` (main branch) - Rust API bridge
@@ -266,7 +281,8 @@ The `--sync` flag fetches and checks out the branch configured in `services.yml`
 This is useful when you've updated branch names in `services.yml` and want to build from those branches.
 
 This produces images such as:
-- f1r3flyindustries/f1r3fly-scala-node:latest (f1r3node)
+- f1r3flyindustries/f1r3fly-scala-node:latest (f1r3node Scala)
+- f1r3flyindustries/f1r3fly-rust-node:latest (f1r3node Rust)
 - f1r3flyindustries/embers:latest
 - f1r3flyindustries/f1r3sky-bsky:latest
 - f1r3flyindustries/f1r3sky-pds:latest
@@ -274,7 +290,8 @@ This produces images such as:
 - f1r3flyindustries/f1r3sky-ozone:latest
 
 **Expected build times:**
-- F1R3node: ~10-15 minutes (first build)
+- F1R3node: ~5-7 minutes (first build)
+- F1R3node-Rust: ~8-12 minutes (first build)
 - F1R3Sky services: ~2-3 minutes each
 - Embers: ~3-5 minutes
 
@@ -284,6 +301,7 @@ Start all services using shardctl (which automatically orchestrates all configur
 
 ```bash
 # Start all services (F1R3node, F1R3Sky, and Embers)
+# Defaults to Scala node implementation with shard topology
 poetry run shardctl up
 ```
 
@@ -292,10 +310,14 @@ poetry run shardctl up
 2. Transition to "Running" state
 3. Initialize Casper consensus (ready to accept deployments)
 
-Wait for blockchain initialization before using Embers API. You can monitor the blockchain startup progress with:
+Wait for blockchain initialization before using Embers API:
 
 ```bash
-poetry run shardctl logs --follow rnode.bootstrap
+# Wait for all nodes to reach Running state (blocks until ready or timeout)
+poetry run shardctl wait
+
+# With a custom timeout (default is 300s)
+poetry run shardctl wait --timeout 120
 ```
 
 #### 7. Verify All Services Running
@@ -335,18 +357,23 @@ Services are now accessible:
 Monitor service logs using shardctl:
 
 ```bash
-# F1R3node blockchain logs
-poetry run shardctl logs --follow rnode.bootstrap
+# View recent logs for a specific node
+poetry run shardctl logs rnode.bootstrap
+
+# Follow logs in real-time (-f / --follow)
+poetry run shardctl logs -f rnode.bootstrap
+
+# Show last N lines (--tail / -n)
+poetry run shardctl logs --tail 100 rnode.validator1
+
+# Follow all node logs at once
+poetry run shardctl logs -f
 
 # Embers API logs
-poetry run shardctl logs --follow embers-api
+poetry run shardctl logs -f embers-api
 
 # F1R3Sky service logs
-poetry run shardctl logs --follow f1r3sky-pds
-poetry run shardctl logs --follow f1r3sky-bsky
-
-# View all logs at once
-poetry run shardctl logs --follow
+poetry run shardctl logs -f f1r3sky-pds
 ```
 
 #### 10. Stop Services
@@ -563,6 +590,25 @@ shardctl compose ARGS... [OPTIONS]
 shardctl compose config --services
 shardctl compose images
 shardctl compose top service-1
+```
+
+## Integration Tests
+
+Integration tests verify F1R3FLY node behavior through HTTP and gRPC APIs against Docker-managed node clusters. The test suite covers consensus, wallets, deploys, finalization, heartbeat, state trimming, bonding, slashing, and more.
+
+For full documentation on running tests, available test suites, parallel execution, log files, and troubleshooting, see **[integration-tests/README.md](integration-tests/README.md)**.
+
+Quick start:
+
+```bash
+# Install dependencies (including integration test packages)
+poetry install --with integration
+
+# Run full test suite (Scala node image is default)
+poetry run pytest integration-tests/test/ -v --tb=short --log-cli-level=WARNING
+
+# Run a single test file
+poetry run pytest integration-tests/test/test_wallets.py -v --tb=short
 ```
 
 ## Docker Compose Configuration
