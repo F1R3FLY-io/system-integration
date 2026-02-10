@@ -25,6 +25,7 @@ x-rnode: &default-rnode
   networks:
     - f1r3fly-shard
   environment:
+    - JAVA_TOOL_OPTIONS=-Xmx2g
     - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
     - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
 

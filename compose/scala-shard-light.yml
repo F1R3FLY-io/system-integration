@@ -15,6 +15,9 @@
 #   Bootstrap:   40400-40405
 #   Validator1:  40410-40415
 #   Validator2:  40420-40425
+#   cAdvisor:    8080
+#   Prometheus:  9090
+#   Grafana:     3000
 
 x-rnode: &default-rnode
   image: f1r3flyindustries/f1r3fly-scala-node
@@ -140,6 +143,66 @@ services:
       timeout: 10s
       retries: 5
       start_period: 90s
+
+  # =================================================================
+  # MONITORING STACK
+  # =================================================================
+
+  # cAdvisor — collects container metrics, feeds Prometheus
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    restart: always
+    privileged: true
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - f1r3fly-shard
+
+  # Prometheus — scrapes cAdvisor every 15s, stores metrics on disk
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: always
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    depends_on:
+      - cadvisor
+    networks:
+      - f1r3fly-shard
+
+  # Grafana — web dashboards, queries Prometheus
+  # Default login: admin / admin
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ../monitoring/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - f1r3fly-shard
+
+volumes:
+  prometheus-data:
+  grafana-data:
 
 networks:
   f1r3fly-shard:
