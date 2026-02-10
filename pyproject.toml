@@ -52,10 +52,11 @@ testpaths = ["integration-tests/test"]
 # one per infrastructure group (shard, standalone, custom). Each test is
 # tagged with @pytest.mark.xdist_group() so all tests sharing the same
 # Docker environment run on the same worker.
-# NOTE: test_consensus_health.py MUST remain last in the shard group -- it
-# scans shard logs from ALL preceding shard tests. The xdist_group("shard")
-# marker keeps it on the same worker, and pytest_collection_modifyitems
-# preserves the ordering below within each worker.
+# NOTE: test_consensus_health.py MUST remain the last shard test -- it
+# scans shard logs from ALL preceding shard tests. It is placed just before
+# the custom tests so the shard can be torn down (by the
+# pytest_runtest_teardown hook in conftest.py) before the resource-heavy
+# custom shard tests begin.
 python_files = [
 	"test_web_api.py",
 	"test_wallets.py",
@@ -67,18 +68,18 @@ python_files = [
 	"test_dag_correctness.py",
 	"test_finalization.py",
 	"test_propose.py",
+	"test_consensus_health.py",
 	"test_synchrony_constraint.py",
 	"test_asymmetric_bonds.py",
 	"test_bonding_validators.py",
 	"test_trim_state.py",
-	"test_consensus_health.py",
 ]
 markers = [
 	"xdist_group: assign test to an xdist load group (shard, standalone, custom)",
 ]
 # Per-test timeout (seconds).
 # Individual tests can override with @pytest.mark.timeout(N).
-timeout = 300
+timeout = 600
 
 [tool.black]
 line-length = 100

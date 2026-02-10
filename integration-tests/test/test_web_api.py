@@ -7,6 +7,7 @@ ceremony master and cannot propose).
 Heartbeat auto-proposes blocks so the fixture only deploys and waits for
 blocks to appear rather than calling propose() directly.
 """
+import logging
 import time
 from typing import Generator, Tuple, List
 import pytest
@@ -20,8 +21,11 @@ pytestmark = pytest.mark.xdist_group("shard")
 @pytest.fixture(scope="module")
 def node_with_blocks(validator1_node: Node) -> Generator[Tuple[Node, List[str], List[str]], None, None]:
     """Deploy three contracts on validator1 and wait for heartbeat to include
-    them in blocks, yielding the node along with deploy hashes and the block
-    hashes that contain them."""
+    them in blocks and for those blocks to be finalized.
+
+    Yields the node along with deploy hashes and the block hashes that
+    contain them.  The finalization wait ensures that downstream tests
+    (e.g. prepare_deploy) see correct sequence numbers."""
     deploy_hashes: List[str] = []
 
     for _ in range(3):
@@ -36,6 +40,7 @@ def node_with_blocks(validator1_node: Node) -> Generator[Tuple[Node, List[str], 
 
     # Wait for heartbeat to propose blocks containing all three deploys
     block_hashes: List[str] = []
+    max_block_number = 0
     deadline = time.time() + 120
     remaining = set(deploy_hashes)
     while remaining and time.time() < deadline:
@@ -44,6 +49,8 @@ def node_with_blocks(validator1_node: Node) -> Generator[Tuple[Node, List[str], 
                 deploy_info = validator1_node.find_deploy(dh)
                 if deploy_info.blockHash:
                     block_hashes.append(deploy_info.blockHash)
+                    if deploy_info.blockNumber > max_block_number:
+                        max_block_number = deploy_info.blockNumber
                     remaining.discard(dh)
             except Exception:
                 pass
@@ -53,6 +60,27 @@ def node_with_blocks(validator1_node: Node) -> Generator[Tuple[Node, List[str], 
     assert not remaining, (
         f"Deploys not included in blocks within 120s: {remaining}"
     )
+
+    # Wait for the LFB to advance past the highest block containing a deploy.
+    # prepare_deploy returns a sequence number based on finalized state, so
+    # without this wait the assertion can see stale (lower) values.
+    lfb_deadline = time.time() + 120
+    while time.time() < lfb_deadline:
+        lfb = validator1_node.last_finalized_block()
+        lfb_number = lfb.blockInfo.blockNumber
+        if lfb_number >= max_block_number:
+            logging.info(
+                "LFB #%d >= deploy block #%d -- finalization caught up",
+                lfb_number, max_block_number,
+            )
+            break
+        time.sleep(5)
+    else:
+        logging.warning(
+            "LFB #%d did not reach deploy block #%d within 120s -- "
+            "continuing anyway",
+            lfb_number, max_block_number,
+        )
 
     yield (validator1_node, deploy_hashes, block_hashes)
 

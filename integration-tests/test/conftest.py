@@ -426,6 +426,10 @@ def pytest_collection_modifyitems(config, items: list) -> None:
     test execution order. Tests from files listed earlier run first. Tests from
     files not in the list are appended at the end. Within a single file, the
     original collection order is preserved.
+
+    After reordering, identifies the last shard test so the
+    pytest_runtest_teardown hook can tear down the shard environment as soon
+    as it finishes, freeing resources for the custom shard tests that follow.
     """
     file_order = config.getini("python_files")
     if not file_order:
@@ -439,10 +443,24 @@ def pytest_collection_modifyitems(config, items: list) -> None:
 
     items[:] = sorted(items, key=sort_key)
 
+    # Find the last shard test in the ordered sequence.
+    global _last_shard_test_nodeid
+    for item in reversed(items):
+        marker = item.get_closest_marker('xdist_group')
+        if marker and marker.args and marker.args[0] == 'shard':
+            _last_shard_test_nodeid = item.nodeid
+            break
+
 
 # Track whether the shard has been started so the health check only
 # runs when shard containers are expected to exist.
 _shard_started = False
+
+# Nodeid of the last shard test in the ordered collection. Set during
+# pytest_collection_modifyitems and used by pytest_runtest_teardown to
+# tear down the shard as soon as the last shard test completes (freeing
+# resources before custom shard tests begin).
+_last_shard_test_nodeid: Optional[str] = None
 
 
 def pytest_runtest_setup(item) -> None:
@@ -475,6 +493,32 @@ def pytest_runtest_setup(item) -> None:
             returncode=1,
         )
     client.close()
+
+
+def pytest_runtest_teardown(item, nextitem) -> None:
+    """Tear down the shard environment after the last shard test completes.
+
+    In sequential mode the shard (5 containers) stays alive for the entire
+    session by default. Custom shard tests that follow don't need it and
+    benefit from having all machine resources available. This hook tears
+    down the shard as soon as the last shard test finishes, as identified
+    during collection by pytest_collection_modifyitems.
+
+    Under parallel execution (xdist), each worker only runs one group so
+    this hook is effectively a no-op -- the session fixture handles teardown.
+    """
+    global _shard_started
+    if not _shard_started:
+        return
+    if _last_shard_test_nodeid is None:
+        return
+    if item.nodeid != _last_shard_test_nodeid:
+        return
+
+    logging.info("Last shard test completed -- tearing down shard environment.")
+    _compose_down()
+    _reset_data()
+    _shard_started = False
 
 
 def pytest_addoption(parser: Parser) -> None:
@@ -593,9 +637,13 @@ def shard(request, command_line_options: CommandLineOptions,
         yield
 
     finally:
-        if not skip_setup:
+        # The pytest_runtest_teardown hook may have already torn down the
+        # shard (and set _shard_started = False) to free resources before
+        # custom shard tests.  Skip the redundant teardown in that case.
+        if not skip_setup and _shard_started:
             _compose_down()
             _reset_data()
+            _shard_started = False
 
 
 def _make_node(docker_client: DockerClient, container_name: str,

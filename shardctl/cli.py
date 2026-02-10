@@ -1138,13 +1138,16 @@ def test_cmd(
 def test_reset_cmd():
     """Clean up integration test data and containers.
 
-    Stops any running test shard containers and deletes the
+    Stops all containers that may have been started by the integration
+    test fixtures (shard, standalone, and custom shard) and deletes the
     integration-tests/data/ directory (which may contain root-owned
     files created by Docker).
 
     Examples:
         poetry run shardctl test-reset
     """
+    import docker as docker_py
+
     config = Config()
     tests_dir = config.root_dir / "integration-tests"
 
@@ -1152,6 +1155,7 @@ def test_reset_cmd():
         console.print("[red]Integration tests directory not found[/red]")
         raise typer.Exit(1)
 
+    # ── Compose-managed containers (shard + standalone) ──
     # Project names must match those used in conftest.py to correctly
     # identify and stop containers started by the test fixtures.
     shard_compose_files = [
@@ -1179,7 +1183,47 @@ def test_reset_cmd():
                 check=False,
             )
 
-    # Delete data directory
+    # ── Custom shard containers (started via Docker SDK, not compose) ──
+    # These are created by start_custom_shard() and add_peer_to_shard()
+    # in conftest.py. Container names match the constants defined there.
+    custom_containers = [
+        "rnode.custom.boot",
+        "rnode.custom.validator1",
+        "rnode.custom.validator2",
+        "rnode.custom.validator3",
+        "rnode.custom.joiner",
+    ]
+    try:
+        client = docker_py.from_env()
+        for name in custom_containers:
+            try:
+                container = client.containers.get(name)
+                console.print(f"[dim]Stopping custom container {name}...[/dim]")
+                try:
+                    container.stop(timeout=10)
+                except Exception:
+                    pass
+                container.remove(force=True)
+            except docker_py.errors.NotFound:
+                pass
+            except Exception as e:
+                console.print(f"[dim]Warning: could not remove {name}: {e}[/dim]")
+
+        # Remove the custom shard Docker network if it exists
+        try:
+            network = client.networks.get("f1r3fly-test-custom")
+            console.print("[dim]Removing custom shard network f1r3fly-test-custom...[/dim]")
+            network.remove()
+        except docker_py.errors.NotFound:
+            pass
+        except Exception as e:
+            console.print(f"[dim]Warning: could not remove network: {e}[/dim]")
+
+        client.close()
+    except Exception as e:
+        console.print(f"[dim]Warning: could not connect to Docker for custom cleanup: {e}[/dim]")
+
+    # ── Delete data directory ──
     data_dir = tests_dir / "data"
     if data_dir.exists():
         console.print("Deleting integration test data directory...")

@@ -52,7 +52,7 @@ poetry run pytest integration-tests/test/test_wallets.py::test_validator1_pay_va
 | `--maxfail=N` | Stop after N failures |
 | `-k EXPR` | Run only tests matching the expression (e.g. `-k "wallets or deploy"`) |
 | `-s` | Disable output capture (show print statements in real-time) |
-| `--timeout=N` | Override the per-test timeout (default: 300s) |
+| `--timeout=N` | Override the per-test timeout (default: 600s) |
 | `--skip-setup` | Skip shard compose up/down (when the shard is already running) |
 | `--collect-only` | List tests that would run without executing them |
 
@@ -126,8 +126,11 @@ test) start a single ephemeral node via `start_standalone_node()` in `conftest.p
 
 ## Test Suites
 
-Tests execute in the order listed below. `test_consensus_health` must remain last
-as it scans shard logs accumulated from all preceding shard tests.
+Tests execute in the order listed below. `test_consensus_health` must remain the
+last **shard** test because it scans shard logs accumulated from all preceding
+shard tests. It is placed before the custom tests so the shard can be torn down
+(by a `pytest_runtest_teardown` hook in `conftest.py`) before the resource-heavy
+custom shard tests begin.
 
 | Suite | Group | Description |
 | ----- | ----- | ----------- |
@@ -141,11 +144,12 @@ as it scans shard logs accumulated from all preceding shard tests.
 | `test_dag_correctness` | shard | DAG structure, fault tolerance, cross-validator state agreement |
 | `test_finalization` | shard | Block finalization advancement |
 | `test_propose` | shard + standalone | Deploy validation, phlo price enforcement, cross-validator lookup |
+| `test_consensus_health` | shard | Post-suite shard log scan for consensus errors (last shard test) |
+| | | **-- shard torn down here --** |
 | `test_synchrony_constraint` | custom | Per-validator synchrony constraint enforcement |
 | `test_asymmetric_bonds` | custom | Consensus with non-equal validator stakes |
 | `test_bonding_validators` | custom | Dynamic validator bonding at epoch boundaries |
 | `test_trim_state` | custom | LFS (Last Finalized State) joiner synchronization |
-| `test_consensus_health` | shard | Post-suite log scan for consensus errors (must be last) |
 
 ## Parallel Execution
 
@@ -171,9 +175,22 @@ the shard independently, the standalone worker starts/stops standalone nodes, an
 the custom worker starts/stops custom shards. The three Docker environments use
 non-overlapping port ranges so they do not conflict.
 
-Sequential execution (the default) is recommended for debugging and on
-resource-constrained machines. Parallel execution requires enough CPU and memory
-to run all three Docker environments concurrently.
+**Sequential execution (the default) is strongly recommended.** Parallel mode
+(`-n 3`) is unreliable on a single machine because three Docker Compose
+environments compete for CPU, memory, ports, and LMDB file locks. Observed
+symptoms under parallel load include:
+
+- `docker-compose up -d` failing with non-zero exit (port collisions or Docker
+  daemon resource exhaustion)
+- LMDB errors (`/var/lib/rnode/deploystorage`, `/var/lib/rnode/transaction`)
+  caused by filesystem contention
+- Deploy-inclusion timeouts (nodes are too slow to propose under heavy I/O)
+- Massively inflated test durations (e.g. a simple `/api/status` call taking
+  400+ seconds instead of <1s)
+
+Parallel execution should only be attempted on machines with dedicated resources
+per environment (separate port ranges are already configured, but CPU/memory
+isolation is not).
 
 ## Log Files
 
@@ -213,7 +230,7 @@ Key settings:
 
 - `python_files` -- Ordered list of test files. Controls execution order.
 - `testpaths` -- Points to `integration-tests/test`.
-- `timeout` -- Default per-test timeout (300s). Override with `@pytest.mark.timeout(N)`.
+- `timeout` -- Default per-test timeout (600s). Override with `@pytest.mark.timeout(N)`.
 - `markers` -- Registers the `xdist_group` marker for parallel execution.
 
 The `integration-tests/` directory also contains its own isolated copies of
