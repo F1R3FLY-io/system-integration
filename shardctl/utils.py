@@ -13,14 +13,25 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 console = Console()
 
+# Cache for docker compose command to avoid repeated version checks
+_docker_compose_command_cache = None
+
 
 def get_docker_compose_command():
     """
     Detect Docker version and return appropriate compose command.
 
+    The result is cached after the first detection to avoid repeated subprocess calls.
+
     Returns:
         list: ["docker", "compose"] for Docker >= 29, ["docker-compose"] for older versions
     """
+    global _docker_compose_command_cache
+
+    # Return cached value if available
+    if _docker_compose_command_cache is not None:
+        return _docker_compose_command_cache
+
     import re
 
     try:
@@ -39,18 +50,20 @@ def get_docker_compose_command():
 
             # Docker 29+ uses "docker compose", older uses "docker-compose"
             if major_version >= 29:
-                return ["docker", "compose"]
+                _docker_compose_command_cache = ["docker", "compose"]
             else:
-                return ["docker-compose"]
+                _docker_compose_command_cache = ["docker-compose"]
         else:
             # Fallback to docker-compose if version parsing fails
             console.print("[yellow]Warning: Could not parse Docker version, using docker-compose[/yellow]", style="dim")
-            return ["docker-compose"]
+            _docker_compose_command_cache = ["docker-compose"]
 
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         # Fallback to docker-compose if docker command fails
         console.print(f"[yellow]Warning: Could not detect Docker version ({e}), using docker-compose[/yellow]", style="dim")
-        return ["docker-compose"]
+        _docker_compose_command_cache = ["docker-compose"]
+
+    return _docker_compose_command_cache
 
 
 def clone_services(
