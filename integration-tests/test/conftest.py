@@ -465,13 +465,28 @@ _last_shard_test_nodeid: Optional[str] = None
 
 
 def pytest_runtest_setup(item) -> None:
-    """Abort the entire test suite if any shard node has crashed.
+    """Pre-test setup hook: shard health check and custom container cleanup.
 
-    Runs before every test. If the shard fixture has been activated and
-    any container is no longer running, calls pytest.exit() to stop
-    immediately rather than letting subsequent tests hang on dead gRPC
-    connections.
+    Runs before every test. Performs two tasks:
+
+    1. If the session-scoped shard is active, verify all containers are still
+       running. If any have crashed, abort the suite immediately rather than
+       letting subsequent tests hang on dead gRPC connections.
+
+    2. Before any custom-group test, force-remove leftover custom shard
+       containers. When pytest-timeout kills a custom shard test (SIGALRM),
+       the context manager's finally block may not execute cleanly, leaving
+       containers running and ports bound. This cleanup ensures the next
+       custom test starts with a clean slate.
     """
+    # --- Custom shard pre-cleanup ---
+    # Detect custom-group tests by their xdist_group marker.
+    markers = list(item.iter_markers("xdist_group"))
+    is_custom = any(m.args and m.args[0] == "custom" for m in markers)
+    if is_custom:
+        _force_cleanup_custom_containers()
+
+    # --- Shard health check ---
     if not _shard_started:
         return
 
