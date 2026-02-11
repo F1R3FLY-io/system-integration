@@ -20,6 +20,7 @@ from docker.client import DockerClient
 from .common import (
     CommandLineOptions,
     ParsingError,
+    TestingContext,
 )
 from .conftest import (
     assert_containers_running,
@@ -40,13 +41,14 @@ def _resources_path(relative: str) -> str:
     return os.path.join(tests_dir, "resources", relative)
 
 
-def _poll_find_deploy(node: Node, deploy_id: str, timeout: int = 30):
+def _poll_find_deploy(node: Node, deploy_id: str, timeout: int = 30, scale: float = 1.0):
     """Poll find_deploy until the block containing the deploy is committed.
 
     Returns the LightBlockInfo for the block that includes the deploy.
     Raises AssertionError if the deploy is not found within the timeout.
     """
-    deadline = time.time() + timeout
+    scaled_timeout = int(timeout * scale)
+    deadline = time.time() + scaled_timeout
     while time.time() < deadline:
         try:
             return node.find_deploy(deploy_id)
@@ -57,7 +59,7 @@ def _poll_find_deploy(node: Node, deploy_id: str, timeout: int = 30):
             )
             time.sleep(2)
     raise AssertionError(
-        f"Block containing deploy {deploy_id[:24]}... not found within {timeout}s"
+        f"Block containing deploy {deploy_id[:24]}... not found within {scaled_timeout}s"
     )
 
 
@@ -69,6 +71,7 @@ def _poll_find_deploy(node: Node, deploy_id: str, timeout: int = 30):
 @pytest.mark.xdist_group("shard")
 def test_deploy_invalid_contract(
     docker_client: DockerClient,
+    testing_context: TestingContext,
     validator1_node: Node,
 ) -> None:
     """Deploying syntactically invalid Rholang must be rejected at the API level.
@@ -95,7 +98,7 @@ def test_deploy_invalid_contract(
     )
 
     # Wait for heartbeat to include the valid deploy in a block
-    block_info = _poll_find_deploy(validator1_node, deploy_id)
+    block_info = _poll_find_deploy(validator1_node, deploy_id, scale=testing_context.timeout_scale)
     block_hash = block_info.blockHash
 
     # Verify the block contains our valid deploy.  The heartbeat proposer
@@ -150,6 +153,7 @@ def test_deploy_phlo_price_too_small(
 @pytest.mark.xdist_group("shard")
 def test_find_block_by_deploy_id_shard(
     docker_client: DockerClient,
+    testing_context: TestingContext,
     validator1_node: Node,
     validator2_node: Node,
 ) -> None:
@@ -170,7 +174,7 @@ def test_find_block_by_deploy_id_shard(
     )
 
     # Wait for the deploy to land in a block on validator1
-    v1_block = _poll_find_deploy(validator1_node, deploy_id)
+    v1_block = _poll_find_deploy(validator1_node, deploy_id, scale=testing_context.timeout_scale)
     v1_hash = v1_block.blockHash
 
     logging.info(
@@ -179,7 +183,7 @@ def test_find_block_by_deploy_id_shard(
     )
 
     # The same block must be visible on validator2 after propagation
-    v2_block = _poll_find_deploy(validator2_node, deploy_id)
+    v2_block = _poll_find_deploy(validator2_node, deploy_id, scale=testing_context.timeout_scale)
     v2_hash = v2_block.blockHash
 
     logging.info(

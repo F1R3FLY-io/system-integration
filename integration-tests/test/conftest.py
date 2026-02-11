@@ -674,6 +674,8 @@ def pytest_addoption(parser: Parser) -> None:
                      help="timeout in seconds for executing a rnode call")
     parser.addoption("--random-seed", type=int, action="store", default=None,
                      help="seed for the random numbers generator used in integration tests")
+    parser.addoption("--timeout-scale", type=float, action="store", default=1.0,
+                     help="multiplier for hardcoded polling timeouts (e.g. 3.0 for CI)")
     parser.addoption("--skip-setup", action="store_true", default=False,
                      help="skip shard setup (assume already running)")
 
@@ -704,6 +706,7 @@ def command_line_options(request) -> Generator[CommandLineOptions, None, None]:
     receive_timeout = int(request.config.getoption("--receive-timeout"))
     command_timeout = int(request.config.getoption("--command-timeout"))
     random_seed = request.config.getoption("--random-seed")
+    timeout_scale = float(request.config.getoption("--timeout-scale"))
 
     yield CommandLineOptions(
         node_startup_timeout=startup_timeout,
@@ -711,6 +714,7 @@ def command_line_options(request) -> Generator[CommandLineOptions, None, None]:
         receive_timeout=receive_timeout,
         command_timeout=command_timeout,
         random_seed=random_seed,
+        timeout_scale=timeout_scale,
     )
 
 
@@ -742,6 +746,7 @@ def testing_context(command_line_options: CommandLineOptions,
         command_timeout=command_line_options.command_timeout,
         docker=docker_client,
         random_generator=random_generator,
+        timeout_scale=command_line_options.timeout_scale,
     )
 
 

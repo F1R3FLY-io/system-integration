@@ -70,8 +70,9 @@ def test_finalizes_block(
     validator3_node.deploy_string("@2003!(3)", VALIDATOR3_KEY)
 
     # Poll for finalization advancement. The LFB must advance beyond
-    # the initial baseline within 60 seconds.
-    deadline = time.time() + 60
+    # the initial baseline.
+    finalization_timeout = int(60 * testing_context.timeout_scale)
+    deadline = time.time() + finalization_timeout
     finalized = False
     while time.time() < deadline:
         current_lfb = validator1_node.last_finalized_block()
@@ -89,7 +90,7 @@ def test_finalizes_block(
 
     assert finalized, (
         f"Finalization did not advance beyond block #{initial_lfb_number} "
-        f"within 60 seconds -- this indicates a consensus bug"
+        f"within {finalization_timeout}s -- this indicates a consensus bug"
     )
 
     # Verify all nodes agree on finalization: each node's LFB should be

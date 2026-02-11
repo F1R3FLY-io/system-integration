@@ -25,6 +25,7 @@ class CommandLineOptions:
     receive_timeout: int
     command_timeout: int
     random_seed: Optional[int]
+    timeout_scale: float = 1.0
 
 
 @dataclasses.dataclass # pylint: disable=too-many-instance-attributes
@@ -43,6 +44,7 @@ class TestingContext:
     command_timeout: int
     docker: DockerClient
     random_generator: random.Random
+    timeout_scale: float = 1.0
 
 
 class NonZeroExitCodeError(Exception):

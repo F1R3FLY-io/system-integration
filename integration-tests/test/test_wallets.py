@@ -182,7 +182,8 @@ def test_transfer_failed_with_insufficient_funds(
     # Poll until the balance reflects the transfer. In a heartbeat-driven
     # multi-validator shard, the transfer block may not be in the merge base
     # of the next balance-check block on the first attempt.
-    deadline = time.time() + 60
+    balance_timeout = int(60 * context.timeout_scale)
+    deadline = time.time() + balance_timeout
     unfunded_balance = 0
     while time.time() < deadline:
         _, unfunded_balance = get_vault_balance(
@@ -232,7 +233,8 @@ def transfer_funds_with_block_hash(
     # Look up the block that included this deploy. Poll in case there is a
     # small window between the log output appearing and the block being
     # fully committed to the DAG.
-    deadline = time.time() + 60
+    find_timeout = int(60 * context.timeout_scale)
+    deadline = time.time() + find_timeout
     while time.time() < deadline:
         try:
             light_block = node.find_deploy(deploy_id)
@@ -243,7 +245,7 @@ def transfer_funds_with_block_hash(
         time.sleep(3)
 
     raise AssertionError(
-        f"Deploy {deploy_id} not included in any block within 60s"
+        f"Deploy {deploy_id} not included in any block within {find_timeout}s"
     )
 
 
@@ -285,7 +287,8 @@ def test_block_api_returns_transfer_info(
     # catch HttpRequestException (e.g. 404) and retry within the loop.
     http_client = HttpClient('localhost', readonly_node.get_http_port())
     deploy_with_transfers = None
-    deadline = time.time() + 120
+    api_timeout = int(120 * context.timeout_scale)
+    deadline = time.time() + api_timeout
 
     while time.time() < deadline:
         try:
@@ -309,7 +312,7 @@ def test_block_api_returns_transfer_info(
         time.sleep(5)
 
     assert deploy_with_transfers is not None, (
-        f"Transfers not populated within 120s for block {block_hash}. "
+        f"Transfers not populated within {api_timeout}s for block {block_hash}. "
         "BlockReportAPI should be available on the read-only node."
     )
 

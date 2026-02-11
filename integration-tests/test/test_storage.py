@@ -157,7 +157,8 @@ def test_data_stored_on_one_validator_served_by_another(
     # The Rholang stdout output appears in the Docker logs during block
     # creation (deploy execution), before the block is committed to the
     # blockstore. Poll find_deploy until the block is committed.
-    deadline = time.time() + 30
+    find_timeout = int(30 * context.timeout_scale)
+    deadline = time.time() + find_timeout
     store_block = None
     while time.time() < deadline:
         try:
@@ -167,7 +168,7 @@ def test_data_stored_on_one_validator_served_by_another(
             logging.info("find_deploy: block not committed yet, retrying...")
             time.sleep(2)
     assert store_block is not None, (
-        f"Block containing store deploy {store_deploy_id[:24]}... not found within 30s"
+        f"Block containing store deploy {store_deploy_id[:24]}... not found within {find_timeout}s"
     )
     store_block_number = store_block.blockNumber
 

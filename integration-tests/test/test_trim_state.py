@@ -45,9 +45,10 @@ from .rnode import Node
 pytestmark = pytest.mark.xdist_group("custom")
 
 
-def _poll_block_visible(node: Node, block_hash: str, timeout: int = 180) -> None:
+def _poll_block_visible(node: Node, block_hash: str, timeout: int = 180, scale: float = 1.0) -> None:
     """Poll until a block is visible on the given node."""
-    deadline = time.time() + timeout
+    scaled_timeout = int(timeout * scale)
+    deadline = time.time() + scaled_timeout
     while time.time() < deadline:
         try:
             node.get_block(block_hash)
@@ -55,7 +56,7 @@ def _poll_block_visible(node: Node, block_hash: str, timeout: int = 180) -> None
         except Exception:
             time.sleep(3)
     raise AssertionError(
-        f"Block {block_hash[:16]}... not visible on {node.name} within {timeout}s"
+        f"Block {block_hash[:16]}... not visible on {node.name} within {scaled_timeout}s"
     )
 
 
@@ -99,6 +100,7 @@ def test_trim_state(
         },
     ) as shard:
         v1 = shard.nodes["validator1"]
+        scale = command_line_options.timeout_scale
 
         # ── Phase 1: Create finalized blocks on V1 ──
         # With FTT=-1, every block is immediately finalized after V1 proposes it.
@@ -138,7 +140,7 @@ def test_trim_state(
             },
         ) as joiner:
             # The joiner should sync from LFS and see the latest block
-            _poll_block_visible(joiner, latest_block_hash, timeout=240)
+            _poll_block_visible(joiner, latest_block_hash, timeout=240, scale=scale)
             logging.info(
                 "Joiner sees latest block %s", latest_block_hash[:16],
             )
@@ -153,7 +155,7 @@ def test_trim_state(
                 )
                 block_hash = v1.propose()
                 logging.info("Post-join block %d: %s", i + 1, block_hash[:16])
-                _poll_block_visible(joiner, block_hash)
+                _poll_block_visible(joiner, block_hash, scale=scale)
 
             # ── Phase 4: Joiner proposes blocks ──
             # The joiner is not bonded (not in genesis bonds.txt), so it

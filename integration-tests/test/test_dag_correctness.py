@@ -171,7 +171,8 @@ def test_cross_validator_post_state_agreement(
     block_hashes = []
     for i, deploy_id in enumerate(deploy_ids):
         node = nodes[i]
-        deadline = time.time() + 60
+        find_timeout = int(60 * context.timeout_scale)
+        deadline = time.time() + find_timeout
         block = None
         while time.time() < deadline:
             try:
@@ -180,7 +181,7 @@ def test_cross_validator_post_state_agreement(
             except RClientException:
                 time.sleep(3)
         assert block is not None, (
-            f"Deploy {deploy_id[:24]}... not included in a block within 60s"
+            f"Deploy {deploy_id[:24]}... not included in a block within {find_timeout}s"
         )
         block_hashes.append(block.blockHash)
 

@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Generator, Tuple, List
 import pytest
+from .common import TestingContext
 from .rnode import Node, default_shard_id
 from .conftest import VALIDATOR1_KEY
 from .http_client import HttpClient
@@ -19,7 +20,7 @@ pytestmark = pytest.mark.xdist_group("shard")
 
 
 @pytest.fixture(scope="module")
-def node_with_blocks(validator1_node: Node) -> Generator[Tuple[Node, List[str], List[str]], None, None]:
+def node_with_blocks(validator1_node: Node, testing_context: TestingContext) -> Generator[Tuple[Node, List[str], List[str]], None, None]:
     """Deploy three contracts on validator1 and wait for heartbeat to include
     them in blocks and for those blocks to be finalized.
 
@@ -39,9 +40,11 @@ def node_with_blocks(validator1_node: Node) -> Generator[Tuple[Node, List[str], 
         deploy_hashes.append(dh)
 
     # Wait for heartbeat to propose blocks containing all three deploys
+    scale = testing_context.timeout_scale
     block_hashes: List[str] = []
     max_block_number = 0
-    deadline = time.time() + 120
+    deploy_timeout = int(120 * scale)
+    deadline = time.time() + deploy_timeout
     remaining = set(deploy_hashes)
     while remaining and time.time() < deadline:
         for dh in list(remaining):
@@ -58,13 +61,14 @@ def node_with_blocks(validator1_node: Node) -> Generator[Tuple[Node, List[str], 
             time.sleep(3)
 
     assert not remaining, (
-        f"Deploys not included in blocks within 120s: {remaining}"
+        f"Deploys not included in blocks within {deploy_timeout}s: {remaining}"
     )
 
     # Wait for the LFB to advance past the highest block containing a deploy.
     # prepare_deploy returns a sequence number based on finalized state, so
     # without this wait the assertion can see stale (lower) values.
-    lfb_deadline = time.time() + 120
+    lfb_timeout = int(120 * scale)
+    lfb_deadline = time.time() + lfb_timeout
     while time.time() < lfb_deadline:
         lfb = validator1_node.last_finalized_block()
         lfb_number = lfb.blockInfo.blockNumber
@@ -77,9 +81,9 @@ def node_with_blocks(validator1_node: Node) -> Generator[Tuple[Node, List[str], 
         time.sleep(5)
     else:
         logging.warning(
-            "LFB #%d did not reach deploy block #%d within 120s -- "
+            "LFB #%d did not reach deploy block #%d within %ds -- "
             "continuing anyway",
-            lfb_number, max_block_number,
+            lfb_number, max_block_number, lfb_timeout,
         )
 
     yield (validator1_node, deploy_hashes, block_hashes)

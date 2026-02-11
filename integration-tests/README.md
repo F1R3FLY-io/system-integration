@@ -52,7 +52,8 @@ poetry run pytest integration-tests/test/test_wallets.py::test_validator1_pay_va
 | `--maxfail=N` | Stop after N failures |
 | `-k EXPR` | Run only tests matching the expression (e.g. `-k "wallets or deploy"`) |
 | `-s` | Disable output capture (show print statements in real-time) |
-| `--timeout=N` | Override the per-test timeout (default: 600s) |
+| `--timeout=N` | Override the per-test timeout (default: 300s; CI uses 1200s) |
+| `--timeout-scale=F` | Multiply all hardcoded polling timeouts by factor F (default: 1.0; CI uses 3.0) |
 | `--skip-setup` | Skip shard compose up/down (when the shard is already running) |
 | `--collect-only` | List tests that would run without executing them |
 
@@ -230,7 +231,7 @@ Key settings:
 
 - `python_files` -- Ordered list of test files. Controls execution order.
 - `testpaths` -- Points to `integration-tests/test`.
-- `timeout` -- Default per-test timeout (600s). Override with `@pytest.mark.timeout(N)`.
+- `timeout` -- Default per-test timeout (300s locally, CI overrides to 1200s). Override with `@pytest.mark.timeout(N)`.
 - `markers` -- Registers the `xdist_group` marker for parallel execution.
 
 The `integration-tests/` directory also contains its own isolated copies of

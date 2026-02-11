@@ -49,9 +49,10 @@ from .rnode import Node
 pytestmark = pytest.mark.xdist_group("custom")
 
 
-def _poll_block_visible(node: Node, block_hash: str, timeout: int = 120) -> None:
+def _poll_block_visible(node: Node, block_hash: str, timeout: int = 120, scale: float = 1.0) -> None:
     """Poll until a block is visible on the given node."""
-    deadline = time.time() + timeout
+    scaled_timeout = int(timeout * scale)
+    deadline = time.time() + scaled_timeout
     while time.time() < deadline:
         try:
             node.get_block(block_hash)
@@ -59,7 +60,7 @@ def _poll_block_visible(node: Node, block_hash: str, timeout: int = 120) -> None
         except Exception:
             time.sleep(3)
     raise AssertionError(
-        f"Block {block_hash[:16]}... not visible on {node.name} within {timeout}s"
+        f"Block {block_hash[:16]}... not visible on {node.name} within {scaled_timeout}s"
     )
 
 
@@ -93,6 +94,7 @@ def test_bonding_validators(
     ) as shard:
         v1 = shard.nodes["validator1"]
         v2 = shard.nodes["validator2"]
+        scale = command_line_options.timeout_scale
 
         # ── Block 1: Initial deploy by V1 ──
         logging.info("Block 1: Initial deploy by V1")
@@ -127,7 +129,7 @@ def test_bonding_validators(
             },
         ) as joiner:
             # Wait for joiner to see the latest block
-            _poll_block_visible(joiner, b1)
+            _poll_block_visible(joiner, b1, scale=scale)
 
             # Joiner cannot propose before bonding (not an active validator)
             joiner.deploy_string(
@@ -176,7 +178,7 @@ def test_bonding_validators(
             logging.info("Block 3: %s", b3[:16])
 
             # Joiner still cannot propose (epoch change hasn't happened)
-            _poll_block_visible(joiner, b3)
+            _poll_block_visible(joiner, b3, scale=scale)
             joiner.deploy_string(
                 '@"still-inactive"!(0)',
                 VALIDATOR4_KEY,
@@ -198,7 +200,7 @@ def test_bonding_validators(
             logging.info("Block 4 (epoch change): %s", b4[:16])
 
             # Wait for joiner to see the epoch change block
-            _poll_block_visible(joiner, b4)
+            _poll_block_visible(joiner, b4, scale=scale)
 
             # ── Block 5: V2 filler after epoch boundary ──
             # The joiner's earlier (rejected) propose attempt left a
@@ -217,7 +219,7 @@ def test_bonding_validators(
             )
             b5 = v2.propose()
             logging.info("Block 5 (V2 filler): %s", b5[:16])
-            _poll_block_visible(joiner, b5)
+            _poll_block_visible(joiner, b5, scale=scale)
 
             # ── Block 6: Joiner can now propose ──
             logging.info("Block 6: Joiner proposes after epoch activation")
@@ -231,6 +233,6 @@ def test_bonding_validators(
             logging.info("Block 6 (joiner): %s", b6[:16])
 
             # Verify the joiner's block is visible on V1
-            _poll_block_visible(v1, b6)
+            _poll_block_visible(v1, b6, scale=scale)
 
             logging.info("Bonding test passed -- joiner activated at epoch boundary")
