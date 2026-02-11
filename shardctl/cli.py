@@ -16,6 +16,7 @@ from .utils import (
     clean_services,
     clone_services,
     create_services_config_example,
+    get_docker_compose_command,
     sync_service_branch,
     format_service_status,
     validate_environment,
@@ -174,7 +175,8 @@ def handle_f1r3node_logs(follow: bool, tail: Optional[int]) -> None:
         return
 
     # Build command with all compose files for combined logs
-    cmd = ["docker-compose", "--env-file", str(config.env_file)]
+    cmd = get_docker_compose_command()  # Dynamic version detection
+    cmd.extend(["--env-file", str(config.env_file)])
     for node_type, topology, compose_file in all_configs:
         cmd.extend(["-f", str(compose_file)])
 
@@ -1283,14 +1285,15 @@ def test_reset_cmd():
         compose_path = tests_dir / compose_file
         if compose_path.exists():
             console.print(f"[dim]Stopping containers from {compose_file} (project: {project_name})...[/dim]")
+            cmd = get_docker_compose_command()  # Dynamic version detection
+            cmd.extend([
+                "--project-name", project_name,
+                "--env-file", str(tests_dir / ".env.node"),
+                "-f", str(compose_path),
+                "down", "--volumes", "--remove-orphans",
+            ])
             subprocess.run(
-                [
-                    "docker-compose",
-                    "--project-name", project_name,
-                    "--env-file", str(tests_dir / ".env.node"),
-                    "-f", str(compose_path),
-                    "down", "--volumes", "--remove-orphans",
-                ],
+                cmd,
                 cwd=tests_dir,
                 check=False,
             )
