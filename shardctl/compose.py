@@ -8,6 +8,7 @@ from typing import List, Optional, Union
 from rich.console import Console
 
 from .config import Config
+from .utils import get_docker_compose_command
 
 console = Console()
 
@@ -31,7 +32,7 @@ class ComposeManager:
         Returns:
             List of command parts for docker-compose.
         """
-        cmd = ["docker", "compose"]
+        cmd = get_docker_compose_command()  # Dynamic version detection
 
         # Add compose files with -f flags
         compose_files = self.config.get_compose_files_for_profile(self.profile)
@@ -142,7 +143,7 @@ class ComposeManager:
             detached: Run in detached mode.
             build: Build images before starting.
         """
-        cmd = ["docker", "compose"]
+        cmd = get_docker_compose_command()  # Dynamic version detection
 
         # Use .env.node for node compose files (in compose/ directory)
         if "compose/" in str(compose_file) or compose_file.parent.name == "compose":

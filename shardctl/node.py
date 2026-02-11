@@ -14,6 +14,8 @@ from typing import List, Optional, Tuple
 import typer
 from rich.console import Console
 
+from .utils import get_docker_compose_command
+
 console = Console()
 
 
@@ -231,13 +233,14 @@ def run_compose_command(
     capture: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run a docker-compose command with the node env file."""
-    cmd = [
-        "docker-compose",
+    cmd = get_docker_compose_command()  # Dynamic version detection
+    cmd.extend([
         "--env-file",
         str(config.env_file),
         "-f",
         str(compose_file),
-    ] + args
+    ])
+    cmd.extend(args)
 
     console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
 

@@ -14,6 +14,45 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 console = Console()
 
 
+def get_docker_compose_command():
+    """
+    Detect Docker version and return appropriate compose command.
+
+    Returns:
+        list: ["docker", "compose"] for Docker >= 29, ["docker-compose"] for older versions
+    """
+    import re
+
+    try:
+        # Get Docker version
+        result = subprocess.run(
+            ["docker", "--version"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        # Parse version from output like "Docker version 24.0.7, build afdd53b"
+        version_match = re.search(r'Docker version (\d+)\.', result.stdout)
+        if version_match:
+            major_version = int(version_match.group(1))
+
+            # Docker 29+ uses "docker compose", older uses "docker-compose"
+            if major_version >= 29:
+                return ["docker", "compose"]
+            else:
+                return ["docker-compose"]
+        else:
+            # Fallback to docker-compose if version parsing fails
+            console.print("[yellow]Warning: Could not parse Docker version, using docker-compose[/yellow]", style="dim")
+            return ["docker-compose"]
+
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        # Fallback to docker-compose if docker command fails
+        console.print(f"[yellow]Warning: Could not detect Docker version ({e}), using docker-compose[/yellow]", style="dim")
+        return ["docker-compose"]
+
+
 def clone_services(
     service_repos: Dict[str, Dict],
     services_dir: Path,
