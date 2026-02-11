@@ -42,10 +42,7 @@ from .wait import (
     wait_for_blocks_count_at_least,
 )
 
-pytestmark = [
-    pytest.mark.xdist_group("custom"),
-    pytest.mark.timeout(1200),  # Custom shard lifecycle (startup + genesis) needs more than 600s
-]
+pytestmark = pytest.mark.xdist_group("custom")
 
 # Shared bond configuration for all asymmetric tests
 _ASYMMETRIC_BONDS = [

@@ -389,8 +389,16 @@ def start_standalone_node(
         _reset_standalone_data()
         _ensure_data_dirs([STANDALONE_CONTAINER])
 
-        # Start
-        _standalone_compose_up(override_file=override_file)
+        # Start with one retry on transient Docker errors
+        try:
+            _standalone_compose_up(override_file=override_file)
+        except subprocess.CalledProcessError:
+            logging.warning("Standalone compose up failed, cleaning up and retrying...")
+            _standalone_compose_down(override_file=override_file)
+            _reset_standalone_data()
+            _ensure_data_dirs([STANDALONE_CONTAINER])
+            time.sleep(5)
+            _standalone_compose_up(override_file=override_file)
 
         # Wait for Running state
         timeout = command_line_options.node_startup_timeout
@@ -435,19 +443,68 @@ def _make_standalone_node(docker_client: DockerClient, command_timeout: int) -> 
 
 def _wait_for_running_state(docker_client: DockerClient, container_name: str,
                              timeout: int) -> None:
-    """Wait for a node container to reach the Running state."""
+    """Wait for a node container to reach the Running state.
+
+    Polls container logs every 5 seconds for the Running state marker. Also
+    checks the container's Docker status on each poll: if the container has
+    exited or died, it is restarted once via ``docker restart`` rather than
+    waiting the full timeout doing nothing. If the container crashes again
+    after restart, fails immediately with diagnostic output.
+
+    This catches scenarios where the JVM crashes during genesis or startup
+    (e.g. OOM, config error) and saves up to 10 minutes of wasted CI time
+    per container compared to blindly polling until timeout.
+    """
     container = docker_client.containers.get(container_name)
     running_marker = 'Making a transition to Running state.'
     start = time.time()
+    restart_attempted = False
+
     while time.time() - start < timeout:
+        # Refresh container state from Docker daemon
+        container.reload()
+
+        # Early crash detection: if the container has exited, either restart
+        # it once or fail immediately if we already tried.
+        if container.status in ('exited', 'dead'):
+            exit_code = container.attrs.get('State', {}).get('ExitCode', '?')
+            log_tail = container.logs(tail=30).decode('utf-8', errors='replace').strip()
+
+            if not restart_attempted:
+                logging.warning(
+                    "Container %s crashed (status=%s, exit_code=%s), "
+                    "attempting restart (%.1fs elapsed). Last 30 log lines:\n%s",
+                    container_name, container.status, exit_code,
+                    time.time() - start, log_tail,
+                )
+                container.restart()
+                restart_attempted = True
+                time.sleep(10)  # Give JVM time to begin startup
+                continue
+            else:
+                raise RuntimeError(
+                    f"Container {container_name} crashed again after restart "
+                    f"(status={container.status}, exit_code={exit_code}). "
+                    f"Last 30 log lines:\n{log_tail}"
+                )
+
+        # Check for the Running state marker in container logs
         logs = container.logs().decode('utf-8')
         if running_marker in logs:
-            logging.info("Container %s reached Running state (%.1fs)",
-                         container_name, time.time() - start)
+            elapsed = time.time() - start
+            restarted = " (after restart)" if restart_attempted else ""
+            logging.info("Container %s reached Running state (%.1fs%s)",
+                         container_name, elapsed, restarted)
             return
+
         time.sleep(5)
+
+    # Timeout: collect diagnostics before raising
+    container.reload()
+    log_tail = container.logs(tail=30).decode('utf-8', errors='replace').strip()
     raise TimeoutError(
-        f"Container {container_name} did not reach Running state within {timeout}s"
+        f"Container {container_name} did not reach Running state within {timeout}s "
+        f"(status={container.status}). Last 30 log lines:\n{log_tail}"
     )
 
 
@@ -708,7 +765,15 @@ def shard(request, command_line_options: CommandLineOptions,
         _compose_down()
         _reset_data()
         _ensure_data_dirs(ALL_CONTAINERS)
-        _compose_up()
+        try:
+            _compose_up()
+        except subprocess.CalledProcessError:
+            logging.warning("Shard compose up failed, cleaning up and retrying...")
+            _compose_down()
+            _reset_data()
+            _ensure_data_dirs(ALL_CONTAINERS)
+            time.sleep(5)
+            _compose_up()
 
     try:
         logging.info("Waiting for all nodes to reach Running state (timeout=%ds)...", timeout)
@@ -1347,7 +1412,17 @@ def start_custom_shard(
         # Wait for the bootstrap port to be released (kernel TIME_WAIT)
         _wait_for_port_free(_CUSTOM_PORT_BASES['boot'])
 
-        _custom_compose_up(compose_file)
+        try:
+            _custom_compose_up(compose_file)
+        except subprocess.CalledProcessError:
+            logging.warning("Custom shard compose up failed, cleaning up and retrying...")
+            _force_cleanup_custom_containers()
+            _custom_compose_down(compose_file)
+            _reset_custom_data(container_names)
+            _ensure_data_dirs(container_names)
+            _wait_for_port_free(_CUSTOM_PORT_BASES['boot'])
+            time.sleep(5)
+            _custom_compose_up(compose_file)
 
         logging.info(
             "Waiting for custom shard nodes to reach Running state (timeout=%ds)...",
@@ -1502,6 +1577,10 @@ def add_peer_to_shard(
                  "mkdir", "-p", f"/parent/{basename}"],
                 check=True,
             )
+
+        # Wait for joiner ports to be released (kernel TIME_WAIT from a
+        # previous test's joiner container that was recently stopped).
+        _wait_for_port_free(_CUSTOM_PORT_BASES['joiner'])
 
         logging.info("Starting joiner %s on network %s ...",
                      container_name, shard.network_name)
