@@ -98,6 +98,53 @@ STANDALONE_KEY = PrivateKey.from_hex("ff2ba092524bafdbc85fa0c7eddb2b41c69bc9bf06
 STANDALONE_PRIVATE_KEY = "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
 
 
+def pytest_sessionstart(session) -> None:
+    """Force-remove all known test containers and networks at session start.
+
+    Ensures a clean Docker environment regardless of what a previous test
+    session, CI job, or manual run left behind. This is the primary defense
+    against resource exhaustion and port conflicts caused by unclean shutdowns
+    (e.g. pytest-timeout SIGALRM killing a test mid-lifecycle, OOM kills,
+    CI job cancellation).
+
+    Uses 'docker rm -f' which is a no-op for non-existent containers.
+    """
+    all_containers = (
+        ALL_CONTAINERS
+        + [STANDALONE_CONTAINER]
+        + [
+            CUSTOM_BOOT_CONTAINER,
+            "rnode.custom.validator1",
+            "rnode.custom.validator2",
+            "rnode.custom.validator3",
+            CUSTOM_JOINER_CONTAINER,
+        ]
+    )
+    removed = []
+    for name in all_containers:
+        result = subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode == 0 and b"No such container" not in result.stderr:
+            removed.append(name)
+
+    all_networks = [COMPOSE_NETWORK, STANDALONE_NETWORK, CUSTOM_NETWORK]
+    for net in all_networks:
+        subprocess.run(
+            ["docker", "network", "rm", net],
+            capture_output=True,
+            check=False,
+        )
+
+    if removed:
+        logging.warning(
+            "Session start: removed leftover containers from previous run: %s",
+            ", ".join(removed),
+        )
+
+
 def _get_tests_dir() -> str:
     """Return the absolute path to the integration-tests directory."""
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -129,11 +176,22 @@ def _compose_up() -> None:
     tests_dir = _get_tests_dir()
     compose_file = _get_compose_file()
     logging.info("Starting test shard via %s ...", compose_file)
-    subprocess.run(
+    result = subprocess.run(
         _compose_cmd("up", "-d"),
         cwd=tests_dir,
-        check=True,
+        capture_output=True,
+        check=False,
     )
+    if result.returncode != 0:
+        stdout = result.stdout.decode("utf-8", errors="replace").strip()
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        logging.error(
+            "docker-compose up failed (exit %d):\nstdout: %s\nstderr: %s",
+            result.returncode, stdout, stderr,
+        )
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr,
+        )
 
 
 def _compose_down() -> None:
@@ -211,11 +269,22 @@ def _standalone_compose_up(override_file: Optional[str] = None) -> None:
     tests_dir = _get_tests_dir()
     compose_file = _get_standalone_compose_file()
     logging.info("Starting standalone node via %s ...", compose_file)
-    subprocess.run(
+    result = subprocess.run(
         _standalone_compose_cmd("up", "-d", override_file=override_file),
         cwd=tests_dir,
-        check=True,
+        capture_output=True,
+        check=False,
     )
+    if result.returncode != 0:
+        stdout = result.stdout.decode("utf-8", errors="replace").strip()
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        logging.error(
+            "docker-compose up (standalone) failed (exit %d):\nstdout: %s\nstderr: %s",
+            result.returncode, stdout, stderr,
+        )
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr,
+        )
 
 
 def _standalone_compose_down(override_file: Optional[str] = None) -> None:
@@ -653,10 +722,13 @@ def shard(request, command_line_options: CommandLineOptions,
         yield
 
     finally:
-        # The pytest_runtest_teardown hook may have already torn down the
-        # shard (and set _shard_started = False) to free resources before
-        # custom shard tests.  Skip the redundant teardown in that case.
-        if not skip_setup and _shard_started:
+        # Always tear down when not skipping setup, even if the shard never
+        # reached Running state. Previously, _compose_down was only called
+        # when _shard_started was True, which meant partially started shards
+        # (e.g. _compose_up succeeded but _wait_for_running_state timed out)
+        # were never cleaned up, leaving containers running and consuming
+        # resources for all subsequent tests.
+        if not skip_setup:
             _compose_down()
             _reset_data()
             _shard_started = False
@@ -1037,11 +1109,22 @@ def _custom_compose_up(compose_file: str) -> None:
     """Bring up the custom shard via docker-compose."""
     tests_dir = _get_tests_dir()
     logging.info("Starting custom shard ...")
-    subprocess.run(
+    result = subprocess.run(
         _custom_compose_cmd(compose_file, "up", "-d"),
         cwd=tests_dir,
-        check=True,
+        capture_output=True,
+        check=False,
     )
+    if result.returncode != 0:
+        stdout = result.stdout.decode("utf-8", errors="replace").strip()
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        logging.error(
+            "docker-compose up (custom) failed (exit %d):\nstdout: %s\nstderr: %s",
+            result.returncode, stdout, stderr,
+        )
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr,
+        )
 
 
 def _force_cleanup_custom_containers() -> None:

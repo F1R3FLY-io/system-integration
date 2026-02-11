@@ -42,7 +42,10 @@ from .conftest import (
 )
 from .rnode import Node
 
-pytestmark = pytest.mark.xdist_group("custom")
+pytestmark = [
+    pytest.mark.xdist_group("custom"),
+    pytest.mark.timeout(1200),  # Custom shard lifecycle (startup + genesis) needs more than 600s
+]
 
 
 def _poll_block_visible(node: Node, block_hash: str, timeout: int = 180) -> None:
