@@ -2,7 +2,7 @@
 # F1R3FLY RUST NODE - STANDALONE INTEGRATION TEST
 # =================================================================
 # Runs a single standalone Rust node for integration tests.
-# Adapted from compose/rust-standalone.yml with test-specific ports
+# Adapted from compose/f1r3node-rust-standalone.yml with test-specific ports
 # (40460-40465) to avoid conflict with the shard topology (40400-40455).
 #
 # Usage (from integration-tests/ directory):

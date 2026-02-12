@@ -8,7 +8,7 @@ This is a microservices integration repository for the F1R3FLY blockchain ecosys
 
 - **Services are git-ignored**: Each service repository (f1r3node, embers, f1r3sky-backend, etc.) is cloned into `services/` and completely ignored by the parent system-integration repository
 - **Independent development**: Work in each service directory normally with full git functionality - changes are isolated to each service repo
-- **Docker Compose orchestration**: Multiple compose files layer configurations for different services and environments
+- **Docker Compose orchestration**: Each service has its own compose file in `compose/` directory
 - **shardctl CLI**: Python CLI tool (installed via Poetry) that wraps docker-compose operations and service management
 
 ## Getting Started
@@ -54,9 +54,12 @@ poetry run shardctl down
 │   ├── f1r3sky-backend/        # AT Protocol backend (Node.js)
 │   └── rust-client/            # Rust CLI client
 ├── shardctl/                   # CLI tool package
-├── docker-compose.yml          # Base f1r3node shard configuration
-├── docker-compose.embers.yml   # Embers services configuration
-├── docker-compose.f1r3sky.yml  # F1R3Sky services configuration
+├── compose/                    # Docker Compose files (one per service)
+│   ├── f1r3node.yml            # Scala shard (default)
+│   ├── f1r3node-rust.yml       # Rust shard
+│   ├── embers.yml              # Embers API + frontend
+│   ├── f1r3sky.yml             # F1R3Sky AT Protocol services
+│   └── monitoring.yml          # Prometheus + Grafana
 ├── services.yml                # Service repository URLs and branches
 ├── .env.embers                 # Embers configuration
 └── README.md                   # Full documentation
@@ -76,10 +79,12 @@ Services are defined in `services.yml` with their git URLs and branches:
 1. **Never commit service directories** - they're independent git repos
 2. **Use `shardctl clone`** to set up service repositories with the correct branches
 3. **Each compose file is independent** - start only what you need:
-   - `docker-compose.yml` - F1R3node blockchain shard
-   - `docker-compose.embers.yml` - Embers API and frontend
-   - `docker-compose.f1r3sky.yml` - F1R3Sky AT Protocol services
-4. **Services communicate via Docker network** - `system-integration_f1r3fly` network
+   - `compose/f1r3node.yml` - F1R3node Scala shard (default)
+   - `compose/f1r3node-rust.yml` - F1R3node Rust shard
+   - `compose/embers.yml` - Embers API and frontend
+   - `compose/f1r3sky.yml` - F1R3Sky AT Protocol services
+   - `compose/monitoring.yml` - Prometheus + Grafana
+4. **Services communicate via Docker network** - `f1r3fly` network
 5. **Always use shardctl commands** - Don't run builds manually (cargo, sbt, etc.). Use:
    - `poetry run shardctl build-service <service>` for regular builds
    - `poetry run shardctl build-service <service> --docker` for Docker image builds

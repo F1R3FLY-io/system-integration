@@ -7,9 +7,9 @@
 #   poetry run shardctl up f1r3node --scala --standalone
 #
 # Or directly:
-#   docker-compose --env-file ../.env.node -f compose/scala-standalone.yml up -d
+#   docker-compose --env-file ../.env.node -f compose/f1r3node-standalone.yml up -d
 #
-# NOTE: For Rust nodes, use rust-standalone.yml instead.
+# NOTE: For Rust nodes, use f1r3node-rust-standalone.yml instead.
 
 services:
   standalone:

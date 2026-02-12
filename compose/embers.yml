@@ -6,7 +6,7 @@ services:
     ports:
       - "8080:3000"  # Expose on 8080 externally (f1r3sky expects this), runs on 3000 internally
     env_file:
-      - .env.embers
+      - ../.env.embers
     networks:
       - f1r3fly
     restart: on-failure:5
@@ -16,7 +16,7 @@ services:
   # Embers Frontend - React 19 web UI (requires ~/.npmrc with GitHub token)
   embers-frontend:
     build:
-      context: ./services/embers-frontend
+      context: ../services/embers-frontend
       dockerfile: apps/embers/Dockerfile
       secrets:
         - npmrc

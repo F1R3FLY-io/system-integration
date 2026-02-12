@@ -2,7 +2,7 @@
 # F1R3FLY SCALA NODE - STANDALONE INTEGRATION TEST
 # =================================================================
 # Runs a single standalone Scala node for integration tests.
-# Adapted from compose/scala-standalone.yml with test-specific ports
+# Adapted from compose/f1r3node-standalone.yml with test-specific ports
 # (40460-40465) to avoid conflict with the shard topology (40400-40455).
 #
 # Usage (from integration-tests/ directory):
