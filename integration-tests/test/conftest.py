@@ -1122,13 +1122,6 @@ def _generate_custom_compose(
             'OPENAI_ENABLED=false',
             f'_JAVA_OPTIONS={java_options}',
         ],
-        'healthcheck': {
-            'test': ['CMD', 'curl', '-f', 'http://localhost:40403/api/status'],
-            'interval': '10s',
-            'timeout': '5s',
-            'retries': 30,
-            'start_period': '30s',
-        },
     }
 
     # ── Validator nodes ──
@@ -1158,7 +1151,7 @@ def _generate_custom_compose(
             'user': 'root',
             'restart': 'no',
             'container_name': host,
-            'depends_on': {'boot': {'condition': 'service_healthy'}},
+            'depends_on': ['boot'],
             'networks': [CUSTOM_NETWORK],
             'command': validator_command,
             'ports': [f"{base_port + p}:4040{p}" for p in range(6)],
@@ -1481,11 +1474,9 @@ def start_custom_shard(
         # Starting all JVM containers simultaneously creates a memory
         # pressure spike (~2 GB per JVM for heap + metaspace + stacks).
         # On a 7 GB CI runner with 4 containers, that's ~8 GB simultaneous
-        # demand.  Starting boot first lets its JVM complete class loading
-        # and network initialization before validators compete for memory.
-        # The compose healthcheck on boot + depends_on condition on
-        # validators provides a docker-native gate, while the explicit
-        # port check below provides a faster signal for the Python layer.
+        # demand.  Starting boot first and waiting for its HTTP port lets
+        # the JVM complete class loading and network initialization before
+        # validators compete for memory.
 
         def _do_staggered_startup() -> None:
             # Phase 1: start boot alone
