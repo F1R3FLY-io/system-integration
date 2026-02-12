@@ -42,7 +42,7 @@ services:
     ports:
       - "2584:2584"
     env_file:
-      - .env.f1r3sky
+      - ../.env.f1r3sky
     environment:
       # Port (not in env file)
       PORT: 2584
@@ -65,7 +65,7 @@ services:
     ports:
       - "2583:2583"
     env_file:
-      - .env.f1r3sky
+      - ../.env.f1r3sky
     volumes:
       - pds_blocks:/pds/blocks
       - pds_tmp:/pds/tmp
@@ -89,7 +89,7 @@ services:
     ports:
       - "3100:3000"
     env_file:
-      - .env.f1r3sky
+      - ../.env.f1r3sky
     environment:
       # Port (not in env file)
       PORT: 3000
@@ -107,7 +107,7 @@ services:
     ports:
       - "3101:3001"
     env_file:
-      - .env.f1r3sky
+      - ../.env.f1r3sky
     environment:
       # Port (not in env file)
       PORT: 3001
@@ -125,7 +125,7 @@ services:
   # F1R3SKY Frontend Web App (bskyweb) - requires ~/.npmrc with GitHub token
   f1r3sky:
     build:
-      context: ../f1r3sky
+      context: ../../f1r3sky
       dockerfile: Dockerfile
       secrets:
         - npmrc

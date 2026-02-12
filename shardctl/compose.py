@@ -12,6 +12,50 @@ from .utils import get_docker_compose_command
 
 console = Console()
 
+# Mapping from compose file base name to env file name.
+# For f1r3node variants (f1r3node.yml, f1r3node-standalone.yml, etc.), use .env.node.
+# For other services, use .env.<name> (e.g. .env.embers, .env.f1r3sky).
+ENV_FILE_MAP = {
+    "f1r3node": ".env.node",
+    "f1r3node-rust": ".env.node",
+    "monitoring": ".env.node",
+}
+
+
+def _get_env_file(config: Config, compose_file: Path) -> Optional[Path]:
+    """Get the env file for a compose file.
+
+    Checks ENV_FILE_MAP first, then falls back to .env.<stem> convention.
+    Returns None if no matching env file exists.
+    """
+    stem = compose_file.stem  # e.g. "f1r3node-standalone"
+
+    # Check explicit mapping (try full stem first, then progressively shorter prefixes)
+    for prefix in _iter_prefixes(stem):
+        if prefix in ENV_FILE_MAP:
+            env_file = config.root_dir / ENV_FILE_MAP[prefix]
+            if env_file.exists():
+                return env_file
+            return None
+
+    # Convention: .env.<stem>
+    env_file = config.root_dir / f".env.{stem}"
+    if env_file.exists():
+        return env_file
+
+    return None
+
+
+def _iter_prefixes(name: str):
+    """Yield progressively shorter dash-separated prefixes.
+
+    e.g. "f1r3node-rust-standalone" yields:
+      "f1r3node-rust-standalone", "f1r3node-rust", "f1r3node"
+    """
+    parts = name.split("-")
+    for i in range(len(parts), 0, -1):
+        yield "-".join(parts[:i])
+
 
 class ComposeManager:
     """Manager class for wrapping docker-compose commands."""
@@ -26,62 +70,48 @@ class ComposeManager:
         self.config = config
         self.profile = profile
 
-    def _build_base_command(self) -> List[str]:
-        """Build base docker-compose command with file flags.
-
-        Returns:
-            List of command parts for docker-compose.
-        """
-        cmd = get_docker_compose_command()  # Dynamic version detection
-
-        # Add compose files with -f flags
-        compose_files = self.config.get_compose_files_for_profile(self.profile)
-        for compose_file in compose_files:
-            cmd.extend(["-f", str(compose_file)])
-
-        # Add profile flag if specified
-        if self.profile:
-            cmd.extend(["--profile", self.profile])
-
-        return cmd
-
-    def _run_command(
+    def _run_single_file_command(
         self,
-        command: List[str],
-        capture_output: bool = False,
-        check: bool = True
+        compose_file: Path,
+        args: List[str],
+        check: bool = True,
+        capture_output: bool = True,
     ) -> subprocess.CompletedProcess:
-        """Run a docker-compose command.
+        """Run a docker-compose command against a single compose file.
 
         Args:
-            command: Command parts to execute.
-            capture_output: Whether to capture output instead of streaming.
-            check: Whether to raise exception on non-zero exit code.
+            compose_file: Path to the compose file.
+            args: Command arguments (e.g. ["up", "-d"]).
+            check: Whether to raise on non-zero exit.
+            capture_output: Whether to capture stdout/stderr.
 
         Returns:
             CompletedProcess instance.
         """
-        full_command = self._build_base_command() + command
+        cmd = get_docker_compose_command()
 
-        console.print(f"[dim]$ {' '.join(full_command)}[/dim]")
+        # Add env file if one matches this compose file
+        env_file = _get_env_file(self.config, compose_file)
+        if env_file:
+            cmd.extend(["--env-file", str(env_file)])
+
+        cmd.extend(["-f", str(compose_file)])
+
+        if self.profile:
+            cmd.extend(["--profile", self.profile])
+
+        cmd.extend(args)
+
+        console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
 
         try:
-            if capture_output:
-                result = subprocess.run(
-                    full_command,
-                    capture_output=True,
-                    text=True,
-                    check=check
-                )
-            else:
-                result = subprocess.run(
-                    full_command,
-                    capture_output=True,
-                    text=True,
-                    check=check
-                )
+            result = subprocess.run(
+                cmd,
+                capture_output=capture_output,
+                text=True,
+                check=check,
+            )
         except subprocess.CalledProcessError as e:
-            # Parse common Docker Compose errors and provide helpful messages
             error_output = e.stderr if e.stderr else e.stdout if e.stdout else str(e)
 
             if "already in use by container" in error_output:
@@ -96,37 +126,15 @@ class ComposeManager:
                 console.print("\n[red]Error: Unknown service[/red]")
                 console.print("[yellow]The specified service was not found in the compose files.[/yellow]")
             else:
-                console.print(f"\n[red]Error running docker compose:[/red]")
+                console.print(f"\n[red]Error running docker compose for {compose_file.name}:[/red]")
                 if error_output:
-                    # Show the full error output - don't hide anything
                     console.print(f"[yellow]{error_output.strip()}[/yellow]")
                 else:
                     console.print("[yellow]No error output captured. Try running the command manually.[/yellow]")
-                    console.print(f"[dim]Command was: {' '.join(full_command)}[/dim]")
+                    console.print(f"[dim]Command was: {' '.join(cmd)}[/dim]")
             raise SystemExit(1)
 
         return result
-
-    def up(self, services: Optional[List[str]] = None, detached: bool = True, build: bool = False):
-        """Start services.
-
-        Args:
-            services: List of specific services to start. If None, starts all.
-            detached: Run in detached mode.
-            build: Build images before starting.
-        """
-        cmd = ["up"]
-
-        if detached:
-            cmd.append("-d")
-
-        if build:
-            cmd.append("--build")
-
-        if services:
-            cmd.extend(services)
-
-        self._run_command(cmd)
 
     def up_single_file(
         self,
@@ -139,218 +147,124 @@ class ComposeManager:
 
         Args:
             compose_file: Path to the compose file.
-            services: List of specific services to start. If None, starts all.
+            services: List of specific docker services to start. If None, starts all.
             detached: Run in detached mode.
             build: Build images before starting.
         """
-        cmd = get_docker_compose_command()  # Dynamic version detection
-
-        # Use .env.node for node compose files (in compose/ directory)
-        if "compose/" in str(compose_file) or compose_file.parent.name == "compose":
-            env_file = self.config.root_dir / ".env.node"
-            if env_file.exists():
-                cmd.extend(["--env-file", str(env_file)])
-
-        cmd.extend(["-f", str(compose_file), "up"])
+        args = ["up"]
 
         if detached:
-            cmd.append("-d")
+            args.append("-d")
 
         if build:
-            cmd.append("--build")
+            args.append("--build")
 
         if services:
-            cmd.extend(services)
+            args.extend(services)
 
-        console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+        return self._run_single_file_command(compose_file, args)
 
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-        except subprocess.CalledProcessError as e:
-            error_output = e.stderr if e.stderr else e.stdout if e.stdout else str(e)
-            console.print(f"\n[red]Error running docker compose for {compose_file.name}:[/red]")
-            if error_output:
-                console.print(f"[yellow]{error_output.strip()}[/yellow]")
-            else:
-                console.print("[yellow]No error output captured.[/yellow]")
-            raise SystemExit(1)
-
-        return result
-
-    def down(self, services: Optional[List[str]] = None, volumes: bool = False, remove_orphans: bool = True):
-        """Stop and remove services.
+    def down_single_file(
+        self,
+        compose_file: Path,
+        volumes: bool = False,
+        remove_orphans: bool = True,
+    ):
+        """Stop and remove services from a single compose file.
 
         Args:
-            services: List of specific services to stop. If None, stops all.
+            compose_file: Path to the compose file.
             volumes: Remove named volumes.
-            remove_orphans: Remove containers for services not defined in compose file.
+            remove_orphans: Remove orphan containers.
         """
-        cmd = ["down"]
+        args = ["down"]
 
         if volumes:
-            cmd.append("--volumes")
+            args.append("--volumes")
 
         if remove_orphans:
-            cmd.append("--remove-orphans")
+            args.append("--remove-orphans")
 
-        if services:
-            cmd.extend(services)
+        return self._run_single_file_command(compose_file, args)
 
-        self._run_command(cmd)
-
-    def ps(self, services: Optional[List[str]] = None):
-        """List containers.
+    def ps_single_file(self, compose_file: Path):
+        """List containers from a single compose file.
 
         Args:
-            services: List of specific services to show. If None, shows all.
+            compose_file: Path to the compose file.
         """
-        cmd = ["ps"]
+        return self._run_single_file_command(compose_file, ["ps"], capture_output=False)
 
-        if services:
-            cmd.extend(services)
-
-        self._run_command(cmd)
-
-    def logs(
+    def logs_single_file(
         self,
-        services: Optional[List[str]] = None,
+        compose_file: Path,
         follow: bool = False,
-        tail: Optional[int] = None
+        tail: Optional[int] = None,
     ):
-        """View service logs.
+        """View logs from a single compose file.
 
         Args:
-            services: List of specific services to show logs for. If None, shows all.
+            compose_file: Path to the compose file.
             follow: Follow log output.
-            tail: Number of lines to show from the end of logs.
+            tail: Number of lines to show from the end.
         """
-        cmd = ["logs"]
+        args = ["logs"]
 
         if follow:
-            cmd.append("-f")
+            args.append("-f")
 
         if tail is not None:
-            cmd.extend(["--tail", str(tail)])
+            args.extend(["--tail", str(tail)])
 
-        if services:
-            cmd.extend(services)
+        return self._run_single_file_command(
+            compose_file, args, capture_output=False
+        )
 
-        self._run_command(cmd)
-
-    def restart(self, services: Optional[List[str]] = None):
-        """Restart services.
+    def restart_single_file(self, compose_file: Path):
+        """Restart services from a single compose file.
 
         Args:
-            services: List of specific services to restart. If None, restarts all.
+            compose_file: Path to the compose file.
         """
-        cmd = ["restart"]
+        return self._run_single_file_command(compose_file, ["restart"])
 
-        if services:
-            cmd.extend(services)
-
-        self._run_command(cmd)
-
-    def build(self, services: Optional[List[str]] = None, no_cache: bool = False):
-        """Build or rebuild services.
+    def build_single_file(
+        self,
+        compose_file: Path,
+        services: Optional[List[str]] = None,
+        no_cache: bool = False,
+    ):
+        """Build services from a single compose file.
 
         Args:
+            compose_file: Path to the compose file.
             services: List of specific services to build. If None, builds all.
             no_cache: Do not use cache when building.
         """
-        cmd = ["build"]
+        args = ["build"]
 
         if no_cache:
-            cmd.append("--no-cache")
+            args.append("--no-cache")
 
         if services:
-            cmd.extend(services)
+            args.extend(services)
 
-        self._run_command(cmd)
+        return self._run_single_file_command(compose_file, args)
 
-    def exec(self, service: str, command: List[str], interactive: bool = True):
-        """Execute a command in a running service container.
-
-        Args:
-            service: Service name.
-            command: Command to execute.
-            interactive: Allocate a TTY.
-        """
-        cmd = ["exec"]
-
-        if interactive:
-            cmd.append("-it")
-
-        cmd.append(service)
-        cmd.extend(command)
-
-        self._run_command(cmd)
-
-    def shell(self, service: str, shell_cmd: str = "/bin/bash"):
-        """Open a shell in a running service container.
+    def pull_single_file(
+        self,
+        compose_file: Path,
+        services: Optional[List[str]] = None,
+    ):
+        """Pull images for a single compose file.
 
         Args:
-            service: Service name.
-            shell_cmd: Shell command to run (default: /bin/bash).
-        """
-        self.exec(service, [shell_cmd], interactive=True)
-
-    def pull(self, services: Optional[List[str]] = None):
-        """Pull service images.
-
-        Args:
+            compose_file: Path to the compose file.
             services: List of specific services to pull. If None, pulls all.
         """
-        cmd = ["pull"]
+        args = ["pull"]
 
         if services:
-            cmd.extend(services)
+            args.extend(services)
 
-        self._run_command(cmd)
-
-    def run_custom_command(self, args: List[str]):
-        """Run a custom docker-compose command.
-
-        Args:
-            args: Command arguments to pass to docker-compose.
-        """
-        self._run_command(args)
-
-    def get_status(self) -> List[dict]:
-        """Get status information for all services.
-
-        Returns:
-            List of service status dictionaries.
-        """
-        try:
-            result = self._run_command(
-                ["ps", "--format", "json"],
-                capture_output=True,
-                check=True
-            )
-
-            # Parse JSON output
-            import json
-            services = []
-
-            # docker-compose ps --format json outputs one JSON object per line
-            for line in result.stdout.strip().split('\n'):
-                if line:
-                    try:
-                        service_info = json.loads(line)
-                        services.append(service_info)
-                    except json.JSONDecodeError:
-                        pass
-
-            return services
-
-        except subprocess.CalledProcessError:
-            console.print("[yellow]Warning: Could not get service status[/yellow]")
-            return []
-        except Exception as e:
-            console.print(f"[yellow]Warning: Error getting service status: {e}[/yellow]")
-            return []
+        return self._run_single_file_command(compose_file, args)

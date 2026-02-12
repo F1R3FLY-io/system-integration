@@ -18,92 +18,27 @@ class Config:
         """
         self.root_dir = root_dir or Path.cwd()
         self.services_dir = self.root_dir / "services"
-        self.compose_file = self.root_dir / "docker-compose.yml"
-        self.compose_embers_file = self.root_dir / "docker-compose.embers.yml"
-        self.compose_f1r3sky_file = self.root_dir / "docker-compose.f1r3sky.yml"
-        self.compose_dev_file = self.root_dir / "docker-compose.dev.yml"
+        self.compose_dir = self.root_dir / "compose"
 
-    @property
-    def compose_files(self) -> List[Path]:
-        """Get list of compose files that exist."""
-        files = []
-        if self.compose_file.exists():
-            files.append(self.compose_file)
-        return files
+    def resolve_compose_file(self, name: str) -> Path:
+        """Resolve a service name or filename to a compose file path.
 
-    def get_compose_files_for_profile(self, profile: Optional[str] = None) -> List[Path]:
-        """Get compose files for a specific profile.
+        Accepts bare service names (e.g. 'f1r3node') or filenames (e.g. 'f1r3node.yml'
+        or 'compose/f1r3node.yml') and returns an absolute path under compose/.
 
         Args:
-            profile: Profile name (e.g., 'dev', 'prod'). If None, returns base files.
+            name: Service name or compose file path.
 
         Returns:
-            List of compose file paths for the profile.
+            Absolute path to the compose file.
         """
-        files = [self.compose_file]
-
-        # Always include embers and f1r3sky compose files if they exist
-        if self.compose_embers_file.exists():
-            files.append(self.compose_embers_file)
-        if self.compose_f1r3sky_file.exists():
-            files.append(self.compose_f1r3sky_file)
-
-        if profile == "dev" and self.compose_dev_file.exists():
-            files.append(self.compose_dev_file)
-
-        return [f for f in files if f.exists()]
-
-    def load_compose_config(self, profile: Optional[str] = None) -> Dict:
-        """Load and merge compose configuration.
-
-        Args:
-            profile: Profile name to load configuration for.
-
-        Returns:
-            Merged compose configuration as dictionary.
-        """
-        config = {}
-
-        for compose_file in self.get_compose_files_for_profile(profile):
-            with open(compose_file, 'r') as f:
-                file_config = yaml.safe_load(f)
-                if file_config:
-                    config = self._merge_configs(config, file_config)
-
-        return config
-
-    def _merge_configs(self, base: Dict, override: Dict) -> Dict:
-        """Merge two configuration dictionaries.
-
-        Args:
-            base: Base configuration.
-            override: Configuration to merge in.
-
-        Returns:
-            Merged configuration.
-        """
-        result = base.copy()
-
-        for key, value in override.items():
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                result[key] = self._merge_configs(result[key], value)
-            else:
-                result[key] = value
-
-        return result
-
-    def get_service_names(self, profile: Optional[str] = None) -> List[str]:
-        """Get list of service names from compose configuration.
-
-        Args:
-            profile: Profile name to get services for.
-
-        Returns:
-            List of service names.
-        """
-        config = self.load_compose_config(profile)
-        services = config.get('services', {})
-        return list(services.keys())
+        # Strip compose/ prefix if present
+        if name.startswith("compose/"):
+            name = name[len("compose/"):]
+        # Add .yml suffix if missing
+        if not name.endswith(".yml"):
+            name = f"{name}.yml"
+        return self.compose_dir / name
 
     def is_service_enabled(self, service_name: str) -> bool:
         """Check if a service is enabled.
@@ -282,9 +217,11 @@ class Config:
     def get_startup_order(self) -> List[Path]:
         """Get ordered list of compose files for startup.
 
-        Reads the startup_order from services.yml. If not defined, falls back
-        to scala-shard as the default node configuration, plus any other
-        compose files found.
+        Reads the startup_order from services.yml. Each entry is a service name
+        (e.g. 'f1r3node') or a yml filename (e.g. 'f1r3node.yml'), resolved to
+        compose/<name>.yml.
+
+        If not defined, falls back to f1r3node as the default.
 
         Returns:
             List of compose file paths in startup order.
@@ -297,25 +234,15 @@ class Config:
                 startup_order = services_config.get('startup_order', [])
 
                 if startup_order:
-                    # Convert to absolute paths and filter to only existing files
                     compose_files = []
-                    for filename in startup_order:
-                        filepath = self.root_dir / filename
+                    for entry in startup_order:
+                        filepath = self.resolve_compose_file(entry)
                         if filepath.exists():
                             compose_files.append(filepath)
                     return compose_files
 
-        # Fallback: start with scala-shard (default node config), then other compose files
-        compose_files = []
-
-        # Default to scala-shard for node operations
-        scala_shard = self.root_dir / "compose" / "scala-shard.yml"
-        if scala_shard.exists():
-            compose_files.append(scala_shard)
-
-        # Add other compose files (embers, f1r3sky, etc.)
-        for f in self.get_compose_files_for_profile(None):
-            if f not in compose_files:
-                compose_files.append(f)
-
-        return compose_files
+        # Fallback: default to f1r3node
+        default = self.compose_dir / "f1r3node.yml"
+        if default.exists():
+            return [default]
+        return []

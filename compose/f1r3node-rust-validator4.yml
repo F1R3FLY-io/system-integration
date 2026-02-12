@@ -4,7 +4,7 @@
 # Runs Validator 4 as an additional node to join an existing shard network.
 #
 # Usage:
-#   docker-compose -f compose/rust-validator4.yml up -d
+#   docker-compose -f compose/f1r3node-rust-validator4.yml up -d
 #
 # PREREQUISITES:
 #   - A running shard network (bootstrap + validators)
@@ -12,7 +12,7 @@
 #
 # See: https://github.com/F1R3FLY-io/rust-client/blob/main/VALIDATOR4_BONDING_GUIDE.md
 #
-# NOTE: For Scala nodes, use scala-validator4.yml instead.
+# NOTE: For Scala nodes, use f1r3node-validator4.yml instead.
 
 services:
   validator4:
