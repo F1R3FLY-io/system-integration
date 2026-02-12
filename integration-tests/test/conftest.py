@@ -1071,11 +1071,11 @@ def _generate_custom_compose(
     # that's 140% -- causing GC thrashing and startup timeouts.
     #
     # Override _JAVA_OPTIONS per container with a percentage that lets all
-    # containers fit within ~80% of host RAM (leaving room for the OS).
+    # containers fit within ~90% of host RAM (leaving ~10% for the OS).
     # On local machines with plenty of RAM this is harmless -- the JVM just
     # gets a proportionally larger (but still bounded) heap.
     total_containers = len(bonds) + 1  # boot + validators
-    max_ram_pct = 80.0 / total_containers
+    max_ram_pct = 90.0 / total_containers
     java_options = (
         f'-XX:MaxRAMPercentage={max_ram_pct:.1f} -XX:MaxDirectMemorySize=128M'
     )
@@ -1122,6 +1122,13 @@ def _generate_custom_compose(
             'OPENAI_ENABLED=false',
             f'_JAVA_OPTIONS={java_options}',
         ],
+        'healthcheck': {
+            'test': ['CMD', 'curl', '-f', 'http://localhost:40403/api/status'],
+            'interval': '10s',
+            'timeout': '5s',
+            'retries': 30,
+            'start_period': '30s',
+        },
     }
 
     # ── Validator nodes ──
@@ -1151,7 +1158,7 @@ def _generate_custom_compose(
             'user': 'root',
             'restart': 'no',
             'container_name': host,
-            'depends_on': ['boot'],
+            'depends_on': {'boot': {'condition': 'service_healthy'}},
             'networks': [CUSTOM_NETWORK],
             'command': validator_command,
             'ports': [f"{base_port + p}:4040{p}" for p in range(6)],
@@ -1200,12 +1207,18 @@ def _custom_compose_cmd(compose_file: str, *args: str) -> List[str]:
     ]
 
 
-def _custom_compose_up(compose_file: str) -> None:
-    """Bring up the custom shard via docker-compose."""
+def _custom_compose_up(compose_file: str, *services: str) -> None:
+    """Bring up custom shard services via docker-compose.
+
+    When *services* is empty, starts all services defined in the compose
+    file (``docker-compose up -d``).  When specific service names are
+    given, only those services are started (``docker-compose up -d <svc>``).
+    """
     tests_dir = _get_tests_dir()
-    logging.info("Starting custom shard ...")
+    label = f"services: {', '.join(services)}" if services else "(all)"
+    logging.info("Starting custom shard %s ...", label)
     result = subprocess.run(
-        _custom_compose_cmd(compose_file, "up", "-d"),
+        _custom_compose_cmd(compose_file, "up", "-d", *services),
         cwd=tests_dir,
         capture_output=True,
         check=False,
@@ -1270,6 +1283,28 @@ def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
     raise RuntimeError(
         f"Port {port} still in use after {timeout}s -- "
         "leftover container or TIME_WAIT?"
+    )
+
+
+def _wait_for_port_listening(host: str, port: int, timeout: float = 120.0) -> None:
+    """Wait until a TCP port is accepting connections.
+
+    Used to detect when a container's network layer is ready before
+    starting dependent containers.  This avoids starting all JVM
+    containers simultaneously, which causes memory pressure spikes on
+    resource-constrained CI runners.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(2)
+            try:
+                s.connect((host, port))
+                return
+            except (ConnectionRefusedError, OSError):
+                time.sleep(2)
+    raise RuntimeError(
+        f"Port {host}:{port} not listening after {timeout}s"
     )
 
 
@@ -1442,17 +1477,40 @@ def start_custom_shard(
         # Wait for the bootstrap port to be released (kernel TIME_WAIT)
         _wait_for_port_free(_CUSTOM_PORT_BASES['boot'])
 
-        try:
+        # ── Staggered startup: boot first, then validators ──
+        # Starting all JVM containers simultaneously creates a memory
+        # pressure spike (~2 GB per JVM for heap + metaspace + stacks).
+        # On a 7 GB CI runner with 4 containers, that's ~8 GB simultaneous
+        # demand.  Starting boot first lets its JVM complete class loading
+        # and network initialization before validators compete for memory.
+        # The compose healthcheck on boot + depends_on condition on
+        # validators provides a docker-native gate, while the explicit
+        # port check below provides a faster signal for the Python layer.
+
+        def _do_staggered_startup() -> None:
+            # Phase 1: start boot alone
+            _custom_compose_up(compose_file, 'boot')
+            boot_http_port = _CUSTOM_PORT_BASES['boot'] + 3  # HTTP API port
+            logging.info(
+                "Waiting for boot HTTP port %d to accept connections...",
+                boot_http_port,
+            )
+            _wait_for_port_listening('localhost', boot_http_port, timeout=120)
+            logging.info("Boot HTTP port is listening, starting validators...")
+            # Phase 2: start validators (boot is already running)
             _custom_compose_up(compose_file)
-        except subprocess.CalledProcessError:
-            logging.warning("Custom shard compose up failed, cleaning up and retrying...")
+
+        try:
+            _do_staggered_startup()
+        except (subprocess.CalledProcessError, RuntimeError):
+            logging.warning("Custom shard startup failed, cleaning up and retrying...")
             _force_cleanup_custom_containers()
             _custom_compose_down(compose_file)
             _reset_custom_data(container_names)
             _ensure_data_dirs(container_names)
             _wait_for_port_free(_CUSTOM_PORT_BASES['boot'])
             time.sleep(5)
-            _custom_compose_up(compose_file)
+            _do_staggered_startup()
 
         logging.info(
             "Waiting for custom shard nodes to reach Running state (timeout=%ds)...",
@@ -1615,7 +1673,7 @@ def add_peer_to_shard(
         # Match the custom shard's JVM tuning so the joiner doesn't
         # claim more RAM than its share (see _generate_custom_compose).
         joiner_total = len(shard.nodes) + 1  # existing nodes + joiner
-        joiner_ram_pct = 80.0 / joiner_total
+        joiner_ram_pct = 90.0 / joiner_total
         joiner_java_opts = (
             f'-XX:MaxRAMPercentage={joiner_ram_pct:.1f} -XX:MaxDirectMemorySize=128M'
         )
