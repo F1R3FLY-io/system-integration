@@ -1065,6 +1065,25 @@ def _generate_custom_compose(
             flags.append(k if v == "" else f"{k}={v}")
         return flags
 
+    # ── JVM memory tuning for CI ──
+    # The CI job sets _JAVA_OPTIONS=-XX:MaxRAMPercentage=35.0 globally, so
+    # each JVM claims 35% of host RAM.  With 4 containers on a 7GB runner
+    # that's 140% -- causing GC thrashing and startup timeouts.
+    #
+    # Override _JAVA_OPTIONS per container with a percentage that lets all
+    # containers fit within ~80% of host RAM (leaving room for the OS).
+    # On local machines with plenty of RAM this is harmless -- the JVM just
+    # gets a proportionally larger (but still bounded) heap.
+    total_containers = len(bonds) + 1  # boot + validators
+    max_ram_pct = 80.0 / total_containers
+    java_options = (
+        f'-XX:MaxRAMPercentage={max_ram_pct:.1f} -XX:MaxDirectMemorySize=128M'
+    )
+    logging.info(
+        "Custom shard JVM tuning: %d containers, MaxRAMPercentage=%.1f%%",
+        total_containers, max_ram_pct,
+    )
+
     services: Dict = {}
 
     # ── Bootstrap node ──
@@ -1099,7 +1118,10 @@ def _generate_custom_compose(
             f"{abs_certs}/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
             f"{abs_certs}/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro",
         ],
-        'environment': ['OPENAI_ENABLED=false'],
+        'environment': [
+            'OPENAI_ENABLED=false',
+            f'_JAVA_OPTIONS={java_options}',
+        ],
     }
 
     # ── Validator nodes ──
@@ -1142,7 +1164,10 @@ def _generate_custom_compose(
                 f"{abs_certs}/{cert_dir}/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
                 f"{abs_certs}/{cert_dir}/node.key.pem:/var/lib/rnode/node.key.pem:ro",
             ],
-            'environment': ['OPENAI_ENABLED=false'],
+            'environment': [
+                'OPENAI_ENABLED=false',
+                f'_JAVA_OPTIONS={java_options}',
+            ],
         }
 
     compose = {
@@ -1587,6 +1612,14 @@ def add_peer_to_shard(
         # previous test's joiner container that was recently stopped).
         _wait_for_port_free(_CUSTOM_PORT_BASES['joiner'])
 
+        # Match the custom shard's JVM tuning so the joiner doesn't
+        # claim more RAM than its share (see _generate_custom_compose).
+        joiner_total = len(shard.nodes) + 1  # existing nodes + joiner
+        joiner_ram_pct = 80.0 / joiner_total
+        joiner_java_opts = (
+            f'-XX:MaxRAMPercentage={joiner_ram_pct:.1f} -XX:MaxDirectMemorySize=128M'
+        )
+
         logging.info("Starting joiner %s on network %s ...",
                      container_name, shard.network_name)
         container = docker_client.containers.run(
@@ -1597,7 +1630,10 @@ def add_peer_to_shard(
             command=command,
             ports=ports,
             volumes=volumes,
-            environment=['OPENAI_ENABLED=false'],
+            environment=[
+                'OPENAI_ENABLED=false',
+                f'_JAVA_OPTIONS={joiner_java_opts}',
+            ],
             detach=True,
         )
 
