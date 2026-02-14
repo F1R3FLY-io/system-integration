@@ -67,8 +67,9 @@ def node_with_blocks(validator1_node: Node, testing_context: TestingContext) -> 
     # Wait for the LFB to advance past the highest block containing a deploy.
     # prepare_deploy returns a sequence number based on finalized state, so
     # without this wait the assertion can see stale (lower) values.
-    lfb_timeout = int(120 * scale)
+    lfb_timeout = int(180 * scale)
     lfb_deadline = time.time() + lfb_timeout
+    lfb_number = 0
     while time.time() < lfb_deadline:
         lfb = validator1_node.last_finalized_block()
         lfb_number = lfb.blockInfo.blockNumber
@@ -80,10 +81,10 @@ def node_with_blocks(validator1_node: Node, testing_context: TestingContext) -> 
             break
         time.sleep(5)
     else:
-        logging.warning(
-            "LFB #%d did not reach deploy block #%d within %ds -- "
-            "continuing anyway",
-            lfb_number, max_block_number, lfb_timeout,
+        pytest.fail(
+            f"LFB #{lfb_number} did not reach deploy block "
+            f"#{max_block_number} within {lfb_timeout}s -- "
+            f"finalization too slow for downstream seq_number assertions"
         )
 
     yield (validator1_node, deploy_hashes, block_hashes)
