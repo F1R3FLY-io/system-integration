@@ -1099,6 +1099,7 @@ def _generate_custom_compose(
         f"--validator-private-key={BOOTSTRAP_PRIVATE_KEY_HEX}",
         f"--fault-tolerance-threshold={ftt}",
         f"--required-signatures={required_signatures}",
+        "--approve-duration=180seconds",
     ] + _extra_cli("boot")
 
     services['boot'] = {
@@ -1277,6 +1278,19 @@ def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
         f"Port {port} still in use after {timeout}s -- "
         "leftover container or TIME_WAIT?"
     )
+
+
+def _wait_for_custom_ports_free(num_validators: int, timeout: float = 30.0) -> None:
+    """Wait for all custom shard host ports to be free.
+
+    Previous custom shard teardown leaves kernel sockets in TIME_WAIT.
+    Waiting only for the boot port is insufficient -- validator ports
+    may still be held, causing BindException inside the container JVM.
+    """
+    node_keys = ['boot'] + [f'validator{i + 1}' for i in range(num_validators)]
+    for key in node_keys:
+        base = _CUSTOM_PORT_BASES[key]
+        _wait_for_port_free(base, timeout=timeout)
 
 
 def _wait_for_port_listening(host: str, port: int, timeout: float = 120.0) -> None:
@@ -1467,8 +1481,10 @@ def start_custom_shard(
         _reset_custom_data(container_names)
         _ensure_data_dirs(container_names)
 
-        # Wait for the bootstrap port to be released (kernel TIME_WAIT)
-        _wait_for_port_free(_CUSTOM_PORT_BASES['boot'])
+        # Wait for all custom shard ports to be released (kernel TIME_WAIT).
+        # Checking only boot is insufficient -- validator ports may still be
+        # held from the previous test's shard, causing BindException on startup.
+        _wait_for_custom_ports_free(len(bonds))
 
         # ── Staggered startup: boot first, then validators ──
         # Starting all JVM containers simultaneously creates a memory
@@ -1499,7 +1515,7 @@ def start_custom_shard(
             _custom_compose_down(compose_file)
             _reset_custom_data(container_names)
             _ensure_data_dirs(container_names)
-            _wait_for_port_free(_CUSTOM_PORT_BASES['boot'])
+            _wait_for_custom_ports_free(len(bonds))
             time.sleep(5)
             _do_staggered_startup()
 
