@@ -701,12 +701,12 @@ def pytest_terminal_summary(terminalreporter: TerminalReporter) -> None:
 
 @pytest.fixture(scope='session')
 def command_line_options(request) -> Generator[CommandLineOptions, None, None]:
-    startup_timeout = int(request.config.getoption("--startup-timeout"))
-    converge_timeout = int(request.config.getoption("--converge-timeout"))
-    receive_timeout = int(request.config.getoption("--receive-timeout"))
-    command_timeout = int(request.config.getoption("--command-timeout"))
-    random_seed = request.config.getoption("--random-seed")
     timeout_scale = float(request.config.getoption("--timeout-scale"))
+    startup_timeout = int(int(request.config.getoption("--startup-timeout")) * timeout_scale)
+    converge_timeout = int(int(request.config.getoption("--converge-timeout")) * timeout_scale)
+    receive_timeout = int(int(request.config.getoption("--receive-timeout")) * timeout_scale)
+    command_timeout = int(int(request.config.getoption("--command-timeout")) * timeout_scale)
+    random_seed = request.config.getoption("--random-seed")
 
     yield CommandLineOptions(
         node_startup_timeout=startup_timeout,
