@@ -442,7 +442,8 @@ def _make_standalone_node(docker_client: DockerClient, command_timeout: int) -> 
 
 
 def _wait_for_running_state(docker_client: DockerClient, container_name: str,
-                             timeout: int) -> None:
+                             timeout: int,
+                             data_dir: Optional[str] = None) -> None:
     """Wait for a node container to reach the Running state.
 
     Polls container logs every 5 seconds for the Running state marker. Also
@@ -451,9 +452,13 @@ def _wait_for_running_state(docker_client: DockerClient, container_name: str,
     waiting the full timeout doing nothing. If the container crashes again
     after restart, fails immediately with diagnostic output.
 
+    When ``data_dir`` is provided, the data directory is cleaned before
+    restart so that partial genesis or DAG state from the crashed run does
+    not prevent the new JVM from completing startup.
+
     This catches scenarios where the JVM crashes during genesis or startup
-    (e.g. OOM, config error) and saves up to 10 minutes of wasted CI time
-    per container compared to blindly polling until timeout.
+    (e.g. OOM, config error, BindException) and saves up to 10 minutes of
+    wasted CI time per container compared to blindly polling until timeout.
     """
     container = docker_client.containers.get(container_name)
     running_marker = 'Making a transition to Running state.'
@@ -477,6 +482,16 @@ def _wait_for_running_state(docker_client: DockerClient, container_name: str,
                     container_name, container.status, exit_code,
                     time.time() - start, log_tail,
                 )
+                # Clean the data directory before restart. A partially-written
+                # genesis or DAG state from the crashed run can prevent the
+                # JVM from completing startup on the second attempt.
+                if data_dir and os.path.exists(data_dir):
+                    logging.info("Cleaning data dir before restart: %s", data_dir)
+                    subprocess.run(
+                        ["docker", "run", "--rm", "-v", f"{data_dir}:/data",
+                         "alpine", "sh", "-c", "rm -rf /data/*"],
+                        check=False,
+                    )
                 container.restart()
                 restart_attempted = True
                 time.sleep(10)  # Give JVM time to begin startup
@@ -1523,8 +1538,11 @@ def start_custom_shard(
             "Waiting for custom shard nodes to reach Running state (timeout=%ds)...",
             timeout,
         )
+        tests_dir = _get_tests_dir()
         for name in container_names:
-            _wait_for_running_state(docker_client, name, timeout)
+            container_data_dir = os.path.join(tests_dir, "data", name)
+            _wait_for_running_state(docker_client, name, timeout,
+                                    data_dir=container_data_dir)
         logging.info("All custom shard nodes are in Running state.")
 
         for i, name in enumerate(container_names):
