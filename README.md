@@ -778,6 +778,34 @@ shardctl up service-1 --build
 
 ## Troubleshooting
 
+### macOS Specific Issues
+
+#### Docker "Outside of rootfs" Error
+
+**Symptom:**
+Services fail to start with an error similar to:
+```text
+Error: failed to create task for container: ... error mounting "..." to rootfs at "...": mountpoint "..." is outside of rootfs
+```
+
+**Cause:**
+This is a known issue with the **VirtioFS** file sharing implementation in Docker Desktop for macOS. It occurs when mounting files (like certificates or config files) *inside* directories that are also mounted as volumes (like the data directory).
+
+**Solution:**
+Switch Docker's file sharing implementation to **gRPC FUSE**.
+
+1. Open **Docker Desktop Dashboard**.
+2. Go to **Settings** (gear icon) -> **General**.
+3. Scroll down to "Choose file sharing implementation for your containers".
+4. Select **gRPC FUSE**.
+5. Click **Apply & Restart**.
+6. After Docker restarts, you may need to clean up the data directory before starting services:
+   ```bash
+   poetry run shardctl down --volumes
+   rm -rf data/rnode*
+   poetry run shardctl up
+   ```
+
 ### Common Build Issues
 
 #### F1R3Sky services fail with "better-sqlite3" errors
