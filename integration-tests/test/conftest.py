@@ -150,10 +150,15 @@ def _get_tests_dir() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _is_rust_node() -> bool:
+    """Check if the active node image is the Rust implementation."""
+    image = os.environ.get("DEFAULT_IMAGE", "")
+    return "rust" in image.lower()
+
+
 def _get_compose_file() -> str:
     """Determine which compose file to use based on DEFAULT_IMAGE env var."""
-    image = os.environ.get("DEFAULT_IMAGE", "")
-    if "rust" in image.lower():
+    if _is_rust_node():
         return "docker-compose.rust.yml"
     return "docker-compose.scala.yml"
 
@@ -242,8 +247,7 @@ def _reset_data() -> None:
 
 def _get_standalone_compose_file() -> str:
     """Determine which standalone compose file to use based on DEFAULT_IMAGE env var."""
-    image = os.environ.get("DEFAULT_IMAGE", "")
-    if "rust" in image.lower():
+    if _is_rust_node():
         return "docker-compose.standalone-rust.yml"
     return "docker-compose.standalone-scala.yml"
 
@@ -1080,7 +1084,7 @@ def _generate_custom_compose(
             flags.append(k if v == "" else f"{k}={v}")
         return flags
 
-    # ── JVM memory tuning for CI ──
+    # ── JVM memory tuning for CI (Scala only) ──
     # The CI job sets _JAVA_OPTIONS=-XX:MaxRAMPercentage=35.0 globally, so
     # each JVM claims 35% of host RAM.  With 4 containers on a 7GB runner
     # that's 140% -- causing GC thrashing and startup timeouts.
@@ -1089,15 +1093,19 @@ def _generate_custom_compose(
     # containers fit within ~90% of host RAM (leaving ~10% for the OS).
     # On local machines with plenty of RAM this is harmless -- the JVM just
     # gets a proportionally larger (but still bounded) heap.
-    total_containers = len(bonds) + 1  # boot + validators
-    max_ram_pct = 90.0 / total_containers
-    java_options = (
-        f'-XX:MaxRAMPercentage={max_ram_pct:.1f} -XX:MaxDirectMemorySize=128M'
-    )
-    logging.info(
-        "Custom shard JVM tuning: %d containers, MaxRAMPercentage=%.1f%%",
-        total_containers, max_ram_pct,
-    )
+    rust = _is_rust_node()
+    if rust:
+        java_options = None
+    else:
+        total_containers = len(bonds) + 1  # boot + validators
+        max_ram_pct = 90.0 / total_containers
+        java_options = (
+            f'-XX:MaxRAMPercentage={max_ram_pct:.1f} -XX:MaxDirectMemorySize=128M'
+        )
+        logging.info(
+            "Custom shard JVM tuning: %d containers, MaxRAMPercentage=%.1f%%",
+            total_containers, max_ram_pct,
+        )
 
     services: Dict = {}
 
@@ -1105,8 +1113,9 @@ def _generate_custom_compose(
     boot_host = CUSTOM_BOOT_CONTAINER
     boot_data = os.path.join(abs_data, boot_host)
     boot_base = _CUSTOM_PORT_BASES['boot']
-    boot_command = [
+    boot_command = ([] if rust else [
         "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
+    ]) + [
         "run",
         f"--host={boot_host}",
         f"--bootstrap={bootstrap_url}",
@@ -1129,15 +1138,18 @@ def _generate_custom_compose(
             f"{abs_conf}/bootstrap-ceremony.conf:/var/lib/rnode/rnode.conf",
             f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
             f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
+        ] + ([] if rust else [
             f"{abs_conf}/logback.xml:/var/lib/rnode/logback.xml",
+        ]) + [
             f"{boot_data}:/var/lib/rnode/",
             f"{abs_certs}/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
             f"{abs_certs}/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro",
         ],
         'environment': [
             'OPENAI_ENABLED=false',
+        ] + ([] if rust else [
             f'_JAVA_OPTIONS={java_options}',
-        ],
+        ]),
     }
 
     # ── Validator nodes ──
@@ -1149,8 +1161,9 @@ def _generate_custom_compose(
         data_path = os.path.join(abs_data, host)
         base_port = _CUSTOM_PORT_BASES[node_key]
 
-        validator_command = [
+        validator_command = ([] if rust else [
             "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
+        ]) + [
             "run",
             f"--host={host}",
             "--allow-private-addresses",
@@ -1175,15 +1188,18 @@ def _generate_custom_compose(
                 f"{abs_conf}/shared-rnode.conf:/var/lib/rnode/rnode.conf",
                 f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
                 f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
+            ] + ([] if rust else [
                 f"{abs_conf}/logback.xml:/var/lib/rnode/logback.xml",
+            ]) + [
                 f"{data_path}:/var/lib/rnode/",
                 f"{abs_certs}/{cert_dir}/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
                 f"{abs_certs}/{cert_dir}/node.key.pem:/var/lib/rnode/node.key.pem:ro",
             ],
             'environment': [
                 'OPENAI_ENABLED=false',
+            ] + ([] if rust else [
                 f'_JAVA_OPTIONS={java_options}',
-            ],
+            ]),
         }
 
     compose = {
@@ -1628,8 +1644,10 @@ def add_peer_to_shard(
     # to create its own genesis block instead of accepting the existing one.
     # We cannot use shared-rnode.conf because genesis-validator-mode = true
     # and the --genesis-validator CLI flag is a presence-only toggle.
-    command = [
+    rust = _is_rust_node()
+    command = ([] if rust else [
         "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
+    ]) + [
         "run",
         f"--host={container_name}",
         "--allow-private-addresses",
@@ -1664,13 +1682,14 @@ def add_peer_to_shard(
         os.path.join(shard.genesis_dir, 'wallets.txt'): {
             'bind': '/var/lib/rnode/genesis/wallets.txt', 'mode': 'ro',
         },
-        os.path.join(abs_conf, 'logback.xml'): {
-            'bind': '/var/lib/rnode/logback.xml', 'mode': 'ro',
-        },
         data_dir: {
             'bind': '/var/lib/rnode/',
         },
     }
+    if not rust:
+        volumes[os.path.join(abs_conf, 'logback.xml')] = {
+            'bind': '/var/lib/rnode/logback.xml', 'mode': 'ro',
+        }
 
     container = None
     node: Optional[Node] = None
@@ -1697,11 +1716,15 @@ def add_peer_to_shard(
 
         # Match the custom shard's JVM tuning so the joiner doesn't
         # claim more RAM than its share (see _generate_custom_compose).
-        joiner_total = len(shard.nodes) + 1  # existing nodes + joiner
-        joiner_ram_pct = 90.0 / joiner_total
-        joiner_java_opts = (
-            f'-XX:MaxRAMPercentage={joiner_ram_pct:.1f} -XX:MaxDirectMemorySize=128M'
-        )
+        joiner_env = ['OPENAI_ENABLED=false']
+        if not rust:
+            joiner_total = len(shard.nodes) + 1  # existing nodes + joiner
+            joiner_ram_pct = 90.0 / joiner_total
+            joiner_java_opts = (
+                f'-XX:MaxRAMPercentage={joiner_ram_pct:.1f}'
+                f' -XX:MaxDirectMemorySize=128M'
+            )
+            joiner_env.append(f'_JAVA_OPTIONS={joiner_java_opts}')
 
         logging.info("Starting joiner %s on network %s ...",
                      container_name, shard.network_name)
@@ -1713,10 +1736,7 @@ def add_peer_to_shard(
             command=command,
             ports=ports,
             volumes=volumes,
-            environment=[
-                'OPENAI_ENABLED=false',
-                f'_JAVA_OPTIONS={joiner_java_opts}',
-            ],
+            environment=joiner_env,
             detach=True,
         )
 

@@ -1217,7 +1217,9 @@ def test_cmd(
     env = os.environ.copy()
     env["DEFAULT_IMAGE"] = docker_image
 
-    pytest_args = ["-v"] if verbose else []
+    pytest_args = ["-v", "--tb=short", "--log-cli-level=WARNING"]
+    if verbose:
+        pytest_args.remove("--log-cli-level=WARNING")
 
     if suite:
         pytest_args.extend(["-k", suite])
@@ -1233,7 +1235,7 @@ def test_cmd(
 
     result = subprocess.run(
         ["python3", "-m", "pytest"] + pytest_args,
-        cwd=tests_dir,
+        cwd=config.root_dir,
         env=env,
     )
 
