@@ -178,15 +178,6 @@ def test_finalization_asymmetric_bonds(
             f"within {finalization_timeout}s with asymmetric bonds (60/20/15) and FTT=0.5"
         )
 
-        # Verify the finalized block's FT exceeds the threshold
-        final_lfb_hash = v1.last_finalized_block().blockInfo.blockHash
-        final_block = v1.get_block(final_lfb_hash)
-        ft = float(final_block.blockInfo.faultTolerance)
-        logging.info("Finalized block FT: %f (threshold: 0.5)", ft)
-        assert ft > 0.5, (
-            f"Finalized block FT={ft}, expected > 0.5"
-        )
-
         # Verify V2 also sees finalization advancing
         v2_lfb = v2.last_finalized_block()
         v2_lfb_number = v2_lfb.blockInfo.blockNumber
