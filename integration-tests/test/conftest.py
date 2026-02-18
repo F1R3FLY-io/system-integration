@@ -1316,27 +1316,34 @@ def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
     )
 
 
+def _wait_for_port_range_free(base: int, count: int = 6, timeout: float = 30.0) -> None:
+    """Wait for a range of consecutive ports to be free.
+
+    Each container binds 6 ports (protocol, ext-gRPC, int-gRPC, HTTP,
+    discovery, admin-HTTP). The kernel releases each socket's TIME_WAIT
+    independently, so checking only the base port is insufficient.
+    """
+    for offset in range(count):
+        _wait_for_port_free(base + offset, timeout=timeout)
+
+
 def _wait_for_custom_ports_free(num_validators: int, timeout: float = 30.0) -> None:
     """Wait for all custom shard host ports to be free.
 
     Previous custom shard teardown leaves kernel sockets in TIME_WAIT.
-    Waiting only for the boot port is insufficient -- validator ports
-    may still be held, causing BindException inside the container JVM.
     """
     node_keys = ['boot'] + [f'validator{i + 1}' for i in range(num_validators)]
     for key in node_keys:
         base = _CUSTOM_PORT_BASES[key]
-        _wait_for_port_free(base, timeout=timeout)
+        _wait_for_port_range_free(base, timeout=timeout)
 
 
 def _wait_for_standalone_ports_free(timeout: float = 30.0) -> None:
     """Wait for all standalone node host ports to be free.
 
     Previous standalone teardown leaves kernel sockets in TIME_WAIT.
-    Only the base port (40460) needs checking since all 6 ports are
-    bound/released atomically by a single container.
     """
-    _wait_for_port_free(40460, timeout=timeout)
+    _wait_for_port_range_free(40460, timeout=timeout)
 
 
 def _wait_for_port_listening(host: str, port: int, timeout: float = 120.0) -> None:
@@ -1727,7 +1734,7 @@ def add_peer_to_shard(
 
         # Wait for joiner ports to be released (kernel TIME_WAIT from a
         # previous test's joiner container that was recently stopped).
-        _wait_for_port_free(_CUSTOM_PORT_BASES['joiner'])
+        _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
 
         # Match the custom shard's JVM tuning so the joiner doesn't
         # claim more RAM than its share (see _generate_custom_compose).
