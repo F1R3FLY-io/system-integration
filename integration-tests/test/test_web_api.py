@@ -97,18 +97,30 @@ def test_status(validator1_node: Node) -> None:
     assert status.version
 
 
-def test_prepare_deploy(node_with_blocks: Tuple[Node, List[str], List[str]]) -> None:
+def test_prepare_deploy(node_with_blocks: Tuple[Node, List[str], List[str]], testing_context: TestingContext) -> None:
     """HTTP /api/prepare-deploy returns incrementing sequence numbers."""
     node = node_with_blocks[0]
     client = HttpClient('localhost', node.get_http_port())
+    scale = testing_context.timeout_scale
 
-    prepare_rep = client.prepare_deploy()
-    assert prepare_rep.seq_number >= 3
+    # seq_number reflects finalized state which may lag slightly behind LFB
+    timeout = int(60 * scale)
+    deadline = time.time() + timeout
+    seq_number = 0
+    while time.time() < deadline:
+        prepare_rep = client.prepare_deploy()
+        seq_number = prepare_rep.seq_number
+        if seq_number >= 3:
+            break
+        time.sleep(3)
+    assert seq_number >= 3, (
+        f"prepare_deploy seq_number={seq_number} did not reach 3 within {timeout}s"
+    )
 
     prepare_rep_2 = client.prepare_deploy(
         VALIDATOR1_KEY.get_public_key().to_hex(), 1, 1,
     )
-    assert prepare_rep_2.seq_number >= 3
+    assert prepare_rep_2.seq_number >= seq_number
 
 
 def test_data_at_name(node_with_blocks: Tuple[Node, List[str], List[str]]) -> None:

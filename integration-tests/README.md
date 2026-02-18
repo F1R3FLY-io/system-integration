@@ -202,6 +202,13 @@ The test suite produces two output files in the `integration-tests/` directory:
 | `integration-tests.log` | Full debug-level log of the entire test run. Contains all Docker operations, gRPC calls, node log parsing, and fixture lifecycle events. Written regardless of `--log-cli-level`. |
 | `report.json` | Machine-readable JSON test report (pytest-json). Contains pass/fail status, durations, and error details for every test. |
 
+To view results from the last run:
+
+```bash
+poetry run shardctl test-report           # Full summary
+poetry run shardctl test-report --failures # Failed tests only
+```
+
 These paths are configured in `pyproject.toml` under `[tool.pytest.ini_options]`.
 
 The `--log-cli-level` flag controls what appears on the **console** during the run.
