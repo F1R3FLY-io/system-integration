@@ -393,6 +393,10 @@ def start_standalone_node(
         _reset_standalone_data()
         _ensure_data_dirs([STANDALONE_CONTAINER])
 
+        # Wait for standalone ports to be released (kernel TIME_WAIT
+        # from a previous test session's standalone container).
+        _wait_for_standalone_ports_free()
+
         # Start with one retry on transient Docker errors
         try:
             _standalone_compose_up(override_file=override_file)
@@ -402,6 +406,7 @@ def start_standalone_node(
             _reset_standalone_data()
             _ensure_data_dirs([STANDALONE_CONTAINER])
             time.sleep(5)
+            _wait_for_standalone_ports_free()
             _standalone_compose_up(override_file=override_file)
 
         # Wait for Running state
@@ -1322,6 +1327,16 @@ def _wait_for_custom_ports_free(num_validators: int, timeout: float = 30.0) -> N
     for key in node_keys:
         base = _CUSTOM_PORT_BASES[key]
         _wait_for_port_free(base, timeout=timeout)
+
+
+def _wait_for_standalone_ports_free(timeout: float = 30.0) -> None:
+    """Wait for all standalone node host ports to be free.
+
+    Previous standalone teardown leaves kernel sockets in TIME_WAIT.
+    Only the base port (40460) needs checking since all 6 ports are
+    bound/released atomically by a single container.
+    """
+    _wait_for_port_free(40460, timeout=timeout)
 
 
 def _wait_for_port_listening(host: str, port: int, timeout: float = 120.0) -> None:
