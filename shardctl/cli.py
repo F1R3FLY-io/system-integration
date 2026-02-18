@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -1234,7 +1235,7 @@ def test_cmd(
     console.print()
 
     result = subprocess.run(
-        ["python3", "-m", "pytest"] + pytest_args,
+        [sys.executable, "-m", "pytest"] + pytest_args,
         cwd=config.root_dir,
         env=env,
     )

@@ -25,6 +25,7 @@ from .conftest import (
     VALIDATOR1_KEY,
     VALIDATOR2_KEY,
     VALIDATOR3_KEY,
+    _is_rust_node,
 )
 from .http_client import HttpClient, HttpRequestException
 from .wait import (
@@ -249,6 +250,10 @@ def transfer_funds_with_block_hash(
     )
 
 
+@pytest.mark.skipif(
+    _is_rust_node(),
+    reason="BlockReportAPI/TransactionAPI not implemented in Rust node (f1r3node#346, backport #315)",
+)
 def test_block_api_returns_transfer_info(
     testing_context: TestingContext,
     validator1_node: Node,
