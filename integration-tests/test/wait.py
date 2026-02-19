@@ -107,9 +107,9 @@ class HasAtLeastPeers:
         self.node = node
         self.minimum_peers_number = minimum_peers_number
         # Rust metrics format: peers{source="f1r3fly.comm.rp.connect"} 1.0
-        # Also support Scala format: rchain_comm_rp_connect_peers 1.0
+        # Also support Scala format: f1r3fly_comm_rp_connect_peers 1.0
         self.metric_regex = re.compile(
-            r"^(?:peers\{source=\"[^\"]+\"\}|rchain_comm_rp_connect_peers)\s+(\d+)(?:\.0)?\s*$",
+            r"^(?:peers\{source=\"[^\"]+\"\}|f1r3fly_comm_rp_connect_peers)\s+(\d+)(?:\.0)?\s*$",
             re.MULTILINE | re.DOTALL
         )
 
