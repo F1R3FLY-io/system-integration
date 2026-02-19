@@ -4,13 +4,13 @@
 # Runs a read-only observer node that syncs from validators.
 #
 # Usage:
-#   docker-compose -f compose/scala-observer.yml up -d
+#   docker-compose -f compose/f1r3node-observer.yml up -d
 #
 # PREREQUISITES:
 #   - A running shard network to connect to
 #   - Must use the same network as the shard (shared-docker-config_f1r3fly-shard)
 #
-# NOTE: For Rust nodes, use rust-observer.yml instead.
+# NOTE: For Rust nodes, use f1r3node-rust-observer.yml instead.
 
 services:
   observer:

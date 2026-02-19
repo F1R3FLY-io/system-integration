@@ -14,6 +14,8 @@ from typing import List, Optional, Tuple
 import typer
 from rich.console import Console
 
+from .utils import get_docker_compose_command
+
 console = Console()
 
 
@@ -55,8 +57,24 @@ class NodeConfig:
         self.env_file = self.root_dir / ".env.node"
 
     def get_compose_file(self, node_type: NodeType, topology: Topology) -> Path:
-        """Get the compose file for a node type and topology."""
-        filename = f"{node_type.value}-{topology.value}.yml"
+        """Get the compose file for a node type and topology.
+
+        Naming convention:
+            Scala shard:      f1r3node.yml
+            Scala standalone: f1r3node-standalone.yml
+            Rust shard:       f1r3node-rust.yml
+            Rust standalone:  f1r3node-rust-standalone.yml
+        """
+        if node_type == NodeType.SCALA:
+            base = "f1r3node"
+        else:
+            base = "f1r3node-rust"
+
+        if topology == Topology.SHARD:
+            filename = f"{base}.yml"
+        else:
+            filename = f"{base}-{topology.value}.yml"
+
         return self.compose_dir / filename
 
     def get_services_for_topology(self, topology: Topology) -> dict:
@@ -231,13 +249,14 @@ def run_compose_command(
     capture: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run a docker-compose command with the node env file."""
-    cmd = [
-        "docker-compose",
+    cmd = get_docker_compose_command()  # Dynamic version detection
+    cmd.extend([
         "--env-file",
         str(config.env_file),
         "-f",
         str(compose_file),
-    ] + args
+    ])
+    cmd.extend(args)
 
     console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
 
@@ -677,6 +696,6 @@ def detect_all_running_node_configs() -> List[Tuple[NodeType, Topology, Path]]:
 
 
 def get_default_node_compose_file() -> Path:
-    """Get the default node compose file (scala-shard)."""
+    """Get the default node compose file (f1r3node.yml = scala shard)."""
     config = NodeConfig()
     return config.get_compose_file(NodeType.SCALA, Topology.SHARD)

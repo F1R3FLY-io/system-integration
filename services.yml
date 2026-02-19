@@ -15,9 +15,9 @@
 # The 'up' command brings up each compose file in order, waiting for each to succeed.
 # This ensures dependencies (like networks) are created before dependent services start.
 startup_order:
-  - docker-compose.yml # Base f1r3node - creates the f1r3fly network
-  - docker-compose.embers.yml # Embers API - depends on f1r3fly network
-  - docker-compose.f1r3sky.yml # F1R3Sky services - depends on f1r3fly network
+  - f1r3node  # compose/f1r3node.yml - creates the f1r3fly network
+  - embers    # compose/embers.yml - depends on f1r3fly network
+  - f1r3sky   # compose/f1r3sky.yml - depends on f1r3fly network
 
 repositories:
   f1r3node:
@@ -26,6 +26,8 @@ repositories:
   f1r3node-rust:
     url: git@github.com:F1R3FLY-io/f1r3node.git
     branch: rust/dev
+  monitoring:
+    enabled: true
   rust-client:
     url: git@github.com:F1R3FLY-io/rust-client.git
     branch: main
@@ -106,6 +108,9 @@ builds:
     # - Nix flake provides complete dev environment: nix develop
     # - Multi-architecture support: AMD64 and AARCH64
     # - Docker entrypoint auto-detects architecture
+
+  monitoring:
+    enabled: false
 
   rust-client:
     # Main build command

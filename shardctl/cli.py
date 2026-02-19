@@ -8,7 +8,7 @@ from typing import List, Optional
 
 import typer
 from rich.console import Console
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Confirm
 
 from .compose import ComposeManager
 from .config import Config
@@ -17,8 +17,8 @@ from .utils import (
     clean_services,
     clone_services,
     create_services_config_example,
+    get_docker_compose_command,
     sync_service_branch,
-    format_service_status,
     validate_environment,
 )
 from . import node as node_module
@@ -32,199 +32,23 @@ app = typer.Typer(
 console = Console()
 
 
-# =============================================================================
-# F1R3NODE SERVICE HANDLING
-# =============================================================================
+def _resolve_compose_files(config: Config, services: Optional[List[str]]) -> List[Path]:
+    """Resolve service names to compose file paths.
 
-def is_f1r3node_service(services: Optional[List[str]]) -> bool:
-    """Check if f1r3node is in the services list."""
-    if not services:
-        return False
-    return "f1r3node" in [s.lower() for s in services]
-
-
-def handle_f1r3node_up(
-    node_type: Optional[str],
-    topology: Optional[str],
-    scala: bool,
-    rust: bool,
-    standalone: bool,
-    shard: bool,
-    default: bool,
-    build: bool,
-    foreground: bool,
-) -> None:
-    """Handle starting f1r3node with node-specific logic."""
-    config = node_module.NodeConfig()
-
-    # Resolve node type from flags
-    resolved_type = None
-    if scala:
-        resolved_type = node_module.NodeType.SCALA
-    elif rust:
-        resolved_type = node_module.NodeType.RUST
-    elif node_type:
-        resolved_type = node_module.NodeType(node_type)
-
-    # Resolve topology from flags
-    resolved_topology = None
-    if standalone:
-        resolved_topology = node_module.Topology.STANDALONE
-    elif shard:
-        resolved_topology = node_module.Topology.SHARD
-    elif topology:
-        resolved_topology = node_module.Topology(topology)
-
-    # Handle --default
-    if default:
-        resolved_type = resolved_type or node_module.NodeType.SCALA
-        resolved_topology = resolved_topology or node_module.Topology.SHARD
-
-    # Interactive mode if flags not provided
-    if resolved_type is None or resolved_topology is None:
-        console.print()
-        console.print("[bold blue]F1R3FLY Node Setup[/bold blue]")
-        console.print("=" * 20)
-        console.print()
-
-        if resolved_type is None:
-            console.print("Select node implementation:")
-            console.print("  [1] Scala  (stable)")
-            console.print("  [2] Rust   (experimental)")
-            console.print()
-            choice = Prompt.ask("Choice", default="1")
-            if choice == "2":
-                resolved_type = node_module.NodeType.RUST
-            else:
-                resolved_type = node_module.NodeType.SCALA
-
-        if resolved_topology is None:
-            console.print()
-            console.print("Select network topology:")
-            console.print("  [1] Standalone  (single node, fast)")
-            console.print("  [2] Shard       (multi-node: bootstrap + 3 validators + observer)")
-            console.print()
-            choice = Prompt.ask("Choice", default="1")
-            if choice == "2":
-                resolved_topology = node_module.Topology.SHARD
-            else:
-                resolved_topology = node_module.Topology.STANDALONE
-
-    # Get compose file
-    compose_file = config.get_compose_file(resolved_type, resolved_topology)
-
-    if not compose_file.exists():
-        console.print(f"[red]Compose file not found: {compose_file}[/red]")
-        raise typer.Exit(1)
-
-    console.print()
-    console.print(
-        f"[green]Starting {resolved_type.value} {resolved_topology.value} node...[/green]"
-    )
-    console.print(f"Using: [blue]{compose_file}[/blue]")
-    console.print()
-
-    args = ["up", "-d"] if not foreground else ["up"]
-    if build:
-        args.insert(1, "--build")
-
-    result = node_module.run_compose_command(config, compose_file, args)
-
-    if result.returncode == 0:
-        console.print()
-        console.print("[green]Started successfully![/green]")
-        console.print()
-        console.print("Useful commands:")
-        console.print("  poetry run shardctl wait              - Wait for all nodes to be ready (timed)")
-        console.print("  poetry run shardctl logs f1r3node     - Follow container logs")
-        console.print("  poetry run shardctl status            - Show container status")
-        console.print("  poetry run shardctl down f1r3node     - Stop containers")
-    else:
-        raise typer.Exit(result.returncode)
-
-
-def handle_f1r3node_down() -> None:
-    """Handle stopping f1r3node with auto-detection of all running configs."""
-    config = node_module.NodeConfig()
-
-    all_configs = config.detect_all_running_configs()
-    if not all_configs:
-        console.print("[yellow]No F1R3FLY containers found[/yellow]")
-        return
-
-    all_ok = True
-    for node_type, topology, compose_file in all_configs:
-        console.print(
-            f"[yellow]Stopping {node_type.value} {topology.value} using {compose_file.name}...[/yellow]"
-        )
-        result = node_module.run_compose_command(config, compose_file, ["down"])
-        if result.returncode != 0:
-            all_ok = False
-
-    if all_ok:
-        console.print("[green]All containers stopped successfully![/green]")
-
-
-def handle_f1r3node_logs(follow: bool, tail: Optional[int]) -> None:
-    """Handle f1r3node logs with auto-detection of all running configs."""
-    config = node_module.NodeConfig()
-
-    all_configs = config.detect_all_running_configs()
-    if not all_configs:
-        console.print("[yellow]No F1R3FLY containers found[/yellow]")
-        return
-
-    # Build command with all compose files for combined logs
-    cmd = ["docker-compose", "--env-file", str(config.env_file)]
-    for node_type, topology, compose_file in all_configs:
-        cmd.extend(["-f", str(compose_file)])
-
-    args = ["logs"]
-    if follow:
-        args.append("-f")
-    if tail:
-        args.extend(["--tail", str(tail)])
-
-    cmd.extend(args)
-    console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
-    subprocess.run(cmd, cwd=config.root_dir)
-
-
-def handle_f1r3node_ps() -> None:
-    """Handle f1r3node ps with auto-detection of all running configs."""
-    config = node_module.NodeConfig()
-
-    all_configs = config.detect_all_running_configs()
-    if not all_configs:
-        console.print("[yellow]No F1R3FLY containers found[/yellow]")
-        return
-
-    for node_type, topology, compose_file in all_configs:
-        console.print(f"[blue]Configuration: {node_type.value} {topology.value} ({compose_file.name})[/blue]")
-        console.print()
-        node_module.run_compose_command(config, compose_file, ["ps"])
-        console.print()
-
-
-def handle_f1r3node_status() -> None:
-    """Handle f1r3node status with auto-detection of all running configs."""
-    config = node_module.NodeConfig()
-
-    all_configs = config.detect_all_running_configs()
-    if not all_configs:
-        console.print("[yellow]No F1R3FLY containers found[/yellow]")
-        return
-
-    console.print(f"[bold]F1R3FLY Node Status[/bold]")
-    for node_type, topology, compose_file in all_configs:
-        console.print(f"  Node Type: [cyan]{node_type.value}[/cyan]")
-        console.print(f"  Topology:  [cyan]{topology.value}[/cyan]")
-        console.print(f"  Compose:   [dim]{compose_file.name}[/dim]")
-    console.print()
-
-    for _node_type, _topology, compose_file in all_configs:
-        node_module.run_compose_command(config, compose_file, ["ps"])
-        console.print()
+    If services are specified, resolves each to compose/<service>.yml.
+    Otherwise, returns the startup_order from services.yml.
+    """
+    if services:
+        files = []
+        for svc in services:
+            compose_file = config.resolve_compose_file(svc)
+            if not compose_file.exists():
+                console.print(f"[red]Compose file not found: {compose_file}[/red]")
+                console.print(f"[dim]Available: {', '.join(f.stem for f in sorted(config.compose_dir.glob('*.yml')))}[/dim]")
+                raise typer.Exit(1)
+            files.append(compose_file)
+        return files
+    return config.get_startup_order()
 
 
 def get_manager(profile: Optional[str] = None) -> ComposeManager:
@@ -325,100 +149,89 @@ def clone(
 
 @app.command()
 def up(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to start (use 'f1r3node' for blockchain nodes)"),
+    services: Optional[List[str]] = typer.Argument(None, help="Services to start (maps to compose/<service>.yml)"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
     foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground"),
     build: bool = typer.Option(False, "--build", "-b", help="Build images before starting"),
-    # F1R3NODE-specific options
-    scala: bool = typer.Option(False, "--scala", help="[f1r3node] Use Scala node"),
-    rust: bool = typer.Option(False, "--rust", help="[f1r3node] Use Rust node"),
-    standalone: bool = typer.Option(False, "--standalone", help="[f1r3node] Standalone topology"),
-    shard: bool = typer.Option(False, "--shard", help="[f1r3node] Shard topology (multi-node)"),
-    default: bool = typer.Option(False, "--default", help="[f1r3node] Use defaults (scala + shard)"),
-    node_type: Optional[str] = typer.Option(None, "--node-type", "-n", help="[f1r3node] Node type: scala or rust"),
-    topology: Optional[str] = typer.Option(None, "--topology", "-t", help="[f1r3node] Topology: standalone or shard"),
 ):
     """Start services (detached by default).
 
-    For regular services, starts in order defined in services.yml startup_order.
-    
-    For f1r3node (blockchain nodes), use node-specific flags:
-    
-        poetry run shardctl up f1r3node --scala --standalone   # Scala standalone
-        poetry run shardctl up f1r3node --rust --shard         # Rust multi-node
-        poetry run shardctl up f1r3node --default              # Scala shard (default)
-        poetry run shardctl up f1r3node                        # Interactive mode
+    Each service name maps to a compose file in compose/<service>.yml.
+    When no services are specified, starts all services in startup_order from services.yml.
+
+    Examples:
+        poetry run shardctl up                    # Start all (startup_order)
+        poetry run shardctl up f1r3node           # Scala shard (default)
+        poetry run shardctl up f1r3node-rust      # Rust shard
+        poetry run shardctl up f1r3node-standalone # Scala standalone
+        poetry run shardctl up embers             # Embers API + frontend
+        poetry run shardctl up f1r3node embers    # Multiple services
     """
     if not validate_environment():
         raise typer.Exit(1)
 
-    # Check if f1r3node is being started
-    if is_f1r3node_service(services):
-        handle_f1r3node_up(
-            node_type=node_type,
-            topology=topology,
-            scala=scala,
-            rust=rust,
-            standalone=standalone,
-            shard=shard,
-            default=default,
-            build=build,
-            foreground=foreground,
-        )
-        return
-
-    # Regular service handling
     config = Config()
     manager = get_manager(profile)
 
-    # Get the ordered list of compose files
-    startup_order = config.get_startup_order()
+    compose_files = _resolve_compose_files(config, services)
 
-    if not startup_order:
+    if not compose_files:
         console.print("[red]No compose files found to start[/red]")
         raise typer.Exit(1)
 
     console.print("[bold blue]Starting services...[/bold blue]")
-    console.print(f"[dim]Startup order: {', '.join(f.name for f in startup_order)}[/dim]\n")
+    console.print(f"[dim]Order: {', '.join(f.stem for f in compose_files)}[/dim]\n")
 
-    # Bring up each compose file in order
-    for i, compose_file in enumerate(startup_order, 1):
-        console.print(f"[cyan]({i}/{len(startup_order)}) Starting {compose_file.name}...[/cyan]")
+    for i, compose_file in enumerate(compose_files, 1):
+        console.print(f"[cyan]({i}/{len(compose_files)}) Starting {compose_file.stem}...[/cyan]")
         manager.up_single_file(
             compose_file=compose_file,
-            services=services,
             detached=not foreground,
-            build=build
+            build=build,
         )
-        console.print(f"[green]✓[/green] {compose_file.name} started\n")
+        console.print(f"[green]✓[/green] {compose_file.stem} started\n")
 
     console.print("[green]✓[/green] All services started successfully")
 
 
 @app.command()
 def down(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to stop (use 'f1r3node' for blockchain nodes)"),
+    services: Optional[List[str]] = typer.Argument(None, help="Services to stop (maps to compose/<service>.yml)"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
     volumes: bool = typer.Option(False, "--volumes", "-v", help="Remove named volumes"),
     keep_orphans: bool = typer.Option(False, "--keep-orphans", help="Keep orphan containers"),
 ):
     """Stop and remove services.
-    
-    For f1r3node, auto-detects the running configuration:
-    
-        poetry run shardctl down f1r3node    # Stop blockchain nodes
+
+    Examples:
+        poetry run shardctl down              # Stop all (reverse startup_order)
+        poetry run shardctl down f1r3node     # Stop scala shard
+        poetry run shardctl down embers       # Stop embers
     """
     if not validate_environment():
         raise typer.Exit(1)
 
-    # Check if f1r3node is being stopped
-    if is_f1r3node_service(services):
-        handle_f1r3node_down()
+    config = Config()
+    manager = get_manager(profile)
+
+    compose_files = _resolve_compose_files(config, services)
+
+    if not compose_files:
+        console.print("[yellow]No compose files found to stop[/yellow]")
         return
 
-    manager = get_manager(profile)
+    # Stop in reverse order (tear down dependents first)
+    compose_files = list(reversed(compose_files))
+
     console.print("[bold blue]Stopping services...[/bold blue]")
-    manager.down(services=services, volumes=volumes, remove_orphans=not keep_orphans)
+    for compose_file in compose_files:
+        console.print(f"[yellow]Stopping {compose_file.stem}...[/yellow]")
+        manager.down_single_file(
+            compose_file=compose_file,
+            volumes=volumes,
+            remove_orphans=not keep_orphans,
+        )
+
     console.print("[green]✓[/green] Services stopped successfully")
 
 
@@ -441,65 +254,74 @@ def clean(
 
 @app.command()
 def ps(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to list (use 'f1r3node' for blockchain nodes)"),
+    services: Optional[List[str]] = typer.Argument(None, help="Services to list (maps to compose/<service>.yml)"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
 ):
     """List running containers.
-    
-    For f1r3node, auto-detects the running configuration:
-    
-        shardctl ps f1r3node    # List blockchain node containers
+
+    Examples:
+        shardctl ps                # List all containers
+        shardctl ps f1r3node       # List f1r3node containers
     """
     if not validate_environment():
         raise typer.Exit(1)
 
-    # Check if f1r3node ps requested
-    if is_f1r3node_service(services):
-        handle_f1r3node_ps()
-        return
-
+    config = Config()
     manager = get_manager(profile)
-    manager.ps(services=services)
+
+    compose_files = _resolve_compose_files(config, services)
+
+    for compose_file in compose_files:
+        console.print(f"[blue]{compose_file.stem}[/blue]")
+        manager.ps_single_file(compose_file)
+        console.print()
 
 
 @app.command()
 def logs(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to show logs for (use 'f1r3node' for blockchain nodes)"),
+    services: Optional[List[str]] = typer.Argument(None, help="Services to show logs for (maps to compose/<service>.yml)"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
     follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output"),
     tail: Optional[int] = typer.Option(None, "--tail", "-n", help="Number of lines to show"),
 ):
     """View service logs.
-    
-    For f1r3node, auto-detects the running configuration:
-    
-        poetry run shardctl logs f1r3node       # View blockchain node logs
+
+    Examples:
+        poetry run shardctl logs f1r3node       # View f1r3node logs
         poetry run shardctl logs f1r3node -f    # Follow logs
+        poetry run shardctl logs embers         # View embers logs
     """
     if not validate_environment():
         raise typer.Exit(1)
 
-    # Check if f1r3node logs requested
-    if is_f1r3node_service(services):
-        handle_f1r3node_logs(follow=follow, tail=tail)
-        return
-
+    config = Config()
     manager = get_manager(profile)
-    manager.logs(services=services, follow=follow, tail=tail)
+
+    compose_files = _resolve_compose_files(config, services)
+
+    for compose_file in compose_files:
+        manager.logs_single_file(compose_file, follow=follow, tail=tail)
 
 
 @app.command()
 def restart(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to restart"),
+    services: Optional[List[str]] = typer.Argument(None, help="Services to restart (maps to compose/<service>.yml)"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
 ):
     """Restart services."""
     if not validate_environment():
         raise typer.Exit(1)
 
+    config = Config()
     manager = get_manager(profile)
+
+    compose_files = _resolve_compose_files(config, services)
+
     console.print("[bold blue]Restarting services...[/bold blue]")
-    manager.restart(services=services)
+    for compose_file in compose_files:
+        console.print(f"[cyan]Restarting {compose_file.stem}...[/cyan]")
+        manager.restart_single_file(compose_file)
+
     console.print("[green]✓[/green] Services restarted successfully")
 
 
@@ -633,113 +455,94 @@ def build(
 
 @app.command()
 def pull(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to pull (use 'f1r3node' for blockchain node images)"),
+    services: Optional[List[str]] = typer.Argument(None, help="Services to pull (maps to compose/<service>.yml)"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
-    scala: bool = typer.Option(False, "--scala", help="Pull Scala node image only (f1r3node)"),
-    rust: bool = typer.Option(False, "--rust", help="Pull Rust node image only (f1r3node)"),
 ):
     """Pull service images.
 
-    For f1r3node, pulls node images:
-
-        poetry run shardctl pull f1r3node           # Pull both Scala and Rust images
-        poetry run shardctl pull f1r3node --scala   # Pull Scala image only
-        poetry run shardctl pull f1r3node --rust    # Pull Rust image only
+    Examples:
+        poetry run shardctl pull                # Pull all service images
+        poetry run shardctl pull f1r3node       # Pull f1r3node images
+        poetry run shardctl pull embers         # Pull embers images
     """
     if not validate_environment():
         raise typer.Exit(1)
 
-    if is_f1r3node_service(services):
-        node_type = None
-        if scala:
-            node_type = node_module.NodeType.SCALA
-        elif rust:
-            node_type = node_module.NodeType.RUST
-        node_module.pull(node_type=node_type)
-        return
-
+    config = Config()
     manager = get_manager(profile)
+
+    compose_files = _resolve_compose_files(config, services)
+
     console.print("[bold blue]Pulling service images...[/bold blue]")
-    manager.pull(services=services)
+    for compose_file in compose_files:
+        console.print(f"[cyan]Pulling {compose_file.stem}...[/cyan]")
+        manager.pull_single_file(compose_file)
+
     console.print("[green]✓[/green] Images pulled successfully")
 
 
 @app.command(name="exec")
 def exec_command(
-    service: str = typer.Argument(..., help="Service name"),
+    container: str = typer.Argument(..., help="Container name"),
     command: List[str] = typer.Argument(..., help="Command to execute"),
-    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
     no_tty: bool = typer.Option(False, "--no-tty", "-T", help="Disable pseudo-TTY allocation"),
 ):
-    """Execute a command in a running service container."""
+    """Execute a command in a running container (via docker exec)."""
     if not validate_environment():
         raise typer.Exit(1)
 
-    manager = get_manager(profile)
-    manager.exec(service, command, interactive=not no_tty)
+    cmd = ["docker", "exec"]
+    if not no_tty:
+        cmd.append("-it")
+    cmd.append(container)
+    cmd.extend(command)
+
+    console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        raise typer.Exit(result.returncode)
 
 
 @app.command()
 def shell(
-    service: str = typer.Argument(..., help="Service name"),
-    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
+    container: str = typer.Argument(..., help="Container name"),
     shell_cmd: str = typer.Option("/bin/bash", "--shell", "-s", help="Shell to use"),
 ):
-    """Open an interactive shell in a running service container."""
+    """Open an interactive shell in a running container."""
     if not validate_environment():
         raise typer.Exit(1)
 
-    manager = get_manager(profile)
-    console.print(f"[dim]Opening shell in {service}...[/dim]")
-    manager.shell(service, shell_cmd=shell_cmd)
+    console.print(f"[dim]Opening shell in {container}...[/dim]")
+    cmd = ["docker", "exec", "-it", container, shell_cmd]
+    console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        raise typer.Exit(result.returncode)
 
 
 @app.command()
 def status(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to show status for (use 'f1r3node' for blockchain nodes)"),
+    services: Optional[List[str]] = typer.Argument(None, help="Services to show status for (maps to compose/<service>.yml)"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
 ):
     """Display service status.
-    
-    For f1r3node, shows the running node configuration:
-    
-        poetry run shardctl status f1r3node    # Show blockchain node status
+
+    Examples:
+        poetry run shardctl status              # Show all service status
+        poetry run shardctl status f1r3node     # Show f1r3node status
     """
     if not validate_environment():
         raise typer.Exit(1)
 
-    # Check if f1r3node status requested
-    if is_f1r3node_service(services):
-        handle_f1r3node_status()
-        return
-
+    config = Config()
     manager = get_manager(profile)
-    all_services = manager.get_status()
 
-    if not all_services:
-        console.print("[yellow]No running services found[/yellow]")
-        return
+    compose_files = _resolve_compose_files(config, services)
 
-    for service_info in all_services:
-        formatted = format_service_status(service_info)
-
-        # Color code the state
-        state = formatted["State"]
-        if state == "running":
-            state_color = "green"
-        elif state == "exited":
-            state_color = "red"
-        else:
-            state_color = "yellow"
-
-        # Simple line format: NAME SERVICE STATE STATUS PORTS
-        console.print(
-            f"{formatted['Name']:<30} "
-            f"{formatted['Service']:<20} "
-            f"[{state_color}]{state:<10}[/{state_color}] "
-            f"{formatted['Status']:<30} "
-            f"{formatted['Ports']}"
-        )
+    for compose_file in compose_files:
+        console.print(f"[blue]{compose_file.stem}[/blue]")
+        manager.ps_single_file(compose_file)
+        console.print()
 
 
 @app.command()
@@ -1025,21 +828,26 @@ def build_service_cmd(
 
 @app.command()
 def compose(
+    service: str = typer.Argument(..., help="Service name (maps to compose/<service>.yml)"),
     args: List[str] = typer.Argument(..., help="Docker compose command and arguments"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
 ):
-    """Run a custom docker-compose command with arguments.
+    """Run a custom docker-compose command against a service's compose file.
 
-    This is a pass-through command that allows you to run any docker-compose
-    command while still using the configured compose files and profile.
-
-    Example: shardctl compose config --services
+    Example: shardctl compose f1r3node config --services
     """
     if not validate_environment():
         raise typer.Exit(1)
 
+    config = Config()
     manager = get_manager(profile)
-    manager.run_custom_command(args)
+    compose_file = config.resolve_compose_file(service)
+
+    if not compose_file.exists():
+        console.print(f"[red]Compose file not found: {compose_file}[/red]")
+        raise typer.Exit(1)
+
+    manager._run_single_file_command(compose_file, list(args), check=False)
 
 
 @app.command(name="wait")
@@ -1102,11 +910,13 @@ def reset_cmd(
 
     # Also run normal compose down if volumes requested
     if volumes:
+        config = Config()
         manager = get_manager()
-        try:
-            manager.down(volumes=True, remove_orphans=True)
-        except SystemExit:
-            pass  # Ignore errors from compose down
+        for compose_file in config.get_startup_order():
+            try:
+                manager.down_single_file(compose_file, volumes=True, remove_orphans=True)
+            except SystemExit:
+                pass  # Ignore errors from compose down
 
     # Delete data directory
     if node_config.data_dir.exists():
@@ -1286,14 +1096,15 @@ def test_reset_cmd():
         compose_path = tests_dir / compose_file
         if compose_path.exists():
             console.print(f"[dim]Stopping containers from {compose_file} (project: {project_name})...[/dim]")
+            cmd = get_docker_compose_command()  # Dynamic version detection
+            cmd.extend([
+                "--project-name", project_name,
+                "--env-file", str(tests_dir / ".env.node"),
+                "-f", str(compose_path),
+                "down", "--volumes", "--remove-orphans",
+            ])
             subprocess.run(
-                [
-                    "docker-compose",
-                    "--project-name", project_name,
-                    "--env-file", str(tests_dir / ".env.node"),
-                    "-f", str(compose_path),
-                    "down", "--volumes", "--remove-orphans",
-                ],
+                cmd,
                 cwd=tests_dir,
                 check=False,
             )
@@ -1488,14 +1299,16 @@ def main():
     shardctl - Microservices Management CLI
 
     A convenience wrapper around docker-compose for managing multiple
-    microservices with support for profiles and streamlined workflows.
+    microservices. Each service maps to a compose file in compose/<service>.yml.
 
-    For F1R3FLY blockchain nodes, use 'f1r3node' as the service name:
-
-        poetry run shardctl up f1r3node --scala --standalone
-        poetry run shardctl up f1r3node --rust --shard
-        poetry run shardctl down f1r3node
-        poetry run shardctl logs f1r3node -f
+    Examples:
+        poetry run shardctl up                        # Start all services (startup_order)
+        poetry run shardctl up f1r3node               # Start Scala shard
+        poetry run shardctl up f1r3node-rust           # Start Rust shard
+        poetry run shardctl up f1r3node-standalone     # Start Scala standalone
+        poetry run shardctl up embers                  # Start Embers API + frontend
+        poetry run shardctl down f1r3node              # Stop Scala shard
+        poetry run shardctl logs f1r3node -f           # Follow f1r3node logs
     """
     pass
 
