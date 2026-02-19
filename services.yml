@@ -30,7 +30,7 @@ repositories:
     enabled: true
   rust-client:
     url: git@github.com:F1R3FLY-io/rust-client.git
-    branch: main
+    branch: dev
   f1r3sky-backend:
     url: git@github.com:F1R3FLY-io/f1r3sky-backend.git
     branch: main
