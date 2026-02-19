@@ -9,6 +9,7 @@ heartbeat, state trimming, bonding, slashing, and more.
 - **Docker & Docker Compose** -- containers are managed automatically by the test fixtures
 - **Python 3.10** -- see the [main README](../README.md) for pyenv setup
 - **Poetry** -- Python dependency manager
+- **Memory** -- Scala node tests require at least **16 GB** RAM; Rust node tests require at least **12 GB** RAM
 
 Install dependencies (from the repository root):
 
@@ -136,7 +137,7 @@ custom shard tests begin.
 | Suite | Group | Description |
 | ----- | ----- | ----------- |
 | `test_web_api` | shard | HTTP API endpoints (status, deploy, blocks, data-at-name) |
-| `test_wallets` | shard | REV wallet transfers, balance checks, error handling |
+| `test_wallets` | shard | Token wallet transfers, balance checks, error handling |
 | `test_heartbeat` | shard + standalone | Heartbeat auto-proposer (block creation, max-parents guard) |
 | `test_deployment` | shard | Deploy error handling (insufficient phlo) |
 | `test_storage` | shard | Data storage and cross-validator retrieval via registry |
