@@ -9,6 +9,7 @@ heartbeat, state trimming, bonding, slashing, and more.
 - **Docker & Docker Compose** -- containers are managed automatically by the test fixtures
 - **Python 3.10** -- see the [main README](../README.md) for pyenv setup
 - **Poetry** -- Python dependency manager
+- **Memory** -- Scala node tests require at least **16 GB** RAM; Rust node tests require at least **12 GB** RAM
 
 Install dependencies (from the repository root):
 
@@ -52,7 +53,8 @@ poetry run pytest integration-tests/test/test_wallets.py::test_validator1_pay_va
 | `--maxfail=N` | Stop after N failures |
 | `-k EXPR` | Run only tests matching the expression (e.g. `-k "wallets or deploy"`) |
 | `-s` | Disable output capture (show print statements in real-time) |
-| `--timeout=N` | Override the per-test timeout (default: 600s) |
+| `--timeout=N` | Override the per-test timeout (default: 300s; CI uses 600s) |
+| `--timeout-scale=F` | Multiply all hardcoded polling timeouts by factor F (default: 1.0; CI uses 1.5 on arm64) |
 | `--skip-setup` | Skip shard compose up/down (when the shard is already running) |
 | `--collect-only` | List tests that would run without executing them |
 
@@ -135,7 +137,7 @@ custom shard tests begin.
 | Suite | Group | Description |
 | ----- | ----- | ----------- |
 | `test_web_api` | shard | HTTP API endpoints (status, deploy, blocks, data-at-name) |
-| `test_wallets` | shard | REV wallet transfers, balance checks, error handling |
+| `test_wallets` | shard | Token wallet transfers, balance checks, error handling |
 | `test_heartbeat` | shard + standalone | Heartbeat auto-proposer (block creation, max-parents guard) |
 | `test_deployment` | shard | Deploy error handling (insufficient phlo) |
 | `test_storage` | shard | Data storage and cross-validator retrieval via registry |
@@ -201,6 +203,13 @@ The test suite produces two output files in the `integration-tests/` directory:
 | `integration-tests.log` | Full debug-level log of the entire test run. Contains all Docker operations, gRPC calls, node log parsing, and fixture lifecycle events. Written regardless of `--log-cli-level`. |
 | `report.json` | Machine-readable JSON test report (pytest-json). Contains pass/fail status, durations, and error details for every test. |
 
+To view results from the last run:
+
+```bash
+poetry run shardctl test-report           # Full summary
+poetry run shardctl test-report --failures # Failed tests only
+```
+
 These paths are configured in `pyproject.toml` under `[tool.pytest.ini_options]`.
 
 The `--log-cli-level` flag controls what appears on the **console** during the run.
@@ -230,7 +239,7 @@ Key settings:
 
 - `python_files` -- Ordered list of test files. Controls execution order.
 - `testpaths` -- Points to `integration-tests/test`.
-- `timeout` -- Default per-test timeout (600s). Override with `@pytest.mark.timeout(N)`.
+- `timeout` -- Default per-test timeout (300s locally, CI overrides to 600s). Override with `@pytest.mark.timeout(N)`.
 - `markers` -- Registers the `xdist_group` marker for parallel execution.
 
 The `integration-tests/` directory also contains its own isolated copies of

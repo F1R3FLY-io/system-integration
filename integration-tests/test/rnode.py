@@ -230,7 +230,7 @@ class Node:
             resp = requests.get(f"http://localhost:{self.ports.http}/metrics", timeout=60)
             result = ''
             for line in resp.content.decode('utf8').splitlines():
-                if line.startswith("peers{") or line.startswith("rchain_comm_rp_connect_peers"):
+                if line.startswith("peers{") or line.startswith("f1r3fly_comm_rp_connect_peers"):
                     result = line
                     break
             return result

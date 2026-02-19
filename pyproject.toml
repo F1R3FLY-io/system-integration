@@ -77,9 +77,12 @@ python_files = [
 markers = [
 	"xdist_group: assign test to an xdist load group (shard, standalone, custom)",
 ]
-# Per-test timeout (seconds).
+# Per-test timeout (seconds). Includes fixture setup time, so session-scoped
+# fixtures (shard startup: compose up + 5 containers reaching Running state)
+# must fit within this budget alongside the test body.
 # Individual tests can override with @pytest.mark.timeout(N).
-timeout = 600
+# CI overrides this with --timeout=600 to accommodate slower runners.
+timeout = 300
 
 [tool.black]
 line-length = 100

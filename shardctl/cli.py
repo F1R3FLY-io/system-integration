@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -1027,7 +1028,9 @@ def test_cmd(
     env = os.environ.copy()
     env["DEFAULT_IMAGE"] = docker_image
 
-    pytest_args = ["-v"] if verbose else []
+    pytest_args = ["-v", "--tb=short", "--log-cli-level=WARNING"]
+    if verbose:
+        pytest_args.remove("--log-cli-level=WARNING")
 
     if suite:
         pytest_args.extend(["-k", suite])
@@ -1042,8 +1045,8 @@ def test_cmd(
     console.print()
 
     result = subprocess.run(
-        ["python3", "-m", "pytest"] + pytest_args,
-        cwd=tests_dir,
+        [sys.executable, "-m", "pytest"] + pytest_args,
+        cwd=config.root_dir,
         env=env,
     )
 
@@ -1165,6 +1168,129 @@ def test_reset_cmd():
         console.print("[green]Integration test data deleted[/green]")
     else:
         console.print("[dim]No integration test data to delete[/dim]")
+
+
+@app.command(name="test-report")
+def test_report_cmd(
+    report_file: Optional[str] = typer.Argument(
+        None,
+        help="Path to report.json (default: integration-tests/report.json)",
+    ),
+    failures_only: bool = typer.Option(
+        False, "--failures", "-f", help="Show only failed tests",
+    ),
+):
+    """Parse and display integration test results from report.json.
+
+    Reads the JSON:API report produced by pytest-json-report and prints a
+    human-readable summary grouped by outcome.
+
+    Examples:
+        poetry run shardctl test-report
+        poetry run shardctl test-report --failures
+        poetry run shardctl test-report /path/to/report.json
+    """
+    import json
+
+    config = Config()
+    report_path = Path(report_file) if report_file else config.root_dir / "integration-tests" / "report.json"
+
+    if not report_path.exists():
+        console.print(f"[red]Report file not found: {report_path}[/red]")
+        console.print("[dim]Run tests first with: poetry run shardctl test[/dim]")
+        raise typer.Exit(1)
+
+    with open(report_path) as f:
+        data = json.load(f)
+
+    # Support both flat pytest-json-report and JSON:API wrapper formats
+    if "tests" in data:
+        tests = data["tests"]
+        summary = data.get("summary", {})
+    elif "data" in data and "included" in data:
+        tests = [
+            item["attributes"]
+            for item in data["included"]
+            if item.get("type") == "test"
+        ]
+        summary = data["data"][0]["attributes"].get("summary", {}) if data["data"] else {}
+    else:
+        console.print("[red]Unrecognized report format[/red]")
+        raise typer.Exit(1)
+
+    # Group by outcome
+    passed = [t for t in tests if t.get("outcome") == "passed"]
+    failed = [t for t in tests if t.get("outcome") == "failed"]
+    skipped = [t for t in tests if t.get("outcome") == "skipped"]
+    errors = [t for t in tests if t.get("outcome") == "error"]
+
+    total_duration = summary.get("duration", 0)
+
+    # Summary line
+    parts = []
+    if passed:
+        parts.append(f"[green]{len(passed)} passed[/green]")
+    if failed:
+        parts.append(f"[red]{len(failed)} failed[/red]")
+    if skipped:
+        parts.append(f"[yellow]{len(skipped)} skipped[/yellow]")
+    if errors:
+        parts.append(f"[red]{len(errors)} errors[/red]")
+    console.print(f"[bold]Results:[/bold] {', '.join(parts)} ({total_duration:.0f}s total)")
+    console.print()
+
+    # Failed tests with details
+    if failed:
+        console.print("[bold red]FAILED[/bold red]")
+        for t in failed:
+            nodeid = t.get("nodeid", t.get("name", ""))
+            duration = t.get("duration", 0)
+            # Extract failure message from call.crash or call.longrepr
+            call = t.get("call", {})
+            crash = call.get("crash", {})
+            longrepr = call.get("longrepr", "")
+            if longrepr:
+                lines = longrepr.strip().split("\n")
+                # Show last assertion lines (skip traceback)
+                tail_lines = [l for l in lines if l.startswith("E   ") or l.startswith("E\t")]
+                if not tail_lines:
+                    tail_lines = lines[-3:]
+                msg = "\n".join(tail_lines[:5])
+            else:
+                msg = crash.get("message", "no details")[:300]
+            console.print(f"  [red]FAIL[/red] {nodeid} [dim]({duration:.0f}s)[/dim]")
+            for line in msg.split("\n"):
+                console.print(f"       [dim]{line}[/dim]")
+        console.print()
+
+    # Errors
+    if errors:
+        console.print("[bold red]ERRORS[/bold red]")
+        for t in errors:
+            nodeid = t.get("nodeid", t.get("name", ""))
+            setup = t.get("setup", {})
+            crash = setup.get("crash", {})
+            msg = crash.get("message", "no details")[:200]
+            console.print(f"  [red]ERROR[/red] {nodeid}")
+            console.print(f"        [dim]{msg}[/dim]")
+        console.print()
+
+    # Skipped tests
+    if skipped and not failures_only:
+        console.print("[bold yellow]SKIPPED[/bold yellow]")
+        for t in skipped:
+            nodeid = t.get("nodeid", t.get("name", ""))
+            console.print(f"  [yellow]SKIP[/yellow] {nodeid}")
+        console.print()
+
+    # Passed tests
+    if passed and not failures_only:
+        console.print("[bold green]PASSED[/bold green]")
+        for t in passed:
+            nodeid = t.get("nodeid", t.get("name", ""))
+            duration = t.get("duration", 0)
+            console.print(f"  [green]PASS[/green] {nodeid} [dim]({duration:.0f}s)[/dim]")
+        console.print()
 
 
 @app.callback()

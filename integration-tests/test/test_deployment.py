@@ -17,6 +17,7 @@ import pytest
 from docker.client import DockerClient
 from f1r3fly.client import RClientException
 
+from .common import TestingContext
 from .conftest import (
     assert_containers_running,
     VALIDATOR1_KEY,
@@ -29,6 +30,7 @@ pytestmark = pytest.mark.xdist_group("shard")
 
 def test_deploy_with_not_enough_phlo(
     docker_client: DockerClient,
+    testing_context: TestingContext,
     validator1_node: Node,
 ) -> None:
     """Deploy with insufficient phlo should be included in a block but marked as errored.
@@ -53,7 +55,8 @@ def test_deploy_with_not_enough_phlo(
     # Poll find_deploy until the heartbeat includes the deploy in a block.
     # find_deploy is a direct index lookup (deploy-id -> block-hash) and does
     # not depend on the DAG tip depth window, unlike get_blocks(N).
-    deadline = time.time() + 120
+    find_timeout = int(120 * testing_context.timeout_scale)
+    deadline = time.time() + find_timeout
     block_hash = None
     while time.time() < deadline:
         try:
@@ -68,7 +71,7 @@ def test_deploy_with_not_enough_phlo(
             time.sleep(3)
 
     assert block_hash is not None, (
-        f"Deploy {deploy_id[:24]} should have been included in a block within 120s"
+        f"Deploy {deploy_id[:24]} should have been included in a block within {find_timeout}s"
     )
 
     # Fetch full block to inspect the deploy's errored status.

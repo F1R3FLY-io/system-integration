@@ -157,7 +157,8 @@ def test_data_stored_on_one_validator_served_by_another(
     # The Rholang stdout output appears in the Docker logs during block
     # creation (deploy execution), before the block is committed to the
     # blockstore. Poll find_deploy until the block is committed.
-    deadline = time.time() + 30
+    find_timeout = int(30 * context.timeout_scale)
+    deadline = time.time() + find_timeout
     store_block = None
     while time.time() < deadline:
         try:
@@ -167,7 +168,7 @@ def test_data_stored_on_one_validator_served_by_another(
             logging.info("find_deploy: block not committed yet, retrying...")
             time.sleep(2)
     assert store_block is not None, (
-        f"Block containing store deploy {store_deploy_id[:24]}... not found within 30s"
+        f"Block containing store deploy {store_deploy_id[:24]}... not found within {find_timeout}s"
     )
     store_block_number = store_block.blockNumber
 
@@ -176,11 +177,37 @@ def test_data_stored_on_one_validator_served_by_another(
     # stdout output appears in validator2's logs.
     wait_for_log_match(context, validator2_node, store_pattern)
 
+    # Wait for the store block to be FINALIZED on validator2. In a multi-proposer
+    # DAG, validAfterBlockNumber provides sequencing but not state visibility.
+    # Only finalization guarantees the store block's state is in the LCA base
+    # of all future blocks. Without this wait, the read deploy may execute
+    # against a merge base that does not include the store block's state,
+    # causing rho:registry:lookup to return nothing.
+    lfb_timeout = int(180 * context.timeout_scale)
+    lfb_deadline = time.time() + lfb_timeout
+    lfb_number = 0
+    while time.time() < lfb_deadline:
+        lfb = validator2_node.last_finalized_block()
+        lfb_number = lfb.blockInfo.blockNumber
+        if lfb_number >= store_block_number:
+            logging.info(
+                "LFB #%d >= store block #%d on validator2 -- finalization caught up",
+                lfb_number, store_block_number,
+            )
+            break
+        time.sleep(5)
+    else:
+        pytest.fail(
+            f"LFB #{lfb_number} on validator2 did not reach store block "
+            f"#{store_block_number} within {lfb_timeout}s -- "
+            f"registry state not guaranteed in merge base"
+        )
+
     read_pattern = _read_pattern_for(id_address)
 
     # Read on validator2 with causal ordering enforced via validAfterBlockNumber.
-    # This ensures the read deploy is only included in a block that comes after
-    # the store block, so the registry lookup will find the stored data.
+    # Combined with the finalization wait above, this ensures the read deploy
+    # executes in a block whose merge base includes the store's registry state.
     validator2_node.deploy_contract_with_substitution(
         {'@id_address@': id_address},
         READ_DATA_CONTRACT,

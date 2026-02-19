@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Generator, Tuple, List
 import pytest
+from .common import TestingContext
 from .rnode import Node, default_shard_id
 from .conftest import VALIDATOR1_KEY
 from .http_client import HttpClient
@@ -19,7 +20,7 @@ pytestmark = pytest.mark.xdist_group("shard")
 
 
 @pytest.fixture(scope="module")
-def node_with_blocks(validator1_node: Node) -> Generator[Tuple[Node, List[str], List[str]], None, None]:
+def node_with_blocks(validator1_node: Node, testing_context: TestingContext) -> Generator[Tuple[Node, List[str], List[str]], None, None]:
     """Deploy three contracts on validator1 and wait for heartbeat to include
     them in blocks and for those blocks to be finalized.
 
@@ -39,9 +40,11 @@ def node_with_blocks(validator1_node: Node) -> Generator[Tuple[Node, List[str], 
         deploy_hashes.append(dh)
 
     # Wait for heartbeat to propose blocks containing all three deploys
+    scale = testing_context.timeout_scale
     block_hashes: List[str] = []
     max_block_number = 0
-    deadline = time.time() + 120
+    deploy_timeout = int(120 * scale)
+    deadline = time.time() + deploy_timeout
     remaining = set(deploy_hashes)
     while remaining and time.time() < deadline:
         for dh in list(remaining):
@@ -58,13 +61,15 @@ def node_with_blocks(validator1_node: Node) -> Generator[Tuple[Node, List[str], 
             time.sleep(3)
 
     assert not remaining, (
-        f"Deploys not included in blocks within 120s: {remaining}"
+        f"Deploys not included in blocks within {deploy_timeout}s: {remaining}"
     )
 
     # Wait for the LFB to advance past the highest block containing a deploy.
     # prepare_deploy returns a sequence number based on finalized state, so
     # without this wait the assertion can see stale (lower) values.
-    lfb_deadline = time.time() + 120
+    lfb_timeout = int(180 * scale)
+    lfb_deadline = time.time() + lfb_timeout
+    lfb_number = 0
     while time.time() < lfb_deadline:
         lfb = validator1_node.last_finalized_block()
         lfb_number = lfb.blockInfo.blockNumber
@@ -76,10 +81,10 @@ def node_with_blocks(validator1_node: Node) -> Generator[Tuple[Node, List[str], 
             break
         time.sleep(5)
     else:
-        logging.warning(
-            "LFB #%d did not reach deploy block #%d within 120s -- "
-            "continuing anyway",
-            lfb_number, max_block_number,
+        pytest.fail(
+            f"LFB #{lfb_number} did not reach deploy block "
+            f"#{max_block_number} within {lfb_timeout}s -- "
+            f"finalization too slow for downstream seq_number assertions"
         )
 
     yield (validator1_node, deploy_hashes, block_hashes)
@@ -92,18 +97,30 @@ def test_status(validator1_node: Node) -> None:
     assert status.version
 
 
-def test_prepare_deploy(node_with_blocks: Tuple[Node, List[str], List[str]]) -> None:
+def test_prepare_deploy(node_with_blocks: Tuple[Node, List[str], List[str]], testing_context: TestingContext) -> None:
     """HTTP /api/prepare-deploy returns incrementing sequence numbers."""
     node = node_with_blocks[0]
     client = HttpClient('localhost', node.get_http_port())
+    scale = testing_context.timeout_scale
 
-    prepare_rep = client.prepare_deploy()
-    assert prepare_rep.seq_number >= 3
+    # seq_number reflects finalized state which may lag slightly behind LFB
+    timeout = int(60 * scale)
+    deadline = time.time() + timeout
+    seq_number = 0
+    while time.time() < deadline:
+        prepare_rep = client.prepare_deploy()
+        seq_number = prepare_rep.seq_number
+        if seq_number >= 3:
+            break
+        time.sleep(3)
+    assert seq_number >= 3, (
+        f"prepare_deploy seq_number={seq_number} did not reach 3 within {timeout}s"
+    )
 
     prepare_rep_2 = client.prepare_deploy(
         VALIDATOR1_KEY.get_public_key().to_hex(), 1, 1,
     )
-    assert prepare_rep_2.seq_number >= 3
+    assert prepare_rep_2.seq_number >= seq_number
 
 
 def test_data_at_name(node_with_blocks: Tuple[Node, List[str], List[str]]) -> None:

@@ -23,6 +23,9 @@ x-rnode: &default-rnode
   environment:
     - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
     - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
+    # 5 JVM containers share the host; cap each at 18% RAM (90%/5) to avoid
+    # memory pressure on 7 GB CI runners.  On larger machines this is harmless.
+    - _JAVA_OPTIONS=-XX:MaxRAMPercentage=18.0 -XX:MaxDirectMemorySize=128M
 
 services:
   # =================================================================

@@ -32,6 +32,7 @@ from docker.client import DockerClient
 
 from .common import (
     CommandLineOptions,
+    TestingContext,
 )
 from .conftest import (
     assert_containers_running,
@@ -113,7 +114,8 @@ def test_heartbeat_creates_blocks_when_idle(
         # Poll until the node has created enough heartbeat blocks.
         # JVM startup inside Docker can take 20-30s, so a fixed sleep is
         # unreliable. Instead we poll with a generous deadline.
-        deadline = time.time() + 90
+        heartbeat_timeout = int(90 * command_line_options.timeout_scale)
+        deadline = time.time() + heartbeat_timeout
         final_count = 0
         success_count = 0
         while time.time() < deadline:
@@ -196,6 +198,7 @@ def test_heartbeat_disabled_when_max_parents_is_one(
 @pytest.mark.xdist_group("shard")
 def test_heartbeat_creates_blocks_when_idle_shard(
     docker_client: DockerClient,
+    testing_context: TestingContext,
     validator1_node: Node,
     validator2_node: Node,
     validator3_node: Node,
@@ -227,7 +230,8 @@ def test_heartbeat_creates_blocks_when_idle_shard(
     ]
 
     # Poll until all validators have advanced by at least 2 blocks.
-    deadline = time.time() + 90
+    shard_timeout = int(90 * testing_context.timeout_scale)
+    deadline = time.time() + shard_timeout
     all_advanced = False
     while time.time() < deadline:
         final_block_numbers = [
@@ -301,7 +305,8 @@ def test_manual_propose_during_heartbeat_shard(
         )
 
     # Poll until the node has advanced beyond the initial block number.
-    deadline = time.time() + 60
+    propose_timeout = int(60 * testing_context.timeout_scale)
+    deadline = time.time() + propose_timeout
     final_block_number = initial_block_number
     while time.time() < deadline:
         final_block_number = max(

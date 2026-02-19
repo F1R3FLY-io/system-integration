@@ -98,15 +98,67 @@ STANDALONE_KEY = PrivateKey.from_hex("ff2ba092524bafdbc85fa0c7eddb2b41c69bc9bf06
 STANDALONE_PRIVATE_KEY = "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
 
 
+def pytest_sessionstart(session) -> None:
+    """Force-remove all known test containers and networks at session start.
+
+    Ensures a clean Docker environment regardless of what a previous test
+    session, CI job, or manual run left behind. This is the primary defense
+    against resource exhaustion and port conflicts caused by unclean shutdowns
+    (e.g. pytest-timeout SIGALRM killing a test mid-lifecycle, OOM kills,
+    CI job cancellation).
+
+    Uses 'docker rm -f' which is a no-op for non-existent containers.
+    """
+    all_containers = (
+        ALL_CONTAINERS
+        + [STANDALONE_CONTAINER]
+        + [
+            CUSTOM_BOOT_CONTAINER,
+            "rnode.custom.validator1",
+            "rnode.custom.validator2",
+            "rnode.custom.validator3",
+            CUSTOM_JOINER_CONTAINER,
+        ]
+    )
+    removed = []
+    for name in all_containers:
+        result = subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode == 0 and b"No such container" not in result.stderr:
+            removed.append(name)
+
+    all_networks = [COMPOSE_NETWORK, STANDALONE_NETWORK, CUSTOM_NETWORK]
+    for net in all_networks:
+        subprocess.run(
+            ["docker", "network", "rm", net],
+            capture_output=True,
+            check=False,
+        )
+
+    if removed:
+        logging.warning(
+            "Session start: removed leftover containers from previous run: %s",
+            ", ".join(removed),
+        )
+
+
 def _get_tests_dir() -> str:
     """Return the absolute path to the integration-tests directory."""
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _is_rust_node() -> bool:
+    """Check if the active node image is the Rust implementation."""
+    image = os.environ.get("DEFAULT_IMAGE", "")
+    return "rust" in image.lower()
+
+
 def _get_compose_file() -> str:
     """Determine which compose file to use based on DEFAULT_IMAGE env var."""
-    image = os.environ.get("DEFAULT_IMAGE", "")
-    if "rust" in image.lower():
+    if _is_rust_node():
         return "docker-compose.rust.yml"
     return "docker-compose.scala.yml"
 
@@ -129,11 +181,22 @@ def _compose_up() -> None:
     tests_dir = _get_tests_dir()
     compose_file = _get_compose_file()
     logging.info("Starting test shard via %s ...", compose_file)
-    subprocess.run(
+    result = subprocess.run(
         _compose_cmd("up", "-d"),
         cwd=tests_dir,
-        check=True,
+        capture_output=True,
+        check=False,
     )
+    if result.returncode != 0:
+        stdout = result.stdout.decode("utf-8", errors="replace").strip()
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        logging.error(
+            "docker-compose up failed (exit %d):\nstdout: %s\nstderr: %s",
+            result.returncode, stdout, stderr,
+        )
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr,
+        )
 
 
 def _compose_down() -> None:
@@ -184,8 +247,7 @@ def _reset_data() -> None:
 
 def _get_standalone_compose_file() -> str:
     """Determine which standalone compose file to use based on DEFAULT_IMAGE env var."""
-    image = os.environ.get("DEFAULT_IMAGE", "")
-    if "rust" in image.lower():
+    if _is_rust_node():
         return "docker-compose.standalone-rust.yml"
     return "docker-compose.standalone-scala.yml"
 
@@ -211,11 +273,22 @@ def _standalone_compose_up(override_file: Optional[str] = None) -> None:
     tests_dir = _get_tests_dir()
     compose_file = _get_standalone_compose_file()
     logging.info("Starting standalone node via %s ...", compose_file)
-    subprocess.run(
+    result = subprocess.run(
         _standalone_compose_cmd("up", "-d", override_file=override_file),
         cwd=tests_dir,
-        check=True,
+        capture_output=True,
+        check=False,
     )
+    if result.returncode != 0:
+        stdout = result.stdout.decode("utf-8", errors="replace").strip()
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        logging.error(
+            "docker-compose up (standalone) failed (exit %d):\nstdout: %s\nstderr: %s",
+            result.returncode, stdout, stderr,
+        )
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr,
+        )
 
 
 def _standalone_compose_down(override_file: Optional[str] = None) -> None:
@@ -320,8 +393,21 @@ def start_standalone_node(
         _reset_standalone_data()
         _ensure_data_dirs([STANDALONE_CONTAINER])
 
-        # Start
-        _standalone_compose_up(override_file=override_file)
+        # Wait for standalone ports to be released (kernel TIME_WAIT
+        # from a previous test session's standalone container).
+        _wait_for_standalone_ports_free()
+
+        # Start with one retry on transient Docker errors
+        try:
+            _standalone_compose_up(override_file=override_file)
+        except subprocess.CalledProcessError:
+            logging.warning("Standalone compose up failed, cleaning up and retrying...")
+            _standalone_compose_down(override_file=override_file)
+            _reset_standalone_data()
+            _ensure_data_dirs([STANDALONE_CONTAINER])
+            time.sleep(5)
+            _wait_for_standalone_ports_free()
+            _standalone_compose_up(override_file=override_file)
 
         # Wait for Running state
         timeout = command_line_options.node_startup_timeout
@@ -365,20 +451,84 @@ def _make_standalone_node(docker_client: DockerClient, command_timeout: int) -> 
 
 
 def _wait_for_running_state(docker_client: DockerClient, container_name: str,
-                             timeout: int) -> None:
-    """Wait for a node container to reach the Running state."""
+                             timeout: int,
+                             data_dir: Optional[str] = None) -> None:
+    """Wait for a node container to reach the Running state.
+
+    Polls container logs every 5 seconds for the Running state marker. Also
+    checks the container's Docker status on each poll: if the container has
+    exited or died, it is restarted once via ``docker restart`` rather than
+    waiting the full timeout doing nothing. If the container crashes again
+    after restart, fails immediately with diagnostic output.
+
+    When ``data_dir`` is provided, the data directory is cleaned before
+    restart so that partial genesis or DAG state from the crashed run does
+    not prevent the new JVM from completing startup.
+
+    This catches scenarios where the JVM crashes during genesis or startup
+    (e.g. OOM, config error, BindException) and saves up to 10 minutes of
+    wasted CI time per container compared to blindly polling until timeout.
+    """
     container = docker_client.containers.get(container_name)
     running_marker = 'Making a transition to Running state.'
     start = time.time()
+    restart_attempted = False
+
     while time.time() - start < timeout:
+        # Refresh container state from Docker daemon
+        container.reload()
+
+        # Early crash detection: if the container has exited, either restart
+        # it once or fail immediately if we already tried.
+        if container.status in ('exited', 'dead'):
+            exit_code = container.attrs.get('State', {}).get('ExitCode', '?')
+            log_tail = container.logs(tail=30).decode('utf-8', errors='replace').strip()
+
+            if not restart_attempted:
+                logging.warning(
+                    "Container %s crashed (status=%s, exit_code=%s), "
+                    "attempting restart (%.1fs elapsed). Last 30 log lines:\n%s",
+                    container_name, container.status, exit_code,
+                    time.time() - start, log_tail,
+                )
+                # Clean the data directory before restart. A partially-written
+                # genesis or DAG state from the crashed run can prevent the
+                # JVM from completing startup on the second attempt.
+                if data_dir and os.path.exists(data_dir):
+                    logging.info("Cleaning data dir before restart: %s", data_dir)
+                    subprocess.run(
+                        ["docker", "run", "--rm", "-v", f"{data_dir}:/data",
+                         "alpine", "sh", "-c", "rm -rf /data/*"],
+                        check=False,
+                    )
+                container.restart()
+                restart_attempted = True
+                time.sleep(10)  # Give JVM time to begin startup
+                continue
+            else:
+                raise RuntimeError(
+                    f"Container {container_name} crashed again after restart "
+                    f"(status={container.status}, exit_code={exit_code}). "
+                    f"Last 30 log lines:\n{log_tail}"
+                )
+
+        # Check for the Running state marker in container logs
         logs = container.logs().decode('utf-8')
         if running_marker in logs:
-            logging.info("Container %s reached Running state (%.1fs)",
-                         container_name, time.time() - start)
+            elapsed = time.time() - start
+            restarted = " (after restart)" if restart_attempted else ""
+            logging.info("Container %s reached Running state (%.1fs%s)",
+                         container_name, elapsed, restarted)
             return
+
         time.sleep(5)
+
+    # Timeout: collect diagnostics before raising
+    container.reload()
+    log_tail = container.logs(tail=30).decode('utf-8', errors='replace').strip()
     raise TimeoutError(
-        f"Container {container_name} did not reach Running state within {timeout}s"
+        f"Container {container_name} did not reach Running state within {timeout}s "
+        f"(status={container.status}). Last 30 log lines:\n{log_tail}"
     )
 
 
@@ -548,6 +698,8 @@ def pytest_addoption(parser: Parser) -> None:
                      help="timeout in seconds for executing a rnode call")
     parser.addoption("--random-seed", type=int, action="store", default=None,
                      help="seed for the random numbers generator used in integration tests")
+    parser.addoption("--timeout-scale", type=float, action="store", default=1.0,
+                     help="multiplier for hardcoded polling timeouts (e.g. 3.0 for CI)")
     parser.addoption("--skip-setup", action="store_true", default=False,
                      help="skip shard setup (assume already running)")
 
@@ -578,6 +730,7 @@ def command_line_options(request) -> Generator[CommandLineOptions, None, None]:
     receive_timeout = int(request.config.getoption("--receive-timeout"))
     command_timeout = int(request.config.getoption("--command-timeout"))
     random_seed = request.config.getoption("--random-seed")
+    timeout_scale = float(request.config.getoption("--timeout-scale"))
 
     yield CommandLineOptions(
         node_startup_timeout=startup_timeout,
@@ -585,6 +738,7 @@ def command_line_options(request) -> Generator[CommandLineOptions, None, None]:
         receive_timeout=receive_timeout,
         command_timeout=command_timeout,
         random_seed=random_seed,
+        timeout_scale=timeout_scale,
     )
 
 
@@ -616,6 +770,7 @@ def testing_context(command_line_options: CommandLineOptions,
         command_timeout=command_line_options.command_timeout,
         docker=docker_client,
         random_generator=random_generator,
+        timeout_scale=command_line_options.timeout_scale,
     )
 
 
@@ -639,7 +794,15 @@ def shard(request, command_line_options: CommandLineOptions,
         _compose_down()
         _reset_data()
         _ensure_data_dirs(ALL_CONTAINERS)
-        _compose_up()
+        try:
+            _compose_up()
+        except subprocess.CalledProcessError:
+            logging.warning("Shard compose up failed, cleaning up and retrying...")
+            _compose_down()
+            _reset_data()
+            _ensure_data_dirs(ALL_CONTAINERS)
+            time.sleep(5)
+            _compose_up()
 
     try:
         logging.info("Waiting for all nodes to reach Running state (timeout=%ds)...", timeout)
@@ -653,10 +816,13 @@ def shard(request, command_line_options: CommandLineOptions,
         yield
 
     finally:
-        # The pytest_runtest_teardown hook may have already torn down the
-        # shard (and set _shard_started = False) to free resources before
-        # custom shard tests.  Skip the redundant teardown in that case.
-        if not skip_setup and _shard_started:
+        # Always tear down when not skipping setup, even if the shard never
+        # reached Running state. Previously, _compose_down was only called
+        # when _shard_started was True, which meant partially started shards
+        # (e.g. _compose_up succeeded but _wait_for_running_state timed out)
+        # were never cleaned up, leaving containers running and consuming
+        # resources for all subsequent tests.
+        if not skip_setup:
             _compose_down()
             _reset_data()
             _shard_started = False
@@ -923,14 +1089,38 @@ def _generate_custom_compose(
             flags.append(k if v == "" else f"{k}={v}")
         return flags
 
+    # ── JVM memory tuning for CI (Scala only) ──
+    # The CI job sets _JAVA_OPTIONS=-XX:MaxRAMPercentage=35.0 globally, so
+    # each JVM claims 35% of host RAM.  With 4 containers on a 7GB runner
+    # that's 140% -- causing GC thrashing and startup timeouts.
+    #
+    # Override _JAVA_OPTIONS per container with a percentage that lets all
+    # containers fit within ~90% of host RAM (leaving ~10% for the OS).
+    # On local machines with plenty of RAM this is harmless -- the JVM just
+    # gets a proportionally larger (but still bounded) heap.
+    rust = _is_rust_node()
+    if rust:
+        java_options = None
+    else:
+        total_containers = len(bonds) + 1  # boot + validators
+        max_ram_pct = 90.0 / total_containers
+        java_options = (
+            f'-XX:MaxRAMPercentage={max_ram_pct:.1f} -XX:MaxDirectMemorySize=128M'
+        )
+        logging.info(
+            "Custom shard JVM tuning: %d containers, MaxRAMPercentage=%.1f%%",
+            total_containers, max_ram_pct,
+        )
+
     services: Dict = {}
 
     # ── Bootstrap node ──
     boot_host = CUSTOM_BOOT_CONTAINER
     boot_data = os.path.join(abs_data, boot_host)
     boot_base = _CUSTOM_PORT_BASES['boot']
-    boot_command = [
+    boot_command = ([] if rust else [
         "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
+    ]) + [
         "run",
         f"--host={boot_host}",
         f"--bootstrap={bootstrap_url}",
@@ -938,6 +1128,7 @@ def _generate_custom_compose(
         f"--validator-private-key={BOOTSTRAP_PRIVATE_KEY_HEX}",
         f"--fault-tolerance-threshold={ftt}",
         f"--required-signatures={required_signatures}",
+        "--approve-duration=180seconds",
     ] + _extra_cli("boot")
 
     services['boot'] = {
@@ -952,12 +1143,18 @@ def _generate_custom_compose(
             f"{abs_conf}/bootstrap-ceremony.conf:/var/lib/rnode/rnode.conf",
             f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
             f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
+        ] + ([] if rust else [
             f"{abs_conf}/logback.xml:/var/lib/rnode/logback.xml",
+        ]) + [
             f"{boot_data}:/var/lib/rnode/",
             f"{abs_certs}/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
             f"{abs_certs}/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro",
         ],
-        'environment': ['OPENAI_ENABLED=false'],
+        'environment': [
+            'OPENAI_ENABLED=false',
+        ] + ([] if rust else [
+            f'_JAVA_OPTIONS={java_options}',
+        ]),
     }
 
     # ── Validator nodes ──
@@ -969,8 +1166,9 @@ def _generate_custom_compose(
         data_path = os.path.join(abs_data, host)
         base_port = _CUSTOM_PORT_BASES[node_key]
 
-        validator_command = [
+        validator_command = ([] if rust else [
             "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
+        ]) + [
             "run",
             f"--host={host}",
             "--allow-private-addresses",
@@ -995,12 +1193,18 @@ def _generate_custom_compose(
                 f"{abs_conf}/shared-rnode.conf:/var/lib/rnode/rnode.conf",
                 f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
                 f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
+            ] + ([] if rust else [
                 f"{abs_conf}/logback.xml:/var/lib/rnode/logback.xml",
+            ]) + [
                 f"{data_path}:/var/lib/rnode/",
                 f"{abs_certs}/{cert_dir}/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
                 f"{abs_certs}/{cert_dir}/node.key.pem:/var/lib/rnode/node.key.pem:ro",
             ],
-            'environment': ['OPENAI_ENABLED=false'],
+            'environment': [
+                'OPENAI_ENABLED=false',
+            ] + ([] if rust else [
+                f'_JAVA_OPTIONS={java_options}',
+            ]),
         }
 
     compose = {
@@ -1033,15 +1237,32 @@ def _custom_compose_cmd(compose_file: str, *args: str) -> List[str]:
     ]
 
 
-def _custom_compose_up(compose_file: str) -> None:
-    """Bring up the custom shard via docker-compose."""
+def _custom_compose_up(compose_file: str, *services: str) -> None:
+    """Bring up custom shard services via docker-compose.
+
+    When *services* is empty, starts all services defined in the compose
+    file (``docker-compose up -d``).  When specific service names are
+    given, only those services are started (``docker-compose up -d <svc>``).
+    """
     tests_dir = _get_tests_dir()
-    logging.info("Starting custom shard ...")
-    subprocess.run(
-        _custom_compose_cmd(compose_file, "up", "-d"),
+    label = f"services: {', '.join(services)}" if services else "(all)"
+    logging.info("Starting custom shard %s ...", label)
+    result = subprocess.run(
+        _custom_compose_cmd(compose_file, "up", "-d", *services),
         cwd=tests_dir,
-        check=True,
+        capture_output=True,
+        check=False,
     )
+    if result.returncode != 0:
+        stdout = result.stdout.decode("utf-8", errors="replace").strip()
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        logging.error(
+            "docker-compose up (custom) failed (exit %d):\nstdout: %s\nstderr: %s",
+            result.returncode, stdout, stderr,
+        )
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr,
+        )
 
 
 def _force_cleanup_custom_containers() -> None:
@@ -1092,6 +1313,58 @@ def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
     raise RuntimeError(
         f"Port {port} still in use after {timeout}s -- "
         "leftover container or TIME_WAIT?"
+    )
+
+
+def _wait_for_port_range_free(base: int, count: int = 6, timeout: float = 30.0) -> None:
+    """Wait for a range of consecutive ports to be free.
+
+    Each container binds 6 ports (protocol, ext-gRPC, int-gRPC, HTTP,
+    discovery, admin-HTTP). The kernel releases each socket's TIME_WAIT
+    independently, so checking only the base port is insufficient.
+    """
+    for offset in range(count):
+        _wait_for_port_free(base + offset, timeout=timeout)
+
+
+def _wait_for_custom_ports_free(num_validators: int, timeout: float = 30.0) -> None:
+    """Wait for all custom shard host ports to be free.
+
+    Previous custom shard teardown leaves kernel sockets in TIME_WAIT.
+    """
+    node_keys = ['boot'] + [f'validator{i + 1}' for i in range(num_validators)]
+    for key in node_keys:
+        base = _CUSTOM_PORT_BASES[key]
+        _wait_for_port_range_free(base, timeout=timeout)
+
+
+def _wait_for_standalone_ports_free(timeout: float = 30.0) -> None:
+    """Wait for all standalone node host ports to be free.
+
+    Previous standalone teardown leaves kernel sockets in TIME_WAIT.
+    """
+    _wait_for_port_range_free(40460, timeout=timeout)
+
+
+def _wait_for_port_listening(host: str, port: int, timeout: float = 120.0) -> None:
+    """Wait until a TCP port is accepting connections.
+
+    Used to detect when a container's network layer is ready before
+    starting dependent containers.  This avoids starting all JVM
+    containers simultaneously, which causes memory pressure spikes on
+    resource-constrained CI runners.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(2)
+            try:
+                s.connect((host, port))
+                return
+            except (ConnectionRefusedError, OSError):
+                time.sleep(2)
+    raise RuntimeError(
+        f"Port {host}:{port} not listening after {timeout}s"
     )
 
 
@@ -1261,17 +1534,53 @@ def start_custom_shard(
         _reset_custom_data(container_names)
         _ensure_data_dirs(container_names)
 
-        # Wait for the bootstrap port to be released (kernel TIME_WAIT)
-        _wait_for_port_free(_CUSTOM_PORT_BASES['boot'])
+        # Wait for all custom shard ports to be released (kernel TIME_WAIT).
+        # Checking only boot is insufficient -- validator ports may still be
+        # held from the previous test's shard, causing BindException on startup.
+        _wait_for_custom_ports_free(len(bonds))
 
-        _custom_compose_up(compose_file)
+        # ── Staggered startup: boot first, then validators ──
+        # Starting all JVM containers simultaneously creates a memory
+        # pressure spike (~2 GB per JVM for heap + metaspace + stacks).
+        # On a 7 GB CI runner with 4 containers, that's ~8 GB simultaneous
+        # demand.  Starting boot first and waiting for its HTTP port lets
+        # the JVM complete class loading and network initialization before
+        # validators compete for memory.
+
+        def _do_staggered_startup() -> None:
+            # Phase 1: start boot alone
+            _custom_compose_up(compose_file, 'boot')
+            boot_http_port = _CUSTOM_PORT_BASES['boot'] + 3  # HTTP API port
+            logging.info(
+                "Waiting for boot HTTP port %d to accept connections...",
+                boot_http_port,
+            )
+            _wait_for_port_listening('localhost', boot_http_port, timeout=120)
+            logging.info("Boot HTTP port is listening, starting validators...")
+            # Phase 2: start validators (boot is already running)
+            _custom_compose_up(compose_file)
+
+        try:
+            _do_staggered_startup()
+        except (subprocess.CalledProcessError, RuntimeError):
+            logging.warning("Custom shard startup failed, cleaning up and retrying...")
+            _force_cleanup_custom_containers()
+            _custom_compose_down(compose_file)
+            _reset_custom_data(container_names)
+            _ensure_data_dirs(container_names)
+            _wait_for_custom_ports_free(len(bonds))
+            time.sleep(5)
+            _do_staggered_startup()
 
         logging.info(
             "Waiting for custom shard nodes to reach Running state (timeout=%ds)...",
             timeout,
         )
+        tests_dir = _get_tests_dir()
         for name in container_names:
-            _wait_for_running_state(docker_client, name, timeout)
+            container_data_dir = os.path.join(tests_dir, "data", name)
+            _wait_for_running_state(docker_client, name, timeout,
+                                    data_dir=container_data_dir)
         logging.info("All custom shard nodes are in Running state.")
 
         for i, name in enumerate(container_names):
@@ -1357,8 +1666,10 @@ def add_peer_to_shard(
     # to create its own genesis block instead of accepting the existing one.
     # We cannot use shared-rnode.conf because genesis-validator-mode = true
     # and the --genesis-validator CLI flag is a presence-only toggle.
-    command = [
+    rust = _is_rust_node()
+    command = ([] if rust else [
         "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
+    ]) + [
         "run",
         f"--host={container_name}",
         "--allow-private-addresses",
@@ -1393,13 +1704,14 @@ def add_peer_to_shard(
         os.path.join(shard.genesis_dir, 'wallets.txt'): {
             'bind': '/var/lib/rnode/genesis/wallets.txt', 'mode': 'ro',
         },
-        os.path.join(abs_conf, 'logback.xml'): {
-            'bind': '/var/lib/rnode/logback.xml', 'mode': 'ro',
-        },
         data_dir: {
             'bind': '/var/lib/rnode/',
         },
     }
+    if not rust:
+        volumes[os.path.join(abs_conf, 'logback.xml')] = {
+            'bind': '/var/lib/rnode/logback.xml', 'mode': 'ro',
+        }
 
     container = None
     node: Optional[Node] = None
@@ -1420,6 +1732,22 @@ def add_peer_to_shard(
                 check=True,
             )
 
+        # Wait for joiner ports to be released (kernel TIME_WAIT from a
+        # previous test's joiner container that was recently stopped).
+        _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
+
+        # Match the custom shard's JVM tuning so the joiner doesn't
+        # claim more RAM than its share (see _generate_custom_compose).
+        joiner_env = ['OPENAI_ENABLED=false']
+        if not rust:
+            joiner_total = len(shard.nodes) + 1  # existing nodes + joiner
+            joiner_ram_pct = 90.0 / joiner_total
+            joiner_java_opts = (
+                f'-XX:MaxRAMPercentage={joiner_ram_pct:.1f}'
+                f' -XX:MaxDirectMemorySize=128M'
+            )
+            joiner_env.append(f'_JAVA_OPTIONS={joiner_java_opts}')
+
         logging.info("Starting joiner %s on network %s ...",
                      container_name, shard.network_name)
         container = docker_client.containers.run(
@@ -1430,7 +1758,7 @@ def add_peer_to_shard(
             command=command,
             ports=ports,
             volumes=volumes,
-            environment=['OPENAI_ENABLED=false'],
+            environment=joiner_env,
             detach=True,
         )
 
