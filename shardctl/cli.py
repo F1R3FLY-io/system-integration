@@ -1201,7 +1201,12 @@ def test_report_cmd(
         raise typer.Exit(1)
 
     with open(report_path) as f:
-        data = json.load(f)
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError as exc:
+            console.print(f"[red]Report file is malformed or incomplete: {exc}[/red]")
+            console.print("[dim]The test run may have been interrupted before writing a valid report.[/dim]")
+            raise typer.Exit(1)
 
     # Support both flat pytest-json-report and JSON:API wrapper formats
     if "tests" in data:

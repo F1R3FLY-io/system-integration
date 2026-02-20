@@ -108,8 +108,8 @@ ssh ubuntu@<IP> "sudo bash /tmp/setup-f1r3node-rust-runner.sh \
 gh api -X POST repos/F1R3FLY-io/f1r3node/actions/runners/remove-token --jq '.token'
 
 # Run teardown (same script for both Scala and Rust)
-scp ci/teardown-f1r3node-<scala|rust>-runner.sh ubuntu@<IP>:/tmp/
-ssh ubuntu@<IP> "sudo bash /tmp/teardown-f1r3node-<scala|rust>-runner.sh --token <TOKEN>"
+scp ci/teardown-runner.sh ubuntu@<IP>:/tmp/
+ssh ubuntu@<IP> "sudo bash /tmp/teardown-runner.sh --token <TOKEN>"
 ```
 
 ## Networking
