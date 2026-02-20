@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # =================================================================
-# F1R3FLY CI Runner Teardown Script (f1r3node / Rust)
+# F1R3FLY CI Runner Teardown Script
 # =================================================================
 # Cleanly stops, unregisters, and removes a GitHub Actions self-hosted
 # runner. Run this before decommissioning or migrating an instance.
+# Works for both Scala and Rust runners (same teardown logic).
 #
 # Usage:
-#   ./teardown-f1r3node-rust-runner.sh --token <REMOVAL_TOKEN>
+#   ./teardown-runner.sh --token <REMOVAL_TOKEN>
 #
 # Obtain a removal token from:
 #   gh api repos/OWNER/REPO/actions/runners/remove-token
