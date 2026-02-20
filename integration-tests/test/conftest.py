@@ -1537,7 +1537,11 @@ def start_custom_shard(
         # Wait for all custom shard ports to be released (kernel TIME_WAIT).
         # Checking only boot is insufficient -- validator ports may still be
         # held from the previous test's shard, causing BindException on startup.
+        # Also wait for the joiner port range: add_peer_to_shard teardown stops
+        # the joiner container but doesn't wait for its ports, so a previous
+        # test's joiner may still hold 40540-40545 in TIME_WAIT.
         _wait_for_custom_ports_free(len(bonds))
+        _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
 
         # ── Staggered startup: boot first, then validators ──
         # Starting all JVM containers simultaneously creates a memory
