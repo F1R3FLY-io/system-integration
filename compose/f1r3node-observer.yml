@@ -8,7 +8,7 @@
 #
 # PREREQUISITES:
 #   - A running shard network to connect to
-#   - Must use the same network as the shard (shared-docker-config_f1r3fly-shard)
+#   - Must use the same network as the shard (f1r3fly-shard)
 #
 # NOTE: For Rust nodes, use f1r3node-rust-observer.yml instead.
 

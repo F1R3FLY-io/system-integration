@@ -890,17 +890,19 @@ def reset_cmd(
 ):
     """Stop F1R3FLY containers and delete blockchain data.
 
-    This command stops all running F1R3FLY containers (including validator4, observer)
-    and deletes the blockchain data directory. Uses a Docker container to delete
-    root-owned files without sudo.
+    This command stops all running F1R3FLY containers (including validator4, observer,
+    and monitoring) and deletes the blockchain data directory. Uses a Docker container
+    to delete root-owned files without sudo.
 
     Example:
         poetry run shardctl reset       # Stop and delete data (with confirmation)
         poetry run shardctl reset -y    # Skip confirmation prompt
     """
     node_config = node_module.NodeConfig()
+    config = Config()
+    manager = get_manager()
 
-    # Stop all running configurations
+    # Stop all running node configurations
     all_configs = node_config.detect_all_running_configs()
     for node_type, topology, compose_file in all_configs:
         console.print(
@@ -908,10 +910,17 @@ def reset_cmd(
         )
         node_module.run_compose_command(node_config, compose_file, ["down"])
 
+    # Stop monitoring (prometheus + grafana) if running
+    monitoring_file = config.resolve_compose_file("monitoring")
+    if monitoring_file.exists():
+        console.print("[yellow]Stopping monitoring...[/yellow]")
+        try:
+            manager.down_single_file(monitoring_file, remove_orphans=True)
+        except SystemExit:
+            pass  # Ignore errors if monitoring was not running
+
     # Also run normal compose down if volumes requested
     if volumes:
-        config = Config()
-        manager = get_manager()
         for compose_file in config.get_startup_order():
             try:
                 manager.down_single_file(compose_file, volumes=True, remove_orphans=True)

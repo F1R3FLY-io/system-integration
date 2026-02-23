@@ -224,4 +224,5 @@ services:
 
 networks:
   f1r3fly-shard:
+    name: f1r3fly-shard
     driver: bridge

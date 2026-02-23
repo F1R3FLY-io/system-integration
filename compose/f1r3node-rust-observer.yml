@@ -8,7 +8,7 @@
 #
 # PREREQUISITES:
 #   - A running shard network to connect to
-#   - Must use the same network as the shard (compose_f1r3fly-shard)
+#   - Must use the same network as the shard (f1r3fly-shard)
 #
 # NOTE: For Scala nodes, use f1r3node-observer.yml instead.
 
@@ -51,4 +51,4 @@ services:
 networks:
   f1r3fly-shard:
     external: true
-    name: compose_f1r3fly-shard
+    name: f1r3fly-shard

@@ -63,7 +63,7 @@ def get_docker_compose_command():
         console.print(f"[yellow]Warning: Could not detect Docker version ({e}), using docker-compose[/yellow]", style="dim")
         _docker_compose_command_cache = ["docker-compose"]
 
-    return _docker_compose_command_cache
+    return list(_docker_compose_command_cache)
 
 
 def clone_services(

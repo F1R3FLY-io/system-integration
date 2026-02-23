@@ -352,8 +352,8 @@ Services are now accessible:
 - **F1R3Sky PDS**: http://localhost:2583
 - **F1R3Sky BSKY (AppView)**: http://localhost:2584
 - **F1R3Sky Ozone (Moderation)**: http://localhost:3101
-- **Grafana**: http://localhost:3000
-- **Prometheus**: http://localhost:9090
+- **Grafana**: http://localhost:43000 (admin / admin)
+- **Prometheus**: http://localhost:49090
 
 #### 9. View Logs
 
@@ -480,6 +480,41 @@ All commands require `poetry run` prefix (or activate shell with `poetry shell` 
 | `compose/embers.yml`               | Embers API + frontend                                          |
 | `compose/f1r3sky.yml`              | F1R3Sky AT Protocol services                                   |
 | `compose/monitoring.yml`           | Prometheus + Grafana                                           |
+
+### Monitoring (Prometheus + Grafana)
+
+The monitoring stack scrapes all node metrics and provides pre-built dashboards.
+
+**Important:** Start the node shard before monitoring. The Prometheus container joins the shard's Docker network (`f1r3fly-shard`), which must exist first.
+
+```bash
+# 1. Start the Rust shard (creates f1r3fly-shard network)
+poetry run shardctl up f1r3node-rust
+
+# 2. Wait for nodes to be ready
+poetry run shardctl wait
+
+# 3. Start monitoring
+poetry run shardctl up monitoring
+
+# 4. Access UIs
+open http://localhost:49090   # Prometheus
+open http://localhost:43000   # Grafana (admin / admin)
+```
+
+**Verify in Prometheus** (`http://localhost:49090`):
+- Status → Targets: all 5 nodes should show `UP`
+- Status → Rules: recording rules should be loaded
+- Query `process_memory_rss_bytes` to confirm Phase 1 metrics are flowing
+
+**Grafana dashboards** (`http://localhost:43000`):
+- **F1R3FLY Node Dashboard** — peers, RSpace ops, memory, DAG state, CasperBuffer, HotStore, transport
+- **Block Transfer Performance** — block download/validation latency percentiles, replay timing, request rates
+
+**Stop monitoring:**
+```bash
+poetry run shardctl down monitoring
+```
 
 ### Configuration
 
