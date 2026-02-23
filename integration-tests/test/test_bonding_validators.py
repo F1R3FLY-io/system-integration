@@ -28,7 +28,7 @@ import time
 
 import pytest
 from docker.client import DockerClient
-from f1r3fly.client import RClientException
+from f1r3fly.client import F1r3flyClientException
 
 from .common import (
     CommandLineOptions,
@@ -75,9 +75,9 @@ def test_bonding_validators(
         (VALIDATOR2_ID, 10_000_000),
     ]
 
-    # The joiner needs REV in its vault to cover the bond amount + phlo costs.
-    # Compute the REV address from VALIDATOR4's public key and seed it at genesis.
-    joiner_rev_address = VALIDATOR4_KEY.get_public_key().get_rev_address()
+    # The joiner needs tokens in its vault to cover the bond amount + phlo costs.
+    # Compute the vault address from VALIDATOR4's public key and seed it at genesis.
+    joiner_vault_address = VALIDATOR4_KEY.get_public_key().get_vault_address()
     joiner_genesis_balance = 50_000_000_000_000_000  # same as other genesis validators
 
     with start_custom_shard(
@@ -85,7 +85,7 @@ def test_bonding_validators(
         bonds=bonds,
         ftt=-1,
         heartbeat=False,
-        extra_wallets=[(joiner_rev_address, joiner_genesis_balance)],
+        extra_wallets=[(joiner_vault_address, joiner_genesis_balance)],
         global_cli_options={
             "--epoch-length": "4",
             "--quarantine-length": "20",
@@ -138,7 +138,7 @@ def test_bonding_validators(
                 phlo_limit=100_000_000,
                 phlo_price=1,
             )
-            with pytest.raises((NotAnActiveValidatorError, RClientException)):
+            with pytest.raises((NotAnActiveValidatorError, F1r3flyClientException)):
                 joiner.propose()
 
             # ── Block 2: Deploy the bond contract ──
@@ -185,7 +185,7 @@ def test_bonding_validators(
                 phlo_limit=100_000_000,
                 phlo_price=1,
             )
-            with pytest.raises((NotAnActiveValidatorError, RClientException)):
+            with pytest.raises((NotAnActiveValidatorError, F1r3flyClientException)):
                 joiner.propose()
 
             # ── Block 4: Epoch boundary (block number 4) ──

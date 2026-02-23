@@ -3,27 +3,8 @@ from dataclasses import dataclass
 from typing import Optional, List, Union, Dict
 import requests
 from f1r3fly.crypto import PrivateKey
+from f1r3fly.util import sign_deploy_data
 from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto  # pylint: disable=no-name-in-module
-
-
-def _sign_deploy_data_with_shard(key: PrivateKey, data: DeployDataProto) -> bytes:
-    """Sign deploy data with shardId included.
-
-    The pyf1r3fly library's sign_deploy_data does not include shardId in the
-    signature, but the f1r3fly server expects shardId to be part of the signed data.
-    This function creates properly signed deploy data with shardId included.
-
-    TODO: Move this into the pyf1r3fly library so sign_deploy_data includes
-    shardId in the signed payload by default.
-    """
-    signed_data = DeployDataProto()
-    signed_data.term = data.term
-    signed_data.timestamp = data.timestamp
-    signed_data.phloLimit = data.phloLimit
-    signed_data.phloPrice = data.phloPrice
-    signed_data.validAfterBlockNumber = data.validAfterBlockNumber
-    signed_data.shardId = data.shardId
-    return key.sign(signed_data.SerializeToString())
 
 
 class HttpRequestException(Exception):
@@ -131,7 +112,7 @@ class HttpClient():
         deploy_req = {
             "data": deploy_data,
             "deployer": deployer.get_public_key().to_hex(),
-            "signature": _sign_deploy_data_with_shard(deployer, deploy_proto).hex(),
+            "signature": sign_deploy_data(deployer, deploy_proto).hex(),
             "sigAlgorithm": "secp256k1"
         }
         deploy_url = self.url + '/deploy'

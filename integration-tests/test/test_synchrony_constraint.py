@@ -34,7 +34,7 @@ import time
 
 import pytest
 from docker.client import DockerClient
-from f1r3fly.client import RClientException
+from f1r3fly.client import F1r3flyClientException
 
 from .common import (
     CommandLineOptions,

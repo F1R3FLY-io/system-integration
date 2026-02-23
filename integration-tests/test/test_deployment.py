@@ -15,7 +15,7 @@ import time
 
 import pytest
 from docker.client import DockerClient
-from f1r3fly.client import RClientException
+from f1r3fly.client import F1r3flyClientException
 
 from .common import TestingContext
 from .conftest import (
@@ -67,7 +67,7 @@ def test_deploy_with_not_enough_phlo(
                 block_hash[:16], light_block.blockNumber,
             )
             break
-        except RClientException:
+        except F1r3flyClientException:
             time.sleep(3)
 
     assert block_hash is not None, (

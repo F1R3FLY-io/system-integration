@@ -16,7 +16,7 @@ import time
 
 import pytest
 from docker.client import DockerClient
-from f1r3fly.client import RClientException
+from f1r3fly.client import F1r3flyClientException
 
 from .common import (
     TestingContext,
@@ -164,7 +164,7 @@ def test_data_stored_on_one_validator_served_by_another(
         try:
             store_block = validator1_node.find_deploy(store_deploy_id)
             break
-        except RClientException:
+        except F1r3flyClientException:
             logging.info("find_deploy: block not committed yet, retrying...")
             time.sleep(2)
     assert store_block is not None, (

@@ -13,7 +13,7 @@ import os
 import time
 
 import pytest
-from f1r3fly.client import RClientException
+from f1r3fly.client import F1r3flyClientException
 from f1r3fly.crypto import PrivateKey
 from docker.client import DockerClient
 
@@ -52,7 +52,7 @@ def _poll_find_deploy(node: Node, deploy_id: str, timeout: int = 30, scale: floa
     while time.time() < deadline:
         try:
             return node.find_deploy(deploy_id)
-        except RClientException:
+        except F1r3flyClientException:
             logging.info(
                 "find_deploy: block not committed yet for %s, retrying...",
                 deploy_id[:24],
@@ -126,7 +126,7 @@ def test_deploy_phlo_price_too_small(
 
     Starts a standalone node with --min-phlo-price=10, then attempts a deploy
     with phlo_price=1. The gRPC API must reject it immediately with an
-    RClientException containing the price mismatch details.
+    F1r3flyClientException containing the price mismatch details.
     """
     with start_standalone_node(
         docker_client=docker_client,
@@ -134,7 +134,7 @@ def test_deploy_phlo_price_too_small(
         cli_options={"--min-phlo-price": "10"},
     ) as node:
         with pytest.raises(
-            RClientException,
+            F1r3flyClientException,
             match=r"Phlo price 1 is less than minimum price 10",
         ):
             node.deploy_string(

@@ -22,7 +22,7 @@ import time
 
 import pytest
 from docker.client import DockerClient
-from f1r3fly.client import RClientException
+from f1r3fly.client import F1r3flyClientException
 
 from .common import (
     CommandLineOptions,
@@ -228,7 +228,7 @@ def test_cross_validator_state_agreement_asymmetric(
                 try:
                     block = node.find_deploy(deploy_id)
                     break
-                except RClientException:
+                except F1r3flyClientException:
                     time.sleep(3)
             assert block is not None, (
                 f"Deploy {deploy_id[:24]}... not included in a block within {find_timeout}s"

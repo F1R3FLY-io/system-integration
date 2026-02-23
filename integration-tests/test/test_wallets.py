@@ -109,8 +109,8 @@ def test_validator1_pay_validator2(testing_context: TestingContext,
     node = validator1_node
 
     transfer_amount = 20000000
-    v1_vault_address = VALIDATOR1_KEY.get_public_key().get_rev_address()
-    v2_vault_address = VALIDATOR2_KEY.get_public_key().get_rev_address()
+    v1_vault_address = VALIDATOR1_KEY.get_public_key().get_vault_address()
+    v2_vault_address = VALIDATOR2_KEY.get_public_key().get_vault_address()
 
     _, v1_balance_before = get_vault_balance(
         context, node, v1_vault_address, VALIDATOR1_KEY, 1000000, 1,
@@ -138,8 +138,8 @@ def test_transfer_failed_with_invalid_key(testing_context: TestingContext,
     context = testing_context
     node = validator1_node
 
-    v2_vault_address = VALIDATOR2_KEY.get_public_key().get_rev_address()
-    v3_vault_address = VALIDATOR3_KEY.get_public_key().get_rev_address()
+    v2_vault_address = VALIDATOR2_KEY.get_public_key().get_vault_address()
+    v3_vault_address = VALIDATOR3_KEY.get_public_key().get_vault_address()
 
     with pytest.raises(TransderFundsError) as e:
         # Sign with VALIDATOR2_KEY but try to transfer FROM VALIDATOR3's vault
@@ -160,8 +160,8 @@ def test_transfer_failed_with_insufficient_funds(
 
     # Generate a fresh key with no genesis wallet (0 balance)
     unfunded_key = PrivateKey.generate()
-    unfunded_vault_address = unfunded_key.get_public_key().get_rev_address()
-    v1_vault_address = VALIDATOR1_KEY.get_public_key().get_rev_address()
+    unfunded_vault_address = unfunded_key.get_public_key().get_vault_address()
+    v1_vault_address = VALIDATOR1_KEY.get_public_key().get_vault_address()
 
     # Create the vault for the unfunded key by checking balance (findOrCreate)
     _, unfunded_balance = get_vault_balance(
@@ -273,8 +273,8 @@ def test_block_api_returns_transfer_info(
     node = validator1_node
 
     transfer_amount = 5000000
-    v1_vault_address = VALIDATOR1_KEY.get_public_key().get_rev_address()
-    v2_vault_address = VALIDATOR2_KEY.get_public_key().get_rev_address()
+    v1_vault_address = VALIDATOR1_KEY.get_public_key().get_vault_address()
+    v2_vault_address = VALIDATOR2_KEY.get_public_key().get_vault_address()
 
     # Ensure Validator2's vault exists (findOrCreate via balance check)
     get_vault_balance(context, node, v2_vault_address, VALIDATOR1_KEY, 1000000, 1)

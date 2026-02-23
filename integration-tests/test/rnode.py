@@ -16,10 +16,11 @@ from typing import (
 from dataclasses import dataclass
 import requests
 import grpc as _grpc
-from f1r3fly.client import RClient, RClientException
+from f1r3fly.client import F1r3flyClient, F1r3flyClientException
 from f1r3fly.client import LightBlockInfo, BlockInfo
 from f1r3fly.crypto import PrivateKey
 from f1r3fly.const import DEFAULT_PHLO_LIMIT, DEFAULT_PHLO_PRICE
+from f1r3fly.util import create_deploy_data
 from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto  # pylint: disable=no-name-in-module
 from docker.client import DockerClient
 from docker.models.containers import Container
@@ -75,37 +76,6 @@ default_external_grpc_port = 40401
 default_shard_id = 'root'
 
 
-def _create_signed_deploy(key: PrivateKey, term: str, phlo_price: int, phlo_limit: int,
-                           valid_after_block_no: int, timestamp_millis: int,
-                           shard_id: str = '') -> DeployDataProto:
-    """Create a signed DeployDataProto with shardId included in the signature.
-
-    The pyf1r3fly library's deploy() and create_deploy_data() do not include
-    shardId in the signed payload, but the node expects it. This function
-    constructs and signs the deploy data correctly.
-
-    TODO: Move this into the pyf1r3fly library so deploy() handles shardId natively.
-    """
-    deploy_data = DeployDataProto(
-        deployer=key.get_public_key().to_bytes(),
-        term=term,
-        phloPrice=phlo_price,
-        phloLimit=phlo_limit,
-        validAfterBlockNumber=valid_after_block_no,
-        timestamp=timestamp_millis,
-        shardId=shard_id,
-        sigAlgorithm='secp256k1',
-    )
-    # Sign with shardId included -- must match server-side verification
-    sign_data = DeployDataProto()
-    sign_data.term = term
-    sign_data.timestamp = timestamp_millis
-    sign_data.phloLimit = phlo_limit
-    sign_data.phloPrice = phlo_price
-    sign_data.validAfterBlockNumber = valid_after_block_no
-    sign_data.shardId = shard_id
-    deploy_data.sig = key.sign(sign_data.SerializeToString())
-    return deploy_data
 
 
 # Module-level function to avoid pickle issues with nested functions
@@ -271,15 +241,15 @@ class Node:
 
     def get_blocks(self, depth: int) -> List[LightBlockInfo]:
         self.check_alive()
-        with RClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
+        with F1r3flyClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
             return client.show_blocks(depth)
 
     def get_block(self, hash: str) -> BlockInfo:
         self.check_alive()
-        with RClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
+        with F1r3flyClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
             try:
                 return client.show_block(hash)
-            except RClientException as e:
+            except F1r3flyClientException as e:
                 message = e.args[0]
                 raise GetBlockError(('show-block',), 1, message) from e
 
@@ -333,13 +303,13 @@ class Node:
             valid_after_block_no = max(0, self.get_current_block_number() - 1)
         try:
             now_time = int(time.time() * 1000)
-            deploy_data = _create_signed_deploy(
+            deploy_data = create_deploy_data(
                 private_key, rholang_code, phlo_price, phlo_limit,
                 valid_after_block_no, now_time, shard_id,
             )
-            with RClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
+            with F1r3flyClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
                 return client.send_deploy(deploy_data)
-        except RClientException as e:
+        except F1r3flyClientException as e:
             message = e.args[0]
             if "Parsing error" in message:
                 raise ParsingError(command=("deploy",), exit_code=1, output=message) from e
@@ -392,7 +362,7 @@ class Node:
 
     def find_deploy(self, deploy_id: str) -> LightBlockInfo:
         self.check_alive()
-        with RClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
+        with F1r3flyClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
             return client.find_deploy(deploy_id)
 
     def propose(self, retries: int = 5, retry_delay: float = 3.0) -> str:
@@ -405,9 +375,9 @@ class Node:
         for attempt in range(retries):
             self.check_alive()
             try:
-                with RClient('localhost', self.get_internal_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
+                with F1r3flyClient('localhost', self.get_internal_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
                     return client.propose()
-            except RClientException as e:
+            except F1r3flyClientException as e:
                 message = e.args[0]
                 if "another propose is in progress" in message:
                     if attempt < retries - 1:
@@ -429,7 +399,7 @@ class Node:
 
     def last_finalized_block(self) -> BlockInfo:
         self.check_alive()
-        with RClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
+        with F1r3flyClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
             return client.last_finalized_block()
 
     def repl(self, rholang_code: str, stderr: bool = False) -> str:
