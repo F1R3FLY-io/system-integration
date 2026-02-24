@@ -1573,7 +1573,7 @@ def start_custom_shard(
             _reset_custom_data(container_names)
             _ensure_data_dirs(container_names)
             _wait_for_custom_ports_free(len(bonds))
-            time.sleep(5)
+            _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
             _do_staggered_startup()
 
         logging.info(
