@@ -81,7 +81,7 @@ VALIDATOR1_KEY = PrivateKey.from_hex("357cdc4201a5650830e0bc5a03299a30038d9934ba
 VALIDATOR2_KEY = PrivateKey.from_hex("2c02138097d019d263c1d5383fcaddb1ba6416a0f4e64e3a617fe3af45b7851d")
 VALIDATOR3_KEY = PrivateKey.from_hex("b67533f1f99c0ecaedb7d829e430b1c0e605bda10f339f65d5567cb5bd77cbcb")
 
-# Genesis wallet balances from genesis/wallets.txt (REV addresses derived from the keys above)
+# Genesis wallet balances from genesis/wallets.txt (vault addresses derived from the keys above)
 # BOOTSTRAP  = 1111AtahZeefej... = 50000000000000000
 # VALIDATOR1 = 111127RX5Zgi...   = 50000000000000000
 # VALIDATOR2 = 111129p33f7v...   = 50000000000000000
@@ -998,15 +998,15 @@ def _generate_custom_genesis(
 
     bonds.txt is generated from the provided validator identities and stakes.
     wallets.txt is copied from the default genesis (all standard keys have
-    sufficient REV for test deploys).  Any entries in *extra_wallets* are
-    appended so that additional keys have REV at genesis.
+    sufficient tokens for test deploys).  Any entries in *extra_wallets* are
+    appended so that additional keys have tokens at genesis.
 
     Args:
         bonds: Validator identities and their bond stakes.
-        extra_wallets: Optional list of ``(rev_address, balance)`` tuples to
+        extra_wallets: Optional list of ``(vault_address, balance)`` tuples to
             append to the genesis wallets file.  Use
-            ``PrivateKey.get_public_key().get_rev_address()`` to compute the
-            REV address for a given key.
+            ``PrivateKey.get_public_key().get_vault_address()`` to compute the
+            vault address for a given key.
 
     Returns the absolute path to the temporary genesis directory.
     """
@@ -1024,8 +1024,8 @@ def _generate_custom_genesis(
 
     if extra_wallets:
         with open(wallets_path, 'a') as f:
-            for rev_addr, balance in extra_wallets:
-                f.write(f"{rev_addr},{balance}\n")
+            for vault_addr, balance in extra_wallets:
+                f.write(f"{vault_addr},{balance}\n")
 
     logging.info("Generated custom genesis in %s (bonds: %s, extra_wallets: %d)",
                  genesis_dir,
@@ -1471,10 +1471,10 @@ def start_custom_shard(
         heartbeat: Whether to enable heartbeat on validator nodes.
             When False, passes ``--heartbeat-enabled=false`` to all validators
             (requires the node's opt[Boolean] heartbeat flag).
-        extra_wallets: Optional list of ``(rev_address, balance)`` tuples to
+        extra_wallets: Optional list of ``(vault_address, balance)`` tuples to
             add to the genesis wallets file.  Use this to fund keys that are
             not among the default genesis wallets (e.g. a joiner that needs
-            REV to bond).
+            tokens to bond).
         global_cli_options: CLI options applied to all nodes
             (e.g. {"--synchrony-constraint-threshold": "0.5"}).
         per_node_cli_options: Per-node CLI overrides, keyed by

@@ -26,7 +26,7 @@ from typing import Generator
 from contextlib import contextmanager
 
 import pytest
-from f1r3fly.client import RClientException
+from f1r3fly.client import F1r3flyClientException
 from f1r3fly.crypto import PrivateKey
 from docker.client import DockerClient
 
@@ -298,7 +298,7 @@ def test_manual_propose_during_heartbeat_shard(
     #   - "another propose is in progress": heartbeat holds the lock (acceptable)
     try:
         validator1_node.propose()
-    except RClientException as e:
+    except F1r3flyClientException as e:
         message = str(e)
         assert "another propose is in progress" in message or "Failure" in message, (
             f"Expected 'another propose is in progress' but got: {message}"
