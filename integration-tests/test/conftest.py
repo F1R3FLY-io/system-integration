@@ -424,6 +424,7 @@ def start_standalone_node(
         # Tear down
         _standalone_compose_down(override_file=override_file)
         _reset_standalone_data()
+        _wait_for_standalone_ports_free()
 
         # Clean up temp override file
         if override_file and os.path.exists(override_file):
@@ -1606,6 +1607,8 @@ def start_custom_shard(
         if compose_file:
             _custom_compose_down(compose_file)
         _reset_custom_data(container_names)
+        _wait_for_custom_ports_free(len(bonds))
+        _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
         if genesis_dir and os.path.exists(genesis_dir):
             shutil.rmtree(genesis_dir, ignore_errors=True)
         if compose_file and os.path.exists(compose_file):
@@ -1786,3 +1789,4 @@ def add_peer_to_shard(
             except Exception:
                 pass
         _reset_custom_data([container_name])
+        _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
