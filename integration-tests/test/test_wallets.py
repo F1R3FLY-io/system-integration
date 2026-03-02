@@ -48,7 +48,8 @@ def wait_transfer_result(context: TestingContext, node: Node,
 
 def deploy_transfer(log_marker: str, node: Node, from_vault_addr: str,
                     to_vault_addr: str, amount: int, private_key: PrivateKey,
-                    phlo_limit: int, phlo_price: int) -> str:
+                    phlo_limit: int, phlo_price: int,
+                    valid_after_block_no: int | None = None) -> str:
     return node.deploy_contract_with_substitution(
         substitute_dict={
             "%FROM": from_vault_addr,
@@ -61,12 +62,14 @@ def deploy_transfer(log_marker: str, node: Node, from_vault_addr: str,
         phlo_limit=phlo_limit,
         phlo_price=phlo_price,
         shard_id=default_shard_id,
+        valid_after_block_no=valid_after_block_no,
     )
 
 
 def transfer_funds(context: TestingContext, node: Node, from_vault_addr: str,
                    to_vault_addr: str, amount: int, private_key: PrivateKey,
-                   phlo_limit: int, phlo_price: int) -> None:
+                   phlo_limit: int, phlo_price: int,
+                   valid_after_block_no: int | None = None) -> None:
     """Transfer tokens from one vault to another vault.
 
     If the transfer is processed successfully, returns None.
@@ -79,6 +82,7 @@ def transfer_funds(context: TestingContext, node: Node, from_vault_addr: str,
     deploy_transfer(
         log_marker, node, from_vault_addr, to_vault_addr, amount,
         private_key, phlo_limit, phlo_price,
+        valid_after_block_no=valid_after_block_no,
     )
     wait_transfer_result(context, node, transfer_funds_result_pattern)
 
@@ -154,56 +158,25 @@ def test_transfer_failed_with_insufficient_funds(
     testing_context: TestingContext,
     validator1_node: Node,
 ) -> None:
-    """Transferring more than available balance fails with Insufficient funds."""
+    """Transferring more than sender balance fails with Insufficient funds."""
     context = testing_context
     node = validator1_node
 
-    # Generate a fresh key with no genesis wallet (0 balance)
-    unfunded_key = PrivateKey.generate()
-    unfunded_vault_address = unfunded_key.get_public_key().get_vault_address()
     v1_vault_address = VALIDATOR1_KEY.get_public_key().get_vault_address()
+    v2_vault_address = VALIDATOR2_KEY.get_public_key().get_vault_address()
 
-    # Create the vault for the unfunded key by checking balance (findOrCreate)
-    _, unfunded_balance = get_vault_balance(
-        context, node, unfunded_vault_address, VALIDATOR1_KEY, 1000000, 1,
+    # Get current sender balance, then overdraw by 1 token.
+    _, v1_balance = get_vault_balance(
+        context, node, v1_vault_address, VALIDATOR1_KEY, 1000000, 1,
     )
-    assert unfunded_balance == 0
+    assert v1_balance > 0
+    overdraw_amount = v1_balance + 1
 
-    # Transfer enough to cover phlo costs for the subsequent deploy.
-    # The unfunded key will sign the "insufficient funds" transfer deploy,
-    # so it needs enough tokens to pay phlo (up to phlo_limit * phlo_price).
-    # With phlo_limit=1,000,000 and phlo_price=1, we need at least 1M
-    # in the deployer's vault. Transfer 5M to have comfortable headroom.
-    seed_amount = 5000000
-    transfer_funds(
-        context, node, v1_vault_address, unfunded_vault_address,
-        seed_amount, VALIDATOR1_KEY, 1000000, 1,
-    )
-
-    # Poll until the balance reflects the transfer. In a heartbeat-driven
-    # multi-validator shard, the transfer block may not be in the merge base
-    # of the next balance-check block on the first attempt.
-    balance_timeout = int(60 * context.timeout_scale)
-    deadline = time.time() + balance_timeout
-    unfunded_balance = 0
-    while time.time() < deadline:
-        _, unfunded_balance = get_vault_balance(
-            context, node, unfunded_vault_address, VALIDATOR1_KEY, 1000000, 1,
-        )
-        if unfunded_balance == seed_amount:
-            break
-        time.sleep(5)
-    assert unfunded_balance == seed_amount, (
-        f"Expected balance {seed_amount} after transfer, got {unfunded_balance}"
-    )
-
-    # Now try to transfer MORE than the unfunded key has.
-    # The deploy is signed by the unfunded key (deployer pays phlo from this
-    # vault), and the transfer amount exceeds the vault balance.
+    # Signed by VALIDATOR1_KEY; transfer amount exceeds sender balance.
     with pytest.raises(TransderFundsError) as e:
         transfer_funds(
-            context, node, unfunded_vault_address, v1_vault_address,
-            seed_amount + 1, unfunded_key, 1000000, 1,
+            context, node, v1_vault_address, v2_vault_address,
+            overdraw_amount, VALIDATOR1_KEY, 1000000, 1,
         )
     assert e.value.reason == "Insufficient funds"
 
