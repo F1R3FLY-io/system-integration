@@ -477,6 +477,7 @@ All commands require `poetry run` prefix (or activate shell with `poetry shell` 
 | `compose/f1r3node-rust-standalone.yml` | Single Rust node for development                           |
 | `compose/f1r3node-rust-observer.yml`   | Read-only Rust observer node (ports 40450-40455)            |
 | `compose/f1r3node-rust-validator4.yml` | 4th Rust validator for bonding tests (ports 40440-40445)    |
+| `compose/scala-shard-light.yml`    | Light Scala shard: bootstrap + 2 validators (~7.5 GB RAM)      |
 | `compose/embers.yml`               | Embers API + frontend                                          |
 | `compose/f1r3sky.yml`              | F1R3Sky AT Protocol services                                   |
 | `compose/monitoring.yml`           | Prometheus + Grafana                                           |
@@ -487,6 +488,59 @@ All commands require `poetry run` prefix (or activate shell with `poetry shell` 
 - **`conf/`** - Node configuration files (rnode.conf, logback.xml)
 - **`genesis/`** - Genesis wallets and bonds files
 - **`certs/`** - TLS certificates for multi-node networks
+
+### Light Shard (Development)
+
+The light shard runs a minimal network with bootstrap + 2 validators (no observer), using ~7.5 GB RAM at peak instead of 10+ GB minimum for the full shard. Suitable for development and testing on 16 GB machines
+
+```bash
+# Start light shard
+poetry run shardctl up scala-shard-light
+
+# Stop and reset
+poetry run shardctl reset
+```
+
+**Memory characteristics (with `-Xmx2g`):**
+- Each node stabilizes at ~2.5 GB after ~2 hours (2 GB heap + ~500 MB JVM overhead)
+- Total shard memory: ~7.5 GB (3 nodes x 2.5 GB)
+- Memory is stable after initial ramp-up — no memory leak observed over 6+ hours of continuous running
+
+The ~500 MB overhead above the 2 GB heap limit is normal JVM behavior: metaspace, thread stacks, JIT code cache, NIO buffers, and GC structures.
+
+**Port mapping:**
+
+| Node        | Ports       |
+| ----------- | ----------- |
+| Bootstrap   | 40400-40405 |
+| Validator 1 | 40410-40415 |
+| Validator 2 | 40420-40425 |
+
+### Monitoring (Prometheus + Grafana)
+
+The light shard compose file includes a built-in monitoring stack for tracking container resource usage over time.
+
+**Components:**
+- **cAdvisor** (port 8080) — collects container metrics from Docker
+- **Prometheus** (port 9090) — scrapes cAdvisor every 15s, stores metrics on disk (7-day retention)
+- **Grafana** (port 3000) — web dashboards, login: `admin` / `admin`
+
+**Configuration files:**
+- `monitoring/prometheus.yml` — Prometheus scrape config
+- `monitoring/datasources.yml` — Grafana datasource provisioning
+- `monitoring/dashboard.json` — Pre-built dashboard (import via Grafana UI)
+
+**Importing the dashboard:**
+1. Open Grafana at http://localhost:3000 (login: admin/admin)
+2. Go to Dashboards > Import
+3. Upload `monitoring/dashboard.json`
+
+**Dashboard panels:**
+- Total Shard Memory (GB)
+- Memory per Container (GB)
+- Total Shard CPU (cores)
+- CPU per Container (cores)
+- Disk I/O (MB/s)
 
 ## CLI Commands
 

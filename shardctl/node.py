@@ -27,6 +27,7 @@ class NodeType(str, Enum):
 class Topology(str, Enum):
     STANDALONE = "standalone"
     SHARD = "shard"
+    SHARD_LIGHT = "shard-light"
     OBSERVER = "observer"
     VALIDATOR4 = "validator4"
 
@@ -39,6 +40,11 @@ SHARD_CONTAINERS = {
     "validator2": "rnode.validator2",
     "validator3": "rnode.validator3",
     "readonly": "rnode.readonly",
+}
+SHARD_LIGHT_CONTAINERS = {
+    "boot": "rnode.bootstrap",
+    "validator1": "rnode.validator1",
+    "validator2": "rnode.validator2",
 }
 OBSERVER_CONTAINERS = {"observer": "rnode.observer"}
 VALIDATOR4_CONTAINERS = {"validator4": "rnode.validator4"}
@@ -83,6 +89,8 @@ class NodeConfig:
             return STANDALONE_CONTAINERS
         elif topology == Topology.SHARD:
             return SHARD_CONTAINERS
+        elif topology == Topology.SHARD_LIGHT:
+            return SHARD_LIGHT_CONTAINERS
         elif topology == Topology.OBSERVER:
             return OBSERVER_CONTAINERS
         elif topology == Topology.VALIDATOR4:
@@ -149,6 +157,11 @@ class NodeConfig:
         for topology, marker_container in topology_checks:
             if marker_container in containers:
                 node_type = self._detect_node_type_from_container(marker_container)
+                # Distinguish shard vs shard-light: both have rnode.bootstrap,
+                # but shard-light has no validator3 or readonly
+                if topology == Topology.SHARD:
+                    if "rnode.validator3" not in containers and "rnode.readonly" not in containers:
+                        topology = Topology.SHARD_LIGHT
                 compose_file = self.get_compose_file(node_type, topology)
                 configs.append((node_type, topology, compose_file))
 

@@ -14,3 +14,7 @@ scrape_configs:
         labels:
           shard: 'default'
     metrics_path: /metrics
+
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']

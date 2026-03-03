@@ -1,0 +1,121 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "title": "Total Shard Memory (GB)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decgbytes",
+          "color": { "mode": "fixed", "fixedColor": "red" },
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "spanNulls": true }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(container_memory_usage_bytes{name=~\"rnode.*\"}) / 1073741824",
+          "legendFormat": "Total Shard Memory",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Memory per Container (GB)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decgbytes",
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "spanNulls": true }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "container_memory_usage_bytes{name=~\"rnode.*\"} / 1073741824",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Total Shard CPU (cores)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "fixed", "fixedColor": "orange" },
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "spanNulls": true }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(container_cpu_usage_seconds_total{name=~\"rnode.*\"}[1m]))",
+          "legendFormat": "Total CPU",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "CPU per Container (cores)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "spanNulls": true }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(container_cpu_usage_seconds_total{name=~\"rnode.*\"}[1m])",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Disk I/O (MB/s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "MBs",
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "spanNulls": true }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(container_fs_reads_bytes_total{name=~\"rnode.*\"}[1m]) / 1048576",
+          "legendFormat": "{{name}} Read",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(container_fs_writes_bytes_total{name=~\"rnode.*\"}[1m]) / 1048576",
+          "legendFormat": "{{name}} Write",
+          "refId": "B"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["f1r3fly"],
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "F1R3FLY Shard Monitoring",
+  "uid": "f1r3fly-shard",
+  "version": 1
+}
