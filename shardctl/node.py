@@ -132,6 +132,16 @@ class NodeConfig:
             return NodeType.RUST
         return NodeType.SCALA
 
+    @staticmethod
+    def _has_label(container: str, label: str, value: str) -> bool:
+        """Check if a container has a specific Docker label."""
+        result = subprocess.run(
+            ["docker", "inspect", "--format", f"{{{{index .Config.Labels \"{label}\"}}}}", container],
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip() == value
+
     def detect_all_running_configs(self) -> List[Tuple[NodeType, Topology, Path]]:
         """Detect all node configurations currently running.
 
@@ -157,10 +167,9 @@ class NodeConfig:
         for topology, marker_container in topology_checks:
             if marker_container in containers:
                 node_type = self._detect_node_type_from_container(marker_container)
-                # Distinguish shard vs shard-light: both have rnode.bootstrap,
-                # but shard-light has no validator3 or readonly
+                # Distinguish shard vs shard-light using Docker labels
                 if topology == Topology.SHARD:
-                    if "rnode.validator3" not in containers and "rnode.readonly" not in containers:
+                    if self._has_label(marker_container, "f1r3fly.topology", "shard-light"):
                         topology = Topology.SHARD_LIGHT
                 compose_file = self.get_compose_file(node_type, topology)
                 configs.append((node_type, topology, compose_file))

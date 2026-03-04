@@ -6,7 +6,7 @@
 # Suitable for development and smoke testing on 16 GB machines.
 #
 # Usage:
-#   poetry run shardctl up f1r3node --scala --shard-light
+#   poetry run shardctl up scala-shard-light
 #
 # Or directly:
 #   docker-compose --env-file ../.env.node -f compose/scala-shard-light.yml up -d
@@ -25,6 +25,8 @@ x-rnode: &default-rnode
   restart: always
   networks:
     - f1r3fly-shard
+  labels:
+    f1r3fly.topology: shard-light
   environment:
     - JAVA_TOOL_OPTIONS=-Xmx2g
     - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
