@@ -4,11 +4,12 @@ services:
     container_name: prometheus
     restart: unless-stopped
     networks:
-      - f1r3fly
+      - f1r3fly-shard
     ports:
-      - "49090:9090"
+      - "9090:9090"
     volumes:
       - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ../monitoring/prometheus-rules.yml:/etc/prometheus/rules.yml:ro
     command:
       - --config.file=/etc/prometheus/prometheus.yml
 
@@ -19,9 +20,9 @@ services:
     depends_on:
       - prometheus
     networks:
-      - f1r3fly
+      - f1r3fly-shard
     ports:
-      - "43000:3000"
+      - "3000:3000"
     environment:
       - GF_USERS_DEFAULT_THEME=light
       # Note: grafana-piechart-panel is built into Grafana 8.x+, no need to install
@@ -29,6 +30,5 @@ services:
       - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
 
 networks:
-  f1r3fly:
-    name: f1r3fly
-    driver: bridge
+  f1r3fly-shard:
+    external: true

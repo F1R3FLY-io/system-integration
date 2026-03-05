@@ -595,6 +595,45 @@ shardctl compose images
 shardctl compose top service-1
 ```
 
+## Monitoring (Prometheus + Grafana)
+
+The monitoring stack provides metrics collection and dashboards for all f1r3node instances.
+
+### What's Included
+
+| Component | Description | URL |
+|---|---|---|
+| **Prometheus** | Scrapes metrics from all nodes every 15s | http://localhost:9090 |
+| **Grafana** | Pre-provisioned dashboards for block transfer metrics | http://localhost:3000 |
+
+Prometheus scrapes `/metrics` on port 40403 from all 5 nodes (bootstrap, validator1-3, readonly) and evaluates 33 recording rules for block transfer, validation, and transport metrics.
+
+### Start Monitoring
+
+```bash
+# Start nodes first (creates the network), then monitoring
+sc up f1r3node
+sc up monitoring
+
+# Or start everything at once (monitoring is in startup_order)
+sc up
+```
+
+### Verify
+
+- **Prometheus targets:** http://localhost:9090/targets — all 5 nodes should show `UP`
+- **Recording rules:** http://localhost:9090/rules — should show `block_transfer_metrics` group
+- **Grafana:** http://localhost:3000 — dashboards are auto-provisioned (default login: admin/admin)
+
+### Configuration Files
+
+| File | Purpose |
+|---|---|
+| `monitoring/prometheus.yml` | Scrape config (targets, intervals) |
+| `monitoring/prometheus-rules.yml` | Recording rules for aggregated metrics |
+| `monitoring/grafana/provisioning/` | Grafana datasource and dashboard provisioning |
+| `compose/monitoring.yml` | Docker Compose for Prometheus + Grafana |
+
 ## Integration Tests
 
 Integration tests verify F1R3FLY node behavior through HTTP and gRPC APIs against Docker-managed node clusters. The test suite covers consensus, wallets, deploys, finalization, heartbeat, state trimming, bonding, slashing, and more.
