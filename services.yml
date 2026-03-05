@@ -15,9 +15,10 @@
 # The 'up' command brings up each compose file in order, waiting for each to succeed.
 # This ensures dependencies (like networks) are created before dependent services start.
 startup_order:
-  - f1r3node  # compose/f1r3node.yml - creates the f1r3fly network
-  - embers    # compose/embers.yml - depends on f1r3fly network
-  - f1r3sky   # compose/f1r3sky.yml - depends on f1r3fly network
+  - f1r3node    # compose/f1r3node.yml - creates the f1r3fly-shard network
+  - monitoring  # compose/monitoring.yml - Prometheus + Grafana (joins f1r3fly-shard)
+  - embers      # compose/embers.yml - depends on f1r3fly network
+  - f1r3sky     # compose/f1r3sky.yml - depends on f1r3fly network
 
 repositories:
   f1r3node:
