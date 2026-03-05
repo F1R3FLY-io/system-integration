@@ -8,7 +8,7 @@ services:
     ports:
       - "49090:9090"
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
     command:
       - --config.file=/etc/prometheus/prometheus.yml
 
@@ -26,7 +26,7 @@ services:
       - GF_USERS_DEFAULT_THEME=light
       # Note: grafana-piechart-panel is built into Grafana 8.x+, no need to install
     volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
 
 networks:
   f1r3fly:
