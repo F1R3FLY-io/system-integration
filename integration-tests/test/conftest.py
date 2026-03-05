@@ -1295,6 +1295,32 @@ def _force_cleanup_custom_containers() -> None:
     )
 
 
+def _describe_port_owner(port: int) -> str:
+    """Best-effort diagnostic information about what owns a port."""
+    # Prefer ss (usually present). Fall back to lsof if available.
+    commands = [
+        ["ss", "-ltnp", f"sport = :{port}"],
+        ["lsof", "-nP", "-i", f"TCP:{port}"],
+    ]
+    outputs: List[str] = []
+    for cmd in commands:
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, check=False
+            )
+        except FileNotFoundError:
+            continue
+        if result.stdout.strip():
+            outputs.append(
+                f"$ {' '.join(cmd)}\n{result.stdout.strip()}"
+            )
+        if result.stderr.strip():
+            outputs.append(
+                f"$ {' '.join(cmd)} (stderr)\n{result.stderr.strip()}"
+            )
+    return "\n\n".join(outputs).strip()
+
+
 def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
     """Wait until a TCP port is available for binding.
 
@@ -1303,6 +1329,7 @@ def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
     or raises RuntimeError after the timeout.
     """
     deadline = time.time() + timeout
+    retry_cleanup_done = False
     while time.time() < deadline:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1310,14 +1337,21 @@ def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
                 s.bind(("0.0.0.0", port))
                 return
             except OSError:
+                # One extra cleanup pass can clear lingering docker-proxy
+                # listeners from aborted/overlapping custom shard teardowns.
+                if not retry_cleanup_done and time.time() >= (deadline - timeout / 2):
+                    _force_cleanup_custom_containers()
+                    retry_cleanup_done = True
                 time.sleep(1)
+    owner = _describe_port_owner(port)
+    details = f"\nPort owner diagnostics:\n{owner}" if owner else ""
     raise RuntimeError(
         f"Port {port} still in use after {timeout}s -- "
-        "leftover container or TIME_WAIT?"
+        f"leftover container or TIME_WAIT?{details}"
     )
 
 
-def _wait_for_port_range_free(base: int, count: int = 6, timeout: float = 30.0) -> None:
+def _wait_for_port_range_free(base: int, count: int = 6, timeout: float = 60.0) -> None:
     """Wait for a range of consecutive ports to be free.
 
     Each container binds 6 ports (protocol, ext-gRPC, int-gRPC, HTTP,
@@ -1328,7 +1362,7 @@ def _wait_for_port_range_free(base: int, count: int = 6, timeout: float = 30.0) 
         _wait_for_port_free(base + offset, timeout=timeout)
 
 
-def _wait_for_custom_ports_free(num_validators: int, timeout: float = 30.0) -> None:
+def _wait_for_custom_ports_free(num_validators: int, timeout: float = 60.0) -> None:
     """Wait for all custom shard host ports to be free.
 
     Previous custom shard teardown leaves kernel sockets in TIME_WAIT.
@@ -1339,7 +1373,7 @@ def _wait_for_custom_ports_free(num_validators: int, timeout: float = 30.0) -> N
         _wait_for_port_range_free(base, timeout=timeout)
 
 
-def _wait_for_standalone_ports_free(timeout: float = 30.0) -> None:
+def _wait_for_standalone_ports_free(timeout: float = 60.0) -> None:
     """Wait for all standalone node host ports to be free.
 
     Previous standalone teardown leaves kernel sockets in TIME_WAIT.
