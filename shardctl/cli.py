@@ -884,77 +884,39 @@ def reset_cmd(
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip confirmation prompt"
     ),
-    volumes: bool = typer.Option(
-        False, "--volumes", "-v", help="Also remove Docker volumes"
-    ),
 ):
-    """Stop F1R3FLY containers and delete blockchain data.
+    """Stop F1R3FLY containers and remove blockchain data volumes.
 
     This command stops all running F1R3FLY containers (including validator4, observer)
-    and deletes the blockchain data directory. Uses a Docker container to delete
-    root-owned files without sudo.
+    and removes their Docker data volumes.
 
     Example:
-        poetry run shardctl reset       # Stop and delete data (with confirmation)
+        poetry run shardctl reset       # Stop and remove data (with confirmation)
         poetry run shardctl reset -y    # Skip confirmation prompt
     """
     node_config = node_module.NodeConfig()
 
-    # Stop all running configurations
     all_configs = node_config.detect_all_running_configs()
+    if not all_configs:
+        console.print("[yellow]No F1R3FLY containers found[/yellow]")
+        return
+
+    if not yes:
+        console.print()
+        console.print(
+            "[red]This will stop all containers and permanently delete all blockchain data volumes[/red]"
+        )
+        if not Confirm.ask("Are you sure?"):
+            console.print("[yellow]Cancelled[/yellow]")
+            return
+
     for node_type, topology, compose_file in all_configs:
         console.print(
-            f"[yellow]Stopping {node_type.value} {topology.value} using {compose_file.name}...[/yellow]"
+            f"[yellow]Stopping {node_type.value} {topology.value} and removing volumes...[/yellow]"
         )
-        node_module.run_compose_command(node_config, compose_file, ["down"])
+        node_module.run_compose_command(node_config, compose_file, ["down", "--volumes"])
 
-    # Also run normal compose down if volumes requested
-    if volumes:
-        config = Config()
-        manager = get_manager()
-        for compose_file in config.get_startup_order():
-            try:
-                manager.down_single_file(compose_file, volumes=True, remove_orphans=True)
-            except SystemExit:
-                pass  # Ignore errors from compose down
-
-    # Delete data directory
-    if node_config.data_dir.exists():
-        if not yes:
-            console.print()
-            console.print(
-                f"[red]This will permanently delete all blockchain data in {node_config.data_dir}/[/red]"
-            )
-            if not Confirm.ask("Are you sure?"):
-                console.print("[yellow]Cancelled[/yellow]")
-                return
-
-        console.print("[yellow]Deleting data directory...[/yellow]")
-        console.print("(Using Docker container to delete root-owned files without sudo)")
-
-        # Use Docker to delete root-owned files
-        cmd = [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            f"{node_config.data_dir}:/data",
-            "alpine",
-            "sh",
-            "-c",
-            "rm -rf /data/*",
-        ]
-        subprocess.run(cmd)
-
-        # Try to remove empty directory
-        try:
-            node_config.data_dir.rmdir()
-        except OSError:
-            pass
-
-        console.print("[green]Data directory deleted[/green]")
-    else:
-        console.print("[dim]No data directory to delete[/dim]")
+    console.print("[green]Containers stopped and data volumes removed[/green]")
 
 
 @app.command(name="test")
@@ -1061,12 +1023,11 @@ def test_cmd(
 
 @app.command(name="test-reset")
 def test_reset_cmd():
-    """Clean up integration test data and containers.
+    """Clean up integration test containers and volumes.
 
     Stops all containers that may have been started by the integration
-    test fixtures (shard, standalone, and custom shard) and deletes the
-    integration-tests/data/ directory (which may contain root-owned
-    files created by Docker).
+    test fixtures (shard, standalone, and custom shard) and removes
+    Docker named volumes used for blockchain data.
 
     Examples:
         poetry run shardctl test-reset
@@ -1145,29 +1106,28 @@ def test_reset_cmd():
         except Exception as e:
             console.print(f"[dim]Warning: could not remove network: {e}[/dim]")
 
+        # Remove custom shard named volumes. The custom compose uses project
+        # name 'f1r3fly-custom', so Docker prefixes volume names accordingly.
+        # The joiner volume is created directly via Docker SDK (no prefix).
+        custom_volume_names = [
+            "f1r3fly-custom_boot-data",
+            "f1r3fly-custom_validator1-data",
+            "f1r3fly-custom_validator2-data",
+            "f1r3fly-custom_validator3-data",
+            "joiner-data",
+        ]
+        for vol_name in custom_volume_names:
+            try:
+                client.volumes.get(vol_name).remove()
+                console.print(f"[dim]Removed volume {vol_name}[/dim]")
+            except docker_py.errors.NotFound:
+                pass
+            except Exception as e:
+                console.print(f"[dim]Warning: could not remove volume {vol_name}: {e}[/dim]")
+
         client.close()
     except Exception as e:
         console.print(f"[dim]Warning: could not connect to Docker for custom cleanup: {e}[/dim]")
-
-    # ── Delete data directory ──
-    data_dir = tests_dir / "data"
-    if data_dir.exists():
-        console.print("Deleting integration test data directory...")
-        console.print("[dim](Using Docker container to delete root-owned files)[/dim]")
-        subprocess.run(
-            ["docker", "run", "--rm", "-v", f"{data_dir}:/data", "alpine",
-             "sh", "-c", "rm -rf /data/*"],
-            check=False,
-        )
-        # Remove empty subdirectories
-        try:
-            import shutil
-            shutil.rmtree(str(data_dir), ignore_errors=True)
-        except OSError:
-            pass
-        console.print("[green]Integration test data deleted[/green]")
-    else:
-        console.print("[dim]No integration test data to delete[/dim]")
 
 
 @app.command(name="test-report")

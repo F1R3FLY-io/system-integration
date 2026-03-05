@@ -537,10 +537,9 @@ shardctl logs [SERVICES...] [OPTIONS]
 poetry run shardctl wait [OPTIONS]
   --timeout, -t INTEGER  Timeout in seconds (default: 300)
 
-# Reset F1R3FLY nodes: stop containers and delete blockchain data
+# Reset F1R3FLY nodes: stop containers and remove blockchain data volumes
 poetry run shardctl reset [OPTIONS]
   --yes, -y             Skip confirmation prompt
-  --volumes, -v         Also remove Docker volumes
 ```
 
 ### Build and Images
@@ -828,7 +827,7 @@ Error: failed to create task for container: ... error mounting "..." to rootfs a
 ```
 
 **Cause:**
-This is a known issue with the **VirtioFS** file sharing implementation in Docker Desktop for macOS. It occurs when mounting files (like certificates or config files) *inside* directories that are also mounted as volumes (like the data directory).
+This is a known issue with the **VirtioFS** file sharing implementation in Docker Desktop for macOS. It occurs when mounting files (like certificates or config files) *inside* directories that are also mounted as Docker named volumes.
 
 **Solution:**
 Switch Docker's file sharing implementation to **gRPC FUSE**.
@@ -838,10 +837,9 @@ Switch Docker's file sharing implementation to **gRPC FUSE**.
 3. Scroll down to "Choose file sharing implementation for your containers".
 4. Select **gRPC FUSE**.
 5. Click **Apply & Restart**.
-6. After Docker restarts, you may need to clean up the data directory before starting services:
+6. After Docker restarts, you may need to reset before starting services:
    ```bash
-   poetry run shardctl down --volumes
-   rm -rf data/rnode*
+   poetry run shardctl reset -y
    poetry run shardctl up
    ```
 
@@ -1005,9 +1003,8 @@ If nothing else works, start completely fresh:
 # Stop everything
 poetry run shardctl down
 
-# Remove all volumes and data
-poetry run shardctl down --volumes
-sudo rm -rf services/f1r3node/docker/data
+# Remove all containers and data volumes
+poetry run shardctl reset -y
 
 # Remove and re-clone services
 rm -rf services/*

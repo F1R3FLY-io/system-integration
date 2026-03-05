@@ -210,41 +210,6 @@ def _compose_down() -> None:
     )
 
 
-def _ensure_data_dirs(container_names: List[str]) -> None:
-    """Create bind-mount data directories so docker-compose up succeeds.
-
-    Docker requires bind-mount source paths to exist. On fresh CI runs the
-    data/ hierarchy does not exist; create it before compose up.
-    """
-    tests_dir = _get_tests_dir()
-    data_root = os.path.join(tests_dir, "data")
-    for name in container_names:
-        path = os.path.join(data_root, name)
-        os.makedirs(path, exist_ok=True)
-
-
-def _reset_data() -> None:
-    """Delete the test data directory (may contain root-owned files from Docker)."""
-    tests_dir = _get_tests_dir()
-    data_dir = os.path.join(tests_dir, "data")
-    if os.path.exists(data_dir):
-        logging.info("Cleaning test data directory: %s", data_dir)
-        subprocess.run(
-            ["docker", "run", "--rm", "-v", f"{data_dir}:/data", "alpine",
-             "sh", "-c", "rm -rf /data/*"],
-            check=False,
-        )
-        try:
-            for entry in os.listdir(data_dir):
-                entry_path = os.path.join(data_dir, entry)
-                if os.path.isdir(entry_path):
-                    os.rmdir(entry_path)
-                else:
-                    os.unlink(entry_path)
-        except OSError:
-            pass
-
-
 def _get_standalone_compose_file() -> str:
     """Determine which standalone compose file to use based on DEFAULT_IMAGE env var."""
     if _is_rust_node():
@@ -301,19 +266,6 @@ def _standalone_compose_down(override_file: Optional[str] = None) -> None:
         cwd=tests_dir,
         check=False,
     )
-
-
-def _reset_standalone_data() -> None:
-    """Delete the standalone node data directory."""
-    tests_dir = _get_tests_dir()
-    data_dir = os.path.join(tests_dir, "data", "rnode.standalone")
-    if os.path.exists(data_dir):
-        logging.info("Cleaning standalone data directory: %s", data_dir)
-        subprocess.run(
-            ["docker", "run", "--rm", "-v", f"{data_dir}:/data", "alpine",
-             "sh", "-c", "rm -rf /data/*"],
-            check=False,
-        )
 
 
 def _build_standalone_override(
@@ -388,10 +340,8 @@ def start_standalone_node(
     override_file = _build_standalone_override(cli_flags, cli_options)
 
     try:
-        # Clean state
+        # Clean state (down --volumes removes named volumes)
         _standalone_compose_down(override_file=override_file)
-        _reset_standalone_data()
-        _ensure_data_dirs([STANDALONE_CONTAINER])
 
         # Wait for standalone ports to be released (kernel TIME_WAIT
         # from a previous test session's standalone container).
@@ -403,8 +353,6 @@ def start_standalone_node(
         except subprocess.CalledProcessError:
             logging.warning("Standalone compose up failed, cleaning up and retrying...")
             _standalone_compose_down(override_file=override_file)
-            _reset_standalone_data()
-            _ensure_data_dirs([STANDALONE_CONTAINER])
             time.sleep(5)
             _wait_for_standalone_ports_free()
             _standalone_compose_up(override_file=override_file)
@@ -421,9 +369,8 @@ def start_standalone_node(
             node.stop_logging()
 
     finally:
-        # Tear down
+        # Tear down (down --volumes removes named volumes)
         _standalone_compose_down(override_file=override_file)
-        _reset_standalone_data()
         _wait_for_standalone_ports_free()
 
         # Clean up temp override file
@@ -453,7 +400,7 @@ def _make_standalone_node(docker_client: DockerClient, command_timeout: int) -> 
 
 def _wait_for_running_state(docker_client: DockerClient, container_name: str,
                              timeout: int,
-                             data_dir: Optional[str] = None) -> None:
+                             data_volume: Optional[str] = None) -> None:
     """Wait for a node container to reach the Running state.
 
     Polls container logs every 5 seconds for the Running state marker. Also
@@ -462,9 +409,9 @@ def _wait_for_running_state(docker_client: DockerClient, container_name: str,
     waiting the full timeout doing nothing. If the container crashes again
     after restart, fails immediately with diagnostic output.
 
-    When ``data_dir`` is provided, the data directory is cleaned before
-    restart so that partial genesis or DAG state from the crashed run does
-    not prevent the new JVM from completing startup.
+    When ``data_volume`` is provided (a Docker named volume), its contents
+    are cleaned before restart so that partial genesis or DAG state from the
+    crashed run does not prevent the new JVM from completing startup.
 
     This catches scenarios where the JVM crashes during genesis or startup
     (e.g. OOM, config error, BindException) and saves up to 10 minutes of
@@ -492,13 +439,13 @@ def _wait_for_running_state(docker_client: DockerClient, container_name: str,
                     container_name, container.status, exit_code,
                     time.time() - start, log_tail,
                 )
-                # Clean the data directory before restart. A partially-written
+                # Clean the data volume before restart. A partially-written
                 # genesis or DAG state from the crashed run can prevent the
                 # JVM from completing startup on the second attempt.
-                if data_dir and os.path.exists(data_dir):
-                    logging.info("Cleaning data dir before restart: %s", data_dir)
+                if data_volume:
+                    logging.info("Cleaning data volume before restart: %s", data_volume)
                     subprocess.run(
-                        ["docker", "run", "--rm", "-v", f"{data_dir}:/data",
+                        ["docker", "run", "--rm", "-v", f"{data_volume}:/data",
                          "alpine", "sh", "-c", "rm -rf /data/*"],
                         check=False,
                     )
@@ -684,7 +631,6 @@ def pytest_runtest_teardown(item, nextitem) -> None:
 
     logging.info("Last shard test completed -- tearing down shard environment.")
     _compose_down()
-    _reset_data()
     _shard_started = False
 
 
@@ -792,16 +738,13 @@ def shard(request, command_line_options: CommandLineOptions,
     timeout = command_line_options.node_startup_timeout
 
     if not skip_setup:
+        # down --volumes removes named volumes for clean state
         _compose_down()
-        _reset_data()
-        _ensure_data_dirs(ALL_CONTAINERS)
         try:
             _compose_up()
         except subprocess.CalledProcessError:
             logging.warning("Shard compose up failed, cleaning up and retrying...")
             _compose_down()
-            _reset_data()
-            _ensure_data_dirs(ALL_CONTAINERS)
             time.sleep(5)
             _compose_up()
 
@@ -825,7 +768,6 @@ def shard(request, command_line_options: CommandLineOptions,
         # resources for all subsequent tests.
         if not skip_setup:
             _compose_down()
-            _reset_data()
             _shard_started = False
 
 
@@ -1047,8 +989,9 @@ def _generate_custom_compose(
     """Generate a complete docker-compose YAML file for a custom shard.
 
     Creates a compose file with a bootstrap node and N validators (1-3),
-    using the provided genesis files and CLI overrides. All volume mounts
-    use absolute paths to avoid path resolution issues.
+    using the provided genesis files and CLI overrides. Data is stored in
+    Docker named volumes (boot-data, validator{N}-data); config and genesis
+    files are bind-mounted on top.
 
     Config overrides are passed as CLI flags after ``run`` (not JVM -D
     properties), because the node's Configuration.scala does not include
@@ -1070,7 +1013,6 @@ def _generate_custom_compose(
 
     abs_conf = os.path.join(tests_dir, 'conf')
     abs_certs = os.path.join(tests_dir, 'certs')
-    abs_data = os.path.join(tests_dir, 'data')
 
     global_opts = global_cli_options or {}
     per_node_opts = per_node_cli_options or {}
@@ -1117,7 +1059,6 @@ def _generate_custom_compose(
 
     # ── Bootstrap node ──
     boot_host = CUSTOM_BOOT_CONTAINER
-    boot_data = os.path.join(abs_data, boot_host)
     boot_base = _CUSTOM_PORT_BASES['boot']
     boot_command = ([] if rust else [
         "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
@@ -1141,13 +1082,13 @@ def _generate_custom_compose(
         'command': boot_command,
         'ports': [f"{boot_base + p}:4040{p}" for p in range(6)],
         'volumes': [
+            'boot-data:/var/lib/rnode',
             f"{abs_conf}/bootstrap-ceremony.conf:/var/lib/rnode/rnode.conf",
             f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
             f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
         ] + ([] if rust else [
             f"{abs_conf}/logback.xml:/var/lib/rnode/logback.xml",
         ]) + [
-            f"{boot_data}:/var/lib/rnode/",
             f"{abs_certs}/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
             f"{abs_certs}/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro",
         ],
@@ -1164,7 +1105,6 @@ def _generate_custom_compose(
         node_key = f"validator{slot}"
         host = f"rnode.custom.{node_key}"
         cert_dir = f"validator{slot}"
-        data_path = os.path.join(abs_data, host)
         base_port = _CUSTOM_PORT_BASES[node_key]
 
         validator_command = ([] if rust else [
@@ -1191,13 +1131,13 @@ def _generate_custom_compose(
             'command': validator_command,
             'ports': [f"{base_port + p}:4040{p}" for p in range(6)],
             'volumes': [
+                f'{node_key}-data:/var/lib/rnode',
                 f"{abs_conf}/shared-rnode.conf:/var/lib/rnode/rnode.conf",
                 f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
                 f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
             ] + ([] if rust else [
                 f"{abs_conf}/logback.xml:/var/lib/rnode/logback.xml",
             ]) + [
-                f"{data_path}:/var/lib/rnode/",
                 f"{abs_certs}/{cert_dir}/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
                 f"{abs_certs}/{cert_dir}/node.key.pem:/var/lib/rnode/node.key.pem:ro",
             ],
@@ -1208,14 +1148,16 @@ def _generate_custom_compose(
             ]),
         }
 
+    volume_names = ['boot-data'] + [f'validator{i+1}-data' for i in range(len(bonds))]
     compose = {
         'services': services,
+        'volumes': {name: None for name in volume_names},
         'networks': {
             CUSTOM_NETWORK: {
                 'name': CUSTOM_NETWORK,
                 'driver': 'bridge',
             }
-        }
+        },
     }
 
     fd, compose_path = tempfile.mkstemp(prefix='custom-shard-', suffix='.yml')
@@ -1380,33 +1322,6 @@ def _custom_compose_down(compose_file: str) -> None:
     )
 
 
-def _reset_custom_data(container_names: List[str]) -> None:
-    """Delete data directories for custom shard containers.
-
-    Uses the same docker+alpine approach as _reset_data() to handle
-    root-owned files created by the node containers.
-    """
-    tests_dir = _get_tests_dir()
-    for name in container_names:
-        data_dir = os.path.join(tests_dir, "data", name)
-        if os.path.exists(data_dir):
-            logging.info("Cleaning custom shard data: %s", data_dir)
-            subprocess.run(
-                ["docker", "run", "--rm", "-v", f"{data_dir}:/data", "alpine",
-                 "sh", "-c", "rm -rf /data/*"],
-                check=False,
-            )
-            try:
-                for entry in os.listdir(data_dir):
-                    entry_path = os.path.join(data_dir, entry)
-                    if os.path.isdir(entry_path):
-                        os.rmdir(entry_path)
-                    else:
-                        os.unlink(entry_path)
-            except OSError:
-                pass
-
-
 def _make_custom_node(docker_client: DockerClient, container_name: str,
                       command_timeout: int) -> Node:
     """Create a Node wrapper for a custom shard container."""
@@ -1532,8 +1447,6 @@ def start_custom_shard(
         # leftovers from a previous test or CI job.
         _force_cleanup_custom_containers()
         _custom_compose_down(compose_file)
-        _reset_custom_data(container_names)
-        _ensure_data_dirs(container_names)
 
         # Wait for all custom shard ports to be released (kernel TIME_WAIT).
         # Checking only boot is insufficient -- validator ports may still be
@@ -1571,8 +1484,6 @@ def start_custom_shard(
             logging.warning("Custom shard startup failed, cleaning up and retrying...")
             _force_cleanup_custom_containers()
             _custom_compose_down(compose_file)
-            _reset_custom_data(container_names)
-            _ensure_data_dirs(container_names)
             _wait_for_custom_ports_free(len(bonds))
             _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
             _do_staggered_startup()
@@ -1581,11 +1492,10 @@ def start_custom_shard(
             "Waiting for custom shard nodes to reach Running state (timeout=%ds)...",
             timeout,
         )
-        tests_dir = _get_tests_dir()
-        for name in container_names:
-            container_data_dir = os.path.join(tests_dir, "data", name)
+        for i, name in enumerate(container_names):
+            volume_name = 'boot-data' if i == 0 else f'validator{i}-data'
             _wait_for_running_state(docker_client, name, timeout,
-                                    data_dir=container_data_dir)
+                                    data_volume=volume_name)
         logging.info("All custom shard nodes are in Running state.")
 
         for i, name in enumerate(container_names):
@@ -1606,7 +1516,6 @@ def start_custom_shard(
             node.stop_logging()
         if compose_file:
             _custom_compose_down(compose_file)
-        _reset_custom_data(container_names)
         _wait_for_custom_ports_free(len(bonds))
         _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
         if genesis_dir and os.path.exists(genesis_dir):
@@ -1632,7 +1541,7 @@ def add_peer_to_shard(
     required) and catches up from the bootstrap node.
 
     On teardown, the joiner container is stopped and removed, and its
-    data directory is cleaned.
+    data volume is cleaned up.
 
     Args:
         docker_client: Docker client for container interaction.
@@ -1659,7 +1568,7 @@ def add_peer_to_shard(
     timeout = command_line_options.node_startup_timeout
 
     container_name = CUSTOM_JOINER_CONTAINER
-    data_dir = os.path.join(tests_dir, 'data', container_name)
+    joiner_volume = 'joiner-data'
 
     bootstrap_url = (
         f"rnode://{BOOTSTRAP_NODE_ID}@{shard.bootstrap_host}"
@@ -1702,6 +1611,9 @@ def add_peer_to_shard(
     # Use shared-rnode-runtime.conf (genesis-validator-mode = false,
     # ceremony-master-mode = false) for the joiner.
     volumes = {
+        joiner_volume: {
+            'bind': '/var/lib/rnode/', 'mode': 'rw',
+        },
         os.path.join(abs_conf, 'shared-rnode-runtime.conf'): {
             'bind': '/var/lib/rnode/rnode.conf', 'mode': 'ro',
         },
@@ -1710,9 +1622,6 @@ def add_peer_to_shard(
         },
         os.path.join(shard.genesis_dir, 'wallets.txt'): {
             'bind': '/var/lib/rnode/genesis/wallets.txt', 'mode': 'ro',
-        },
-        data_dir: {
-            'bind': '/var/lib/rnode/',
         },
     }
     if not rust:
@@ -1724,20 +1633,7 @@ def add_peer_to_shard(
     node: Optional[Node] = None
 
     try:
-        _reset_custom_data([container_name])
         _remove_container_if_exists(docker_client, container_name)
-        try:
-            os.makedirs(data_dir, exist_ok=True)
-        except PermissionError:
-            # Parent directory may be root-owned (created by Docker).
-            # Use docker+alpine to create the subdirectory.
-            parent = os.path.dirname(data_dir)
-            basename = os.path.basename(data_dir)
-            subprocess.run(
-                ["docker", "run", "--rm", "-v", f"{parent}:/parent", "alpine",
-                 "mkdir", "-p", f"/parent/{basename}"],
-                check=True,
-            )
 
         # Wait for joiner ports to be released (kernel TIME_WAIT from a
         # previous test's joiner container that was recently stopped).
@@ -1788,5 +1684,8 @@ def add_peer_to_shard(
                 container.remove(force=True)
             except Exception:
                 pass
-        _reset_custom_data([container_name])
+        try:
+            docker_client.volumes.get(joiner_volume).remove()
+        except Exception:
+            pass
         _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
