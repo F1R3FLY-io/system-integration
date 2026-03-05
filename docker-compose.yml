@@ -29,13 +29,14 @@ services:
       - "40404:40404"
       - "40405:40405"
     volumes:
+      # Persistent data volume (named volume avoids bind-mount collision with config files)
+      - boot-data:/var/lib/rnode
       # Bootstrap-specific configuration (ceremony master)
       - ./conf/bootstrap-ceremony.conf:/var/lib/rnode/rnode.conf
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
-      # Node-specific volumes
-      - ./data/${BOOTSTRAP_HOST:-rnode.bootstrap}:/var/lib/rnode/
+      # Node identity
       - ./certs/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
       - ./certs/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro
 
@@ -62,11 +63,11 @@ services:
       - "40414:40404"
       - "40415:40405"
     volumes:
+      - validator1-data:/var/lib/rnode
       - ./conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
-      - ./data/${VALIDATOR1_HOST:-rnode.validator1}:/var/lib/rnode/
       - ./certs/validator1/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
       - ./certs/validator1/node.key.pem:/var/lib/rnode/node.key.pem:ro
 
@@ -93,11 +94,11 @@ services:
       - "40424:40404"
       - "40425:40405"
     volumes:
+      - validator2-data:/var/lib/rnode
       - ./conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
-      - ./data/${VALIDATOR2_HOST:-rnode.validator2}:/var/lib/rnode/
       - ./certs/validator2/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
       - ./certs/validator2/node.key.pem:/var/lib/rnode/node.key.pem:ro
 
@@ -124,11 +125,11 @@ services:
       - "40434:40404"
       - "40435:40405"
     volumes:
+      - validator3-data:/var/lib/rnode
       - ./conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
-      - ./data/${VALIDATOR3_HOST:-rnode.validator3}:/var/lib/rnode/
       - ./certs/validator3/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
       - ./certs/validator3/node.key.pem:/var/lib/rnode/node.key.pem:ro
 
@@ -148,6 +149,7 @@ services:
       - --allow-private-addresses
       - -Dlogback.configurationFile=/var/lib/rnode/logback.xml
     volumes:
+      - readonly-data:/var/lib/rnode
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
 
   prometheus:
@@ -178,6 +180,13 @@ services:
       # Note: grafana-piechart-panel is built into Grafana 8.x+, no need to install
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+
+volumes:
+  boot-data:
+  validator1-data:
+  validator2-data:
+  validator3-data:
+  readonly-data:
 
 networks:
   f1r3fly:

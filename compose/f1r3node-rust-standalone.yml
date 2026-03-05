@@ -41,13 +41,12 @@ services:
       # Admin HTTP API port
       - "40405:40405"
     volumes:
+      - standalone-data:/var/lib/rnode
       # Standalone configuration file
       - ../conf/standalone-dev.conf:/var/lib/rnode/rnode.conf
       # Standalone genesis files (single validator)
       - ../genesis/standalone-wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/standalone-bonds.txt:/var/lib/rnode/genesis/bonds.txt
-      # Data directory for blockchain state
-      - ../data/${STANDALONE_HOST:-rnode.standalone}:/var/lib/rnode/
     environment:
       - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
       - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
@@ -57,6 +56,9 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+
+volumes:
+  standalone-data:
 
 networks:
   f1r3fly-standalone:
