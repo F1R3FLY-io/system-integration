@@ -49,11 +49,11 @@ services:
       - "40404:40404"
       - "40405:40405"
     volumes:
+      - boot-data:/var/lib/rnode
       - ./conf/bootstrap-ceremony.conf:/var/lib/rnode/rnode.conf
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
-      - ./data/${BOOTSTRAP_HOST:-rnode.bootstrap}:/var/lib/rnode/
       - ./certs/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
       - ./certs/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro
     healthcheck:
@@ -88,11 +88,11 @@ services:
       - "40414:40404"
       - "40415:40405"
     volumes:
+      - validator1-data:/var/lib/rnode
       - ./conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
-      - ./data/${VALIDATOR1_HOST:-rnode.validator1}:/var/lib/rnode/
       - ./certs/validator1/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
       - ./certs/validator1/node.key.pem:/var/lib/rnode/node.key.pem:ro
     healthcheck:
@@ -127,11 +127,11 @@ services:
       - "40424:40404"
       - "40425:40405"
     volumes:
+      - validator2-data:/var/lib/rnode
       - ./conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
-      - ./data/${VALIDATOR2_HOST:-rnode.validator2}:/var/lib/rnode/
       - ./certs/validator2/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
       - ./certs/validator2/node.key.pem:/var/lib/rnode/node.key.pem:ro
     healthcheck:
@@ -166,11 +166,11 @@ services:
       - "40434:40404"
       - "40435:40405"
     volumes:
+      - validator3-data:/var/lib/rnode
       - ./conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
-      - ./data/${VALIDATOR3_HOST:-rnode.validator3}:/var/lib/rnode/
       - ./certs/validator3/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro
       - ./certs/validator3/node.key.pem:/var/lib/rnode/node.key.pem:ro
     healthcheck:
@@ -203,17 +203,24 @@ services:
       - "40454:40404"
       - "40455:40405"
     volumes:
+      - readonly-data:/var/lib/rnode
       - ./conf/observer.conf:/var/lib/rnode/rnode.conf
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
-      - ./data/${READONLY_HOST:-rnode.readonly}:/var/lib/rnode/
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 120s
+
+volumes:
+  boot-data:
+  validator1-data:
+  validator2-data:
+  validator3-data:
+  readonly-data:
 
 networks:
   f1r3fly-test-shard:

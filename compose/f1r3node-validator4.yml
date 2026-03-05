@@ -38,11 +38,11 @@ services:
       - "40444:40404"
       - "40445:40405"
     volumes:
+      - validator4-data:/var/lib/rnode
       - ../conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
-      - ../data/${VALIDATOR4_HOST:-rnode.validator4}:/var/lib/rnode/
     environment:
       - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
       - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
@@ -52,6 +52,9 @@ services:
       timeout: 10s
       retries: 5
       start_period: 90s
+
+volumes:
+  validator4-data:
 
 networks:
   f1r3fly-shard:
