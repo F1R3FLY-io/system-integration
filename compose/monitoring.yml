@@ -1,14 +1,31 @@
 services:
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - f1r3fly-shard
+
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
     restart: unless-stopped
+    depends_on:
+      - cadvisor
     networks:
-      - f1r3fly
+      - f1r3fly-shard
     ports:
-      - "49090:9090"
+      - "9090:9090"
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ../monitoring/prometheus-rules.yml:/etc/prometheus/rules.yml:ro
     command:
       - --config.file=/etc/prometheus/prometheus.yml
 
@@ -19,16 +36,15 @@ services:
     depends_on:
       - prometheus
     networks:
-      - f1r3fly
+      - f1r3fly-shard
     ports:
-      - "43000:3000"
+      - "3000:3000"
     environment:
       - GF_USERS_DEFAULT_THEME=light
       # Note: grafana-piechart-panel is built into Grafana 8.x+, no need to install
     volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
 
 networks:
-  f1r3fly:
-    name: f1r3fly
-    driver: bridge
+  f1r3fly-shard:
+    external: true
