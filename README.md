@@ -480,7 +480,7 @@ All commands require `poetry run` prefix (or activate shell with `poetry shell` 
 | `compose/scala-shard-light.yml`    | Light Scala shard: bootstrap + 2 validators (~7.5 GB RAM)      |
 | `compose/embers.yml`               | Embers API + frontend                                          |
 | `compose/f1r3sky.yml`              | F1R3Sky AT Protocol services                                   |
-| `compose/monitoring.yml`           | Prometheus + Grafana                                           |
+| `compose/monitoring.yml`           | cAdvisor + Prometheus + Grafana                                |
 
 ### Configuration
 
@@ -516,31 +516,16 @@ The ~500 MB overhead above the 2 GB heap limit is normal JVM behavior: metaspace
 | Validator 1 | 40410-40415 |
 | Validator 2 | 40420-40425 |
 
-### Monitoring (Prometheus + Grafana)
+### Monitoring
 
-The light shard compose file includes a built-in monitoring stack for tracking container resource usage over time.
+The light shard uses the shared monitoring stack (`compose/monitoring.yml`). Start it separately after the shard:
 
-**Components:**
-- **cAdvisor** (port 8080) — collects container metrics from Docker
-- **Prometheus** (port 9090) — scrapes cAdvisor every 15s, stores metrics on disk (7-day retention)
-- **Grafana** (port 3000) — web dashboards, login: `admin` / `admin`
+```bash
+poetry run shardctl up scala-shard-light
+poetry run shardctl up monitoring
+```
 
-**Configuration files:**
-- `monitoring/prometheus.yml` — Prometheus scrape config
-- `monitoring/datasources.yml` — Grafana datasource provisioning
-- `monitoring/dashboard.json` — Pre-built dashboard (import via Grafana UI)
-
-**Importing the dashboard:**
-1. Open Grafana at http://localhost:3000 (login: admin/admin)
-2. Go to Dashboards > Import
-3. Upload `monitoring/dashboard.json`
-
-**Dashboard panels:**
-- Total Shard Memory (GB)
-- Memory per Container (GB)
-- Total Shard CPU (cores)
-- CPU per Container (cores)
-- Disk I/O (MB/s)
+See [Monitoring (Prometheus + Grafana + cAdvisor)](#monitoring-prometheus--grafana--cadvisor) for details.
 
 ## CLI Commands
 
@@ -591,10 +576,9 @@ shardctl logs [SERVICES...] [OPTIONS]
 poetry run shardctl wait [OPTIONS]
   --timeout, -t INTEGER  Timeout in seconds (default: 300)
 
-# Reset F1R3FLY nodes: stop containers and delete blockchain data
+# Reset F1R3FLY nodes: stop containers and remove blockchain data volumes
 poetry run shardctl reset [OPTIONS]
   --yes, -y             Skip confirmation prompt
-  --volumes, -v         Also remove Docker volumes
 ```
 
 ### Build and Images
@@ -648,6 +632,67 @@ shardctl compose config --services
 shardctl compose images
 shardctl compose top service-1
 ```
+
+## Monitoring (Prometheus + Grafana + cAdvisor)
+
+The monitoring stack provides node metrics and container resource tracking for any shard configuration (full or light).
+
+### What's Included
+
+| Component | Description | URL |
+|---|---|---|
+| **cAdvisor** | Collects container CPU, memory, and I/O metrics from Docker | http://localhost:8080 |
+| **Prometheus** | Scrapes node metrics (port 40403) and cAdvisor every 15s | http://localhost:9090 |
+| **Grafana** | Auto-provisioned dashboards (no manual import needed) | http://localhost:3000 |
+
+Prometheus scrapes `/metrics` from all f1r3node instances and cAdvisor, and evaluates 33 recording rules for block transfer, validation, and transport metrics.
+
+### Start Monitoring
+
+```bash
+# Start a shard first (creates the f1r3fly-shard network), then monitoring
+poetry run shardctl up f1r3node          # full shard
+# or
+poetry run shardctl up scala-shard-light # light shard
+
+# Then start monitoring
+poetry run shardctl up monitoring
+
+# Or start everything at once (monitoring is in startup_order)
+poetry run shardctl up
+```
+
+### Dashboard Panels
+
+The auto-provisioned **F1R3FLY Node Dashboard** includes:
+
+**Node metrics** (from f1r3node `/metrics`):
+- Blocks proposed/finalized per minute
+- Block transfer rates and latencies
+- Validator status and peer counts
+- Casper consensus metrics
+
+**Container resources** (from cAdvisor):
+- Total Shard Memory (GB)
+- Memory per Container (GB)
+- Total Shard CPU (cores)
+- CPU per Container (cores)
+
+### Verify
+
+- **Prometheus targets:** http://localhost:9090/targets — nodes and cAdvisor should show `UP`
+- **Recording rules:** http://localhost:9090/rules — should show `block_transfer_metrics` group
+- **Grafana:** http://localhost:3000 — dashboards are auto-provisioned (default login: admin/admin)
+
+### Configuration Files
+
+| File | Purpose |
+|---|---|
+| `monitoring/prometheus.yml` | Scrape config (node targets + cAdvisor) |
+| `monitoring/prometheus-rules.yml` | Recording rules for aggregated metrics |
+| `monitoring/grafana/provisioning/datasources/` | Grafana datasource provisioning (Prometheus) |
+| `monitoring/grafana/provisioning/dashboards/` | Dashboard provisioning (F1R3FLY Node Dashboard) |
+| `compose/monitoring.yml` | Docker Compose for cAdvisor + Prometheus + Grafana |
 
 ## Integration Tests
 
@@ -843,7 +888,7 @@ Error: failed to create task for container: ... error mounting "..." to rootfs a
 ```
 
 **Cause:**
-This is a known issue with the **VirtioFS** file sharing implementation in Docker Desktop for macOS. It occurs when mounting files (like certificates or config files) *inside* directories that are also mounted as volumes (like the data directory).
+This is a known issue with the **VirtioFS** file sharing implementation in Docker Desktop for macOS. It occurs when mounting files (like certificates or config files) *inside* directories that are also mounted as Docker named volumes.
 
 **Solution:**
 Switch Docker's file sharing implementation to **gRPC FUSE**.
@@ -853,10 +898,9 @@ Switch Docker's file sharing implementation to **gRPC FUSE**.
 3. Scroll down to "Choose file sharing implementation for your containers".
 4. Select **gRPC FUSE**.
 5. Click **Apply & Restart**.
-6. After Docker restarts, you may need to clean up the data directory before starting services:
+6. After Docker restarts, you may need to reset before starting services:
    ```bash
-   poetry run shardctl down --volumes
-   rm -rf data/rnode*
+   poetry run shardctl reset -y
    poetry run shardctl up
    ```
 
@@ -1020,9 +1064,8 @@ If nothing else works, start completely fresh:
 # Stop everything
 poetry run shardctl down
 
-# Remove all volumes and data
-poetry run shardctl down --volumes
-sudo rm -rf services/f1r3node/docker/data
+# Remove all containers and data volumes
+poetry run shardctl reset -y
 
 # Remove and re-clone services
 rm -rf services/*
