@@ -34,10 +34,10 @@ services:
       - "40454:40404"
       - "40455:40405"
     volumes:
+      - observer-data:/var/lib/rnode
       - ../conf/observer.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
-      - ../data/${READONLY_HOST:-rnode.readonly}:/var/lib/rnode/
     environment:
       - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
       - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
@@ -47,6 +47,9 @@ services:
       timeout: 10s
       retries: 5
       start_period: 120s
+
+volumes:
+  observer-data:
 
 networks:
   f1r3fly-shard:

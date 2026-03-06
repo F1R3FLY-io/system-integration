@@ -223,13 +223,10 @@ still showing test progress. The log file always captures everything at `DEBUG` 
 poetry run shardctl test-reset
 
 # Or manually:
-# Stop test containers
+# Stop test containers and remove data volumes
 docker-compose --project-name f1r3fly-shard down --volumes --remove-orphans
 docker-compose --project-name f1r3fly-standalone down --volumes --remove-orphans
 docker-compose --project-name f1r3fly-custom down --volumes --remove-orphans
-
-# Remove test data (may need sudo due to root-owned Docker files)
-sudo rm -rf integration-tests/data/
 ```
 
 ## Configuration

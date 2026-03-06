@@ -59,7 +59,6 @@ class NodeConfig:
         self.conf_dir = self.root_dir / "conf"
         self.certs_dir = self.root_dir / "certs"
         self.genesis_dir = self.root_dir / "genesis"
-        self.data_dir = self.root_dir / "data"
         self.env_file = self.root_dir / ".env.node"
 
     def get_compose_file(self, node_type: NodeType, topology: Topology) -> Path:
@@ -597,54 +596,30 @@ def reset(
         False, "--yes", "-y", help="Skip confirmation prompt"
     ),
 ):
-    """Stop containers and delete blockchain data."""
+    """Stop containers and remove blockchain data volumes."""
     config = NodeConfig()
 
-    # Stop all running configurations
     all_configs = config.detect_all_running_configs()
+    if not all_configs:
+        console.print("[yellow]No F1R3FLY containers found[/yellow]")
+        return
+
+    if not yes:
+        console.print()
+        console.print(
+            "[red]This will stop all containers and permanently delete all blockchain data volumes[/red]"
+        )
+        if not Confirm.ask("Are you sure?"):
+            console.print("[yellow]Cancelled[/yellow]")
+            return
+
     for node_type, topology, compose_file in all_configs:
         console.print(
-            f"[yellow]Stopping {node_type.value} {topology.value} using {compose_file.name}...[/yellow]"
+            f"[yellow]Stopping {node_type.value} {topology.value} and removing volumes...[/yellow]"
         )
-        run_compose_command(config, compose_file, ["down"])
+        run_compose_command(config, compose_file, ["down", "--volumes"])
 
-    # Delete data directory
-    if config.data_dir.exists():
-        if not yes:
-            console.print()
-            console.print(
-                f"[red]This will permanently delete all blockchain data in {config.data_dir}/[/red]"
-            )
-            if not Confirm.ask("Are you sure?"):
-                console.print("[yellow]Cancelled[/yellow]")
-                return
-
-        console.print("[yellow]Deleting data directory...[/yellow]")
-        console.print("(Using Docker container to delete root-owned files without sudo)")
-
-        # Use Docker to delete root-owned files
-        cmd = [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            f"{config.data_dir}:/data",
-            "alpine",
-            "sh",
-            "-c",
-            "rm -rf /data/*",
-        ]
-        subprocess.run(cmd)
-
-        # Try to remove empty directory
-        try:
-            config.data_dir.rmdir()
-        except OSError:
-            pass
-
-        console.print("[green]Data directory deleted[/green]")
-    else:
-        console.print("[yellow]No data directory found[/yellow]")
+    console.print("[green]Containers stopped and data volumes removed[/green]")
 
 
 
@@ -701,7 +676,6 @@ def info():
         if all_configs.index((node_type, topology, compose_file)) < len(all_configs) - 1:
             console.print()
     console.print(f"  Env File:  [dim]{config.env_file}[/dim]")
-    console.print(f"  Data Dir:  [dim]{config.data_dir}[/dim]")
 
 
 # Export for use in main CLI
