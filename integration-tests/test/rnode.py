@@ -288,7 +288,7 @@ class Node:
         return self.rnode_command('eval', rho_file_path)
 
     def deploy(self, rho_file_path: str, private_key: PrivateKey, phlo_limit: int = DEFAULT_PHLO_LIMIT,
-               phlo_price: int = DEFAULT_PHLO_PRICE, valid_after_block_no: int = -1,
+               phlo_price: int = DEFAULT_PHLO_PRICE, valid_after_block_no: Optional[int] = None,
                shard_id: str = default_shard_id) -> str:
         return self.deploy_string(
             self.view_file(rho_file_path), private_key, phlo_limit, phlo_price,
@@ -296,10 +296,11 @@ class Node:
         )
 
     def deploy_string(self, rholang_code: str, private_key: PrivateKey, phlo_limit: int = DEFAULT_PHLO_LIMIT,
-                      phlo_price: int = DEFAULT_PHLO_PRICE, valid_after_block_no: int = -1,
+                      phlo_price: int = DEFAULT_PHLO_PRICE, valid_after_block_no: Optional[int] = None,
                       shard_id: str = default_shard_id) -> str:
         self.check_alive()
-        if valid_after_block_no < 0:
+        if valid_after_block_no is None or valid_after_block_no < 0:
+            # Keep deploy validity near chain tip to avoid stale deploy filtering.
             valid_after_block_no = max(0, self.get_current_block_number() - 1)
         try:
             now_time = int(time.time() * 1000)
@@ -328,7 +329,7 @@ class Node:
                                           private_key: PrivateKey, phlo_limit: int = DEFAULT_PHLO_LIMIT,
                                           phlo_price: int = DEFAULT_PHLO_PRICE,
                                           shard_id: str = default_shard_id,
-                                          valid_after_block_no: int = -1) -> str:
+                                          valid_after_block_no: Optional[int] = None) -> str:
         """Deploy a contract with string substitutions applied.
 
         Reads the .rho template from the local filesystem, applies
