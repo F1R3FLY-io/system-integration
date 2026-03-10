@@ -477,9 +477,10 @@ All commands require `poetry run` prefix (or activate shell with `poetry shell` 
 | `compose/f1r3node-rust-standalone.yml` | Single Rust node for development                           |
 | `compose/f1r3node-rust-observer.yml`   | Read-only Rust observer node (ports 40450-40455)            |
 | `compose/f1r3node-rust-validator4.yml` | 4th Rust validator for bonding tests (ports 40440-40445)    |
+| `compose/f1r3node-shard-light.yml`    | Light Scala shard: bootstrap + 2 validators (~7.5 GB RAM)      |
 | `compose/embers.yml`               | Embers API + frontend                                          |
 | `compose/f1r3sky.yml`              | F1R3Sky AT Protocol services                                   |
-| `compose/monitoring.yml`           | Prometheus + Grafana                                           |
+| `compose/monitoring.yml`           | cAdvisor + Prometheus + Grafana                                |
 
 ### Configuration
 
@@ -487,6 +488,44 @@ All commands require `poetry run` prefix (or activate shell with `poetry shell` 
 - **`conf/`** - Node configuration files (rnode.conf, logback.xml)
 - **`genesis/`** - Genesis wallets and bonds files
 - **`certs/`** - TLS certificates for multi-node networks
+
+### Light Shard (Development)
+
+The light shard runs a minimal network with bootstrap + 2 validators (no observer), using ~7.5 GB RAM at peak instead of 10+ GB minimum for the full shard. Suitable for development and testing on 16 GB machines
+
+```bash
+# Start light shard
+poetry run shardctl up f1r3node-shard-light
+
+# Stop and reset
+poetry run shardctl reset
+```
+
+**Memory characteristics (with `-Xmx2g`):**
+- Each node stabilizes at ~2.5 GB after ~2 hours (2 GB heap + ~500 MB JVM overhead)
+- Total shard memory: ~7.5 GB (3 nodes x 2.5 GB)
+- Memory is stable after initial ramp-up — no memory leak observed over 6+ hours of continuous running
+
+The ~500 MB overhead above the 2 GB heap limit is normal JVM behavior: metaspace, thread stacks, JIT code cache, NIO buffers, and GC structures.
+
+**Port mapping:**
+
+| Node        | Ports       |
+| ----------- | ----------- |
+| Bootstrap   | 40400-40405 |
+| Validator 1 | 40410-40415 |
+| Validator 2 | 40420-40425 |
+
+### Monitoring
+
+The light shard uses the shared monitoring stack (`compose/monitoring.yml`). Start it separately after the shard:
+
+```bash
+poetry run shardctl up f1r3node-shard-light
+poetry run shardctl up monitoring
+```
+
+See [Monitoring (Prometheus + Grafana + cAdvisor)](#monitoring-prometheus--grafana--cadvisor) for details.
 
 ## CLI Commands
 
@@ -594,33 +633,54 @@ shardctl compose images
 shardctl compose top service-1
 ```
 
-## Monitoring (Prometheus + Grafana)
+## Monitoring (Prometheus + Grafana + cAdvisor)
 
-The monitoring stack provides metrics collection and dashboards for all f1r3node instances.
+The monitoring stack provides node metrics and container resource tracking for any shard configuration (full or light).
 
 ### What's Included
 
 | Component | Description | URL |
 |---|---|---|
-| **Prometheus** | Scrapes metrics from all nodes every 15s | http://localhost:9090 |
-| **Grafana** | Pre-provisioned dashboards for block transfer metrics | http://localhost:3000 |
+| **cAdvisor** | Collects container CPU, memory, and I/O metrics from Docker | http://localhost:8080 |
+| **Prometheus** | Scrapes node metrics (port 40403) and cAdvisor every 15s | http://localhost:9090 |
+| **Grafana** | Auto-provisioned dashboards (no manual import needed) | http://localhost:3000 |
 
-Prometheus scrapes `/metrics` on port 40403 from all 5 nodes (bootstrap, validator1-3, readonly) and evaluates 33 recording rules for block transfer, validation, and transport metrics.
+Prometheus scrapes `/metrics` from all f1r3node instances and cAdvisor, and evaluates 33 recording rules for block transfer, validation, and transport metrics.
 
 ### Start Monitoring
 
 ```bash
-# Start nodes first (creates the network), then monitoring
-sc up f1r3node
-sc up monitoring
+# Start a shard first (creates the f1r3fly-shard network), then monitoring
+poetry run shardctl up f1r3node          # full shard
+# or
+poetry run shardctl up f1r3node-shard-light # light shard
+
+# Then start monitoring
+poetry run shardctl up monitoring
 
 # Or start everything at once (monitoring is in startup_order)
-sc up
+poetry run shardctl up
 ```
+
+### Dashboard Panels
+
+The auto-provisioned **F1R3FLY Node Dashboard** includes:
+
+**Node metrics** (from f1r3node `/metrics`):
+- Blocks proposed/finalized per minute
+- Block transfer rates and latencies
+- Validator status and peer counts
+- Casper consensus metrics
+
+**Container resources** (from cAdvisor):
+- Total Shard Memory (GB)
+- Memory per Container (GB)
+- Total Shard CPU (cores)
+- CPU per Container (cores)
 
 ### Verify
 
-- **Prometheus targets:** http://localhost:9090/targets — all 5 nodes should show `UP`
+- **Prometheus targets:** http://localhost:9090/targets — nodes and cAdvisor should show `UP`
 - **Recording rules:** http://localhost:9090/rules — should show `block_transfer_metrics` group
 - **Grafana:** http://localhost:3000 — dashboards are auto-provisioned (default login: admin/admin)
 
@@ -628,10 +688,11 @@ sc up
 
 | File | Purpose |
 |---|---|
-| `monitoring/prometheus.yml` | Scrape config (targets, intervals) |
+| `monitoring/prometheus.yml` | Scrape config (node targets + cAdvisor) |
 | `monitoring/prometheus-rules.yml` | Recording rules for aggregated metrics |
-| `monitoring/grafana/provisioning/` | Grafana datasource and dashboard provisioning |
-| `compose/monitoring.yml` | Docker Compose for Prometheus + Grafana |
+| `monitoring/grafana/provisioning/datasources/` | Grafana datasource provisioning (Prometheus) |
+| `monitoring/grafana/provisioning/dashboards/` | Dashboard provisioning (F1R3FLY Node Dashboard) |
+| `compose/monitoring.yml` | Docker Compose for cAdvisor + Prometheus + Grafana |
 
 ## Integration Tests
 
