@@ -13,7 +13,7 @@
 
 services:
   standalone:
-    image: f1r3flyindustries/f1r3fly-scala-node
+    image: ${F1R3FLY_SCALA_IMAGE:-f1r3flyindustries/f1r3fly-scala-node}
     user: root
     restart: always
     networks:

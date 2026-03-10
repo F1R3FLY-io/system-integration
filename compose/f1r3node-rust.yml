@@ -20,7 +20,7 @@
 #   Observer:    40450-40455
 
 x-rnode: &default-rnode
-  image: f1r3flyindustries/f1r3fly-rust-node:latest
+  image: ${F1R3FLY_RUST_IMAGE:-f1r3flyindustries/f1r3fly-rust-node:latest}
   user: root
   restart: always
   networks:
