@@ -477,7 +477,7 @@ All commands require `poetry run` prefix (or activate shell with `poetry shell` 
 | `compose/f1r3node-rust-standalone.yml` | Single Rust node for development                           |
 | `compose/f1r3node-rust-observer.yml`   | Read-only Rust observer node (ports 40450-40455)            |
 | `compose/f1r3node-rust-validator4.yml` | 4th Rust validator for bonding tests (ports 40440-40445)    |
-| `compose/scala-shard-light.yml`    | Light Scala shard: bootstrap + 2 validators (~7.5 GB RAM)      |
+| `compose/f1r3node-shard-light.yml`    | Light Scala shard: bootstrap + 2 validators (~7.5 GB RAM)      |
 | `compose/embers.yml`               | Embers API + frontend                                          |
 | `compose/f1r3sky.yml`              | F1R3Sky AT Protocol services                                   |
 | `compose/monitoring.yml`           | cAdvisor + Prometheus + Grafana                                |
@@ -495,7 +495,7 @@ The light shard runs a minimal network with bootstrap + 2 validators (no observe
 
 ```bash
 # Start light shard
-poetry run shardctl up scala-shard-light
+poetry run shardctl up f1r3node-shard-light
 
 # Stop and reset
 poetry run shardctl reset
@@ -521,7 +521,7 @@ The ~500 MB overhead above the 2 GB heap limit is normal JVM behavior: metaspace
 The light shard uses the shared monitoring stack (`compose/monitoring.yml`). Start it separately after the shard:
 
 ```bash
-poetry run shardctl up scala-shard-light
+poetry run shardctl up f1r3node-shard-light
 poetry run shardctl up monitoring
 ```
 
@@ -653,7 +653,7 @@ Prometheus scrapes `/metrics` from all f1r3node instances and cAdvisor, and eval
 # Start a shard first (creates the f1r3fly-shard network), then monitoring
 poetry run shardctl up f1r3node          # full shard
 # or
-poetry run shardctl up scala-shard-light # light shard
+poetry run shardctl up f1r3node-shard-light # light shard
 
 # Then start monitoring
 poetry run shardctl up monitoring

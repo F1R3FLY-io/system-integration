@@ -96,28 +96,39 @@ class NodeConfig:
             return VALIDATOR4_CONTAINERS
         return {}
 
-    def _get_rnode_containers(self, include_stopped: bool = True) -> List[str]:
-        """Get list of rnode container names.
+    def _get_rnode_containers(self, include_stopped: bool = True) -> List[dict]:
+        """Get list of rnode containers with names and labels.
 
+        Returns list of dicts with 'name' and 'topology_label' keys.
         Checks running containers first. If none found and include_stopped is True,
         also checks stopped containers.
         """
+        fmt = '{{.Names}}\t{{.Label "f1r3fly.topology"}}'
         result = subprocess.run(
-            ["docker", "ps", "--format", "{{.Names}}"],
+            ["docker", "ps", "--format", fmt],
             capture_output=True,
             text=True,
         )
-        containers = result.stdout.strip().split("\n") if result.stdout.strip() else []
+        lines = result.stdout.strip().split("\n") if result.stdout.strip() else []
 
-        if include_stopped and not any(c.startswith("rnode.") for c in containers):
+        if include_stopped and not any(l.split("\t")[0].startswith("rnode.") for l in lines if l):
             result = subprocess.run(
-                ["docker", "ps", "-a", "--format", "{{.Names}}"],
+                ["docker", "ps", "-a", "--format", fmt],
                 capture_output=True,
                 text=True,
             )
-            containers = result.stdout.strip().split("\n") if result.stdout.strip() else []
+            lines = result.stdout.strip().split("\n") if result.stdout.strip() else []
 
-        return [c for c in containers if c.startswith("rnode.")]
+        containers = []
+        for line in lines:
+            if not line:
+                continue
+            parts = line.split("\t", 1)
+            name = parts[0]
+            label = parts[1] if len(parts) > 1 else ""
+            if name.startswith("rnode."):
+                containers.append({"name": name, "topology_label": label})
+        return containers
 
     def _detect_node_type_from_container(self, container: str) -> NodeType:
         """Determine node type (Scala/Rust) from a container's image."""
@@ -131,16 +142,6 @@ class NodeConfig:
             return NodeType.RUST
         return NodeType.SCALA
 
-    @staticmethod
-    def _has_label(container: str, label: str, value: str) -> bool:
-        """Check if a container has a specific Docker label."""
-        result = subprocess.run(
-            ["docker", "inspect", "--format", f"{{{{index .Config.Labels \"{label}\"}}}}", container],
-            capture_output=True,
-            text=True,
-        )
-        return result.stdout.strip() == value
-
     def detect_all_running_configs(self) -> List[Tuple[NodeType, Topology, Path]]:
         """Detect all node configurations currently running.
 
@@ -149,9 +150,13 @@ class NodeConfig:
 
         Returns list of (node_type, topology, compose_file) tuples.
         """
-        containers = self._get_rnode_containers()
-        if not containers:
+        container_infos = self._get_rnode_containers()
+        if not container_infos:
             return []
+
+        # Build lookup: name -> topology_label
+        container_names = {c["name"] for c in container_infos}
+        label_by_name = {c["name"]: c["topology_label"] for c in container_infos}
 
         configs = []
 
@@ -164,11 +169,11 @@ class NodeConfig:
         ]
 
         for topology, marker_container in topology_checks:
-            if marker_container in containers:
+            if marker_container in container_names:
                 node_type = self._detect_node_type_from_container(marker_container)
                 # Distinguish shard vs shard-light using Docker labels
                 if topology == Topology.SHARD:
-                    if self._has_label(marker_container, "f1r3fly.topology", "shard-light"):
+                    if label_by_name.get(marker_container) == "shard-light":
                         topology = Topology.SHARD_LIGHT
                 compose_file = self.get_compose_file(node_type, topology)
                 configs.append((node_type, topology, compose_file))

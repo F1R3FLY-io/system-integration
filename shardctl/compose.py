@@ -18,7 +18,7 @@ console = Console()
 ENV_FILE_MAP = {
     "f1r3node": ".env.node",
     "f1r3node-rust": ".env.node",
-    "scala-shard-light": ".env.node",
+    "f1r3node-shard-light": ".env.node",
     "monitoring": ".env.node",
 }
 
