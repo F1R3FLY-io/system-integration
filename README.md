@@ -494,12 +494,14 @@ All commands require `poetry run` prefix (or activate shell with `poetry shell` 
 All compose files use env vars with sensible defaults for the node image. Override to use a local build or a specific tag:
 
 ```bash
-# Use a local Rust node build
-F1R3FLY_RUST_IMAGE=f1r3fly-rust-node:local poetry run shardctl up f1r3node-rust
+# Use a specific Rust node tag
+F1R3FLY_RUST_IMAGE=f1r3flyindustries/f1r3fly-rust-node:dev poetry run shardctl up f1r3node-rust
 
 # Use a specific Scala node tag
 F1R3FLY_SCALA_IMAGE=f1r3flyindustries/f1r3fly-scala-node:v1.2.3 poetry run shardctl up f1r3node
 ```
+
+Docker will use the local image if present, otherwise pull from the registry.
 
 | Variable | Default | Used by |
 |---|---|---|
