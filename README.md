@@ -506,7 +506,7 @@ Docker will use the local image if present, otherwise pull from the registry.
 | Variable | Default | Used by |
 |---|---|---|
 | `F1R3FLY_RUST_IMAGE` | `f1r3flyindustries/f1r3fly-rust-node:latest` | All Rust node compose files |
-| `F1R3FLY_SCALA_IMAGE` | `f1r3flyindustries/f1r3fly-scala-node` | All Scala node compose files |
+| `F1R3FLY_SCALA_IMAGE` | `f1r3flyindustries/f1r3fly-scala-node:latest` | All Scala node compose files |
 
 These can also be set in a `.env` file at the repository root.
 

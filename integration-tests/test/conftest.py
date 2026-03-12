@@ -1698,6 +1698,7 @@ def add_peer_to_shard(
             ports=ports,
             volumes=volumes,
             environment=joiner_env,
+            pull=False,
             detach=True,
         )
 
