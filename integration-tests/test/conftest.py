@@ -1075,6 +1075,7 @@ def _generate_custom_compose(
 
     services['boot'] = {
         'image': image,
+        'pull_policy': 'never',
         'user': 'root',
         'restart': 'no',
         'container_name': boot_host,
@@ -1123,6 +1124,7 @@ def _generate_custom_compose(
 
         services[node_key] = {
             'image': image,
+            'pull_policy': 'never',
             'user': 'root',
             'restart': 'no',
             'container_name': host,
@@ -1696,6 +1698,7 @@ def add_peer_to_shard(
             ports=ports,
             volumes=volumes,
             environment=joiner_env,
+            pull=False,
             detach=True,
         )
 

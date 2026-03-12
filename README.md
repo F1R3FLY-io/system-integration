@@ -489,6 +489,27 @@ All commands require `poetry run` prefix (or activate shell with `poetry shell` 
 - **`genesis/`** - Genesis wallets and bonds files
 - **`certs/`** - TLS certificates for multi-node networks
 
+#### Custom Docker Images
+
+All compose files use env vars with sensible defaults for the node image. Override to use a local build or a specific tag:
+
+```bash
+# Use a specific Rust node tag
+F1R3FLY_RUST_IMAGE=f1r3flyindustries/f1r3fly-rust-node:dev poetry run shardctl up f1r3node-rust
+
+# Use a specific Scala node tag
+F1R3FLY_SCALA_IMAGE=f1r3flyindustries/f1r3fly-scala-node:v1.2.3 poetry run shardctl up f1r3node
+```
+
+Docker will use the local image if present, otherwise pull from the registry.
+
+| Variable | Default | Used by |
+|---|---|---|
+| `F1R3FLY_RUST_IMAGE` | `f1r3flyindustries/f1r3fly-rust-node:latest` | All Rust node compose files |
+| `F1R3FLY_SCALA_IMAGE` | `f1r3flyindustries/f1r3fly-scala-node:latest` | All Scala node compose files |
+
+These can also be set in a `.env` file at the repository root.
+
 ### Light Shard (Development)
 
 The light shard runs a minimal network with bootstrap + 2 validators (no observer), using ~7.5 GB RAM at peak instead of 10+ GB minimum for the full shard. Suitable for development and testing on 16 GB machines
