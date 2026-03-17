@@ -60,6 +60,11 @@ poetry run shardctl down
 │   ├── embers.yml              # Embers API + frontend
 │   ├── f1r3sky.yml             # F1R3Sky AT Protocol services
 │   └── monitoring.yml          # Prometheus + Grafana
+├── docs/                       # Additional documentation
+│   ├── prerequisites.md        # Service build dependencies
+│   ├── troubleshooting.md      # Troubleshooting guide
+│   ├── development.md          # Development workflow and advanced usage
+│   └── TODO.md                 # Config notes and known issues
 ├── services.yml                # Service repository URLs and branches
 ├── .env.embers                 # Embers configuration
 └── README.md                   # Full documentation
