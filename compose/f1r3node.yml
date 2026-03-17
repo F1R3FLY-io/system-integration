@@ -4,10 +4,10 @@
 # Runs a multi-node shard with bootstrap + 3 validators + observer.
 #
 # Usage:
-#   poetry run shardctl up f1r3node --scala --shard
+#   poetry run shardctl up f1r3node
 #
 # Or directly:
-#   docker-compose --env-file ../.env.node -f compose/f1r3node.yml up -d
+#   docker compose --env-file ../.env.node -f compose/f1r3node.yml up -d
 #
 # NOTE: For Rust nodes, use f1r3node-rust.yml instead.
 #
@@ -23,7 +23,7 @@ x-rnode: &default-rnode
   user: root
   restart: always
   networks:
-    - f1r3fly-shard
+    - f1r3fly
   environment:
     - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
     - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
@@ -38,13 +38,14 @@ services:
     <<: *default-rnode
     container_name: ${BOOTSTRAP_HOST:-rnode.bootstrap}
     command:
-      # Scala-specific: -D flag is ignored by Rust node
       - -Dlogback.configurationFile=/var/lib/rnode/logback.xml
       - run
       - --host=${BOOTSTRAP_HOST:-rnode.bootstrap}
       - --bootstrap=rnode://${BOOTSTRAP_NODE_ID:-1e780e5dfbe0a3d9470a2b414f502d59402e09c2}@${BOOTSTRAP_HOST:-rnode.bootstrap}?protocol=40400&discovery=40404
       - --allow-private-addresses
       - --validator-private-key=${BOOTSTRAP_PRIVATE_KEY:-aea5f89c15f880f1aaeb6e8f0f24acef4a5c00b55b7cebea3baee6f2cf56f42d}
+      - --required-signatures
+      - "2"
     ports:
       - "40400:40400"
       - "40401:40401"
@@ -54,8 +55,8 @@ services:
       - "40405:40405"
     volumes:
       - boot-data:/var/lib/rnode
-      # Bootstrap-specific configuration (ceremony master, heartbeat disabled)
-      - ../conf/bootstrap-ceremony.conf:/var/lib/rnode/rnode.conf
+      - ../conf/bootstrap.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default.conf:/var/lib/rnode/default.conf:ro
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
@@ -94,7 +95,7 @@ services:
       - "40415:40405"
     volumes:
       - validator1-data:/var/lib/rnode
-      - ../conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
@@ -133,7 +134,7 @@ services:
       - "40425:40405"
     volumes:
       - validator2-data:/var/lib/rnode
-      - ../conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
@@ -172,7 +173,7 @@ services:
       - "40435:40405"
     volumes:
       - validator3-data:/var/lib/rnode
-      - ../conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
@@ -210,7 +211,7 @@ services:
       - "40455:40405"
     volumes:
       - readonly-data:/var/lib/rnode
-      - ../conf/observer.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default.conf:/var/lib/rnode/rnode.conf
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
@@ -229,6 +230,6 @@ volumes:
   readonly-data:
 
 networks:
-  f1r3fly-shard:
-    name: f1r3fly-shard
+  f1r3fly:
+    name: f1r3fly
     driver: bridge

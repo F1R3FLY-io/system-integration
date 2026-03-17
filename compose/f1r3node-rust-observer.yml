@@ -4,11 +4,10 @@
 # Runs a read-only observer node that syncs from validators.
 #
 # Usage:
-#   docker-compose -f compose/f1r3node-rust-observer.yml up -d
+#   docker compose --env-file ../.env.node -f compose/f1r3node-rust-observer.yml up -d
 #
 # PREREQUISITES:
-#   - A running shard network to connect to
-#   - Must use the same network as the shard (compose_f1r3fly-shard)
+#   - A running shard network to connect to (f1r3fly network)
 #
 # NOTE: For Scala nodes, use f1r3node-observer.yml instead.
 
@@ -18,7 +17,7 @@ services:
     user: root
     restart: always
     networks:
-      - f1r3fly-shard
+      - f1r3fly
     container_name: ${READONLY_HOST:-rnode.readonly}
     command:
       - run
@@ -35,12 +34,15 @@ services:
       - "40455:40405"
     volumes:
       - observer-data:/var/lib/rnode
-      - ../conf/observer.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
     environment:
       - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
       - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
+      - MALLOC_ARENA_MAX=2
+      - MALLOC_TRIM_THRESHOLD_=131072
+      - MALLOC_MMAP_THRESHOLD_=131072
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
       interval: 30s
@@ -52,6 +54,6 @@ volumes:
   observer-data:
 
 networks:
-  f1r3fly-shard:
+  f1r3fly:
     external: true
-    name: compose_f1r3fly-shard
+    name: f1r3fly

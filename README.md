@@ -31,7 +31,7 @@ This repository provides a clean structure for managing multiple microservice re
 │   ├── embers.yml                  #   Embers API + frontend
 │   ├── f1r3sky.yml                 #   F1R3Sky AT Protocol services
 │   └── monitoring.yml              #   Prometheus + Grafana
-├── conf/                           # Node configuration files
+├── conf/                           # Node configuration files (shared by Rust and Scala)
 ├── certs/                          # TLS certificates for nodes
 ├── genesis/                        # Genesis wallets and bonds
 ├── integration-tests/              # Integration test suite (see integration-tests/README.md)
@@ -186,6 +186,44 @@ shardctl --help
 Poetry automatically manages a virtual environment and installs all dependencies. The `--with integration` flag adds pytest, Docker SDK, gRPC client, and other packages needed to run the integration test suite.
 
 ## Quick Start
+
+### Docker Only (No Poetry Needed)
+
+Pull pre-built images and start a Rust shard:
+
+```bash
+docker compose --env-file .env.node -f compose/f1r3node-rust.yml pull
+docker compose --env-file .env.node -f compose/f1r3node-rust.yml up -d
+```
+
+Wait for genesis (~2-3 minutes). All validators must transition to Running state:
+```bash
+docker compose --env-file .env.node -f compose/f1r3node-rust.yml logs -f | grep "Making a transition to Running state"
+```
+
+Once all validators report Running, press `Ctrl+C`. The network is ready.
+
+**Stop:**
+```bash
+docker compose --env-file .env.node -f compose/f1r3node-rust.yml down
+```
+
+**Stop and wipe all data (fresh restart):**
+```bash
+docker compose --env-file .env.node -f compose/f1r3node-rust.yml down -v
+```
+
+### With shardctl (Recommended)
+
+After installing Poetry:
+
+```bash
+poetry install
+poetry run shardctl up f1r3node-rust
+poetry run shardctl wait
+poetry run shardctl logs -f
+poetry run shardctl down
+```
 
 ### Complete Setup from Scratch
 
@@ -484,10 +522,28 @@ All commands require `poetry run` prefix (or activate shell with `poetry shell` 
 
 ### Configuration
 
-- **`.env.node`** - Node environment variables (validator keys, hostnames)
-- **`conf/`** - Node configuration files (rnode.conf, logback.xml)
+- **`.env.node`** - Node environment variables (validator keys, hostnames, F1R3_* Rust tuning)
+- **`conf/`** - Node configuration files (shared by Rust and Scala nodes, plus logback.xml for JVM logging)
 - **`genesis/`** - Genesis wallets and bonds files
 - **`certs/`** - TLS certificates for multi-node networks
+
+Both Rust and Scala nodes share 3 config files:
+
+| Config File | Used By | Key Difference |
+|-------------|---------|----------------|
+| `default.conf` | Validators, Observer | `ceremony-master-mode = false` |
+| `bootstrap.conf` | Bootstrap | `include "default.conf"` + `ceremony-master-mode = true` |
+| `standalone-dev.conf` | Standalone | `standalone = true`, `fault-tolerance-threshold = 0.0` |
+
+Per-role behavior is controlled via CLI flags in compose commands:
+
+| Role | Config File | CLI Overrides |
+|------|------------|--------------|
+| Bootstrap | `bootstrap.conf` | `--required-signatures 2` |
+| Validators 1-3 | `default.conf` | `--genesis-validator` |
+| Observer | `default.conf` | *(none)* |
+| Validator4 | `default.conf` | *(none - joins via bonding)* |
+| Standalone | `standalone-dev.conf` | *(none)* |
 
 #### Custom Docker Images
 
@@ -671,7 +727,7 @@ Prometheus scrapes `/metrics` from all f1r3node instances and cAdvisor, and eval
 ### Start Monitoring
 
 ```bash
-# Start a shard first (creates the f1r3fly-shard network), then monitoring
+# Start a shard first (creates the f1r3fly network), then monitoring
 poetry run shardctl up f1r3node          # full shard
 # or
 poetry run shardctl up f1r3node-shard-light # light shard
@@ -1018,13 +1074,10 @@ The `pnpm` command will use IPv6 if it appears to be available and has no option
 
 **Solution:**
 ```bash
-# Stop all services
-poetry run shardctl down
+# Stop all services and remove data volumes (triggers fresh genesis on next start)
+poetry run shardctl reset -y
 
-# Clean blockchain data
-sudo rm -rf services/f1r3node/docker/data
-
-# Restart (will trigger fresh genesis)
+# Restart
 poetry run shardctl up
 ```
 
@@ -1034,13 +1087,14 @@ poetry run shardctl up
 
 #### Permission denied removing files
 
-**Symptom:** Cannot delete `services/f1r3node/docker/data` files
+**Symptom:** Cannot remove blockchain data
 
-**Cause:** Docker containers created files as root
+**Cause:** Docker containers created files as root inside named volumes
 
 **Solution:**
 ```bash
-sudo rm -rf services/f1r3node/docker/data
+# Named volumes are managed by Docker — reset removes them cleanly
+poetry run shardctl reset -y
 ```
 
 #### Services Won't Start
@@ -1074,7 +1128,7 @@ poetry run shardctl down
 poetry run shardctl up
 
 # For advanced network diagnostics, you can use docker directly:
-docker network inspect system-integration_f1r3fly
+docker network inspect f1r3fly
 ```
 
 ### Complete Clean Slate
