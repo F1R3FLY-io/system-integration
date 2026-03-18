@@ -1247,8 +1247,8 @@ dev = ["grpcio-tools (>=1.60.0)", "isort (>=5.12.0)", "mypy (>=1.7.0)", "mypy-pr
 [package.source]
 type = "git"
 url = "https://github.com/F1R3FLY-io/pyf1r3fly.git"
-reference = "HEAD"
-resolved_reference = "d0caac07d369e2c1c27dafa191012dc983e990fe"
+reference = "feature/file-upload-download"
+resolved_reference = "705fd630370198c1f6aef58a2b70c0363dec148b"
 
 [[package]]
 name = "pygments"
@@ -1703,4 +1703,4 @@ zstd = ["backports-zstd (>=1.0.0) ; python_version < \"3.14\""]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "fc956f7d9342acdf4e251710d3a4b0dd44d2b19bc1b949e90ea836e7f0946592"
+content-hash = "584a333f936c14373e51758184dba4be8c12881015fd37f457d0c90b736a03f1"
