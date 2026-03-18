@@ -26,6 +26,36 @@ cd services/f1r3node-rust/docker && docker compose -f shard.yml up -d && cd -
 - Docker Desktop running (allocate at least 12GB RAM)
 - Nightly Rust toolchain (nightly-2026-02-09) — installed automatically via `rust-toolchain.toml` in embers
 
+## Docker Image Tags
+
+| Image | Tag | Source | Rebuild when |
+|---|---|---|---|
+| `f1r3flyio/embers` | `:local` | Built from `services/embers` source | Embers code changes |
+| `f1r3flyio/embers-frontend` | `:latest` | Pre-built from Docker Hub | No local changes needed |
+| `f1r3flyio/firesky-ts` | `:local` | Built from `services/f1r3sky-backend` source | Backend API changes (must match frontend) |
+| `f1r3flyio/firesky-frontend` | `:local` | Built from `services/f1r3sky` source | F1R3Sky frontend code changes |
+| `postgres:16-alpine` | — | Docker Hub | Never |
+| `redis:7-alpine` | — | Docker Hub | Never |
+
+Rebuild commands:
+```bash
+# Embers backend (after code changes)
+cd services/embers && docker build -f docker/embers.dockerfile -t f1r3flyio/embers:local .
+
+# F1R3Sky backend (must match frontend API version)
+cd services/f1r3sky-backend && docker build -f Dockerfile.dev -t f1r3flyindustries/firesky-ts:local .
+
+# F1R3Sky frontend (after code changes or to set EXPO_PUBLIC_EMBERS_API_URL)
+cd services/f1r3sky && docker build \
+  --build-arg NPM_TOKEN=<github-pat> \
+  --build-arg EXPO_PUBLIC_EMBERS_API_URL=http://localhost:8080 \
+  -t f1r3flyio/firesky-frontend:local .
+```
+
+**Important:** The f1r3sky backend and frontend must be matching versions. The frontend uses `getPostThreadV2` which only exists in the locally-built backend. Using `firesky-ts:latest` from Docker Hub with `firesky-frontend:local` will cause "Error loading post" on thread views.
+
+The scripts assume images are already built — rebuild first, then run `scripts/start-all.sh`.
+
 ## Architecture
 
 ```
@@ -192,10 +222,15 @@ Create accounts via PDS API (frontend captcha doesn't work locally):
 ```bash
 curl -X POST http://localhost:2583/xrpc/com.atproto.server.createAccount \
   -H 'Content-Type: application/json' \
-  -d '{"handle": "myuser.test", "email": "user@test.com", "password": "password123"}'
+  -d '{"handle": "user1.test", "email": "user1@test.com", "password": "password123"}'
 ```
 
-Then sign in on the frontend with custom hosting provider `http://localhost:2583`.
+The `start-all.sh` script creates this account automatically. Sign in on the frontend:
+- **Hosting provider**: `http://localhost:2583`
+- **Username**: `user1.test`
+- **Password**: `password123`
+
+Note: The handle must be in `name.test` format for the local dev PDS.
 
 ## Step 6: Restart Embers with F1R3Sky Integration
 

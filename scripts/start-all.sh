@@ -20,6 +20,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 EMBERS_DIR="$ROOT_DIR/services/embers"
 
+# Docker image tags:
+#   f1r3flyio/embers:local          — built from local source (docker build -f docker/embers.dockerfile)
+#   f1r3flyio/embers-frontend:latest — pre-built from Docker Hub
+#   f1r3flyindustries/firesky-ts:local — built from f1r3sky-backend source (must match frontend)
+#   f1r3flyio/firesky-frontend:local — built locally with EXPO_PUBLIC_EMBERS_API_URL
+#   postgres:16-alpine, redis:7-alpine — standard images
+#
+# If you change embers code, rebuild first:
+#   cd services/embers && docker build -f docker/embers.dockerfile -t f1r3flyio/embers:local .
+
 # Check shard is running
 if ! docker ps --format '{{.Names}}' | grep -q 'rnode.bootstrap'; then
     err "Shard is not running. Start it first:"
@@ -54,7 +64,7 @@ docker run -d --name f1r3sky --network f1r3fly \
   -e DB_POSTGRES_URL=postgresql://postgres:postgres@f1r3sky-postgres:5432/atproto \
   -e REDIS_HOST=f1r3sky-redis \
   -e PDS_HOSTNAME=f1r3sky \
-  f1r3flyindustries/firesky-ts:latest >/dev/null
+  f1r3flyindustries/firesky-ts:local >/dev/null
 
 log "Waiting for f1r3sky to start..."
 sleep 10

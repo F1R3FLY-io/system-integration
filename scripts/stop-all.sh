@@ -14,9 +14,11 @@ echo "Stopping embers and f1r3sky services..."
 docker rm -f embers embers-frontend f1r3sky-frontend f1r3sky f1r3sky-redis f1r3sky-postgres 2>/dev/null || true
 
 if $CLEAN; then
-    echo "Pruning unused volumes..."
-    docker volume prune -f 2>/dev/null || true
-    echo "Done. Containers removed and volumes pruned."
+    echo "Removing associated volumes..."
+    docker volume ls -q --filter dangling=true | xargs -r docker volume rm 2>/dev/null || true
+    echo "Pruning build cache..."
+    docker builder prune -f 2>/dev/null | tail -1 || true
+    echo "Done. Containers and volumes removed."
 else
     echo "Done. Containers removed (volumes preserved)."
     echo "  Use --clean to also remove volumes"

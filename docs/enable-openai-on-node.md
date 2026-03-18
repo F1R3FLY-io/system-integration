@@ -62,15 +62,9 @@ openai {
 - All f1r3sky services (postgres, redis, f1r3sky, f1r3sky-frontend) also need restart after shard restart.
 - See `docs/local-dev-setup.md` in the embers repo for full startup sequence.
 
-## Known Issue: WebSocket Block Events Not Flowing
+## Resolved: WebSocket Block Events
 
-After enabling OpenAI and running an agent team, the deploy executes successfully on the blockchain (confirmed in validator logs — block created in ~15 seconds with AI call), but the WebSocket at `/ws/events` on both validator and readonly nodes only sends the initial `{"event":"started","schema-version":1}` and no subsequent block events (`block-created`, `block-added`, `block-finalised`).
-
-This causes embers' `wait_for_deploy` to timeout with `block is not finalized` even though the block was finalized. The event publisher in the node may not be wired to the WebSocket endpoint.
-
-**Impact:** Manual run of agent teams times out. The AI execution works but embers can't detect when it completes.
-
-**Investigation needed:** Check if the `F1r3flyEvents` publisher (`shared/src/rust/shared/f1r3fly_events.rs`) is connected to the WebSocket handler (`node/src/rust/web/events_info.rs`). The events may be published internally but not forwarded to WebSocket subscribers.
+Previously reported as not flowing — this was caused by a stale shard state. After a clean shard restart (`docker compose -f shard.yml down -v && docker compose -f shard.yml up -d`), WebSocket block events (`block-created`, `block-added`, `block-finalised`) flow correctly on all nodes (bootstrap, validators, readonly).
 
 ## Files Reference
 
