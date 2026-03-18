@@ -50,8 +50,17 @@ check embers-frontend 8081 "http://localhost:8081"
 
 echo ""
 echo "F1R3Sky:"
-check f1r3sky-postgres 5432 "http://localhost:5433"
-check f1r3sky-redis 6379 "http://localhost:6380"
+# postgres and redis are internal-only (no host port), just check container status
+for svc in f1r3sky-postgres f1r3sky-redis; do
+    status=$(docker ps -a --filter "name=^${svc}$" --format '{{.Status}}' 2>/dev/null)
+    if [ -z "$status" ]; then
+        echo -e "  ${RED}[DOWN]${NC} $svc (no container)"
+    elif echo "$status" | grep -q "Up"; then
+        echo -e "  ${GREEN}[ UP ]${NC} $svc"
+    else
+        echo -e "  ${RED}[DOWN]${NC} $svc — $status"
+    fi
+done
 check f1r3sky 2583 "http://localhost:2583/xrpc/_health"
 check f1r3sky-frontend 8100 "http://localhost:8100"
 
