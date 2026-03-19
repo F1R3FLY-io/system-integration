@@ -96,7 +96,9 @@ def three_nodes_network_with_node_client(
 
 @pytest.mark.skipif(
     sys.platform in ("win32", "cygwin", "darwin"),
-    reason="Only Linux docker support connection between host and container which node client needs",
+    reason=(
+        "Only Linux docker support connection between host and container which node client needs"
+    ),
 )
 def test_slash_invalid_block_hash(
     command_line_options: CommandLineOptions, random_generator: Random, docker_client: DockerClient
@@ -146,13 +148,17 @@ def test_slash_invalid_block_hash(
 
 @pytest.mark.skipif(
     sys.platform in ("win32", "cygwin", "darwin"),
-    reason="Only Linux docker support connection between host and container which node client needs",
+    reason=(
+        "Only Linux docker support connection between host and container which node client needs"
+    ),
 )
 def test_slash_invalid_block_number(
     command_line_options: CommandLineOptions, random_generator: Random, docker_client: DockerClient
 ) -> None:
     """
-    Propose an block with invalid block number(a block number that isn't one more than the max of all the parents block's numbers).
+    Propose an block with invalid block number(a block number
+    that isn't one more than the max of all the parents
+    block's numbers).
     """
     with three_nodes_network_with_node_client(
         command_line_options, random_generator, docker_client
@@ -191,13 +197,17 @@ def test_slash_invalid_block_number(
 
 @pytest.mark.skipif(
     sys.platform in ("win32", "cygwin", "darwin"),
-    reason="Only Linux docker support connection between host and container which node client needs",
+    reason=(
+        "Only Linux docker support connection between host and container which node client needs"
+    ),
 )
 def test_slash_invalid_block_seq(
     command_line_options: CommandLineOptions, random_generator: Random, docker_client: DockerClient
 ) -> None:
     """
-    Propose an block with invalid block seq number(a block seq number that isn't one more than the max of all the parents block's numbers).
+    Propose an block with invalid block seq number(a block seq
+    number that isn't one more than the max of all the parents
+    block's numbers).
 
     1. v1 proposes a valid block b1
     2. v1 proposes an invalid block b2 which contains invalid seq number and send it to v2
@@ -246,16 +256,21 @@ def test_slash_invalid_block_seq(
 
 @pytest.mark.skipif(
     sys.platform in ("win32", "cygwin", "darwin"),
-    reason="Only Linux docker support connection between host and container which node client needs",
+    reason=(
+        "Only Linux docker support connection between host and container which node client needs"
+    ),
 )
 def test_slash_justification_not_correct(
     command_line_options: CommandLineOptions, random_generator: Random, docker_client: DockerClient
 ) -> None:
     """
-    Slash a validator which proposed a block with justifications not matching bonded validators of main parent
+    Slash a validator which proposed a block with justifications
+    not matching bonded validators of main parent
 
     1. v1 proposes a valid block b1
-    2. v1 proposes an invalid block b3 which contains justifications not matching bonded validators and send it to v2
+    2. v1 proposes an invalid block b3 which contains
+       justifications not matching bonded validators
+       and send it to v2
     3. v2 records the invalid block b3 (InvalidFollows)
     4. v2 proposes a new block which slashes v1.
     """
@@ -312,7 +327,13 @@ def test_slash_justification_not_correct(
         assert bonds_validators[BONDED_VALIDATOR_KEY_1.get_public_key().to_hex()] == 0.0
 
 
-# @pytest.mark.skipif(sys.platform in ('win32', 'cygwin', 'darwin'), reason="Only Linux docker support connection between host and container which node client needs")
+# @pytest.mark.skipif(
+#     sys.platform in ('win32', 'cygwin', 'darwin'),
+#     reason=(
+#         "Only Linux docker support connection between"
+#         " host and container which node client needs"
+#     ),
+# )
 @pytest.mark.skip
 def test_slash_invalid_validator_approve_evil_block(
     command_line_options: CommandLineOptions, random_generator: Random, docker_client: DockerClient
@@ -321,7 +342,9 @@ def test_slash_invalid_validator_approve_evil_block(
 
     1.v1 proposes valid block
     2.v1 creates another block with invalid parent block hash and sends it to v2
-    3.v2 creates block using v1's second block as parent hash (i.e. no slashing, another invalid block) and sends it to v3
+    3.v2 creates block using v1's second block as parent hash
+      (i.e. no slashing, another invalid block) and sends it
+      to v3
     4.v3 records invalid block (InvalidTransaction) from v2
     5.v3 proposes block which slashes both v1 and v2
     """
@@ -420,8 +443,10 @@ def test_slash_invalid_validator_approve_evil_block(
 
         client.send_block(block_not_slash_invalid_block, validator3)
 
-        # Because validator2 doesn't slash validator1's block while validator3 slash validator1's block,
-        # hence there are some comm events lack of in validator3 which cause an invalid transaction
+        # Because validator2 doesn't slash validator1's block
+        # while validator3 slash validator1's block,
+        # hence there are some comm events lack of in
+        # validator3 which cause an invalid transaction
         record_invalid = re.compile(
             f"Recording invalid block {invalid_block_hash.hex()[:10]}... for InvalidTransaction"
         )
@@ -438,7 +463,9 @@ def test_slash_invalid_validator_approve_evil_block(
 
 @pytest.mark.skipif(
     sys.platform in ("win32", "cygwin", "darwin"),
-    reason="Only Linux docker support connection between host and container which node client needs",
+    reason=(
+        "Only Linux docker support connection between host and container which node client needs"
+    ),
 )
 def test_slash_GHOST_disobeyed(
     command_line_options: CommandLineOptions, random_generator: Random, docker_client: DockerClient
@@ -514,7 +541,9 @@ def test_slash_GHOST_disobeyed(
 
 @pytest.mark.skipif(
     sys.platform in ("win32", "cygwin", "darwin"),
-    reason="Only Linux docker support connection between host and container which node client needs",
+    reason=(
+        "Only Linux docker support connection between host and container which node client needs"
+    ),
 )
 def test_node_working_right_after_slashing(
     command_line_options: CommandLineOptions, random_generator: Random, docker_client: DockerClient

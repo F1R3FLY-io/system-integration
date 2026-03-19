@@ -13,6 +13,7 @@ from typing import List, Optional, Tuple
 
 import typer
 from rich.console import Console
+from rich.prompt import Confirm, Prompt
 
 from .utils import get_docker_compose_command
 
@@ -111,7 +112,9 @@ class NodeConfig:
         )
         lines = result.stdout.strip().split("\n") if result.stdout.strip() else []
 
-        if include_stopped and not any(l.split("\t")[0].startswith("rnode.") for l in lines if l):
+        if include_stopped and not any(
+            line.split("\t")[0].startswith("rnode.") for line in lines if line
+        ):
             result = subprocess.run(
                 ["docker", "ps", "-a", "--format", fmt],
                 capture_output=True,
@@ -414,7 +417,8 @@ def down():
     all_ok = True
     for node_type, topology, compose_file in all_configs:
         console.print(
-            f"[yellow]Stopping {node_type.value} {topology.value} using {compose_file.name}...[/yellow]"
+            f"[yellow]Stopping {node_type.value} {topology.value}"
+            f" using {compose_file.name}...[/yellow]"
         )
         result = run_compose_command(config, compose_file, ["down"])
         if result.returncode != 0:
@@ -594,7 +598,8 @@ def reset(
     if not yes:
         console.print()
         console.print(
-            "[red]This will stop all containers and permanently delete all blockchain data volumes[/red]"
+            "[red]This will stop all containers and permanently"
+            " delete all blockchain data volumes[/red]"
         )
         if not Confirm.ask("Are you sure?"):
             console.print("[yellow]Cancelled[/yellow]")

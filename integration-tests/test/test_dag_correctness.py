@@ -55,7 +55,6 @@ def test_fault_tolerance(
     assert_containers_running(docker_client, ALL_CONTAINERS)
 
     context = testing_context
-    validators = [validator1_node, validator2_node, validator3_node]
 
     # Deploy contracts on different validators to stimulate block creation
     # with actual deploys (not just empty heartbeat blocks). Each uses a

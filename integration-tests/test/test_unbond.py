@@ -64,7 +64,8 @@ def test_unbond_validator_and_reward(
     total_bond_amount = sum(bonded_validator_map.values())
     # unbond a validator. set the epoch length to 3 and quarantine length to 2
     # every epoch change the network would re-pick the active validator and
-    # the withdraw process is going to happen after (quarantine_length + epoch_length * (1 + blockNumber // epoch_length)) blocks
+    # the withdraw process happens after:
+    # quarantine_length + epoch_length * (1 + blockNumber // epoch_length) blocks
     # normally quarantine_length is 5x of epoch_length
     # but in order to decrease the time in running the test we choose 2x of the epoch_length
     epoch_length = 3
@@ -168,7 +169,8 @@ def test_unbond_validator_and_reward(
             100000,
             1,
         )
-        # the unbond process cost validator1 some phlos so the balance of validator1 is smaller than the initial wallet amount
+        # the unbond process cost validator1 some phlos so the balance
+        # is smaller than the initial wallet amount
         assert validator_1_balance_before_bond_refund < validator_1_initial_wallet_amount
 
         wait_for_node_sees_block(context, bootstrap_node, b4)

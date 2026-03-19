@@ -90,8 +90,19 @@ target-version = ["py310"]
 
 [tool.ruff]
 line-length = 100
-select = ["E", "F", "I", "N", "W"]
-ignore = []
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = [
+    "N999",   # Invalid module name (integration-tests directory uses hyphen)
+]
+
+[tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
+# gRPC/protobuf interface code must match upstream naming conventions
+"integration-tests/test/node_client.py" = ["N802", "N803", "N806", "N818"]
+# Test function names and protobuf field iteration variables
+"integration-tests/test/test_slash.py" = ["N802", "N806"]
+# Exception classes follow existing codebase conventions (used across many files)
+"integration-tests/test/common.py" = ["N818"]
+"integration-tests/test/http_client.py" = ["N818"]
