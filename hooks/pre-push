@@ -53,6 +53,16 @@ if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
     exit 0
 fi
 
+# Guard against racing pushes: verify HEAD isn't already on the remote.
+# When two pushes overlap, the local tracking ref may be stale, causing
+# tests to run unnecessarily before the push is rejected by the remote.
+_qc_local_head=$(git rev-parse HEAD)
+_qc_remote_head=$(git ls-remote origin "$(git symbolic-ref HEAD)" 2>/dev/null | awk '{print $1}')
+if [ -n "$_qc_remote_head" ] && [ "$_qc_local_head" = "$_qc_remote_head" ]; then
+    echo "Already up to date with remote. Skipping pre-push checks."
+    exit 0
+fi
+
 # Check if there are actually new commits to push
 # Git sends push info on stdin: <local ref> <local oid> <remote ref> <remote oid>
 has_new_commits=0
