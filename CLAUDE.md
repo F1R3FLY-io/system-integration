@@ -43,6 +43,22 @@ poetry run shardctl logs --follow
 poetry run shardctl down
 ```
 
+## Git Hooks
+
+Pre-commit and pre-push hooks enforce code quality. Install with:
+
+```bash
+./scripts/setup-hooks.sh           # Uses core.hooksPath (recommended)
+./scripts/setup-hooks.sh --copy    # Copies to .git/hooks/ (alternative)
+./scripts/setup-hooks.sh --status  # Show current configuration
+```
+
+- **pre-commit**: ruff lint, black format check, YAML validation on staged files
+- **pre-push**: ruff + black on full codebase, `test_internal.py` unit tests
+
+Bypass with `--no-verify` (not recommended). Skip individual checks with env vars:
+`SKIP_LINT=1`, `SKIP_RUFF=1`, `SKIP_BLACK=1`, `SKIP_YAML=1`, `SKIP_TESTS=1`, `QUICK=1`.
+
 ## Repository Structure
 
 ```
@@ -53,6 +69,8 @@ poetry run shardctl down
 │   ├── embers-frontend/        # Embers UI (React 19)
 │   ├── f1r3sky-backend/        # AT Protocol backend (Node.js)
 │   └── rust-client/            # Rust CLI client
+├── hooks/                      # Git hooks (pre-commit, pre-push)
+├── scripts/                    # Setup scripts (setup-hooks.sh)
 ├── shardctl/                   # CLI tool package
 ├── compose/                    # Docker Compose files (one per service)
 │   ├── f1r3node.yml            # Scala shard (default)

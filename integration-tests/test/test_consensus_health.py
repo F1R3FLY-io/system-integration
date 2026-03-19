@@ -17,8 +17,8 @@ import pytest
 from docker.client import DockerClient
 
 from .conftest import (
-    assert_containers_running,
     ALL_CONTAINERS,
+    assert_containers_running,
 )
 from .rnode import Node
 
@@ -109,19 +109,19 @@ def test_no_consensus_errors_in_logs(
         for pattern, description in FATAL_PATTERNS:
             matches = pattern.findall(node_logs)
             if matches:
-                errors.append(
-                    f"[{node.name}] {description}: {len(matches)} occurrence(s)"
-                )
+                errors.append(f"[{node.name}] {description}: {len(matches)} occurrence(s)")
 
         # Log info patterns (not errors)
         for pattern, description in INFO_PATTERNS:
             matches = pattern.findall(node_logs)
             if matches:
                 logging.info(
-                    "[%s] %s: %d occurrence(s)", node.name, description, len(matches),
+                    "[%s] %s: %d occurrence(s)",
+                    node.name,
+                    description,
+                    len(matches),
                 )
 
-    assert len(errors) == 0, (
-        "Consensus errors detected in node logs:\n"
-        + "\n".join(f"  - {e}" for e in errors)
+    assert len(errors) == 0, "Consensus errors detected in node logs:\n" + "\n".join(
+        f"  - {e}" for e in errors
     )

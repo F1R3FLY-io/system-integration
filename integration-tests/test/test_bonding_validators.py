@@ -41,15 +41,17 @@ from .conftest import (
     VALIDATOR2_KEY,
     VALIDATOR4_ID,
     VALIDATOR4_KEY,
-    start_custom_shard,
     add_peer_to_shard,
+    start_custom_shard,
 )
 from .rnode import Node
 
 pytestmark = pytest.mark.xdist_group("custom")
 
 
-def _poll_block_visible(node: Node, block_hash: str, timeout: int = 120, scale: float = 1.0) -> None:
+def _poll_block_visible(
+    node: Node, block_hash: str, timeout: int = 120, scale: float = 1.0
+) -> None:
     """Poll until a block is visible on the given node."""
     scaled_timeout = int(timeout * scale)
     deadline = time.time() + scaled_timeout
@@ -81,7 +83,8 @@ def test_bonding_validators(
     joiner_genesis_balance = 50_000_000_000_000_000  # same as other genesis validators
 
     with start_custom_shard(
-        docker_client, command_line_options,
+        docker_client,
+        command_line_options,
         bonds=bonds,
         ftt=-1,
         heartbeat=False,
@@ -109,9 +112,7 @@ def test_bonding_validators(
 
         # Verify the joiner is not yet bonded
         block_info = v1.get_block(b1)
-        bonded_validators = {
-            b.validator for b in block_info.blockInfo.bonds
-        }
+        bonded_validators = {b.validator for b in block_info.blockInfo.bonds}
         joiner_pub_hex = VALIDATOR4_ID.public_hex
         assert joiner_pub_hex not in bonded_validators, (
             f"Joiner {joiner_pub_hex[:16]}... should not be bonded yet"
@@ -119,8 +120,10 @@ def test_bonding_validators(
 
         # ── Add joiner node to the shard ──
         with add_peer_to_shard(
-            docker_client, command_line_options,
-            shard, VALIDATOR4_ID,
+            docker_client,
+            command_line_options,
+            shard,
+            VALIDATOR4_ID,
             cli_options={
                 "--epoch-length": "4",
                 "--quarantine-length": "20",
@@ -157,12 +160,9 @@ def test_bonding_validators(
 
             # Verify the bond is recorded in the bonds map
             block_info = v1.get_block(b2)
-            bonds_map = {
-                b.validator: b.stake for b in block_info.blockInfo.bonds
-            }
+            bonds_map = {b.validator: b.stake for b in block_info.blockInfo.bonds}
             assert bonds_map.get(joiner_pub_hex) == bond_amount, (
-                f"Expected joiner bond={bond_amount}, got "
-                f"{bonds_map.get(joiner_pub_hex)}"
+                f"Expected joiner bond={bond_amount}, got {bonds_map.get(joiner_pub_hex)}"
             )
             logging.info("Bond recorded: %s -> %d", joiner_pub_hex[:16], bond_amount)
 

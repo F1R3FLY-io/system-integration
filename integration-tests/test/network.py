@@ -1,6 +1,6 @@
 from typing import (
-    List,
     TYPE_CHECKING,
+    List,
 )
 
 if TYPE_CHECKING:
@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 
 class Network:
-    def __init__(self, network: str, bootstrap: 'Node', peers: List['Node']):
+    def __init__(self, network: str, bootstrap: "Node", peers: List["Node"]):
         self.network = network
         self.bootstrap = bootstrap
         self.peers = peers

@@ -22,27 +22,26 @@ Shard tests use the session-scoped shard fixture (shared across tests).
 """
 
 import time
-from typing import Generator
 from contextlib import contextmanager
+from typing import Generator
 
 import pytest
+from docker.client import DockerClient
 from f1r3fly.client import F1r3flyClientException
 from f1r3fly.crypto import PrivateKey
-from docker.client import DockerClient
 
 from .common import (
     CommandLineOptions,
     TestingContext,
 )
 from .conftest import (
-    assert_containers_running,
-    start_standalone_node,
+    ALL_CONTAINERS,
     STANDALONE_PRIVATE_KEY,
     VALIDATOR1_KEY,
-    ALL_CONTAINERS,
+    assert_containers_running,
+    start_standalone_node,
 )
 from .rnode import Node
-
 
 USER_KEY = PrivateKey.from_hex(STANDALONE_PRIVATE_KEY)
 
@@ -50,6 +49,7 @@ USER_KEY = PrivateKey.from_hex(STANDALONE_PRIVATE_KEY)
 # ---------------------------------------------------------------------------
 # Standalone helper
 # ---------------------------------------------------------------------------
+
 
 @contextmanager
 def start_node_with_heartbeat(
@@ -171,10 +171,10 @@ def test_heartbeat_disabled_when_max_parents_is_one(
         max_number_of_parents=1,
     ) as node:
         logs = node.logs()
-        assert "Heartbeat incompatible with max-number-of-parents=1" in logs or \
-               "CONFIGURATION ERROR" in logs, (
-            "Should log warning about max-number-of-parents=1"
-        )
+        assert (
+            "Heartbeat incompatible with max-number-of-parents=1" in logs
+            or "CONFIGURATION ERROR" in logs
+        ), "Should log warning about max-number-of-parents=1"
 
         initial_count = node.get_blocks_count(10)
 
@@ -225,21 +225,16 @@ def test_heartbeat_creates_blocks_when_idle_shard(
     # depth parameter returns a sliding window -- as the chain advances,
     # older blocks scroll out and the count can decrease even though new
     # blocks are being created.
-    initial_block_numbers = [
-        max(b.blockNumber for b in v.get_blocks(5)) for v in validators
-    ]
+    initial_block_numbers = [max(b.blockNumber for b in v.get_blocks(5)) for v in validators]
 
     # Poll until all validators have advanced by at least 2 blocks.
     shard_timeout = int(90 * testing_context.timeout_scale)
     deadline = time.time() + shard_timeout
     all_advanced = False
     while time.time() < deadline:
-        final_block_numbers = [
-            max(b.blockNumber for b in v.get_blocks(5)) for v in validators
-        ]
+        final_block_numbers = [max(b.blockNumber for b in v.get_blocks(5)) for v in validators]
         if all(
-            final_block_numbers[i] >= initial_block_numbers[i] + 2
-            for i in range(len(validators))
+            final_block_numbers[i] >= initial_block_numbers[i] + 2 for i in range(len(validators))
         ):
             all_advanced = True
             break
@@ -249,7 +244,7 @@ def test_heartbeat_creates_blocks_when_idle_shard(
     assert_containers_running(docker_client, ALL_CONTAINERS)
 
     assert all_advanced, (
-        f"All validators should advance by at least 2 blocks from heartbeat. "
+        "All validators should advance by at least 2 blocks from heartbeat. "
         + ", ".join(
             f"{validators[i].name}: initial={initial_block_numbers[i]}, "
             f"final={final_block_numbers[i]}"
@@ -282,9 +277,7 @@ def test_manual_propose_during_heartbeat_shard(
     # with multiple validators, show_blocks(depth=N) returns a sliding window
     # whose count can plateau even as new blocks arrive (old blocks fall out of
     # the window). Block number is monotonically increasing and reliable.
-    initial_block_number = max(
-        b.blockNumber for b in validator1_node.get_blocks(5)
-    )
+    initial_block_number = max(b.blockNumber for b in validator1_node.get_blocks(5))
 
     # Deploy a contract on validator1
     validator1_node.deploy_string(
@@ -309,9 +302,7 @@ def test_manual_propose_during_heartbeat_shard(
     deadline = time.time() + propose_timeout
     final_block_number = initial_block_number
     while time.time() < deadline:
-        final_block_number = max(
-            b.blockNumber for b in validator1_node.get_blocks(5)
-        )
+        final_block_number = max(b.blockNumber for b in validator1_node.get_blocks(5))
         if final_block_number > initial_block_number:
             break
         time.sleep(5)

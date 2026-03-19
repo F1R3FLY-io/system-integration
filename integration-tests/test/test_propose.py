@@ -13,9 +13,9 @@ import os
 import time
 
 import pytest
+from docker.client import DockerClient
 from f1r3fly.client import F1r3flyClientException
 from f1r3fly.crypto import PrivateKey
-from docker.client import DockerClient
 
 from .common import (
     CommandLineOptions,
@@ -23,14 +23,13 @@ from .common import (
     TestingContext,
 )
 from .conftest import (
-    assert_containers_running,
-    start_standalone_node,
+    ALL_CONTAINERS,
     STANDALONE_PRIVATE_KEY,
     VALIDATOR1_KEY,
-    ALL_CONTAINERS,
+    assert_containers_running,
+    start_standalone_node,
 )
 from .rnode import Node
-
 
 STANDALONE_KEY = PrivateKey.from_hex(STANDALONE_PRIVATE_KEY)
 
@@ -107,8 +106,7 @@ def test_deploy_invalid_contract(
     full_block = validator1_node.get_block(block_hash)
     deploy_terms = [d.term for d in full_block.deploys]
     assert any('@"valid-after-invalid"!(42)' in t for t in deploy_terms), (
-        f"Block should contain the valid deploy, but found terms: "
-        f"{[t[:40] for t in deploy_terms]}"
+        f"Block should contain the valid deploy, but found terms: {[t[:40] for t in deploy_terms]}"
     )
 
 
@@ -179,7 +177,8 @@ def test_find_block_by_deploy_id_shard(
 
     logging.info(
         "Deploy %s found in block %s on validator1",
-        deploy_id[:24], v1_hash[:16],
+        deploy_id[:24],
+        v1_hash[:16],
     )
 
     # The same block must be visible on validator2 after propagation
@@ -188,7 +187,8 @@ def test_find_block_by_deploy_id_shard(
 
     logging.info(
         "Deploy %s found in block %s on validator2",
-        deploy_id[:24], v2_hash[:16],
+        deploy_id[:24],
+        v2_hash[:16],
     )
 
     assert v1_hash == v2_hash, (

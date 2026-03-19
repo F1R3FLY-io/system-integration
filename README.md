@@ -45,6 +45,8 @@ This repository provides a clean structure for managing multiple microservice re
 │   ├── docker-compose.standalone-scala.yml
 │   ├── docker-compose.standalone-rust.yml
 │   └── README.md                   #   Test documentation
+├── hooks/                          # Git hooks (pre-commit, pre-push)
+├── scripts/                        # Setup scripts (setup-hooks.sh)
 ├── shardctl/                       # CLI tool package
 ├── services/                       # Service repositories (git-ignored)
 │   └── .gitkeep
@@ -849,6 +851,65 @@ rm -rf services/service-name
 3. Remove service definition from compose files
 
 4. Update `services.yml` if needed
+
+## Git Hooks
+
+Pre-commit and pre-push hooks enforce code quality checks before changes leave your machine.
+
+### Installation
+
+```bash
+# Recommended: point git at hooks/ directory (no copying needed)
+./scripts/setup-hooks.sh
+
+# Alternative: copy hooks to .git/hooks/
+./scripts/setup-hooks.sh --copy
+
+# Check current hook status
+./scripts/setup-hooks.sh --status
+
+# Remove hooks
+./scripts/setup-hooks.sh --remove
+```
+
+### What the Hooks Check
+
+**pre-commit** (runs on every `git commit`):
+- **ruff** lint on staged `.py` files
+- **black** format check on staged `.py` files
+- **YAML** validation on staged `.yml`/`.yaml` files
+
+**pre-push** (runs on every `git push`):
+- **ruff** lint on `shardctl/` and `integration-tests/test/`
+- **black** format check on the same directories
+- **test_internal.py** unit tests (pure Python, no Docker required)
+- Lint and tests run in parallel for speed
+
+Integration tests (Docker-based, 10-30+ minutes) are **not** run by hooks. Use `poetry run shardctl test` for those.
+
+### Environment Variables
+
+Control hook behavior with environment variables:
+
+| Variable | Effect |
+|---|---|
+| `SKIP_LINT=1` | Skip all lint checks (pre-commit and pre-push) |
+| `SKIP_RUFF=1` | Skip ruff linting only |
+| `SKIP_BLACK=1` | Skip black formatting only |
+| `SKIP_YAML=1` | Skip YAML validation only |
+| `SKIP_TESTS=1` | Skip unit tests (pre-push only) |
+| `QUICK=1` | Lint only, skip tests (pre-push only) |
+| `VERBOSE=1` | Show all output, not just failures |
+| `TEST_TIMEOUT=N` | Per-test timeout in seconds (default: 120) |
+
+```bash
+# Examples
+QUICK=1 git push                    # Lint only, skip tests
+SKIP_BLACK=1 git commit -m "wip"   # Skip black check
+git push --no-verify                # Bypass all hooks (not recommended)
+```
+
+Hooks automatically skip in CI environments (`CI`, `GITHUB_ACTIONS` env vars).
 
 ## Development Workflow
 

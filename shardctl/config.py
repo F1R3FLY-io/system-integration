@@ -1,6 +1,5 @@
 """Configuration management for shardctl."""
 
-import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -34,7 +33,7 @@ class Config:
         """
         # Strip compose/ prefix if present
         if name.startswith("compose/"):
-            name = name[len("compose/"):]
+            name = name[len("compose/") :]
         # Add .yml suffix if missing
         if not name.endswith(".yml"):
             name = f"{name}.yml"
@@ -54,9 +53,9 @@ class Config:
         if not services_config_file.exists():
             return True
 
-        with open(services_config_file, 'r') as f:
+        with open(services_config_file, "r") as f:
             services_config = yaml.safe_load(f)
-            repos = services_config.get('repositories', {})
+            repos = services_config.get("repositories", {})
 
             if service_name not in repos:
                 return True
@@ -68,7 +67,7 @@ class Config:
                 return True
 
             # Handle new format (dict) - default to True if enabled field is missing
-            return repo_config.get('enabled', True)
+            return repo_config.get("enabled", True)
 
     def get_service_repos(self, only_enabled: bool = True) -> Dict[str, Dict]:
         """Get mapping of service names to their repository configuration.
@@ -84,22 +83,22 @@ class Config:
         services_config_file = self.root_dir / "services.yml"
 
         if services_config_file.exists():
-            with open(services_config_file, 'r') as f:
+            with open(services_config_file, "r") as f:
                 services_config = yaml.safe_load(f)
-                repos = services_config.get('repositories', {})
+                repos = services_config.get("repositories", {})
 
                 # Normalize to dict format
                 normalized = {}
                 for name, config in repos.items():
                     if isinstance(config, str):
                         # Old format: just URL string
-                        normalized[name] = {'url': config, 'branch': None, 'enabled': True}
+                        normalized[name] = {"url": config, "branch": None, "enabled": True}
                     else:
                         # New format: dict with url and branch
                         # Default enabled to True if not specified
                         service_config = config.copy()
-                        if 'enabled' not in service_config:
-                            service_config['enabled'] = True
+                        if "enabled" not in service_config:
+                            service_config["enabled"] = True
                         normalized[name] = service_config
 
                 # Filter by enabled status if requested
@@ -107,7 +106,7 @@ class Config:
                     normalized = {
                         name: config
                         for name, config in normalized.items()
-                        if config.get('enabled', True)
+                        if config.get("enabled", True)
                     }
 
                 return normalized
@@ -126,9 +125,9 @@ class Config:
         services_config_file = self.root_dir / "services.yml"
 
         if services_config_file.exists():
-            with open(services_config_file, 'r') as f:
+            with open(services_config_file, "r") as f:
                 services_config = yaml.safe_load(f)
-                builds = services_config.get('builds', {})
+                builds = services_config.get("builds", {})
                 return builds.get(service_name)
 
         return None
@@ -151,10 +150,10 @@ class Config:
         if not services_config_file.exists():
             return {}
 
-        with open(services_config_file, 'r') as f:
+        with open(services_config_file, "r") as f:
             services_config = yaml.safe_load(f)
-            builds = services_config.get('builds', {})
-            repos = services_config.get('repositories', {})
+            builds = services_config.get("builds", {})
+            repos = services_config.get("repositories", {})
 
         if not only_enabled:
             return builds
@@ -169,13 +168,13 @@ class Config:
             if isinstance(repo_config, str):
                 is_enabled = True
             else:
-                is_enabled = repo_config.get('enabled', True)
+                is_enabled = repo_config.get("enabled", True)
 
             service_enabled[service_name] = is_enabled
 
             # Get builds list for this service (default to [service_name])
             if isinstance(repo_config, dict):
-                builds_list = repo_config.get('builds', [service_name])
+                builds_list = repo_config.get("builds", [service_name])
             else:
                 builds_list = [service_name]
 
@@ -200,7 +199,7 @@ class Config:
                 continue
 
             # Check if build itself is enabled (defaults to True)
-            build_enabled = build_config.get('enabled', True)
+            build_enabled = build_config.get("enabled", True)
 
             if build_enabled:
                 filtered_builds[build_name] = build_config
@@ -229,9 +228,9 @@ class Config:
         services_config_file = self.root_dir / "services.yml"
 
         if services_config_file.exists():
-            with open(services_config_file, 'r') as f:
+            with open(services_config_file, "r") as f:
                 services_config = yaml.safe_load(f)
-                startup_order = services_config.get('startup_order', [])
+                startup_order = services_config.get("startup_order", [])
 
                 if startup_order:
                     compose_files = []

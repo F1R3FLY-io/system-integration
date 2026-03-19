@@ -19,9 +19,9 @@ from f1r3fly.client import F1r3flyClientException
 
 from .common import TestingContext
 from .conftest import (
-    assert_containers_running,
-    VALIDATOR1_KEY,
     ALL_CONTAINERS,
+    VALIDATOR1_KEY,
+    assert_containers_running,
 )
 from .rnode import Node
 
@@ -45,7 +45,7 @@ def test_deploy_with_not_enough_phlo(
 
     # Deploy with intentionally low phlo limit (97 phlo needed, only 10 allowed)
     deploy_id = node.deploy_string(
-        '@1!(1)',
+        "@1!(1)",
         VALIDATOR1_KEY,
         phlo_limit=10,
         phlo_price=1,
@@ -64,7 +64,8 @@ def test_deploy_with_not_enough_phlo(
             block_hash = light_block.blockHash
             logging.info(
                 "Deploy found in block %s (blockNumber=%d)",
-                block_hash[:16], light_block.blockNumber,
+                block_hash[:16],
+                light_block.blockNumber,
             )
             break
         except F1r3flyClientException:
@@ -79,7 +80,7 @@ def test_deploy_with_not_enough_phlo(
     block_info = node.get_block(block_hash)
     errored_deploy = None
     for deploy in block_info.deploys:
-        if deploy.term == '@1!(1)':
+        if deploy.term == "@1!(1)":
             errored_deploy = deploy
             break
 
