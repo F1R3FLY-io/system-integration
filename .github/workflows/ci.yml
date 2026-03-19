@@ -30,7 +30,7 @@ jobs:
 
       - name: YAML validation
         run: |
-          python3 << 'SCRIPT'
+          poetry run python3 << 'SCRIPT'
           import yaml, glob, sys
           errors = []
           for pattern in ['compose/*.yml', 'services.yml', '*.yml', '*.yaml']:
