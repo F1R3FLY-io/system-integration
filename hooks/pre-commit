@@ -116,17 +116,29 @@ fi
 
 # --- YAML validation ---
 if [[ ${#yaml_files[@]} -gt 0 && "$SKIP_YAML" != "1" ]]; then
-    yaml_failed=0
-    for yaml_file in "${yaml_files[@]}"; do
-        if ! python3 -c "import yaml; yaml.safe_load(open('$yaml_file'))" 2>/dev/null; then
-            echo -e "  ${CYAN}[yaml]${NC}  ${yaml_file} ${RED}FAIL${NC} (invalid YAML)"
-            yaml_failed=1
-        fi
-    done
-    if [[ $yaml_failed -eq 0 ]]; then
-        echo -e "  ${CYAN}[yaml]${NC}  validate ${GREEN}PASS${NC} (${#yaml_files[@]} files)"
+    # Check if pyyaml is available (try poetry first, then system python)
+    yaml_cmd=""
+    if command -v poetry &> /dev/null && poetry run python3 -c "import yaml" 2>/dev/null; then
+        yaml_cmd="poetry run python3"
+    elif python3 -c "import yaml" 2>/dev/null; then
+        yaml_cmd="python3"
+    fi
+
+    if [[ -z "$yaml_cmd" ]]; then
+        echo -e "  ${CYAN}[yaml]${NC}  validate ${YELLOW}SKIP${NC} (pyyaml not available)"
     else
-        FAILED=1
+        yaml_failed=0
+        for yaml_file in "${yaml_files[@]}"; do
+            if ! $yaml_cmd -c "import yaml; yaml.safe_load(open('$yaml_file'))" 2>/dev/null; then
+                echo -e "  ${CYAN}[yaml]${NC}  ${yaml_file} ${RED}FAIL${NC} (invalid YAML)"
+                yaml_failed=1
+            fi
+        done
+        if [[ $yaml_failed -eq 0 ]]; then
+            echo -e "  ${CYAN}[yaml]${NC}  validate ${GREEN}PASS${NC} (${#yaml_files[@]} files)"
+        else
+            FAILED=1
+        fi
     fi
 fi
 

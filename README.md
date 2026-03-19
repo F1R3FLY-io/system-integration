@@ -19,6 +19,7 @@ This repository provides a clean structure for managing multiple microservice re
 
 ```
 .
+├── .github/workflows/              # CI (GitHub Actions)
 ├── compose/                        # Docker Compose files (one per service)
 │   ├── f1r3node.yml                #   Scala shard (default)
 │   ├── f1r3node-standalone.yml     #   Scala standalone
@@ -910,6 +911,19 @@ git push --no-verify                # Bypass all hooks (not recommended)
 ```
 
 Hooks automatically skip in CI environments (`CI`, `GITHUB_ACTIONS` env vars).
+
+## CI (GitHub Actions)
+
+The same checks that run in git hooks also run in CI on every push and pull request to `dev` and `main` branches.
+
+| Job | What it checks | Runner |
+|-----|---------------|--------|
+| **Lint** | ruff, black, YAML validation | `ubuntu-latest` |
+| **Test** | `test_internal.py` unit tests | `ubuntu-latest` |
+
+Workflow file: `.github/workflows/ci.yml`
+
+Integration tests (Docker-based, 10-30+ minutes) are **not** run in CI automatically. Use the self-hosted runners and `poetry run shardctl test` for those (see `ci/CLAUDE.md` for runner details).
 
 ## Development Workflow
 

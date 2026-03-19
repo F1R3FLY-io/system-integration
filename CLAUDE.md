@@ -59,6 +59,14 @@ Pre-commit and pre-push hooks enforce code quality. Install with:
 Bypass with `--no-verify` (not recommended). Skip individual checks with env vars:
 `SKIP_LINT=1`, `SKIP_RUFF=1`, `SKIP_BLACK=1`, `SKIP_YAML=1`, `SKIP_TESTS=1`, `QUICK=1`.
 
+## CI
+
+GitHub Actions runs the same checks as the git hooks on pushes and PRs to `dev` and `main`:
+- **Lint job**: ruff + black + YAML validation (runs on `ubuntu-latest`)
+- **Test job**: `test_internal.py` unit tests with full integration deps
+
+Workflow: `.github/workflows/ci.yml`
+
 ## Repository Structure
 
 ```
@@ -69,6 +77,7 @@ Bypass with `--no-verify` (not recommended). Skip individual checks with env var
 │   ├── embers-frontend/        # Embers UI (React 19)
 │   ├── f1r3sky-backend/        # AT Protocol backend (Node.js)
 │   └── rust-client/            # Rust CLI client
+├── .github/workflows/          # CI (GitHub Actions)
 ├── hooks/                      # Git hooks (pre-commit, pre-push)
 ├── scripts/                    # Setup scripts (setup-hooks.sh)
 ├── shardctl/                   # CLI tool package
