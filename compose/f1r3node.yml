@@ -211,7 +211,8 @@ services:
       - "40455:40405"
     volumes:
       - readonly-data:/var/lib/rnode
-      - ../conf/default.conf:/var/lib/rnode/rnode.conf
+      - ../conf/observer.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default.conf:/var/lib/rnode/default.conf:ro
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
