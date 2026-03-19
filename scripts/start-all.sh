@@ -93,7 +93,7 @@ log "Starting f1r3sky frontend (port 8100)..."
 docker run -d --name f1r3sky-frontend --network f1r3fly \
   -p 8100:8100 \
   -e HTTP_ADDRESS=:8100 \
-  -e ATP_APPVIEW_HOST=http://f1r3sky:2584 \
+  -e ATP_APPVIEW_HOST=http://f1r3sky:2583 \
   f1r3flyio/firesky-frontend:local \
   /usr/bin/bskyweb serve >/dev/null
 
