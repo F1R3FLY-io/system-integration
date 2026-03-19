@@ -57,7 +57,9 @@ def three_nodes_network_with_node_client(
     random_generator: Random,
     docker_client: DockerClient,
     validator_bonds_dict: Dict[PrivateKey, int] = None,
-) -> Generator[Tuple[TestingContext, Node, Node, Node, NodeClient], None, None]:  # pylint: disable=contextmanager-generator-missing-cleanup
+) -> Generator[
+    Tuple[TestingContext, Node, Node, Node, NodeClient], None, None
+]:  # pylint: disable=contextmanager-generator-missing-cleanup
     peers_keypairs = [BONDED_VALIDATOR_KEY_1, BONDED_VALIDATOR_KEY_2]
     wallet_map = {
         BOOTSTRAP_NODE_KEY: 10000,
@@ -178,7 +180,9 @@ def test_slash_invalid_block_number(
         invalid_block_num_block.CopyFrom(block_msg)
         invalid_block_num_block.body.state.blockNumber = 1000  # pylint: disable=maybe-no-member
         # change timestamp to make block hash different
-        invalid_block_num_block.header.timestamp = block_msg.header.timestamp + 1  # pylint: disable=maybe-no-member
+        invalid_block_num_block.header.timestamp = (
+            block_msg.header.timestamp + 1
+        )  # pylint: disable=maybe-no-member
         invalid_block_hash = gen_block_hash_from_block(invalid_block_num_block)
         invalid_block_num_block.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(invalid_block_hash)
         invalid_block_num_block.blockHash = invalid_block_hash
@@ -232,7 +236,9 @@ def test_slash_invalid_block_seq(
         invalid_block_num_block.CopyFrom(block_msg)
         invalid_block_num_block.seqNum = 1000
         # change timestamp to make block hash different
-        invalid_block_num_block.header.timestamp = block_msg.header.timestamp + 1  # pylint: disable=maybe-no-member
+        invalid_block_num_block.header.timestamp = (
+            block_msg.header.timestamp + 1
+        )  # pylint: disable=maybe-no-member
         invalid_block_hash = gen_block_hash_from_block(invalid_block_num_block)
         invalid_block_num_block.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(invalid_block_hash)
         invalid_block_num_block.blockHash = invalid_block_hash
@@ -303,9 +309,13 @@ def test_slash_justification_not_correct(
             validator=PrivateKey.generate().to_bytes(), latestBlockHash=block_msg.blockHash
         )
 
-        invalid_justifications_block.justifications.append(error_justification)  # pylint: disable=maybe-no-member
+        invalid_justifications_block.justifications.append(
+            error_justification
+        )  # pylint: disable=maybe-no-member
         # change timestamp to make block hash different
-        invalid_justifications_block.header.timestamp = block_msg.header.timestamp + 1  # pylint: disable=maybe-no-member
+        invalid_justifications_block.header.timestamp = (
+            block_msg.header.timestamp + 1
+        )  # pylint: disable=maybe-no-member
         invalid_block_hash = gen_block_hash_from_block(invalid_justifications_block)
         invalid_justifications_block.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(
             invalid_block_hash
@@ -371,7 +381,9 @@ def test_slash_invalid_validator_approve_evil_block(
         invalid_block = BlockMessage()
         invalid_block.CopyFrom(block_msg)
         invalid_block.seqNum = block_msg.seqNum + 1
-        invalid_block.body.state.blockNumber = block_msg.body.state.blockNumber + 1  # pylint: disable=maybe-no-member
+        invalid_block.body.state.blockNumber = (
+            block_msg.body.state.blockNumber + 1
+        )  # pylint: disable=maybe-no-member
         invalid_block.blockHash = evil_block_hash
         invalid_block.header.timestamp = int(time.time() * 1000)  # pylint: disable=maybe-no-member
         invalid_block.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(evil_block_hash)
@@ -429,12 +441,18 @@ def test_slash_invalid_validator_approve_evil_block(
             1,
             1000000,
         )
-        block_not_slash_invalid_block.body.deploys[0].deploy.CopyFrom(deploy_data)  # pylint: disable=maybe-no-member
-        block_not_slash_invalid_block.header.ClearField("parentsHashList")  # pylint: disable=maybe-no-member
+        block_not_slash_invalid_block.body.deploys[0].deploy.CopyFrom(
+            deploy_data
+        )  # pylint: disable=maybe-no-member
+        block_not_slash_invalid_block.header.ClearField(
+            "parentsHashList"
+        )  # pylint: disable=maybe-no-member
         block_not_slash_invalid_block.header.parentsHashList.append(
             bytes.fromhex(genesis_block.blockInfo.blockHash)
         )  # pylint: disable=maybe-no-member
-        block_not_slash_invalid_block.header.timestamp = int(time.time() * 1000)  # pylint: disable=maybe-no-member
+        block_not_slash_invalid_block.header.timestamp = int(
+            time.time() * 1000
+        )  # pylint: disable=maybe-no-member
         invalid_block_hash = gen_block_hash_from_block(block_not_slash_invalid_block)
         block_not_slash_invalid_block.sig = BONDED_VALIDATOR_KEY_2.sign_block_hash(
             invalid_block_hash
@@ -511,7 +529,9 @@ def test_slash_GHOST_disobeyed(
         invalid_block.CopyFrom(block_msg3)
         invalid_block.header.ClearField("parentsHashList")  # pylint: disable=maybe-no-member
         invalid_block.body.state.blockNumber = 2  # pylint: disable=maybe-no-member
-        invalid_block.header.parentsHashList.append(bytes.fromhex(block_info1.blockInfo.blockHash))  # pylint: disable=maybe-no-member
+        invalid_block.header.parentsHashList.append(
+            bytes.fromhex(block_info1.blockInfo.blockHash)
+        )  # pylint: disable=maybe-no-member
         invalid_block.header.timestamp = int(time.time() * 1000)  # pylint: disable=maybe-no-member
         deploy_data = create_deploy_data(
             BONDED_VALIDATOR_KEY_2,
@@ -520,7 +540,9 @@ def test_slash_GHOST_disobeyed(
             1000000,
             shard_id="test",
         )
-        invalid_block.body.deploys[0].deploy.CopyFrom(deploy_data)  # pylint: disable=maybe-no-member
+        invalid_block.body.deploys[0].deploy.CopyFrom(
+            deploy_data
+        )  # pylint: disable=maybe-no-member
         invalid_block_hash = gen_block_hash_from_block(invalid_block)
         invalid_block.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(invalid_block_hash)
         invalid_block.blockHash = invalid_block_hash
@@ -592,9 +614,9 @@ def test_node_working_right_after_slashing(
         bonds_validators = {b.validator: b.stake for b in block_info.blockInfo.bonds}
         assert bonds_validators[BONDED_VALIDATOR_KEY_1.get_public_key().to_hex()] == 0
         slash_block = client.block_request(block_info.blockInfo.blockHash, validator2)
-        assert is_exist_slash_deploy(slash_block), (
-            "systemDeploy does not contain slash system deploy"
-        )
+        assert is_exist_slash_deploy(
+            slash_block
+        ), "systemDeploy does not contain slash system deploy"
 
         # this new block should not contain slash deploy
         validator2.deploy(contract, BONDED_VALIDATOR_KEY_2)

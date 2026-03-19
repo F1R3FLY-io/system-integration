@@ -105,9 +105,9 @@ def test_deploy_invalid_contract(
     # for presence rather than an exact count.
     full_block = validator1_node.get_block(block_hash)
     deploy_terms = [d.term for d in full_block.deploys]
-    assert any('@"valid-after-invalid"!(42)' in t for t in deploy_terms), (
-        f"Block should contain the valid deploy, but found terms: {[t[:40] for t in deploy_terms]}"
-    )
+    assert any(
+        '@"valid-after-invalid"!(42)' in t for t in deploy_terms
+    ), f"Block should contain the valid deploy, but found terms: {[t[:40] for t in deploy_terms]}"
 
 
 # ===========================================================================

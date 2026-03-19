@@ -91,6 +91,13 @@ target-version = ["py310"]
 [tool.ruff]
 line-length = 100
 
+[tool.ruff.format]
+# Exclude all files from ruff format — this project uses black for formatting.
+# The quick-commit script runs `ruff format .` as auto-fix, which conflicts
+# with black on assert statement formatting. Excluding everything here ensures
+# ruff format is a no-op and black has the final word.
+exclude = ["*"]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
 ignore = [
