@@ -65,3 +65,21 @@ check f1r3sky 2583 "http://localhost:2583/xrpc/_health"
 check f1r3sky-frontend 8100 "http://localhost:8100"
 
 echo ""
+echo "API Health:"
+for endpoint in \
+    "ai-agents-teams/1111AtahZeefej4tvVR6ti9TJtv8yxLebT31SCEVDCKMNikBk5r3g" \
+    "ai-agents/1111AtahZeefej4tvVR6ti9TJtv8yxLebT31SCEVDCKMNikBk5r3g" \
+    "oslfs/1111AtahZeefej4tvVR6ti9TJtv8yxLebT31SCEVDCKMNikBk5r3g" \
+    "wallets/1111AtahZeefej4tvVR6ti9TJtv8yxLebT31SCEVDCKMNikBk5r3g/state"; do
+    name=$(echo "$endpoint" | cut -d/ -f1)
+    result=$(curl -s --max-time 5 "http://localhost:8080/api/$endpoint" 2>&1)
+    if echo "$result" | grep -q 'contract did not return'; then
+        echo -e "  ${RED}[FAIL]${NC} $name — contract did not return any value"
+    elif echo "$result" | grep -q '"agents_teams"\|"agents"\|"oslfs"\|"balance"'; then
+        echo -e "  ${GREEN}[ OK ]${NC} $name"
+    else
+        echo -e "  ${YELLOW}[????]${NC} $name — $result"
+    fi
+done
+
+echo ""

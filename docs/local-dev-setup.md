@@ -54,13 +54,33 @@ docker build \
 | Image | Tag | Source |
 |---|---|---|
 | `f1r3flyio/embers` | `:local` | Built from `services/embers` |
-| `f1r3flyio/embers-frontend` | `:latest` | Pre-built from Docker Hub |
+| `f1r3flyio/embers-frontend` | `:local` | Patched from `:latest` (120s finalization timeout) |
 | `f1r3flyindustries/firesky-ts` | `:local` | Built from `services/f1r3sky-backend` |
 | `f1r3flyio/firesky-frontend` | `:local` | Built from `services/f1r3sky` |
 | `postgres:16-alpine` | — | Docker Hub |
 | `redis:7-alpine` | — | Docker Hub |
 
 **Important:** The f1r3sky backend and frontend must be matching versions. The frontend uses `getPostThreadV2` which only exists in the locally-built backend.
+
+### Embers Frontend Timeout Patch
+
+The pre-built `embers-frontend:latest` from Docker Hub has a 15-second finalization timeout which is too short (block finalization takes 20-80s). Patch it to 120 seconds:
+
+```bash
+docker pull f1r3flyio/embers-frontend:latest
+docker create --name patch f1r3flyio/embers-frontend:latest
+docker cp patch:/usr/share/nginx/html/assets/ /tmp/ef-assets/
+python3 -c "
+with open('/tmp/ef-assets/index-CrWcWNeT.js', 'r') as f: c = f.read()
+c = c.replace('aitForFinalisation??15e3', 'aitForFinalisation??12e4')
+with open('/tmp/ef-assets/index-CrWcWNeT.js', 'w') as f: f.write(c)
+"
+docker cp /tmp/ef-assets/index-CrWcWNeT.js patch:/usr/share/nginx/html/assets/
+docker commit patch f1r3flyio/embers-frontend:local
+docker rm patch && rm -rf /tmp/ef-assets
+```
+
+All images must be built/patched before running `scripts/start-all.sh`.
 
 ## Architecture
 
@@ -138,8 +158,10 @@ curl -X POST http://localhost:2583/xrpc/com.atproto.server.createAccount \
    - Handle: `myagent.test`
    - Email: any
    - Password: any
-3. **F1R3Sky frontend** → Sign in → post tagging `@myagent.test <your prompt>`
-4. Agent replies with GPT-4 text + DALL-E 3 image
+3. **F1R3Sky frontend** → Sign in → add wallet (import `bootstrap-wallet.json` from Downloads or create new) → post tagging `@myagent.test <your prompt>`
+4. Agent replies with GPT-4 text + DALL-E 3 image (~60-80 seconds)
+
+**Note:** A wallet must be loaded in the F1R3Sky frontend for the @mention trigger to work. The wallet signs the run-on-firesky transaction.
 
 ## Enabling OpenAI (AI Agent Execution)
 

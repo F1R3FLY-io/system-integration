@@ -22,7 +22,7 @@ EMBERS_DIR="$ROOT_DIR/services/embers"
 
 # Docker image tags:
 #   f1r3flyio/embers:local          — built from local source (docker build -f docker/embers.dockerfile)
-#   f1r3flyio/embers-frontend:latest — pre-built from Docker Hub
+#   f1r3flyio/embers-frontend:local — pre-built from Docker Hub
 #   f1r3flyindustries/firesky-ts:local — built from f1r3sky-backend source (must match frontend)
 #   f1r3flyio/firesky-frontend:local — built locally with EXPO_PUBLIC_EMBERS_API_URL
 #   postgres:16-alpine, redis:7-alpine — standard images
@@ -86,7 +86,7 @@ log "Starting embers frontend (port 8081)..."
 docker run -d --name embers-frontend \
   -p 8081:80 \
   -e API_URL="http://localhost:8080" \
-  f1r3flyio/embers-frontend:latest >/dev/null
+  f1r3flyio/embers-frontend:local >/dev/null
 
 # Start f1r3sky frontend
 log "Starting f1r3sky frontend (port 8100)..."
