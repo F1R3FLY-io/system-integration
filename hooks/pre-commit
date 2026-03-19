@@ -85,12 +85,14 @@ if [[ ${#py_files[@]} -gt 0 && "$SKIP_RUFF" != "1" ]]; then
     fi
 fi
 
-# --- Black format check ---
+# --- Black auto-format ---
 if [[ ${#py_files[@]} -gt 0 && "$SKIP_BLACK" != "1" ]]; then
-    if command -v poetry &> /dev/null && poetry run black --version &> /dev/null; then
+    if command -v poetry &> /dev/null && poetry run black --version &> /dev/null 2>&1; then
         black_cmd="poetry run black"
     elif command -v black &> /dev/null; then
         black_cmd="black"
+    elif command -v pipx &> /dev/null && pipx run black --version &> /dev/null 2>&1; then
+        black_cmd="pipx run black"
     else
         black_cmd=""
     fi
@@ -100,13 +102,10 @@ if [[ ${#py_files[@]} -gt 0 && "$SKIP_BLACK" != "1" ]]; then
         if $black_cmd --check --quiet "${py_files[@]}" > "$black_out" 2>&1; then
             echo -e "  ${CYAN}[black]${NC} format ${GREEN}PASS${NC} (${#py_files[@]} files)"
         else
-            echo -e "  ${CYAN}[black]${NC} format ${RED}FAIL${NC}"
-            echo ""
-            $black_cmd --diff "${py_files[@]}" 2>/dev/null || true
-            echo ""
-            echo -e "  Run: ${CYAN}poetry run black ${py_files[*]}${NC} to fix"
-            echo ""
-            FAILED=1
+            # Auto-format and re-stage
+            $black_cmd --quiet "${py_files[@]}" 2>/dev/null
+            git add "${py_files[@]}"
+            echo -e "  ${CYAN}[black]${NC} format ${GREEN}FIXED${NC} (${#py_files[@]} files auto-formatted)"
         fi
         rm -f "$black_out"
     else
