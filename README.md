@@ -877,12 +877,12 @@ Pre-commit and pre-push hooks enforce code quality checks before changes leave y
 
 **pre-commit** (runs on every `git commit`):
 - **ruff** lint on staged `.py` files
-- **black** format check on staged `.py` files
+- **ruff format** auto-fix on staged `.py` files (formats and re-stages)
 - **YAML** validation on staged `.yml`/`.yaml` files
 
 **pre-push** (runs on every `git push`):
 - **ruff** lint on `shardctl/` and `integration-tests/test/`
-- **black** format check on the same directories
+- **ruff format** check on the same directories
 - **test_internal.py** unit tests (pure Python, no Docker required)
 - Lint and tests run in parallel for speed
 
@@ -896,7 +896,7 @@ Control hook behavior with environment variables:
 |---|---|
 | `SKIP_LINT=1` | Skip all lint checks (pre-commit and pre-push) |
 | `SKIP_RUFF=1` | Skip ruff linting only |
-| `SKIP_BLACK=1` | Skip black formatting only |
+| `SKIP_BLACK=1` | Skip ruff formatting only |
 | `SKIP_YAML=1` | Skip YAML validation only |
 | `SKIP_TESTS=1` | Skip unit tests (pre-push only) |
 | `QUICK=1` | Lint only, skip tests (pre-push only) |
@@ -906,7 +906,7 @@ Control hook behavior with environment variables:
 ```bash
 # Examples
 QUICK=1 git push                    # Lint only, skip tests
-SKIP_BLACK=1 git commit -m "wip"   # Skip black check
+SKIP_BLACK=1 git commit -m "wip"   # Skip format check
 git push --no-verify                # Bypass all hooks (not recommended)
 ```
 
@@ -918,7 +918,7 @@ The same checks that run in git hooks also run in CI on every push and pull requ
 
 | Job | What it checks | Runner |
 |-----|---------------|--------|
-| **Lint** | ruff, black, YAML validation | `ubuntu-latest` |
+| **Lint** | ruff lint + format, YAML validation | `ubuntu-latest` |
 | **Test** | `test_internal.py` unit tests | `ubuntu-latest` |
 
 Workflow file: `.github/workflows/ci.yml`
@@ -1238,8 +1238,8 @@ poetry show
 # Run tests
 poetry run pytest
 
-# Format code with black
-poetry run black shardctl/
+# Format code with ruff
+poetry run ruff format shardctl/
 
 # Lint with ruff
 poetry run ruff check shardctl/

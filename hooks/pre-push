@@ -2,7 +2,7 @@
 #
 # pre-push hook - Run lint and unit tests before pushing
 #
-# Runs ruff, black, and fast unit tests (test_internal.py) before allowing push.
+# Runs ruff (lint + format) and fast unit tests (test_internal.py) before allowing push.
 # Integration tests (Docker-based) are NOT run here -- they require a running
 # shard and take 10-30+ minutes. Use `poetry run shardctl test` for those.
 #
@@ -13,7 +13,7 @@
 #   ./scripts/setup-hooks.sh --copy       # Alternative: copies to .git/hooks/
 #
 # Environment variables:
-#   SKIP_LINT=1          - Skip ruff and black checks
+#   SKIP_LINT=1          - Skip ruff lint and format checks
 #   SKIP_TESTS=1         - Skip pytest unit tests
 #   VERBOSE=1            - Show all test output (not just failures)
 #   QUICK=1              - Skip tests, lint only
@@ -135,36 +135,28 @@ echo "================================"
         skipped=$((skipped + 1))
     fi
 
-    # Black
+    # Ruff format check
     total=$((total + 1))
-    if command -v poetry &> /dev/null && poetry run black --version &> /dev/null 2>&1; then
-        black_cmd="poetry run black"
-    elif command -v black &> /dev/null; then
-        black_cmd="black"
-    else
-        black_cmd=""
-    fi
-
-    if [[ -n "$black_cmd" ]]; then
-        black_out="$RESULTS_DIR/black.out"
-        if $black_cmd --check --quiet "$REPO_ROOT/shardctl" "$REPO_ROOT/integration-tests/test" > "$black_out" 2>&1; then
-            echo -e "  ${CYAN}[lint]${NC}  black ${GREEN}PASS${NC}" >&3
+    if [[ -n "$ruff_cmd" ]]; then
+        fmt_out="$RESULTS_DIR/ruff-fmt.out"
+        if $ruff_cmd format --check "$REPO_ROOT/shardctl" "$REPO_ROOT/integration-tests/test" > "$fmt_out" 2>&1; then
+            echo -e "  ${CYAN}[lint]${NC}  format ${GREEN}PASS${NC}" >&3
             passed=$((passed + 1))
         else
-            echo -e "  ${CYAN}[lint]${NC}  black ${RED}FAIL${NC}" >&3
+            echo -e "  ${CYAN}[lint]${NC}  format ${RED}FAIL${NC}" >&3
             failed=$((failed + 1))
             has_failure=1
             {
                 echo ""
-                echo -e "${RED}FAIL${NC}: black"
+                echo -e "${RED}FAIL${NC}: ruff format"
                 echo "--- Output ---"
-                cat "$black_out"
+                cat "$fmt_out"
                 echo "--------------"
             } >> "$RESULTS_DIR/lint-failures.out"
         fi
-        rm -f "$black_out"
+        rm -f "$fmt_out"
     else
-        echo -e "  ${CYAN}[lint]${NC}  black ${YELLOW}SKIP${NC} (not available)" >&3
+        echo -e "  ${CYAN}[lint]${NC}  format ${YELLOW}SKIP${NC} (ruff not available)" >&3
         skipped=$((skipped + 1))
     fi
 

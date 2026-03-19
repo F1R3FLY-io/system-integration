@@ -85,31 +85,27 @@ if [[ ${#py_files[@]} -gt 0 && "$SKIP_RUFF" != "1" ]]; then
     fi
 fi
 
-# --- Black auto-format ---
+# --- Ruff format auto-fix ---
 if [[ ${#py_files[@]} -gt 0 && "$SKIP_BLACK" != "1" ]]; then
-    if command -v poetry &> /dev/null && poetry run black --version &> /dev/null 2>&1; then
-        black_cmd="poetry run black"
-    elif command -v black &> /dev/null; then
-        black_cmd="black"
-    elif command -v pipx &> /dev/null && pipx run black --version &> /dev/null 2>&1; then
-        black_cmd="pipx run black"
+    if command -v poetry &> /dev/null && poetry run ruff format --version &> /dev/null 2>&1; then
+        fmt_cmd="poetry run ruff format"
+    elif command -v ruff &> /dev/null; then
+        fmt_cmd="ruff format"
     else
-        black_cmd=""
+        fmt_cmd=""
     fi
 
-    if [[ -n "$black_cmd" ]]; then
-        black_out=$(mktemp)
-        if $black_cmd --check --quiet "${py_files[@]}" > "$black_out" 2>&1; then
-            echo -e "  ${CYAN}[black]${NC} format ${GREEN}PASS${NC} (${#py_files[@]} files)"
+    if [[ -n "$fmt_cmd" ]]; then
+        if $fmt_cmd --check --quiet "${py_files[@]}" 2>/dev/null; then
+            echo -e "  ${CYAN}[ruff]${NC}  format ${GREEN}PASS${NC} (${#py_files[@]} files)"
         else
             # Auto-format and re-stage
-            $black_cmd --quiet "${py_files[@]}" 2>/dev/null
+            $fmt_cmd --quiet "${py_files[@]}" 2>/dev/null
             git add "${py_files[@]}"
-            echo -e "  ${CYAN}[black]${NC} format ${GREEN}FIXED${NC} (${#py_files[@]} files auto-formatted)"
+            echo -e "  ${CYAN}[ruff]${NC}  format ${GREEN}FIXED${NC} (${#py_files[@]} files auto-formatted)"
         fi
-        rm -f "$black_out"
     else
-        echo -e "  ${CYAN}[black]${NC} format ${YELLOW}SKIP${NC} (black not available)"
+        echo -e "  ${CYAN}[ruff]${NC}  format ${YELLOW}SKIP${NC} (ruff not available)"
     fi
 fi
 

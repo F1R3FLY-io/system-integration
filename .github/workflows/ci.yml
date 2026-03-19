@@ -25,8 +25,8 @@ jobs:
       - name: Ruff lint
         run: poetry run ruff check shardctl/ integration-tests/test/
 
-      - name: Black format check
-        run: poetry run black --check shardctl/ integration-tests/test/
+      - name: Ruff format check
+        run: poetry run ruff format --check shardctl/ integration-tests/test/
 
       - name: YAML validation
         run: |

@@ -119,9 +119,9 @@ def test_prepare_deploy(
         if seq_number >= 3:
             break
         time.sleep(3)
-    assert (
-        seq_number >= 3
-    ), f"prepare_deploy seq_number={seq_number} did not reach 3 within {timeout}s"
+    assert seq_number >= 3, (
+        f"prepare_deploy seq_number={seq_number} did not reach 3 within {timeout}s"
+    )
 
     prepare_rep_2 = client.prepare_deploy(
         VALIDATOR1_KEY.get_public_key().to_hex(),

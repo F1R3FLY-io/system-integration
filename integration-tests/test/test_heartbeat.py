@@ -129,9 +129,9 @@ def test_heartbeat_creates_blocks_when_idle(
         logs = node.logs()
 
         # Verify heartbeat initialization log
-        assert (
-            "Heartbeat: Starting with random initial delay" in logs
-        ), "Should log heartbeat startup message"
+        assert "Heartbeat: Starting with random initial delay" in logs, (
+            "Should log heartbeat startup message"
+        )
 
         assert final_count >= 4, (
             f"Heartbeat should create multiple blocks in standalone mode. "
@@ -145,9 +145,9 @@ def test_heartbeat_creates_blocks_when_idle(
         )
 
         # Regression guard: standalone validator should not hit this error
-        assert (
-            "has not made progress" not in logs
-        ), "Should NOT see 'has not made progress' error in standalone mode"
+        assert "has not made progress" not in logs, (
+            "Should NOT see 'has not made progress' error in standalone mode"
+        )
 
 
 @pytest.mark.xdist_group("standalone")
@@ -216,9 +216,9 @@ def test_heartbeat_creates_blocks_when_idle_shard(
 
     # Verify heartbeat initialization log on at least one validator
     logs = validator1_node.logs()
-    assert (
-        "Heartbeat: Starting with random initial delay" in logs
-    ), "Shard validator should log heartbeat startup message"
+    assert "Heartbeat: Starting with random initial delay" in logs, (
+        "Shard validator should log heartbeat startup message"
+    )
 
     # Record the highest block number seen by each validator.
     # Using blockNumber instead of get_blocks_count(depth) because the
@@ -243,12 +243,13 @@ def test_heartbeat_creates_blocks_when_idle_shard(
     # Post-check: all containers still running after wait
     assert_containers_running(docker_client, ALL_CONTAINERS)
 
-    assert (
-        all_advanced
-    ), "All validators should advance by at least 2 blocks from heartbeat. " + ", ".join(
-        f"{validators[i].name}: initial={initial_block_numbers[i]}, "
-        f"final={final_block_numbers[i]}"
-        for i in range(len(validators))
+    assert all_advanced, (
+        "All validators should advance by at least 2 blocks from heartbeat. "
+        + ", ".join(
+            f"{validators[i].name}: initial={initial_block_numbers[i]}, "
+            f"final={final_block_numbers[i]}"
+            for i in range(len(validators))
+        )
     )
 
 
@@ -292,9 +293,9 @@ def test_manual_propose_during_heartbeat_shard(
         validator1_node.propose()
     except F1r3flyClientException as e:
         message = str(e)
-        assert (
-            "another propose is in progress" in message or "Failure" in message
-        ), f"Expected 'another propose is in progress' but got: {message}"
+        assert "another propose is in progress" in message or "Failure" in message, (
+            f"Expected 'another propose is in progress' but got: {message}"
+        )
 
     # Poll until the node has advanced beyond the initial block number.
     propose_timeout = int(60 * testing_context.timeout_scale)
