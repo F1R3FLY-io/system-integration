@@ -192,17 +192,33 @@ pid_lint=$!
         passed=$((passed + 1))
     else
         rc=$?
-        if [[ $rc -eq 124 ]]; then
-            echo -e "  ${CYAN}[test]${NC} test_internal ${RED}TIMEOUT${NC} (${TEST_TIMEOUT}s)" >&3
+        # Detect missing integration dependencies (f1r3fly, docker, etc.)
+        # pytest exit codes: 2=interrupted, 3=internal error, 4=usage error, 5=no tests
+        # Import errors during conftest loading can produce exit codes 2, 4, or 5
+        is_import_error=0
+        if grep -qE "ModuleNotFoundError|ImportError" "$test_out" 2>/dev/null; then
+            is_import_error=1
         elif [[ $rc -eq 5 ]]; then
-            # Exit code 5 = no tests collected (fixture import issue without Docker)
-            echo -e "  ${CYAN}[test]${NC} test_internal ${YELLOW}SKIP${NC} (collection requires Docker fixtures)" >&3
+            is_import_error=1  # no tests collected
+        fi
+
+        if [[ $is_import_error -eq 1 ]]; then
+            echo -e "  ${CYAN}[test]${NC} test_internal ${YELLOW}SKIP${NC} (missing integration deps)" >&3
             skipped=$((skipped + 1))
             total=$((total - 1))  # don't count as failure
+        elif [[ $rc -eq 124 ]]; then
+            echo -e "  ${CYAN}[test]${NC} test_internal ${RED}TIMEOUT${NC} (${TEST_TIMEOUT}s)" >&3
+            failed=$((failed + 1))
+            has_failure=1
+            {
+                echo ""
+                echo -e "${RED}FAIL${NC}: test_internal"
+                echo "--- Output ---"
+                cat "$test_out"
+                echo "--------------"
+            } >> "$RESULTS_DIR/test-failures.out"
         else
             echo -e "  ${CYAN}[test]${NC} test_internal ${RED}FAIL${NC}" >&3
-        fi
-        if [[ $rc -ne 5 ]]; then
             failed=$((failed + 1))
             has_failure=1
             {
