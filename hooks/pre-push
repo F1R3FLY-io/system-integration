@@ -13,7 +13,9 @@
 #   ./scripts/setup-hooks.sh --copy       # Alternative: copies to .git/hooks/
 #
 # Environment variables:
-#   SKIP_LINT=1          - Skip ruff lint and format checks
+#   SKIP_LINT=1          - Skip all lint checks (ruff lint + format)
+#   SKIP_RUFF=1          - Skip ruff linting only
+#   SKIP_FORMAT=1        - Skip ruff formatting check only (legacy: SKIP_BLACK)
 #   SKIP_TESTS=1         - Skip pytest unit tests
 #   VERBOSE=1            - Show all test output (not just failures)
 #   QUICK=1              - Skip tests, lint only
@@ -42,6 +44,8 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 # Configuration from environment
 SKIP_LINT="${SKIP_LINT:-0}"
+SKIP_RUFF="${SKIP_RUFF:-0}"
+SKIP_FORMAT="${SKIP_FORMAT:-${SKIP_BLACK:-0}}"
 SKIP_TESTS="${SKIP_TESTS:-0}"
 VERBOSE="${VERBOSE:-0}"
 QUICK="${QUICK:-0}"
@@ -102,8 +106,7 @@ echo "================================"
         exit 0
     fi
 
-    # Ruff
-    total=$((total + 1))
+    # Resolve ruff command once for both lint and format
     if command -v poetry &> /dev/null && poetry run ruff --version &> /dev/null 2>&1; then
         ruff_cmd="poetry run ruff"
     elif command -v ruff &> /dev/null; then
@@ -112,52 +115,62 @@ echo "================================"
         ruff_cmd=""
     fi
 
-    if [[ -n "$ruff_cmd" ]]; then
-        ruff_out="$RESULTS_DIR/ruff.out"
-        if $ruff_cmd check "$REPO_ROOT/shardctl" "$REPO_ROOT/integration-tests/test" > "$ruff_out" 2>&1; then
-            echo -e "  ${CYAN}[lint]${NC}  ruff ${GREEN}PASS${NC}" >&3
-            passed=$((passed + 1))
-        else
-            echo -e "  ${CYAN}[lint]${NC}  ruff ${RED}FAIL${NC}" >&3
-            failed=$((failed + 1))
-            has_failure=1
-            {
-                echo ""
-                echo -e "${RED}FAIL${NC}: ruff"
-                echo "--- Output ---"
-                cat "$ruff_out"
-                echo "--------------"
-            } >> "$RESULTS_DIR/lint-failures.out"
-        fi
-        rm -f "$ruff_out"
+    # Ruff lint
+    if [[ "$SKIP_RUFF" == "1" ]]; then
+        echo -e "  ${CYAN}[lint]${NC}  ruff ${YELLOW}SKIP${NC} (SKIP_RUFF=1)" >&3
     else
-        echo -e "  ${CYAN}[lint]${NC}  ruff ${YELLOW}SKIP${NC} (not available)" >&3
-        skipped=$((skipped + 1))
+        total=$((total + 1))
+        if [[ -n "$ruff_cmd" ]]; then
+            ruff_out="$RESULTS_DIR/ruff.out"
+            if $ruff_cmd check "$REPO_ROOT/shardctl" "$REPO_ROOT/integration-tests/test" > "$ruff_out" 2>&1; then
+                echo -e "  ${CYAN}[lint]${NC}  ruff ${GREEN}PASS${NC}" >&3
+                passed=$((passed + 1))
+            else
+                echo -e "  ${CYAN}[lint]${NC}  ruff ${RED}FAIL${NC}" >&3
+                failed=$((failed + 1))
+                has_failure=1
+                {
+                    echo ""
+                    echo -e "${RED}FAIL${NC}: ruff"
+                    echo "--- Output ---"
+                    cat "$ruff_out"
+                    echo "--------------"
+                } >> "$RESULTS_DIR/lint-failures.out"
+            fi
+            rm -f "$ruff_out"
+        else
+            echo -e "  ${CYAN}[lint]${NC}  ruff ${YELLOW}SKIP${NC} (not available)" >&3
+            skipped=$((skipped + 1))
+        fi
     fi
 
     # Ruff format check
-    total=$((total + 1))
-    if [[ -n "$ruff_cmd" ]]; then
-        fmt_out="$RESULTS_DIR/ruff-fmt.out"
-        if $ruff_cmd format --check "$REPO_ROOT/shardctl" "$REPO_ROOT/integration-tests/test" > "$fmt_out" 2>&1; then
-            echo -e "  ${CYAN}[lint]${NC}  format ${GREEN}PASS${NC}" >&3
-            passed=$((passed + 1))
-        else
-            echo -e "  ${CYAN}[lint]${NC}  format ${RED}FAIL${NC}" >&3
-            failed=$((failed + 1))
-            has_failure=1
-            {
-                echo ""
-                echo -e "${RED}FAIL${NC}: ruff format"
-                echo "--- Output ---"
-                cat "$fmt_out"
-                echo "--------------"
-            } >> "$RESULTS_DIR/lint-failures.out"
-        fi
-        rm -f "$fmt_out"
+    if [[ "$SKIP_FORMAT" == "1" ]]; then
+        echo -e "  ${CYAN}[lint]${NC}  format ${YELLOW}SKIP${NC} (SKIP_FORMAT=1)" >&3
     else
-        echo -e "  ${CYAN}[lint]${NC}  format ${YELLOW}SKIP${NC} (ruff not available)" >&3
-        skipped=$((skipped + 1))
+        total=$((total + 1))
+        if [[ -n "$ruff_cmd" ]]; then
+            fmt_out="$RESULTS_DIR/ruff-fmt.out"
+            if $ruff_cmd format --check "$REPO_ROOT/shardctl" "$REPO_ROOT/integration-tests/test" > "$fmt_out" 2>&1; then
+                echo -e "  ${CYAN}[lint]${NC}  format ${GREEN}PASS${NC}" >&3
+                passed=$((passed + 1))
+            else
+                echo -e "  ${CYAN}[lint]${NC}  format ${RED}FAIL${NC}" >&3
+                failed=$((failed + 1))
+                has_failure=1
+                {
+                    echo ""
+                    echo -e "${RED}FAIL${NC}: ruff format"
+                    echo "--- Output ---"
+                    cat "$fmt_out"
+                    echo "--------------"
+                } >> "$RESULTS_DIR/lint-failures.out"
+            fi
+            rm -f "$fmt_out"
+        else
+            echo -e "  ${CYAN}[lint]${NC}  format ${YELLOW}SKIP${NC} (ruff not available)" >&3
+            skipped=$((skipped + 1))
+        fi
     fi
 
     echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/lint.counts"
@@ -292,7 +305,9 @@ else
     echo "Options:"
     echo "  VERBOSE=1 git push       - Show detailed output"
     echo "  QUICK=1 git push         - Lint only, skip tests"
-    echo "  SKIP_LINT=1 git push     - Skip lint checks"
+    echo "  SKIP_LINT=1 git push     - Skip all lint checks"
+    echo "  SKIP_RUFF=1 git push     - Skip ruff lint only"
+    echo "  SKIP_FORMAT=1 git push   - Skip ruff format only"
     echo "  SKIP_TESTS=1 git push    - Skip unit tests"
     echo "  TEST_TIMEOUT=60          - Set per-test timeout (default: 120s)"
     exit 1

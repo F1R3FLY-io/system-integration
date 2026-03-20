@@ -82,7 +82,7 @@ Pre-commit and pre-push hooks enforce code quality. Install with:
 - **pre-push**: ruff lint + format on full codebase, `test_internal.py` unit tests
 
 Bypass with `--no-verify` (not recommended). Skip individual checks with env vars:
-`SKIP_LINT=1`, `SKIP_RUFF=1`, `SKIP_BLACK=1`, `SKIP_YAML=1`, `SKIP_TESTS=1`, `QUICK=1`.
+`SKIP_LINT=1`, `SKIP_RUFF=1`, `SKIP_FORMAT=1`, `SKIP_YAML=1`, `SKIP_TESTS=1`, `QUICK=1`.
 
 ## CI
 

@@ -896,7 +896,7 @@ Control hook behavior with environment variables:
 |---|---|
 | `SKIP_LINT=1` | Skip all lint checks (pre-commit and pre-push) |
 | `SKIP_RUFF=1` | Skip ruff linting only |
-| `SKIP_BLACK=1` | Skip ruff formatting only |
+| `SKIP_FORMAT=1` | Skip ruff formatting only (legacy: `SKIP_BLACK` also works) |
 | `SKIP_YAML=1` | Skip YAML validation only |
 | `SKIP_TESTS=1` | Skip unit tests (pre-push only) |
 | `QUICK=1` | Lint only, skip tests (pre-push only) |
@@ -906,7 +906,7 @@ Control hook behavior with environment variables:
 ```bash
 # Examples
 QUICK=1 git push                    # Lint only, skip tests
-SKIP_BLACK=1 git commit -m "wip"   # Skip format check
+SKIP_FORMAT=1 git commit -m "wip"  # Skip format check
 git push --no-verify                # Bypass all hooks (not recommended)
 ```
 
@@ -1235,8 +1235,11 @@ poetry update
 # Show installed packages
 poetry show
 
-# Run tests
-poetry run pytest
+# Run unit tests (fast, no Docker required)
+poetry run pytest integration-tests/test/test_internal.py -v --tb=short
+
+# Run full integration tests (requires Docker, 10-30+ min)
+poetry run shardctl test
 
 # Format code with ruff
 poetry run ruff format shardctl/

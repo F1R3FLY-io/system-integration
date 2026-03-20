@@ -72,6 +72,8 @@ python_files = [
 	"test_asymmetric_bonds.py",
 	"test_bonding_validators.py",
 	"test_trim_state.py",
+	"test_slash.py",
+	"test_unbond.py",
 ]
 markers = [
 	"xdist_group: assign test to an xdist load group (shard, standalone, custom)",

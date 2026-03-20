@@ -2,13 +2,13 @@
 #
 # pre-commit hook - Run fast lint checks on staged files
 #
-# Checks Python files staged for commit with ruff (lint) and black (format).
+# Checks Python files staged for commit with ruff (lint + format).
 # To bypass (use sparingly): git commit --no-verify
 #
 # Environment variables:
 #   SKIP_LINT=1          - Skip all linting
 #   SKIP_RUFF=1          - Skip ruff linting only
-#   SKIP_BLACK=1         - Skip black formatting check only
+#   SKIP_FORMAT=1        - Skip ruff formatting check only (legacy: SKIP_BLACK)
 #   SKIP_YAML=1          - Skip YAML validation
 #   VERBOSE=1            - Show all output (not just failures)
 #
@@ -27,7 +27,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 # Configuration from environment
 SKIP_LINT="${SKIP_LINT:-0}"
 SKIP_RUFF="${SKIP_RUFF:-0}"
-SKIP_BLACK="${SKIP_BLACK:-0}"
+SKIP_FORMAT="${SKIP_FORMAT:-${SKIP_BLACK:-0}}"
 SKIP_YAML="${SKIP_YAML:-0}"
 VERBOSE="${VERBOSE:-0}"
 
@@ -86,7 +86,7 @@ if [[ ${#py_files[@]} -gt 0 && "$SKIP_RUFF" != "1" ]]; then
 fi
 
 # --- Ruff format auto-fix ---
-if [[ ${#py_files[@]} -gt 0 && "$SKIP_BLACK" != "1" ]]; then
+if [[ ${#py_files[@]} -gt 0 && "$SKIP_FORMAT" != "1" ]]; then
     if command -v poetry &> /dev/null && poetry run ruff format --version &> /dev/null 2>&1; then
         fmt_cmd="poetry run ruff format"
     elif command -v ruff &> /dev/null; then
