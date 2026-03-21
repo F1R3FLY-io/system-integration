@@ -224,9 +224,9 @@ poetry run shardctl test-reset
 
 # Or manually:
 # Stop test containers and remove data volumes
-docker-compose --project-name f1r3fly-shard down --volumes --remove-orphans
-docker-compose --project-name f1r3fly-standalone down --volumes --remove-orphans
-docker-compose --project-name f1r3fly-custom down --volumes --remove-orphans
+docker compose --project-name f1r3fly-shard down --volumes --remove-orphans
+docker compose --project-name f1r3fly-standalone down --volumes --remove-orphans
+docker compose --project-name f1r3fly-custom down --volumes --remove-orphans
 ```
 
 ## Configuration

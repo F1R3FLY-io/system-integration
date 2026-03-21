@@ -1,6 +1,6 @@
 # TODO
 
-## f1r3node-rust: WebSocket event stream spams ERROR on client disconnect
+## f1r3node: WebSocket event stream spams ERROR on client disconnect
 
 **File:** `node/src/rust/web/events_info.rs`, lines 38-42
 
@@ -11,32 +11,20 @@ When a WebSocket client disconnects from `/ws/events`, `handle_websocket` logs `
 1. `break` out of the loop when `send_event_to_websocket` returns a connection error (broken pipe, connection reset). The client is gone.
 2. Downgrade from `error!` to `debug!` or `warn!` — a client disconnecting is normal operation, not an error.
 
-## Configuration Notes
+## f1r3node: Scala node crashes with enable-mergeable-channel-gc during genesis
 
-### Settings Without CLI Flags
+Tracked in [f1r3node#441](https://github.com/F1R3FLY-io/f1r3node/issues/441).
 
-Two HOCON settings **cannot** be overridden via CLI flags and must be set in config files:
+When `enable-mergeable-channel-gc = true`, the Scala node bootstrap crashes during genesis ceremony if an observer connects before the genesis block is approved. The Rust node handles this gracefully.
 
-#### `enable-mergeable-channel-gc`
+**Workaround:** Scala compose files use `default-scala.conf` and `standalone-dev-scala.conf` overlays that disable GC. Once the Scala bug is fixed, these overlays can be removed and all nodes can use `default.conf` directly.
 
-- Set to `true` for both Rust and Scala nodes
-- Set in `conf/default.conf`
+## f1r3node: Add CLI flags for HOCON-only settings ([f1r3node#442](https://github.com/F1R3FLY-io/f1r3node/issues/442))
 
-#### `ceremony-master-mode`
+Three settings require HOCON config file overrides because they have no CLI flags, which is why we need 6 config files instead of 2:
 
-- Only the bootstrap node sets this to `true`
-- This is why bootstrap needs a separate `bootstrap.conf` that includes `default.conf` and overrides this single setting
-- All other roles (validators, observer) use `default.conf` with the default `false`
+- `ceremony-master-mode` — no CLI flag on either node → requires `bootstrap.conf`
+- `enable-mergeable-channel-gc` — no CLI flag on either node → requires Scala overlay files
+- `heartbeat.enabled` — `--heartbeat-disabled` exists on Rust but not Scala → requires `observer.conf`
 
-### Heartbeat Configuration
-
-Heartbeat is disabled for non-validator nodes via HOCON config overrides:
-
-- `bootstrap.conf` and `observer.conf` both set `casper.heartbeat.enabled = false`
-- `default.conf` has `heartbeat.enabled = true` (inherited by validators only)
-- `--heartbeat-disabled` CLI flag exists in Rust node (`options.rs:439`) but is **not used** because Scala does not support it — HOCON override keeps both node types consistent
-
-## Completed: Unified default.conf
-
-Rust and Scala nodes now share a single `conf/` directory with unified config files (`default.conf`, `bootstrap.conf`, `observer.conf`, `standalone-dev.conf`). Scala-only `logback.xml` is also in `conf/`.
-
+Adding CLI flags for these would allow a single `default.conf` + `standalone-dev.conf` for all roles and both node types.

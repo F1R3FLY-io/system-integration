@@ -39,7 +39,8 @@ services:
       - "40445:40405"
     volumes:
       - validator4-data:/var/lib/rnode
-      - ../conf/default.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default-scala.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default.conf:/var/lib/rnode/default-base.conf:ro
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml

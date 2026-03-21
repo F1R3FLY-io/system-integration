@@ -28,9 +28,9 @@ def get_docker_compose_command():
     """
     global _docker_compose_command_cache
 
-    # Return cached value if available
+    # Return a copy of cached value to prevent callers from mutating it
     if _docker_compose_command_cache is not None:
-        return _docker_compose_command_cache
+        return list(_docker_compose_command_cache)
 
     import re
 
@@ -63,7 +63,7 @@ def get_docker_compose_command():
         console.print(f"[yellow]Warning: Could not detect Docker version ({e}), using docker-compose[/yellow]", style="dim")
         _docker_compose_command_cache = ["docker-compose"]
 
-    return _docker_compose_command_cache
+    return list(_docker_compose_command_cache)
 
 
 def clone_services(
