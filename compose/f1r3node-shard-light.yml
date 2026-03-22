@@ -45,6 +45,9 @@ services:
       - --validator-private-key=${BOOTSTRAP_PRIVATE_KEY:-5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657}
       - --required-signatures
       - "1"
+      - --ceremony-master-mode
+      - --heartbeat-disabled
+      - --disable-mergeable-channel-gc
     ports:
       - "40400:40400"
       - "40401:40401"
@@ -54,9 +57,7 @@ services:
       - "40405:40405"
     volumes:
       - boot-data:/var/lib/rnode
-      - ../conf/bootstrap.conf:/var/lib/rnode/rnode.conf
-      - ../conf/default.conf:/var/lib/rnode/default-base.conf:ro
-      - ../conf/default-scala.conf:/var/lib/rnode/default.conf:ro
+      - ../conf/default.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/shard-light-bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
@@ -88,6 +89,7 @@ services:
       - --genesis-validator
       - --required-signatures
       - "1"
+      - --disable-mergeable-channel-gc
     ports:
       - "40410:40400"
       - "40411:40401"
@@ -97,8 +99,7 @@ services:
       - "40415:40405"
     volumes:
       - validator1-data:/var/lib/rnode
-      - ../conf/default-scala.conf:/var/lib/rnode/rnode.conf
-      - ../conf/default.conf:/var/lib/rnode/default-base.conf:ro
+      - ../conf/default.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/shard-light-bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
@@ -130,6 +131,7 @@ services:
       - --genesis-validator
       - --required-signatures
       - "1"
+      - --disable-mergeable-channel-gc
     ports:
       - "40420:40400"
       - "40421:40401"
@@ -139,8 +141,7 @@ services:
       - "40425:40405"
     volumes:
       - validator2-data:/var/lib/rnode
-      - ../conf/default-scala.conf:/var/lib/rnode/rnode.conf
-      - ../conf/default.conf:/var/lib/rnode/default-base.conf:ro
+      - ../conf/default.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/shard-light-bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml

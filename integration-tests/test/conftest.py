@@ -1011,7 +1011,9 @@ def _generate_custom_compose(
         f"?protocol=40400&discovery=40404"
     )
 
-    abs_conf = os.path.join(tests_dir, 'conf')
+    repo_root = os.path.dirname(tests_dir)
+    abs_conf = os.path.join(repo_root, 'conf')
+    abs_local_conf = os.path.join(tests_dir, 'conf')
     abs_certs = os.path.join(tests_dir, 'certs')
 
     global_opts = global_cli_options or {}
@@ -1071,7 +1073,11 @@ def _generate_custom_compose(
         f"--fault-tolerance-threshold={ftt}",
         f"--required-signatures={required_signatures}",
         "--approve-duration=180seconds",
-    ] + _extra_cli("boot")
+        "--ceremony-master-mode",
+        "--heartbeat-disabled",
+    ] + ([] if rust else [
+        "--disable-mergeable-channel-gc",
+    ]) + _extra_cli("boot")
 
     services['boot'] = {
         'image': image,
@@ -1084,11 +1090,11 @@ def _generate_custom_compose(
         'ports': [f"{boot_base + p}:4040{p}" for p in range(6)],
         'volumes': [
             'boot-data:/var/lib/rnode',
-            f"{abs_conf}/bootstrap-ceremony.conf:/var/lib/rnode/rnode.conf",
+            f"{abs_conf}/default.conf:/var/lib/rnode/rnode.conf",
             f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
             f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
         ] + ([] if rust else [
-            f"{abs_conf}/logback.xml:/var/lib/rnode/logback.xml",
+            f"{abs_local_conf}/logback.xml:/var/lib/rnode/logback.xml",
         ]) + [
             f"{abs_certs}/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
             f"{abs_certs}/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro",
@@ -1120,7 +1126,9 @@ def _generate_custom_compose(
             "--genesis-validator",
             f"--fault-tolerance-threshold={ftt}",
             f"--required-signatures={required_signatures}",
-        ] + _extra_cli(node_key)
+        ] + ([] if rust else [
+            "--disable-mergeable-channel-gc",
+        ]) + _extra_cli(node_key)
 
         services[node_key] = {
             'image': image,
@@ -1134,11 +1142,11 @@ def _generate_custom_compose(
             'ports': [f"{base_port + p}:4040{p}" for p in range(6)],
             'volumes': [
                 f'{node_key}-data:/var/lib/rnode',
-                f"{abs_conf}/shared-rnode.conf:/var/lib/rnode/rnode.conf",
+                f"{abs_conf}/default.conf:/var/lib/rnode/rnode.conf",
                 f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
                 f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
             ] + ([] if rust else [
-                f"{abs_conf}/logback.xml:/var/lib/rnode/logback.xml",
+                f"{abs_local_conf}/logback.xml:/var/lib/rnode/logback.xml",
             ]) + [
                 f"{abs_certs}/{cert_dir}/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
                 f"{abs_certs}/{cert_dir}/node.key.pem:/var/lib/rnode/node.key.pem:ro",
@@ -1600,7 +1608,9 @@ def add_peer_to_shard(
                 joiner.deploy_string(...)
     """
     tests_dir = _get_tests_dir()
-    abs_conf = os.path.join(tests_dir, 'conf')
+    repo_root = os.path.dirname(tests_dir)
+    abs_conf = os.path.join(repo_root, 'conf')
+    abs_local_conf = os.path.join(tests_dir, 'conf')
     timeout = command_line_options.node_startup_timeout
 
     container_name = CUSTOM_JOINER_CONTAINER
@@ -1611,13 +1621,10 @@ def add_peer_to_shard(
         f"?protocol=40400&discovery=40404"
     )
 
-    # The joiner is not a genesis validator (it joins post-genesis). We mount
-    # shared-rnode-runtime.conf which has genesis-validator-mode = false and
-    # ceremony-master-mode = false.  We cannot use bootstrap-ceremony.conf
-    # because that has ceremony-master-mode = true, which causes the joiner
-    # to create its own genesis block instead of accepting the existing one.
-    # We cannot use shared-rnode.conf because genesis-validator-mode = true
-    # and the --genesis-validator CLI flag is a presence-only toggle.
+    # The joiner uses default.conf (genesis-validator-mode = false,
+    # ceremony-master-mode = false by default). Role-specific behavior
+    # is controlled via CLI flags — joiner doesn't get --genesis-validator
+    # or --ceremony-master-mode.
     rust = _is_rust_node()
     command = ([] if rust else [
         "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
@@ -1628,12 +1635,12 @@ def add_peer_to_shard(
         f"--bootstrap={bootstrap_url}",
         f"--validator-public-key={joiner_identity.public_hex}",
         f"--validator-private-key={joiner_identity.private_hex}",
-        # Joiner is not a ceremony master so required-signatures is irrelevant,
-        # but the node still validates required_sigs < bonded_validators at
-        # startup.  The HOCON default (2) can exceed the actual bond count in
+        # The HOCON default (2) can exceed the actual bond count in
         # small custom shards, causing a silent crash.  Set to 0 to be safe.
         "--required-signatures=0",
-    ]
+    ] + ([] if rust else [
+        "--disable-mergeable-channel-gc",
+    ])
     if cli_options:
         for k, v in sorted(cli_options.items()):
             if v:
@@ -1644,13 +1651,11 @@ def add_peer_to_shard(
     base_port = _CUSTOM_PORT_BASES['joiner']
     ports = {f"4040{p}/tcp": base_port + p for p in range(6)}
 
-    # Use shared-rnode-runtime.conf (genesis-validator-mode = false,
-    # ceremony-master-mode = false) for the joiner.
     volumes = {
         joiner_volume: {
             'bind': '/var/lib/rnode/', 'mode': 'rw',
         },
-        os.path.join(abs_conf, 'shared-rnode-runtime.conf'): {
+        os.path.join(abs_conf, 'default.conf'): {
             'bind': '/var/lib/rnode/rnode.conf', 'mode': 'ro',
         },
         os.path.join(shard.genesis_dir, 'bonds.txt'): {
@@ -1661,7 +1666,7 @@ def add_peer_to_shard(
         },
     }
     if not rust:
-        volumes[os.path.join(abs_conf, 'logback.xml')] = {
+        volumes[os.path.join(abs_local_conf, 'logback.xml')] = {
             'bind': '/var/lib/rnode/logback.xml', 'mode': 'ro',
         }
 

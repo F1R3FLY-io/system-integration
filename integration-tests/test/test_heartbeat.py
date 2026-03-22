@@ -207,7 +207,7 @@ def test_heartbeat_creates_blocks_when_idle_shard(
     Test that heartbeat creates blocks on all shard validators and emits expected logs.
 
     Validates heartbeat under multi-validator coordination and multi-parent DAG.
-    The shard conf (shared-rnode.conf) has heartbeat.enabled=true by default.
+    The shard conf (default.conf) has heartbeat.enabled=true by default.
     """
     # Pre-check: all shard containers must be running
     assert_containers_running(docker_client, ALL_CONTAINERS)

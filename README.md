@@ -191,18 +191,20 @@ shardctl test-reset               Clean up test containers and volumes
 
 ### Node Config Files
 
-Rust and Scala nodes share config files in `conf/`. Scala uses overlay configs that disable `enable-mergeable-channel-gc` ([f1r3node#441](https://github.com/F1R3FLY-io/f1r3node/issues/441)).
+Rust and Scala nodes share 2 config files in `conf/`. Per-role behavior is controlled entirely via CLI flags in compose commands.
 
 | Config File | Used By | Purpose |
 |-------------|---------|---------|
-| `default.conf` | Rust validators, base for overlays | Shared defaults, GC enabled |
-| `default-scala.conf` | Scala validators | Includes `default.conf`, disables GC |
-| `bootstrap.conf` | Bootstrap (both) | `ceremony-master-mode = true`, heartbeat disabled |
-| `observer.conf` | Observer (both) | Heartbeat disabled |
-| `standalone-dev.conf` | Rust standalone | Standalone mode, GC enabled |
-| `standalone-dev-scala.conf` | Scala standalone | Includes `standalone-dev.conf`, disables GC |
+| `default.conf` | All shard roles (both Rust and Scala) | Shared defaults, GC enabled |
+| `standalone-dev.conf` | All standalone nodes (both Rust and Scala) | Standalone mode |
 
-These overlays exist because `ceremony-master-mode`, `enable-mergeable-channel-gc`, and `heartbeat.enabled` (Scala) have no CLI flags ([f1r3node#442](https://github.com/F1R3FLY-io/f1r3node/issues/442)).
+Per-role CLI flags used in compose files:
+
+| Flag | Used by |
+|------|---------|
+| `--ceremony-master-mode` | Bootstrap only |
+| `--heartbeat-disabled` | Bootstrap and observer |
+| `--disable-mergeable-channel-gc` | All Scala services ([f1r3node#441](https://github.com/F1R3FLY-io/f1r3node/issues/441)) |
 
 ### Environment Files
 

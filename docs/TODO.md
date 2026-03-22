@@ -17,14 +17,4 @@ Tracked in [f1r3node#441](https://github.com/F1R3FLY-io/f1r3node/issues/441).
 
 When `enable-mergeable-channel-gc = true`, the Scala node bootstrap crashes during genesis ceremony if an observer connects before the genesis block is approved. The Rust node handles this gracefully.
 
-**Workaround:** Scala compose files use `default-scala.conf` and `standalone-dev-scala.conf` overlays that disable GC. Once the Scala bug is fixed, these overlays can be removed and all nodes can use `default.conf` directly.
-
-## f1r3node: Add CLI flags for HOCON-only settings ([f1r3node#442](https://github.com/F1R3FLY-io/f1r3node/issues/442))
-
-Three settings require HOCON config file overrides because they have no CLI flags, which is why we need 6 config files instead of 2:
-
-- `ceremony-master-mode` — no CLI flag on either node → requires `bootstrap.conf`
-- `enable-mergeable-channel-gc` — no CLI flag on either node → requires Scala overlay files
-- `heartbeat.enabled` — `--heartbeat-disabled` exists on Rust but not Scala → requires `observer.conf`
-
-Adding CLI flags for these would allow a single `default.conf` + `standalone-dev.conf` for all roles and both node types.
+**Workaround:** All Scala compose services pass `--disable-mergeable-channel-gc` via CLI. Once the Scala bug is fixed, this flag can be removed from Scala compose files.

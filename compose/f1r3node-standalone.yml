@@ -26,6 +26,7 @@ services:
         "-s",
         "--host=${STANDALONE_HOST:-rnode.standalone}",
         "--validator-private-key=${STANDALONE_PRIVATE_KEY:-5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657}",
+        "--disable-mergeable-channel-gc",
       ]
     ports:
       - "40400:40400"
@@ -36,8 +37,7 @@ services:
       - "40405:40405"
     volumes:
       - standalone-data:/var/lib/rnode
-      - ../conf/standalone-dev-scala.conf:/var/lib/rnode/rnode.conf
-      - ../conf/standalone-dev.conf:/var/lib/rnode/standalone-dev-base.conf:ro
+      - ../conf/standalone-dev.conf:/var/lib/rnode/rnode.conf
       - ../genesis/standalone-wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/standalone-bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
