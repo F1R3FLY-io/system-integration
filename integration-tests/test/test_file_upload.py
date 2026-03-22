@@ -30,7 +30,7 @@ from .conftest import (
     VALIDATOR2_KEY,
     assert_containers_running,
 )
-from .rnode import Node, _GRPC_OPTIONS, default_shard_id, DOCKER_HOST
+from .rnode import Node, _GRPC_OPTIONS, default_shard_id
 
 pytestmark = pytest.mark.xdist_group("shard")
 
@@ -76,7 +76,7 @@ def _upload_file(
     )
 
     with F1r3flyClient(
-        DOCKER_HOST, node.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS
+        'localhost', node.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS
     ) as client:
         return client.upload_file(metadata, data)
 
@@ -98,19 +98,10 @@ def _download_file(node: Node, file_hash: str, offset: int = 0,
                    timeout: float = 600) -> bytes:
     """Download a file from the given node."""
     with F1r3flyClient(
-        DOCKER_HOST, node.get_external_grpc_port(),
+        'localhost', node.get_external_grpc_port(),
         grpc_options=_DOWNLOAD_GRPC_OPTIONS
     ) as client:
-        request = FileDownloadRequest(fileHash=file_hash, offset=offset)
-        response_stream = client._deploy_stub.downloadFile(
-            request, timeout=timeout
-        )
-        chunks = []
-        for chunk in response_stream:
-            which = chunk.WhichOneof('chunk')
-            if which == 'data':
-                chunks.append(chunk.data)
-        return b''.join(chunks)
+        return client.download_file(file_hash, offset=offset, timeout=timeout)
 
 
 def _wait_for_deploy_in_block(node: Node, deploy_id: str, timeout: float):
