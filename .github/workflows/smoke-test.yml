@@ -2,8 +2,7 @@ name: Smoke Test
 
 on:
   push:
-    # TODO: Remove chore/docker-config-consolidation after PR #35 merges
-    branches: [main, chore/docker-config-consolidation]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
