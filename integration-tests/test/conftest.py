@@ -43,6 +43,19 @@ logging.getLogger('connectionpool.py').setLevel(logging.WARNING)
 logging.getLogger('docker.utils.config').setLevel(logging.WARNING)
 logging.getLogger('docker.auth').setLevel(logging.WARNING)
 
+def _docker_compose_bin():
+    """Return the docker compose binary as a list.
+
+    Tries 'docker compose' (v2 plugin) first, falls back to 'docker-compose'.
+    """
+    try:
+        subprocess.run(["docker", "compose", "version"],
+                       capture_output=True, check=True)
+        return ["docker", "compose"]
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ["docker-compose"]
+
+
 # Container names matching the docker-compose defaults
 BOOTSTRAP_CONTAINER = 'rnode.bootstrap'
 VALIDATOR1_CONTAINER = 'rnode.validator1'
@@ -164,11 +177,11 @@ def _get_compose_file() -> str:
 
 
 def _compose_cmd(*args: str) -> List[str]:
-    """Build a docker-compose command with the correct env and compose file."""
+    """Build a docker compose command with the correct env and compose file."""
     tests_dir = _get_tests_dir()
     compose_file = _get_compose_file()
     return [
-        "docker-compose",
+        *_docker_compose_bin(),
         "--project-name", SHARD_PROJECT_NAME,
         "--env-file", os.path.join(tests_dir, ".env.node"),
         "-f", os.path.join(tests_dir, compose_file),
@@ -222,7 +235,7 @@ def _standalone_compose_cmd(*args: str, override_file: Optional[str] = None) -> 
     tests_dir = _get_tests_dir()
     compose_file = _get_standalone_compose_file()
     cmd = [
-        "docker-compose",
+        *_docker_compose_bin(),
         "--project-name", STANDALONE_PROJECT_NAME,
         "--env-file", os.path.join(tests_dir, ".env.node"),
         "-f", os.path.join(tests_dir, compose_file),
@@ -1182,7 +1195,7 @@ def _custom_compose_cmd(compose_file: str, *args: str) -> List[str]:
     """Build a docker-compose command for the custom shard."""
     tests_dir = _get_tests_dir()
     return [
-        "docker-compose",
+        *_docker_compose_bin(),
         "--project-name", CUSTOM_PROJECT_NAME,
         "--env-file", os.path.join(tests_dir, ".env.node"),
         "-f", compose_file,
