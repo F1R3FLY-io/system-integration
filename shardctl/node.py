@@ -457,7 +457,7 @@ def logs(
         return
 
     # Build command with all compose files
-    cmd = ["docker-compose", "--env-file", str(config.env_file)]
+    cmd = get_docker_compose_command() + ["--env-file", str(config.env_file)]
     for node_type, topology, compose_file in all_configs:
         cmd.extend(["-f", str(compose_file)])
 

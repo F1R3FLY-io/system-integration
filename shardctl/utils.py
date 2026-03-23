@@ -19,12 +19,13 @@ _docker_compose_command_cache = None
 
 def get_docker_compose_command():
     """
-    Detect Docker version and return appropriate compose command.
+    Detect available compose command.
 
+    Tries "docker compose" (v2 plugin) first, falls back to "docker-compose" (standalone).
     The result is cached after the first detection to avoid repeated subprocess calls.
 
     Returns:
-        list: ["docker", "compose"] for Docker >= 29, ["docker-compose"] for older versions
+        list: ["docker", "compose"] or ["docker-compose"]
     """
     global _docker_compose_command_cache
 
@@ -32,37 +33,33 @@ def get_docker_compose_command():
     if _docker_compose_command_cache is not None:
         return list(_docker_compose_command_cache)
 
-    import re
-
+    # Try "docker compose" (v2 plugin, available since Docker ~20.10)
     try:
-        # Get Docker version
-        result = subprocess.run(
-            ["docker", "--version"],
+        subprocess.run(
+            ["docker", "compose", "version"],
             capture_output=True,
-            text=True,
             check=True
         )
+        _docker_compose_command_cache = ["docker", "compose"]
+        return list(_docker_compose_command_cache)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
 
-        # Parse version from output like "Docker version 24.0.7, build afdd53b"
-        version_match = re.search(r'Docker version (\d+)\.', result.stdout)
-        if version_match:
-            major_version = int(version_match.group(1))
-
-            # Docker 29+ uses "docker compose", older uses "docker-compose"
-            if major_version >= 29:
-                _docker_compose_command_cache = ["docker", "compose"]
-            else:
-                _docker_compose_command_cache = ["docker-compose"]
-        else:
-            # Fallback to docker-compose if version parsing fails
-            console.print("[yellow]Warning: Could not parse Docker version, using docker-compose[/yellow]", style="dim")
-            _docker_compose_command_cache = ["docker-compose"]
-
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        # Fallback to docker-compose if docker command fails
-        console.print(f"[yellow]Warning: Could not detect Docker version ({e}), using docker-compose[/yellow]", style="dim")
+    # Fall back to "docker-compose" (standalone binary)
+    try:
+        subprocess.run(
+            ["docker-compose", "version"],
+            capture_output=True,
+            check=True
+        )
         _docker_compose_command_cache = ["docker-compose"]
+        return list(_docker_compose_command_cache)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
 
+    # Neither found — default to "docker compose" and let it fail with a clear error
+    console.print("[yellow]Warning: Neither 'docker compose' nor 'docker-compose' found[/yellow]", style="dim")
+    _docker_compose_command_cache = ["docker", "compose"]
     return list(_docker_compose_command_cache)
 
 
