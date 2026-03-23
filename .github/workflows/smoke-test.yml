@@ -1,0 +1,153 @@
+name: Smoke Test
+
+on:
+  push:
+    # TODO: Remove chore/docker-config-consolidation after PR #35 merges
+    branches: [main, chore/docker-config-consolidation]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate & CLI
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install shardctl
+        run: |
+          pip install poetry
+          poetry install
+
+      - name: Validate all compose files
+        run: ./scripts/smoke-test.sh --validate-only
+
+      - name: Verify shardctl CLI
+        run: |
+          poetry run shardctl --help
+          poetry run shardctl status || true
+          poetry run shardctl ps || true
+
+  rust:
+    name: Rust Topologies & Integration
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install shardctl
+        run: |
+          pip install poetry
+          poetry install --with integration
+
+      - name: Pull Rust node image
+        run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+
+      # --- Topologies ---
+      - name: "Topology: Rust shard"
+        run: |
+          poetry run shardctl up f1r3node-rust
+          poetry run shardctl wait --timeout 300
+          poetry run shardctl status
+          poetry run shardctl logs f1r3node-rust --tail 20
+          poetry run shardctl reset -y
+
+      - name: "Topology: Rust standalone"
+        run: |
+          poetry run shardctl up f1r3node-rust-standalone
+          poetry run shardctl wait --timeout 120
+          poetry run shardctl status
+          poetry run shardctl reset -y
+
+      # --- Integration tests ---
+      - name: "Integration: Rust shard (test_status)"
+        run: poetry run shardctl test --rust test_web_api --pytest-args "--timeout=600"
+
+      - name: "Integration: Rust standalone (test_heartbeat)"
+        run: poetry run shardctl test --rust test_heartbeat_creates_block --pytest-args "--timeout=600"
+
+      - name: "Integration: Rust custom shard (test_synchrony)"
+        run: poetry run shardctl test --rust test_synchrony_constraint --pytest-args "--timeout=600"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          poetry run shardctl reset -y || true
+          poetry run shardctl test-reset || true
+
+  scala:
+    name: Scala Topologies & Integration
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install shardctl
+        run: |
+          pip install poetry
+          poetry install --with integration
+
+      - name: Pull Scala node image
+        run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+
+      # --- Topologies ---
+      - name: "Topology: Scala shard"
+        run: |
+          poetry run shardctl up f1r3node
+          poetry run shardctl wait --timeout 420
+          poetry run shardctl status
+          poetry run shardctl logs f1r3node --tail 20
+          poetry run shardctl reset -y
+
+      - name: "Topology: Scala standalone"
+        run: |
+          poetry run shardctl up f1r3node-standalone
+          poetry run shardctl wait --timeout 120
+          poetry run shardctl status
+          poetry run shardctl reset -y
+
+      - name: "Topology: Scala light shard"
+        run: |
+          poetry run shardctl up f1r3node-shard-light
+          poetry run shardctl wait --timeout 300
+          poetry run shardctl status
+          poetry run shardctl reset -y
+
+      # --- Integration tests ---
+      - name: "Integration: Scala shard (test_status)"
+        run: poetry run shardctl test --scala test_web_api --pytest-args "--timeout=600"
+
+      - name: "Integration: Scala standalone (test_heartbeat)"
+        run: poetry run shardctl test --scala test_heartbeat_creates_block --pytest-args "--timeout=600"
+
+      - name: "Integration: Scala custom shard (test_synchrony)"
+        run: poetry run shardctl test --scala test_synchrony_constraint --pytest-args "--timeout=600"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          poetry run shardctl reset -y || true
+          poetry run shardctl test-reset || true
+
+# =============================================================
+# Not yet covered:
+# - shardctl clone / setup / build-service (requires source builds, ~30min+)
+# - shardctl exec / shell (interactive)
+# - Embers, F1R3Sky, monitoring topologies (separate service images)
+# =============================================================
