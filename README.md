@@ -62,6 +62,8 @@ poetry run shardctl reset -y      # Stop and wipe data volumes
 | `shardctl up f1r3node-standalone` | Scala standalone |
 | `shardctl up f1r3node-shard-light` | Scala light shard (boot + 2 validators, ~7.5 GB RAM) |
 
+See [COMPOSE_STRUCTURE.md](COMPOSE_STRUCTURE.md) for details on each compose file.
+
 All commands require `poetry run` prefix unless you activate the shell with `poetry shell`.
 
 ### Custom Docker Images
