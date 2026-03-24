@@ -7,6 +7,14 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  PYTEST_TIMEOUT_ARGS: >-
+    --pytest-args "--startup-timeout=600"
+    --pytest-args "--command-timeout=300"
+    --pytest-args "--timeout=600"
+    --pytest-args "--timeout-scale=1.5"
+  BLOCK_TARGET: 25
+
 jobs:
   validate:
     name: Validate & CLI
@@ -29,11 +37,14 @@ jobs:
           poetry run shardctl status || true
           poetry run shardctl ps || true
 
+  # ===========================================================
+  # Topology Health Checks (25 blocks each)
+  # ===========================================================
   rust-shard:
-    name: Rust Shard (10 blocks)
+    name: Rust Shard (25 blocks)
     runs-on: ubuntu-latest
     needs: validate
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -48,28 +59,28 @@ jobs:
           poetry run shardctl up f1r3node-rust
           poetry run shardctl wait --timeout 300
           poetry run shardctl status
-      - name: Wait for 10 blocks
+      - name: Wait for 25 blocks
         run: |
-          echo "Waiting for at least 10 blocks..."
-          for i in $(seq 1 60); do
+          TARGET=${{ env.BLOCK_TARGET }}
+          for i in $(seq 1 120); do
             BLOCK_COUNT=$(curl -sf http://localhost:40413/api/blocks/1000 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
             echo "  [$((i*5))s] blocks: $BLOCK_COUNT"
-            if [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null; then
+            if [ "$BLOCK_COUNT" -ge "$TARGET" ] 2>/dev/null; then
               echo "Reached $BLOCK_COUNT blocks"
               break
             fi
             sleep 5
           done
-          [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 300s" && exit 1)
+          [ "$BLOCK_COUNT" -ge "$TARGET" ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 600s" && exit 1)
       - name: Cleanup
         if: always()
         run: poetry run shardctl reset -y || true
 
   rust-standalone:
-    name: Rust Standalone (10 blocks)
+    name: Rust Standalone (25 blocks)
     runs-on: ubuntu-latest
     needs: validate
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -84,28 +95,28 @@ jobs:
           poetry run shardctl up f1r3node-rust-standalone
           poetry run shardctl wait --timeout 120
           poetry run shardctl status
-      - name: Wait for 10 blocks
+      - name: Wait for 25 blocks
         run: |
-          echo "Waiting for at least 10 blocks..."
-          for i in $(seq 1 60); do
+          TARGET=${{ env.BLOCK_TARGET }}
+          for i in $(seq 1 120); do
             BLOCK_COUNT=$(curl -sf http://localhost:40403/api/blocks/1000 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
             echo "  [$((i*5))s] blocks: $BLOCK_COUNT"
-            if [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null; then
+            if [ "$BLOCK_COUNT" -ge "$TARGET" ] 2>/dev/null; then
               echo "Reached $BLOCK_COUNT blocks"
               break
             fi
             sleep 5
           done
-          [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 300s" && exit 1)
+          [ "$BLOCK_COUNT" -ge "$TARGET" ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 600s" && exit 1)
       - name: Cleanup
         if: always()
         run: poetry run shardctl reset -y || true
 
   scala-shard:
-    name: Scala Shard (10 blocks)
+    name: Scala Shard (25 blocks)
     runs-on: ubuntu-latest
     needs: validate
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -120,28 +131,28 @@ jobs:
           poetry run shardctl up f1r3node
           poetry run shardctl wait --timeout 420
           poetry run shardctl status
-      - name: Wait for 10 blocks
+      - name: Wait for 25 blocks
         run: |
-          echo "Waiting for at least 10 blocks..."
-          for i in $(seq 1 90); do
+          TARGET=${{ env.BLOCK_TARGET }}
+          for i in $(seq 1 120); do
             BLOCK_COUNT=$(curl -sf http://localhost:40413/api/blocks/1000 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
             echo "  [$((i*5))s] blocks: $BLOCK_COUNT"
-            if [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null; then
+            if [ "$BLOCK_COUNT" -ge "$TARGET" ] 2>/dev/null; then
               echo "Reached $BLOCK_COUNT blocks"
               break
             fi
             sleep 5
           done
-          [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 450s" && exit 1)
+          [ "$BLOCK_COUNT" -ge "$TARGET" ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 600s" && exit 1)
       - name: Cleanup
         if: always()
         run: poetry run shardctl reset -y || true
 
   scala-standalone:
-    name: Scala Standalone (10 blocks)
+    name: Scala Standalone (25 blocks)
     runs-on: ubuntu-latest
     needs: validate
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -156,28 +167,28 @@ jobs:
           poetry run shardctl up f1r3node-standalone
           poetry run shardctl wait --timeout 120
           poetry run shardctl status
-      - name: Wait for 10 blocks
+      - name: Wait for 25 blocks
         run: |
-          echo "Waiting for at least 10 blocks..."
-          for i in $(seq 1 60); do
+          TARGET=${{ env.BLOCK_TARGET }}
+          for i in $(seq 1 120); do
             BLOCK_COUNT=$(curl -sf http://localhost:40403/api/blocks/1000 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
             echo "  [$((i*5))s] blocks: $BLOCK_COUNT"
-            if [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null; then
+            if [ "$BLOCK_COUNT" -ge "$TARGET" ] 2>/dev/null; then
               echo "Reached $BLOCK_COUNT blocks"
               break
             fi
             sleep 5
           done
-          [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 300s" && exit 1)
+          [ "$BLOCK_COUNT" -ge "$TARGET" ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 600s" && exit 1)
       - name: Cleanup
         if: always()
         run: poetry run shardctl reset -y || true
 
   scala-light:
-    name: Scala Light Shard (10 blocks)
+    name: Scala Light Shard (25 blocks)
     runs-on: ubuntu-latest
     needs: validate
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -192,25 +203,94 @@ jobs:
           poetry run shardctl up f1r3node-shard-light
           poetry run shardctl wait --timeout 300
           poetry run shardctl status
-      - name: Wait for 10 blocks
+      - name: Wait for 25 blocks
         run: |
-          echo "Waiting for at least 10 blocks..."
-          for i in $(seq 1 60); do
+          TARGET=${{ env.BLOCK_TARGET }}
+          for i in $(seq 1 120); do
             BLOCK_COUNT=$(curl -sf http://localhost:40413/api/blocks/1000 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
             echo "  [$((i*5))s] blocks: $BLOCK_COUNT"
-            if [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null; then
+            if [ "$BLOCK_COUNT" -ge "$TARGET" ] 2>/dev/null; then
               echo "Reached $BLOCK_COUNT blocks"
               break
             fi
             sleep 5
           done
-          [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 300s" && exit 1)
+          [ "$BLOCK_COUNT" -ge "$TARGET" ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 600s" && exit 1)
       - name: Cleanup
         if: always()
         run: poetry run shardctl reset -y || true
 
-  rust-integration:
-    name: Rust Integration Tests
+  # ===========================================================
+  # Integration Tests (each on its own runner)
+  # ===========================================================
+  rust-test-shard:
+    name: "Rust: test_web_api (shard)"
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: |
+          pip install poetry
+          poetry install --with integration
+      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+      - name: Run test
+        run: poetry run shardctl test --rust test_web_api ${{ env.PYTEST_TIMEOUT_ARGS }}
+      - name: Cleanup
+        if: always()
+        run: |
+          poetry run shardctl reset -y || true
+          poetry run shardctl test-reset || true
+
+  rust-test-standalone:
+    name: "Rust: test_heartbeat (standalone)"
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: |
+          pip install poetry
+          poetry install --with integration
+      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+      - name: Run test
+        run: poetry run shardctl test --rust test_heartbeat_creates_block ${{ env.PYTEST_TIMEOUT_ARGS }}
+      - name: Cleanup
+        if: always()
+        run: |
+          poetry run shardctl reset -y || true
+          poetry run shardctl test-reset || true
+
+  rust-test-custom:
+    name: "Rust: test_synchrony (custom)"
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: |
+          pip install poetry
+          poetry install --with integration
+      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+      - name: Run test
+        run: poetry run shardctl test --rust test_synchrony_constraint ${{ env.PYTEST_TIMEOUT_ARGS }}
+      - name: Cleanup
+        if: always()
+        run: |
+          poetry run shardctl reset -y || true
+          poetry run shardctl test-reset || true
+
+  scala-test-shard:
+    name: "Scala: test_web_api (shard)"
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 25
@@ -222,24 +302,20 @@ jobs:
       - run: |
           pip install poetry
           poetry install --with integration
-      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
-      - name: "test_web_api (shard)"
-        run: poetry run shardctl test --rust test_web_api --pytest-args "--startup-timeout=600" --pytest-args "--command-timeout=300" --pytest-args "--timeout=600" --pytest-args "--timeout-scale=1.5"
-      - name: "test_heartbeat (standalone)"
-        run: poetry run shardctl test --rust test_heartbeat_creates_block --pytest-args "--startup-timeout=600" --pytest-args "--command-timeout=300" --pytest-args "--timeout=600" --pytest-args "--timeout-scale=1.5"
-      - name: "test_synchrony_constraint (custom)"
-        run: poetry run shardctl test --rust test_synchrony_constraint --pytest-args "--startup-timeout=600" --pytest-args "--command-timeout=300" --pytest-args "--timeout=600" --pytest-args "--timeout-scale=1.5"
+      - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+      - name: Run test
+        run: poetry run shardctl test --scala test_web_api ${{ env.PYTEST_TIMEOUT_ARGS }}
       - name: Cleanup
         if: always()
         run: |
           poetry run shardctl reset -y || true
           poetry run shardctl test-reset || true
 
-  scala-integration:
-    name: Scala Integration Tests
+  scala-test-standalone:
+    name: "Scala: test_heartbeat (standalone)"
     runs-on: ubuntu-latest
     needs: validate
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -249,12 +325,30 @@ jobs:
           pip install poetry
           poetry install --with integration
       - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
-      - name: "test_web_api (shard)"
-        run: poetry run shardctl test --scala test_web_api --pytest-args "--startup-timeout=600" --pytest-args "--command-timeout=300" --pytest-args "--timeout=600" --pytest-args "--timeout-scale=1.5"
-      - name: "test_heartbeat (standalone)"
-        run: poetry run shardctl test --scala test_heartbeat_creates_block --pytest-args "--startup-timeout=600" --pytest-args "--command-timeout=300" --pytest-args "--timeout=600" --pytest-args "--timeout-scale=1.5"
-      - name: "test_synchrony_constraint (custom)"
-        run: poetry run shardctl test --scala test_synchrony_constraint --pytest-args "--startup-timeout=600" --pytest-args "--command-timeout=300" --pytest-args "--timeout=600" --pytest-args "--timeout-scale=1.5"
+      - name: Run test
+        run: poetry run shardctl test --scala test_heartbeat_creates_block ${{ env.PYTEST_TIMEOUT_ARGS }}
+      - name: Cleanup
+        if: always()
+        run: |
+          poetry run shardctl reset -y || true
+          poetry run shardctl test-reset || true
+
+  scala-test-custom:
+    name: "Scala: test_synchrony (custom)"
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: |
+          pip install poetry
+          poetry install --with integration
+      - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+      - name: Run test
+        run: poetry run shardctl test --scala test_synchrony_constraint ${{ env.PYTEST_TIMEOUT_ARGS }}
       - name: Cleanup
         if: always()
         run: |
