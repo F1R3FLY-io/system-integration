@@ -1072,6 +1072,36 @@ def _generate_custom_compose(
             total_containers, max_ram_pct,
         )
 
+    # F1R3_* runtime tuning for Rust nodes (must match compose/f1r3node-rust.yml).
+    # These env vars are read via OnceLock on first use; Scala ignores them.
+    rust_env = [
+        'F1R3_SYNCHRONY_CONSTRAINT_THRESHOLD=0.67',
+        'F1R3_SYNCHRONY_RECOVERY_STALL_WINDOW_SECONDS=60',
+        'F1R3_SYNCHRONY_RECOVERY_COOLDOWN_SECONDS=20',
+        'F1R3_SYNCHRONY_RECOVERY_MAX_BYPASSES=2',
+        'F1R3_SYNCHRONY_FINALIZED_BASELINE_ENABLED=1',
+        'F1R3_SYNCHRONY_FINALIZED_BASELINE_MAX_DISTANCE=2048',
+        'F1R3_HEARTBEAT_FRONTIER_CHASE_MAX_LAG=0',
+        'F1R3_HEARTBEAT_SELF_PROPOSE_COOLDOWN_MS=15000',
+        'F1R3_FINALIZER_WORK_BUDGET_MS=8000',
+        'F1R3_FINALIZER_CATCHUP_WORK_BUDGET_MS=8000',
+        'F1R3_FINALIZER_STEP_TIMEOUT_MS=1000',
+        'F1R3_FINALIZER_CATCHUP_STEP_TIMEOUT_MS=1000',
+        'F1R3_FINALIZER_MAX_CLIQUE_CANDIDATES=128',
+        'F1R3_FINALIZER_CANDIDATE_RANKING=recency_stake',
+        'F1R3_BLOCK_RETRIEVER_PEER_REQUERY_COOLDOWN_MS=500',
+        'F1R3_BLOCK_RETRIEVER_BROADCAST_ONLY_COOLDOWN_MS=500',
+        'F1R3_BLOCK_RETRIEVER_DEPENDENCY_RECOVERY_COOLDOWN_MS=500',
+        'F1R3_BLOCK_RETRIEVER_STALE_REQUEST_LIFETIME_MULTIPLIER=6',
+        'F1R3_BLOCK_RETRIEVER_MAX_RETRIES_PER_HASH=32',
+        'F1R3_BLOCK_RETRIEVER_KNOWN_PEER_REQUERY_SOFT_LIMIT=8',
+        'F1R3_BLOCK_RETRIEVER_MIN_REREQUEST_INTERVAL_MS=500',
+        'F1R3_BLOCK_RETRIEVER_RETRY_BUDGET_QUARANTINE_MS=10000',
+        'F1R3_BLOCK_RETRIEVER_DEDUP_QUERIED_PEERS=0',
+        'F1R3_MAX_BLOCKS_IN_PROCESSING=2048',
+        'F1R3_MAX_USER_DEPLOYS_PER_BLOCK=32',
+    ] if rust else []
+
     services: Dict = {}
 
     # ── Bootstrap node ──
@@ -1115,7 +1145,7 @@ def _generate_custom_compose(
         ],
         'environment': [
             'OPENAI_ENABLED=false',
-        ] + ([] if rust else [
+        ] + rust_env + ([] if rust else [
             f'_JAVA_OPTIONS={java_options}',
         ]),
     }
@@ -1167,7 +1197,7 @@ def _generate_custom_compose(
             ],
             'environment': [
                 'OPENAI_ENABLED=false',
-            ] + ([] if rust else [
+            ] + rust_env + ([] if rust else [
                 f'_JAVA_OPTIONS={java_options}',
             ]),
         }
