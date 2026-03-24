@@ -1075,15 +1075,12 @@ def _generate_custom_compose(
     # F1R3_* runtime tuning for Rust nodes (must match compose/f1r3node-rust.yml).
     # These env vars are read via OnceLock on first use; Scala ignores them.
     rust_env = [
-        # NOTE: F1R3_SYNCHRONY_CONSTRAINT_THRESHOLD intentionally omitted here.
-        # It overrides per-validator CLI thresholds at runtime, breaking
+        # NOTE: All F1R3_SYNCHRONY_* vars intentionally omitted here.
+        # They override per-validator CLI settings at runtime via OnceLock, breaking
         # test_synchrony_constraint which sets different thresholds per node.
-        # The static compose (docker-compose.rust.yml) sets it via x-rnode anchor.
-        'F1R3_SYNCHRONY_RECOVERY_STALL_WINDOW_SECONDS=60',
-        'F1R3_SYNCHRONY_RECOVERY_COOLDOWN_SECONDS=20',
-        'F1R3_SYNCHRONY_RECOVERY_MAX_BYPASSES=2',
-        'F1R3_SYNCHRONY_FINALIZED_BASELINE_ENABLED=1',
-        'F1R3_SYNCHRONY_FINALIZED_BASELINE_MAX_DISTANCE=2048',
+        # In particular, F1R3_SYNCHRONY_FINALIZED_BASELINE_ENABLED=1 enables a
+        # permissive check that bypasses the threshold the test expects to trigger.
+        # The static compose (docker-compose.rust.yml) sets these via x-rnode anchor.
         'F1R3_HEARTBEAT_FRONTIER_CHASE_MAX_LAG=0',
         'F1R3_HEARTBEAT_SELF_PROPOSE_COOLDOWN_MS=15000',
         'F1R3_FINALIZER_WORK_BUDGET_MS=8000',
