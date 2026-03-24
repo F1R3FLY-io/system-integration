@@ -1087,7 +1087,6 @@ def _generate_custom_compose(
         f"--required-signatures={required_signatures}",
         "--approve-duration=180seconds",
         "--ceremony-master-mode",
-        "--heartbeat-disabled",
     ] + ([] if rust else [
         "--disable-mergeable-channel-gc",
     ]) + _extra_cli("boot")

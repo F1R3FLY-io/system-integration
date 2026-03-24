@@ -14,130 +14,247 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-
       - name: Install shardctl
         run: |
           pip install poetry
           poetry install
-
       - name: Validate all compose files
         run: ./scripts/smoke-test.sh --validate-only
-
       - name: Verify shardctl CLI
         run: |
           poetry run shardctl --help
           poetry run shardctl status || true
           poetry run shardctl ps || true
 
-  rust:
-    name: Rust Topologies & Integration
+  rust-shard:
+    name: Rust Shard (10 blocks)
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: |
+          pip install poetry
+          poetry install
+      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+      - name: Start shard and wait for Running
+        run: |
+          poetry run shardctl up f1r3node-rust
+          poetry run shardctl wait --timeout 300
+          poetry run shardctl status
+      - name: Wait for 10 blocks
+        run: |
+          echo "Waiting for at least 10 blocks..."
+          for i in $(seq 1 60); do
+            BLOCK_COUNT=$(curl -sf http://localhost:40413/api/blocks/1000 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+            echo "  [$((i*5))s] blocks: $BLOCK_COUNT"
+            if [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null; then
+              echo "Reached $BLOCK_COUNT blocks"
+              break
+            fi
+            sleep 5
+          done
+          [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 300s" && exit 1)
+      - name: Cleanup
+        if: always()
+        run: poetry run shardctl reset -y || true
+
+  rust-standalone:
+    name: Rust Standalone (10 blocks)
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: |
+          pip install poetry
+          poetry install
+      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+      - name: Start standalone and wait for Running
+        run: |
+          poetry run shardctl up f1r3node-rust-standalone
+          poetry run shardctl wait --timeout 120
+          poetry run shardctl status
+      - name: Wait for 10 blocks
+        run: |
+          echo "Waiting for at least 10 blocks..."
+          for i in $(seq 1 60); do
+            BLOCK_COUNT=$(curl -sf http://localhost:40403/api/blocks/1000 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+            echo "  [$((i*5))s] blocks: $BLOCK_COUNT"
+            if [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null; then
+              echo "Reached $BLOCK_COUNT blocks"
+              break
+            fi
+            sleep 5
+          done
+          [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 300s" && exit 1)
+      - name: Cleanup
+        if: always()
+        run: poetry run shardctl reset -y || true
+
+  scala-shard:
+    name: Scala Shard (10 blocks)
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: |
+          pip install poetry
+          poetry install
+      - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+      - name: Start shard and wait for Running
+        run: |
+          poetry run shardctl up f1r3node
+          poetry run shardctl wait --timeout 420
+          poetry run shardctl status
+      - name: Wait for 10 blocks
+        run: |
+          echo "Waiting for at least 10 blocks..."
+          for i in $(seq 1 90); do
+            BLOCK_COUNT=$(curl -sf http://localhost:40413/api/blocks/1000 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+            echo "  [$((i*5))s] blocks: $BLOCK_COUNT"
+            if [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null; then
+              echo "Reached $BLOCK_COUNT blocks"
+              break
+            fi
+            sleep 5
+          done
+          [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 450s" && exit 1)
+      - name: Cleanup
+        if: always()
+        run: poetry run shardctl reset -y || true
+
+  scala-standalone:
+    name: Scala Standalone (10 blocks)
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: |
+          pip install poetry
+          poetry install
+      - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+      - name: Start standalone and wait for Running
+        run: |
+          poetry run shardctl up f1r3node-standalone
+          poetry run shardctl wait --timeout 120
+          poetry run shardctl status
+      - name: Wait for 10 blocks
+        run: |
+          echo "Waiting for at least 10 blocks..."
+          for i in $(seq 1 60); do
+            BLOCK_COUNT=$(curl -sf http://localhost:40403/api/blocks/1000 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+            echo "  [$((i*5))s] blocks: $BLOCK_COUNT"
+            if [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null; then
+              echo "Reached $BLOCK_COUNT blocks"
+              break
+            fi
+            sleep 5
+          done
+          [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 300s" && exit 1)
+      - name: Cleanup
+        if: always()
+        run: poetry run shardctl reset -y || true
+
+  scala-light:
+    name: Scala Light Shard (10 blocks)
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: |
+          pip install poetry
+          poetry install
+      - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+      - name: Start light shard and wait for Running
+        run: |
+          poetry run shardctl up f1r3node-shard-light
+          poetry run shardctl wait --timeout 300
+          poetry run shardctl status
+      - name: Wait for 10 blocks
+        run: |
+          echo "Waiting for at least 10 blocks..."
+          for i in $(seq 1 60); do
+            BLOCK_COUNT=$(curl -sf http://localhost:40413/api/blocks/1000 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+            echo "  [$((i*5))s] blocks: $BLOCK_COUNT"
+            if [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null; then
+              echo "Reached $BLOCK_COUNT blocks"
+              break
+            fi
+            sleep 5
+          done
+          [ "$BLOCK_COUNT" -ge 10 ] 2>/dev/null || (echo "FAIL: only $BLOCK_COUNT blocks after 300s" && exit 1)
+      - name: Cleanup
+        if: always()
+        run: poetry run shardctl reset -y || true
+
+  rust-integration:
+    name: Rust Integration Tests
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-
-      - name: Install shardctl
-        run: |
+      - run: |
           pip install poetry
           poetry install --with integration
-
-      - name: Pull Rust node image
-        run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
-
-      # --- Topologies ---
-      - name: "Topology: Rust shard"
-        run: |
-          poetry run shardctl up f1r3node-rust
-          poetry run shardctl wait --timeout 300
-          poetry run shardctl status
-          poetry run shardctl logs f1r3node-rust --tail 20
-          poetry run shardctl reset -y
-
-      - name: "Topology: Rust standalone"
-        run: |
-          poetry run shardctl up f1r3node-rust-standalone
-          poetry run shardctl wait --timeout 120
-          poetry run shardctl status
-          poetry run shardctl reset -y
-
-      # --- Integration tests ---
-      - name: "Integration: Rust shard (test_status)"
+      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+      - name: "test_web_api (shard)"
         run: poetry run shardctl test --rust test_web_api --pytest-args "--timeout=600"
-
-      - name: "Integration: Rust standalone (test_heartbeat)"
+      - name: "test_heartbeat (standalone)"
         run: poetry run shardctl test --rust test_heartbeat_creates_block --pytest-args "--timeout=600"
-
-      - name: "Integration: Rust custom shard (test_synchrony)"
+      - name: "test_synchrony_constraint (custom)"
         run: poetry run shardctl test --rust test_synchrony_constraint --pytest-args "--timeout=600"
-
       - name: Cleanup
         if: always()
         run: |
           poetry run shardctl reset -y || true
           poetry run shardctl test-reset || true
 
-  scala:
-    name: Scala Topologies & Integration
+  scala-integration:
+    name: Scala Integration Tests
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-
-      - name: Install shardctl
-        run: |
+      - run: |
           pip install poetry
           poetry install --with integration
-
-      - name: Pull Scala node image
-        run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
-
-      # --- Topologies ---
-      - name: "Topology: Scala shard"
-        run: |
-          poetry run shardctl up f1r3node
-          poetry run shardctl wait --timeout 420
-          poetry run shardctl status
-          poetry run shardctl logs f1r3node --tail 20
-          poetry run shardctl reset -y
-
-      - name: "Topology: Scala standalone"
-        run: |
-          poetry run shardctl up f1r3node-standalone
-          poetry run shardctl wait --timeout 120
-          poetry run shardctl status
-          poetry run shardctl reset -y
-
-      - name: "Topology: Scala light shard"
-        run: |
-          poetry run shardctl up f1r3node-shard-light
-          poetry run shardctl wait --timeout 300
-          poetry run shardctl status
-          poetry run shardctl reset -y
-
-      # --- Integration tests ---
-      - name: "Integration: Scala shard (test_status)"
+      - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+      - name: "test_web_api (shard)"
         run: poetry run shardctl test --scala test_web_api --pytest-args "--timeout=600"
-
-      - name: "Integration: Scala standalone (test_heartbeat)"
+      - name: "test_heartbeat (standalone)"
         run: poetry run shardctl test --scala test_heartbeat_creates_block --pytest-args "--timeout=600"
-
-      - name: "Integration: Scala custom shard (test_synchrony)"
+      - name: "test_synchrony_constraint (custom)"
         run: poetry run shardctl test --scala test_synchrony_constraint --pytest-args "--timeout=600"
-
       - name: Cleanup
         if: always()
         run: |
