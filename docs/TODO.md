@@ -21,10 +21,19 @@ When `enable-mergeable-channel-gc = true`, the Scala node bootstrap crashes duri
 
 ## F1R3_* env vars override HOCON and CLI settings at runtime
 
-Rust nodes read `F1R3_*` env vars via `OnceLock` on first use. These **override** both HOCON config values and CLI flags. This creates a subtle interaction:
+Rust nodes read `F1R3_*` env vars via `OnceLock` on first use. These **override** both HOCON config values and CLI flags at runtime. Docker Compose's `--env-file` passes all uncommented vars to containers, even if they're not declared in the compose YAML `environment:` section.
 
+This means any `F1R3_*` var in `.env.node` will reach **every** container started with `--env-file .env.node`, including integration test custom shards.
+
+### What's commented out in `.env.node` and why
+
+All `F1R3_SYNCHRONY_*` vars are commented out in `.env.node` because `test_synchrony_constraint` sets per-validator synchrony thresholds via CLI. If these env vars are active:
 - `F1R3_SYNCHRONY_CONSTRAINT_THRESHOLD` overrides `--synchrony-constraint-threshold` CLI flag
-- The integration test `test_synchrony_constraint` sets per-validator thresholds via CLI, so `F1R3_SYNCHRONY_CONSTRAINT_THRESHOLD` must NOT be in the custom shard env (conftest.py `rust_env`)
-- The static integration compose (`docker-compose.rust.yml`) does include it in the x-rnode anchor since all validators use the same threshold there
+- `F1R3_SYNCHRONY_FINALIZED_BASELINE_ENABLED` enables a more permissive synchrony check that bypasses the threshold the test expects to trigger
+- `F1R3_SYNCHRONY_RECOVERY_*` vars change recovery behavior during the test
 
-**Rule:** Any `F1R3_*` var that a test sets per-node via CLI must be excluded from `rust_env` in conftest.py. Currently only `F1R3_SYNCHRONY_CONSTRAINT_THRESHOLD` is excluded.
+The topology compose files (`compose/f1r3node-rust.yml`) declare these vars in their `environment:` section with `${VAR:-default}` syntax, so they use the inline defaults regardless of `.env.node`.
+
+### Rule
+
+Any `F1R3_*` var that could interfere with per-validator CLI settings in integration tests must be commented out in `.env.node` and set only in compose YAML `environment:` sections.
