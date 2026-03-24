@@ -1119,9 +1119,7 @@ def _generate_custom_compose(
         f"--required-signatures={required_signatures}",
         "--approve-duration=180seconds",
         "--ceremony-master-mode",
-    ] + ([] if rust else [
-        "--disable-mergeable-channel-gc",
-    ]) + _extra_cli("boot")
+    ] + _extra_cli("boot")
 
     services['boot'] = {
         'image': image,
@@ -1170,9 +1168,7 @@ def _generate_custom_compose(
             "--genesis-validator",
             f"--fault-tolerance-threshold={ftt}",
             f"--required-signatures={required_signatures}",
-        ] + ([] if rust else [
-            "--disable-mergeable-channel-gc",
-        ]) + _extra_cli(node_key)
+        ] + _extra_cli(node_key)
 
         services[node_key] = {
             'image': image,
@@ -1683,9 +1679,7 @@ def add_peer_to_shard(
         # The HOCON default (2) can exceed the actual bond count in
         # small custom shards, causing a silent crash.  Set to 0 to be safe.
         "--required-signatures=0",
-    ] + ([] if rust else [
-        "--disable-mergeable-channel-gc",
-    ])
+    ]
     if cli_options:
         for k, v in sorted(cli_options.items()):
             if v:

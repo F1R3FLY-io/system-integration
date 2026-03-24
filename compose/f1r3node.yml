@@ -48,7 +48,6 @@ services:
       - "2"
       - --ceremony-master-mode
       - --heartbeat-disabled
-      - --disable-mergeable-channel-gc
     ports:
       - "40400:40400"
       - "40401:40401"
@@ -88,7 +87,6 @@ services:
       - --validator-public-key=${VALIDATOR1_PUBLIC_KEY}
       - --validator-private-key=${VALIDATOR1_PRIVATE_KEY}
       - --genesis-validator
-      - --disable-mergeable-channel-gc
     ports:
       - "40410:40400"
       - "40411:40401"
@@ -128,7 +126,6 @@ services:
       - --validator-public-key=${VALIDATOR2_PUBLIC_KEY}
       - --validator-private-key=${VALIDATOR2_PRIVATE_KEY}
       - --genesis-validator
-      - --disable-mergeable-channel-gc
     ports:
       - "40420:40400"
       - "40421:40401"
@@ -168,7 +165,6 @@ services:
       - --validator-public-key=${VALIDATOR3_PUBLIC_KEY}
       - --validator-private-key=${VALIDATOR3_PRIVATE_KEY}
       - --genesis-validator
-      - --disable-mergeable-channel-gc
     ports:
       - "40430:40400"
       - "40431:40401"
@@ -208,7 +204,6 @@ services:
       - --no-upnp
       - --allow-private-addresses
       - --heartbeat-disabled
-      - --disable-mergeable-channel-gc
     ports:
       - "40450:40400"
       - "40451:40401"

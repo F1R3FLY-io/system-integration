@@ -206,7 +206,6 @@ Per-role CLI flags used in compose files:
 |------|---------|
 | `--ceremony-master-mode` | Bootstrap only |
 | `--heartbeat-disabled` | Bootstrap and observer |
-| `--disable-mergeable-channel-gc` | All Scala services ([f1r3node#441](https://github.com/F1R3FLY-io/f1r3node/issues/441)) |
 
 ### Environment Files
 

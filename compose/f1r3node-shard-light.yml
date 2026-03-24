@@ -47,7 +47,6 @@ services:
       - "1"
       - --ceremony-master-mode
       - --heartbeat-disabled
-      - --disable-mergeable-channel-gc
     ports:
       - "40400:40400"
       - "40401:40401"
@@ -89,7 +88,6 @@ services:
       - --genesis-validator
       - --required-signatures
       - "1"
-      - --disable-mergeable-channel-gc
     ports:
       - "40410:40400"
       - "40411:40401"
@@ -131,7 +129,6 @@ services:
       - --genesis-validator
       - --required-signatures
       - "1"
-      - --disable-mergeable-channel-gc
     ports:
       - "40420:40400"
       - "40421:40401"

@@ -30,7 +30,6 @@ services:
       - --bootstrap=rnode://${BOOTSTRAP_NODE_ID:-1e780e5dfbe0a3d9470a2b414f502d59402e09c2}@${BOOTSTRAP_HOST:-rnode.bootstrap}?protocol=40400&discovery=40404
       - --validator-public-key=${VALIDATOR4_PUBLIC_KEY}
       - --validator-private-key=${VALIDATOR4_PRIVATE_KEY}
-      - --disable-mergeable-channel-gc
     ports:
       - "40440:40400"
       - "40441:40401"

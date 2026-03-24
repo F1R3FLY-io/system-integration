@@ -27,7 +27,6 @@ services:
       - --no-upnp
       - --allow-private-addresses
       - --heartbeat-disabled
-      - --disable-mergeable-channel-gc
     ports:
       - "40450:40400"
       - "40451:40401"
