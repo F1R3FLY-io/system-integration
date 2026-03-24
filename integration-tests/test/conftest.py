@@ -1314,12 +1314,21 @@ def _describe_port_owner(port: int) -> str:
     return "\n\n".join(outputs).strip()
 
 
-def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
+def _wait_for_port_free(port: int, timeout: float = 15.0,
+                        force_cleanup: bool = True) -> None:
     """Wait until a TCP port is available for binding.
 
     After stopping containers, the kernel may hold ports in TIME_WAIT
     state for a few seconds.  This function polls until the port is free
     or raises RuntimeError after the timeout.
+
+    Args:
+        port: TCP port number to check.
+        timeout: Maximum seconds to wait.
+        force_cleanup: If True, call _force_cleanup_custom_containers()
+            as a last resort when ports are stuck.  Set to False when
+            called from within a running custom shard (e.g. add_peer_to_shard)
+            to avoid destroying the active shard and its network.
     """
     deadline = time.time() + timeout
     retry_cleanup_done = False
@@ -1332,7 +1341,8 @@ def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
             except OSError:
                 # One extra cleanup pass can clear lingering docker-proxy
                 # listeners from aborted/overlapping custom shard teardowns.
-                if not retry_cleanup_done and time.time() >= (deadline - timeout / 2):
+                if (force_cleanup and not retry_cleanup_done
+                        and time.time() >= (deadline - timeout / 2)):
                     _force_cleanup_custom_containers()
                     retry_cleanup_done = True
                 time.sleep(1)
@@ -1344,15 +1354,24 @@ def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
     )
 
 
-def _wait_for_port_range_free(base: int, count: int = 6, timeout: float = 60.0) -> None:
+def _wait_for_port_range_free(base: int, count: int = 6, timeout: float = 60.0,
+                              force_cleanup: bool = True) -> None:
     """Wait for a range of consecutive ports to be free.
 
     Each container binds 6 ports (protocol, ext-gRPC, int-gRPC, HTTP,
     discovery, admin-HTTP). The kernel releases each socket's TIME_WAIT
     independently, so checking only the base port is insufficient.
+
+    Args:
+        base: First port in the range.
+        count: Number of consecutive ports.
+        timeout: Maximum seconds to wait per port.
+        force_cleanup: Passed to _wait_for_port_free; set False when
+            called from within a running shard to avoid nuking it.
     """
     for offset in range(count):
-        _wait_for_port_free(base + offset, timeout=timeout)
+        _wait_for_port_free(base + offset, timeout=timeout,
+                            force_cleanup=force_cleanup)
 
 
 def _wait_for_custom_ports_free(num_validators: int, timeout: float = 60.0) -> None:
@@ -1717,7 +1736,12 @@ def add_peer_to_shard(
 
         # Wait for joiner ports to be released (kernel TIME_WAIT from a
         # previous test's joiner container that was recently stopped).
-        _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
+        # force_cleanup=False: the parent shard is still running — calling
+        # _force_cleanup_custom_containers() here would destroy the active
+        # shard and its Docker network, causing "network not found" when
+        # the joiner container tries to start.
+        _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'],
+                                  force_cleanup=False)
 
         # Match the custom shard's JVM tuning so the joiner doesn't
         # claim more RAM than its share (see _generate_custom_compose).
