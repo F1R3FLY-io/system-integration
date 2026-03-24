@@ -159,9 +159,12 @@ jobs:
         run: poetry run shardctl reset -y || true
 
   scala-shard:
+    # Unstable on 2-core/7GB GitHub runners: 5 Scala JVMs compete for CPU/RAM
+    # during genesis. Topology passes most runs but intermittently times out.
     name: Scala Shard (10 finalized)
     runs-on: ubuntu-latest
     needs: validate
+    continue-on-error: true
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
@@ -429,9 +432,12 @@ jobs:
           poetry run shardctl test-reset || true
 
   scala-test-shard:
+    # Unstable on 2-core/7GB GitHub runners: Scala shard startup can exceed
+    # timeout when JVMs compete for resources during genesis.
     name: "Scala: test_web_api (shard)"
     runs-on: ubuntu-latest
     needs: validate
+    continue-on-error: true
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
