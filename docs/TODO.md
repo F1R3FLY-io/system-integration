@@ -18,3 +18,13 @@ Tracked in [f1r3node#441](https://github.com/F1R3FLY-io/f1r3node/issues/441).
 When `enable-mergeable-channel-gc = true`, the Scala node bootstrap crashes during genesis ceremony if an observer connects before the genesis block is approved. The Rust node handles this gracefully.
 
 **Workaround:** All Scala compose services pass `--disable-mergeable-channel-gc` via CLI. Once the Scala bug is fixed, this flag can be removed from Scala compose files.
+
+## F1R3_* env vars override HOCON and CLI settings at runtime
+
+Rust nodes read `F1R3_*` env vars via `OnceLock` on first use. These **override** both HOCON config values and CLI flags. This creates a subtle interaction:
+
+- `F1R3_SYNCHRONY_CONSTRAINT_THRESHOLD` overrides `--synchrony-constraint-threshold` CLI flag
+- The integration test `test_synchrony_constraint` sets per-validator thresholds via CLI, so `F1R3_SYNCHRONY_CONSTRAINT_THRESHOLD` must NOT be in the custom shard env (conftest.py `rust_env`)
+- The static integration compose (`docker-compose.rust.yml`) does include it in the x-rnode anchor since all validators use the same threshold there
+
+**Rule:** Any `F1R3_*` var that a test sets per-node via CLI must be excluded from `rust_env` in conftest.py. Currently only `F1R3_SYNCHRONY_CONSTRAINT_THRESHOLD` is excluded.

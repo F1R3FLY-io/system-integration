@@ -1075,7 +1075,10 @@ def _generate_custom_compose(
     # F1R3_* runtime tuning for Rust nodes (must match compose/f1r3node-rust.yml).
     # These env vars are read via OnceLock on first use; Scala ignores them.
     rust_env = [
-        'F1R3_SYNCHRONY_CONSTRAINT_THRESHOLD=0.67',
+        # NOTE: F1R3_SYNCHRONY_CONSTRAINT_THRESHOLD intentionally omitted here.
+        # It overrides per-validator CLI thresholds at runtime, breaking
+        # test_synchrony_constraint which sets different thresholds per node.
+        # The static compose (docker-compose.rust.yml) sets it via x-rnode anchor.
         'F1R3_SYNCHRONY_RECOVERY_STALL_WINDOW_SECONDS=60',
         'F1R3_SYNCHRONY_RECOVERY_COOLDOWN_SECONDS=20',
         'F1R3_SYNCHRONY_RECOVERY_MAX_BYPASSES=2',
