@@ -97,39 +97,9 @@ shardctl restart embers-api
 shardctl down
 ```
 
-### Smoke Testing
+### CI Pipeline
 
-`scripts/smoke-test.sh` validates that the orchestration layer works end-to-end: compose files parse, topologies start and reach Running state, and the integration test harness can bring up its own stacks.
-
-```bash
-# Run all phases (validation + topology health + integration harness)
-./scripts/smoke-test.sh
-
-# Compose file validation only (no Docker needed beyond the CLI)
-./scripts/smoke-test.sh --validate-only
-
-# Only Rust or Scala topologies
-./scripts/smoke-test.sh --rust-only
-./scripts/smoke-test.sh --scala-only
-
-# Skip integration test phase
-./scripts/smoke-test.sh --skip-integration
-
-# Don't stop on first failure
-./scripts/smoke-test.sh --continue
-```
-
-The script runs three phases:
-
-| Phase              | What it does                                                                                                                                                      | Docker required |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| **1. Validate**    | `docker compose config` on all 16 compose files                                                                                                                   | CLI only        |
-| **2. Topology**    | Start each topology (rust shard, rust standalone, scala shard, scala standalone, light shard), wait for all nodes to reach Running via `shardctl wait`, tear down | Yes             |
-| **3. Integration** | Run one representative test per environment (shard, standalone, custom) to verify the test harness works                                                          | Yes             |
-
-Phase 2 and 3 automatically skip topologies whose Docker image is not available locally. Run this after any changes to compose files, config files, `.env.node`, or network configuration.
-
-**Note:** This script only covers f1r3node (Scala) and f1r3node-rust (Rust node) topologies. Other services (embers, f1r3sky, monitoring) are not health-checked.
+The CI workflow (`.github/workflows/smoke-test.yml`) runs automatically on PRs to `main`. It validates compose files, starts all topologies (checking for 10 finalized blocks), and runs representative integration tests — all in parallel across 12 runners.
 
 ### Rebuilding After Changes
 

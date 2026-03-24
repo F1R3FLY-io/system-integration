@@ -179,11 +179,12 @@ def _get_compose_file() -> str:
 def _compose_cmd(*args: str) -> List[str]:
     """Build a docker compose command with the correct env and compose file."""
     tests_dir = _get_tests_dir()
+    repo_root = os.path.dirname(tests_dir)
     compose_file = _get_compose_file()
     return [
         *_docker_compose_bin(),
         "--project-name", SHARD_PROJECT_NAME,
-        "--env-file", os.path.join(tests_dir, ".env.node"),
+        "--env-file", os.path.join(repo_root, ".env.node"),
         "-f", os.path.join(tests_dir, compose_file),
         *args,
     ]
@@ -233,11 +234,12 @@ def _get_standalone_compose_file() -> str:
 def _standalone_compose_cmd(*args: str, override_file: Optional[str] = None) -> List[str]:
     """Build a docker-compose command for the standalone node."""
     tests_dir = _get_tests_dir()
+    repo_root = os.path.dirname(tests_dir)
     compose_file = _get_standalone_compose_file()
     cmd = [
         *_docker_compose_bin(),
         "--project-name", STANDALONE_PROJECT_NAME,
-        "--env-file", os.path.join(tests_dir, ".env.node"),
+        "--env-file", os.path.join(repo_root, ".env.node"),
         "-f", os.path.join(tests_dir, compose_file),
     ]
     if override_file:
@@ -1193,10 +1195,11 @@ def _generate_custom_compose(
 def _custom_compose_cmd(compose_file: str, *args: str) -> List[str]:
     """Build a docker-compose command for the custom shard."""
     tests_dir = _get_tests_dir()
+    repo_root = os.path.dirname(tests_dir)
     return [
         *_docker_compose_bin(),
         "--project-name", CUSTOM_PROJECT_NAME,
-        "--env-file", os.path.join(tests_dir, ".env.node"),
+        "--env-file", os.path.join(repo_root, ".env.node"),
         "-f", compose_file,
         *args,
     ]

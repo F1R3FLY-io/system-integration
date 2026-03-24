@@ -242,16 +242,6 @@ poetry run shardctl test --scala          # Against Scala node
 poetry run shardctl test test_wallets     # Single suite
 ```
 
-## Smoke Testing
-
-Validates compose files, topologies, and the integration test harness. See [docs/development.md](docs/development.md#smoke-testing).
-
-```bash
-./scripts/smoke-test.sh                    # Full run
-./scripts/smoke-test.sh --validate-only    # Compose config validation only
-./scripts/smoke-test.sh --rust-only        # Rust topologies only
-```
-
 ## Troubleshooting
 
 | Symptom | Quick Fix |
@@ -273,7 +263,7 @@ For all troubleshooting topics, see [docs/troubleshooting.md](docs/troubleshooti
 ├── genesis/                        # Genesis wallets and bonds
 ├── monitoring/                     # Prometheus + Grafana config
 ├── shardctl/                       # CLI tool package
-├── scripts/                        # Utility scripts (smoke-test.sh)
+├── .github/workflows/              # CI smoke test pipeline
 ├── integration-tests/              # Integration test suite
 ├── services/                       # Service repositories (git-ignored)
 ├── docs/                           # Prerequisites, troubleshooting, development guide
@@ -286,7 +276,7 @@ For all troubleshooting topics, see [docs/troubleshooting.md](docs/troubleshooti
 
 1. Only commit changes to integration tooling (compose files, shardctl code)
 2. Never commit service code (it belongs in service repos)
-3. Run `./scripts/smoke-test.sh --validate-only` before pushing
+3. CI runs automatically on PRs (compose validation, topology health, integration tests)
 4. Update documentation for new features
 
 For development workflow and best practices, see [docs/development.md](docs/development.md).

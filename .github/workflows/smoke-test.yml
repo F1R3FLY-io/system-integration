@@ -27,7 +27,26 @@ jobs:
           pip install poetry
           poetry install
       - name: Validate all compose files
-        run: ./scripts/smoke-test.sh --validate-only
+        run: |
+          FAIL=0
+          for cf in \
+            compose/f1r3node-rust.yml compose/f1r3node-rust-standalone.yml \
+            compose/f1r3node-rust-observer.yml compose/f1r3node-rust-validator4.yml \
+            compose/f1r3node.yml compose/f1r3node-standalone.yml \
+            compose/f1r3node-observer.yml compose/f1r3node-validator4.yml \
+            compose/f1r3node-shard-light.yml compose/embers.yml \
+            compose/f1r3sky.yml compose/monitoring.yml \
+            integration-tests/docker-compose.rust.yml integration-tests/docker-compose.scala.yml \
+            integration-tests/docker-compose.standalone-rust.yml integration-tests/docker-compose.standalone-scala.yml
+          do
+            if docker compose --env-file .env.node -f "$cf" config >/dev/null 2>&1; then
+              echo "PASS: $cf"
+            else
+              echo "FAIL: $cf"
+              FAIL=$((FAIL + 1))
+            fi
+          done
+          [ "$FAIL" -eq 0 ] || (echo "$FAIL compose file(s) failed validation" && exit 1)
       - name: Verify shardctl CLI
         run: |
           poetry run shardctl --help
@@ -528,4 +547,10 @@ jobs:
 # - shardctl clone / setup / build-service (requires source builds, ~30min+)
 # - shardctl exec / shell (interactive)
 # - Embers, F1R3Sky, monitoring topologies (separate service images)
+#
+# TODO: Once rust-client has a published binary or fast compile:
+#   - Test shardctl clone to pull service repos
+#   - Build rust-client via shardctl build-service
+#   - Use rust-client to verify LFB advancement (deploy + propose + finalize)
+#   - This would replace the curl-based LFB polling with a proper e2e check
 # =============================================================
