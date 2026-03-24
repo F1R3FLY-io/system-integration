@@ -33,3 +33,30 @@ The topology compose files (`compose/f1r3node-rust.yml`) declare these vars in t
 ### Rule
 
 Any `F1R3_*` var that could interfere with per-validator CLI settings in integration tests must be commented out in `.env.node` and set only in compose YAML `environment:` sections.
+
+## Monitoring stack alignment across repos
+
+The monitoring setup (Prometheus, Grafana, cAdvisor) is inconsistent across the three repos:
+
+| Aspect | system-integration | f1r3node-rust | f1r3node (Scala) |
+|---|---|---|---|
+| **Prometheus targets** | `rnode.bootstrap`, `rnode.validator1-3`, `rnode.readonly` | `boot`, `validator1-3` (no `rnode.` prefix, different job split) | Same as system-integration but no cAdvisor |
+| **Recording rules** | Loaded via `rule_files` | Same rules + header comment | `rule_files` directive missing — rules not loaded |
+| **cAdvisor** | Yes (separate compose) | No | No |
+| **Compose** | `compose/monitoring.yml` (external network) | Embedded in `shard.yml` | `shard-monitoring.yml` overlay |
+
+### Needs
+
+1. Align container names in prometheus.yml targets across all three
+2. Add `rule_files` to Scala prometheus.yml so recording rules are loaded
+3. Decide whether cAdvisor belongs in f1r3node repos or only in system-integration
+4. Test monitoring locally: start shard + monitoring, verify Prometheus targets UP, Grafana dashboards load
+5. Add monitoring health check to CI (Prometheus targets UP after shard start)
+
+## F1R3_* env var handling cleanup
+
+The current approach of inlining 40+ F1R3_* env vars in compose YAML `environment:` sections and commenting them out in `.env.node` is fragile. Follow-up PR should:
+
+1. Evaluate whether `.env.node` should be the single source for all F1R3_* values (uncommented) with the compose YAML only declaring `${VAR}` without `:-default` fallbacks
+2. Or keep the current split but document clearly which vars are safe in `.env.node` vs which must be compose-only
+3. Ensure f1r3node-rust `docker/.env` and system-integration `.env.node` stay in sync
