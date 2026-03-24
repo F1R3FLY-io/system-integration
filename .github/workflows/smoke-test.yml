@@ -10,6 +10,9 @@ on:
 env:
   PYTEST_TIMEOUT_ARGS: >-
     --pytest-args "--timeout=600"
+  # Scala JVMs are slower to start on 2-core/7GB GitHub runners
+  SCALA_PYTEST_TIMEOUT_ARGS: >-
+    --pytest-args "--startup-timeout=600" --pytest-args "--timeout=600" --pytest-args "--timeout-scale=1.5"
   FINALIZED_BLOCK_TARGET: 10
 
 jobs:
@@ -443,7 +446,7 @@ jobs:
           poetry install --with integration
       - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
       - name: Run test
-        run: poetry run shardctl test --scala test_web_api ${{ env.PYTEST_TIMEOUT_ARGS }}
+        run: poetry run shardctl test --scala test_web_api ${{ env.SCALA_PYTEST_TIMEOUT_ARGS }}
       - name: Collect logs
         if: always()
         run: |
@@ -481,7 +484,7 @@ jobs:
           poetry install --with integration
       - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
       - name: Run test
-        run: poetry run shardctl test --scala "test_heartbeat_creates_blocks_when_idle and not shard" ${{ env.PYTEST_TIMEOUT_ARGS }}
+        run: poetry run shardctl test --scala "test_heartbeat_creates_blocks_when_idle and not shard" ${{ env.SCALA_PYTEST_TIMEOUT_ARGS }}
       - name: Collect logs
         if: always()
         run: |
@@ -519,7 +522,7 @@ jobs:
           poetry install --with integration
       - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
       - name: Run test
-        run: poetry run shardctl test --scala test_synchrony_constraint ${{ env.PYTEST_TIMEOUT_ARGS }}
+        run: poetry run shardctl test --scala test_synchrony_constraint ${{ env.SCALA_PYTEST_TIMEOUT_ARGS }}
       - name: Collect logs
         if: always()
         run: |
