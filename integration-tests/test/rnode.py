@@ -1,47 +1,36 @@
-import re
-import os
-import shlex
-import time
 import logging
+import os
+import re
+import shlex
 import threading
-from threading import Event
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from typing import (
-    Dict,
-    List,
-    Tuple,
-    Optional,
-    Set
-)
+import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
+from threading import Event
+from typing import Dict, List, Optional, Set, Tuple
+
 import requests
-import grpc as _grpc
-from f1r3fly.client import F1r3flyClient, F1r3flyClientException
-from f1r3fly.client import LightBlockInfo, BlockInfo
-from f1r3fly.crypto import PrivateKey
-from f1r3fly.const import DEFAULT_PHLO_LIMIT, DEFAULT_PHLO_PRICE
-from f1r3fly.util import create_deploy_data
-from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto  # pylint: disable=no-name-in-module
 from docker.client import DockerClient
-from docker.models.containers import Container
-from docker.models.containers import ExecResult
+from docker.models.containers import Container, ExecResult
+from f1r3fly.client import BlockInfo, F1r3flyClient, F1r3flyClientException, LightBlockInfo
+from f1r3fly.const import DEFAULT_PHLO_LIMIT, DEFAULT_PHLO_PRICE
+from f1r3fly.crypto import PrivateKey
+from f1r3fly.util import create_deploy_data
 
 from .common import (
-    TestingContext,
-    NonZeroExitCodeError,
     GetBlockError,
+    NodeCrashedError,
+    NonZeroExitCodeError,
+    NotAnActiveValidatorError,
     ParsingError,
     SynchronyConstraintError,
-    NotAnActiveValidatorError,
     ValidatorNotContainsLatestMes,
-    NodeCrashedError,
 )
-
-from .error import(
-    RNodeAddressNotFoundError,
+from .error import (
     CommandTimeoutError,
+    RNodeAddressNotFoundError,
 )
-
 from .utils import (
     parse_mvdag_str,
 )
@@ -51,21 +40,21 @@ DEFAULT_IMAGE = os.environ.get("DEFAULT_IMAGE", "f1r3flyindustries/f1r3fly-scala
 # gRPC channel options to fail fast when a node is down rather than
 # hanging indefinitely on a dead connection.
 _GRPC_OPTIONS: tuple = (
-    ('grpc.enable_retries', 0),
-    ('grpc.initial_reconnect_backoff_ms', 500),
-    ('grpc.max_reconnect_backoff_ms', 2000),
-    ('grpc.keepalive_time_ms', 10000),
-    ('grpc.keepalive_timeout_ms', 5000),
-    ('grpc.keepalive_permit_without_calls', 1),
+    ("grpc.enable_retries", 0),
+    ("grpc.initial_reconnect_backoff_ms", 500),
+    ("grpc.max_reconnect_backoff_ms", 2000),
+    ("grpc.keepalive_time_ms", 10000),
+    ("grpc.keepalive_timeout_ms", 5000),
+    ("grpc.keepalive_permit_without_calls", 1),
 )
 
-rnode_binary = '/opt/docker/bin/node'
+rnode_binary = "/opt/docker/bin/node"
 rnode_directory = "/var/lib/rnode"
 rnode_deploy_dir = f"{rnode_directory}/deploy"
-rnode_bonds_file = f'{rnode_directory}/genesis/bonds.txt'
-rnode_wallets_file = f'{rnode_directory}/genesis/wallets.txt'
-rnode_certificate_path = f'{rnode_directory}/node.certificate.pem'
-rnode_key_path = f'{rnode_directory}/node.key.pem'
+rnode_bonds_file = f"{rnode_directory}/genesis/bonds.txt"
+rnode_wallets_file = f"{rnode_directory}/genesis/wallets.txt"
+rnode_certificate_path = f"{rnode_directory}/node.certificate.pem"
+rnode_key_path = f"{rnode_directory}/node.key.pem"
 
 # Default ports inside container (all nodes use same internal ports)
 default_http_port = 40403
@@ -73,21 +62,20 @@ default_internal_grpc_port = 40402
 default_external_grpc_port = 40401
 
 # Shard ID matches the shared HOCON configs (casper.shard-name = root)
-default_shard_id = 'root'
-
-
+default_shard_id = "root"
 
 
 # Module-level function to avoid pickle issues with nested functions
 def _command_executor(container: Container, cmd: Tuple[str, ...], stderr: bool) -> Tuple[int, str]:
     """Execute container command and return result."""
     exec_result: ExecResult = container.exec_run(cmd, stderr=stderr)
-    return (exec_result.exit_code, exec_result.output.decode('utf-8'))
+    return (exec_result.exit_code, exec_result.output.decode("utf-8"))
 
 
 @dataclass
 class PortMapping:
     """Maps container internal ports to host-accessible ports."""
+
     http: int
     external_grpc: int
     internal_grpc: int
@@ -96,19 +84,19 @@ class PortMapping:
 # Host port mappings for each node in the compose shard topology.
 # These match the port mappings in integration-tests/docker-compose.yml.
 COMPOSE_PORT_MAPPINGS = {
-    'rnode.bootstrap': PortMapping(http=40403, external_grpc=40401, internal_grpc=40402),
-    'rnode.validator1': PortMapping(http=40413, external_grpc=40411, internal_grpc=40412),
-    'rnode.validator2': PortMapping(http=40423, external_grpc=40421, internal_grpc=40422),
-    'rnode.validator3': PortMapping(http=40433, external_grpc=40431, internal_grpc=40432),
-    'rnode.readonly': PortMapping(http=40453, external_grpc=40451, internal_grpc=40452),
+    "rnode.bootstrap": PortMapping(http=40403, external_grpc=40401, internal_grpc=40402),
+    "rnode.validator1": PortMapping(http=40413, external_grpc=40411, internal_grpc=40412),
+    "rnode.validator2": PortMapping(http=40423, external_grpc=40421, internal_grpc=40422),
+    "rnode.validator3": PortMapping(http=40433, external_grpc=40431, internal_grpc=40432),
+    "rnode.readonly": PortMapping(http=40453, external_grpc=40451, internal_grpc=40452),
     # Standalone node (ports 40460-40465, avoids conflict with shard)
-    'rnode.standalone': PortMapping(http=40463, external_grpc=40461, internal_grpc=40462),
+    "rnode.standalone": PortMapping(http=40463, external_grpc=40461, internal_grpc=40462),
     # Custom shard nodes (ports 40500-40545, for per-test custom shard infrastructure)
-    'rnode.custom.boot': PortMapping(http=40503, external_grpc=40501, internal_grpc=40502),
-    'rnode.custom.validator1': PortMapping(http=40513, external_grpc=40511, internal_grpc=40512),
-    'rnode.custom.validator2': PortMapping(http=40523, external_grpc=40521, internal_grpc=40522),
-    'rnode.custom.validator3': PortMapping(http=40533, external_grpc=40531, internal_grpc=40532),
-    'rnode.custom.joiner': PortMapping(http=40543, external_grpc=40541, internal_grpc=40542),
+    "rnode.custom.boot": PortMapping(http=40503, external_grpc=40501, internal_grpc=40502),
+    "rnode.custom.validator1": PortMapping(http=40513, external_grpc=40511, internal_grpc=40512),
+    "rnode.custom.validator2": PortMapping(http=40523, external_grpc=40521, internal_grpc=40522),
+    "rnode.custom.validator3": PortMapping(http=40533, external_grpc=40531, internal_grpc=40532),
+    "rnode.custom.joiner": PortMapping(http=40543, external_grpc=40541, internal_grpc=40542),
 }
 
 
@@ -120,8 +108,9 @@ class Node:
     via docker-compose. It never creates or destroys containers.
     """
 
-    def __init__(self, *, container: Container, command_timeout: int,
-                 network: str, ports: PortMapping) -> None:
+    def __init__(
+        self, *, container: Container, command_timeout: int, network: str, ports: PortMapping
+    ) -> None:
         self.container = container
         self.name = container.name
         self.command_timeout = command_timeout
@@ -130,14 +119,14 @@ class Node:
         self.terminate_background_logging_event = threading.Event()
         self.background_logging = LoggingThread(
             container=container,
-            logger=logging.getLogger('peers'),
+            logger=logging.getLogger("peers"),
             terminate_thread_event=self.terminate_background_logging_event,
         )
         self.background_logging.daemon = True
         self.background_logging.start()
 
     def __repr__(self) -> str:
-        return f'<Node(name={repr(self.name)})>'
+        return f"<Node(name={repr(self.name)})>"
 
     def check_alive(self) -> None:
         """Raise NodeCrashedError immediately if the container is not running.
@@ -148,13 +137,14 @@ class Node:
         """
         self.container.reload()
         status = self.container.status
-        if status != 'running':
-            exit_code = self.container.attrs.get('State', {}).get('ExitCode', '?')
+        if status != "running":
+            exit_code = self.container.attrs.get("State", {}).get("ExitCode", "?")
             raise NodeCrashedError(self.name, status, str(exit_code))
 
     @classmethod
-    def from_container_name(cls, docker_client: DockerClient, container_name: str,
-                            command_timeout: int, network: str) -> 'Node':
+    def from_container_name(
+        cls, docker_client: DockerClient, container_name: str, command_timeout: int, network: str
+    ) -> "Node":
         """Create a Node by looking up an existing container by name."""
         container = docker_client.containers.get(container_name)
         ports = COMPOSE_PORT_MAPPINGS.get(container_name)
@@ -168,17 +158,17 @@ class Node:
         )
 
     def get_node_pem_cert(self) -> bytes:
-        return self.shell_out("cat", rnode_certificate_path).encode('utf8')
+        return self.shell_out("cat", rnode_certificate_path).encode("utf8")
 
     def get_node_pem_key(self) -> bytes:
-        return self.shell_out("cat", rnode_key_path).encode('utf8')
+        return self.shell_out("cat", rnode_key_path).encode("utf8")
 
     def view_file(self, path: str) -> str:
         return self.shell_out("cat", path)
 
     def logs(self) -> str:
         self.check_alive()
-        return self.container.logs().decode('utf-8')
+        return self.container.logs().decode("utf-8")
 
     def get_rnode_address(self) -> str:
         log_content = self.logs()
@@ -192,21 +182,21 @@ class Node:
     def get_metrics(self) -> str:
         self.check_alive()
         resp = requests.get(f"http://localhost:{self.ports.http}/metrics", timeout=60)
-        return resp.content.decode('utf8')
+        return resp.content.decode("utf8")
 
     def get_connected_peers_metric_value(self) -> str:
         self.check_alive()
         try:
             resp = requests.get(f"http://localhost:{self.ports.http}/metrics", timeout=60)
-            result = ''
-            for line in resp.content.decode('utf8').splitlines():
+            result = ""
+            for line in resp.content.decode("utf8").splitlines():
                 if line.startswith("peers{") or line.startswith("f1r3fly_comm_rp_connect_peers"):
                     result = line
                     break
             return result
         except NonZeroExitCodeError as e:
             if e.exit_code == 1:
-                return ''
+                return ""
             raise
 
     def get_http_port(self) -> int:
@@ -241,17 +231,21 @@ class Node:
 
     def get_blocks(self, depth: int) -> List[LightBlockInfo]:
         self.check_alive()
-        with F1r3flyClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
+        with F1r3flyClient(
+            "localhost", self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS
+        ) as client:
             return client.show_blocks(depth)
 
     def get_block(self, hash: str) -> BlockInfo:
         self.check_alive()
-        with F1r3flyClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
+        with F1r3flyClient(
+            "localhost", self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS
+        ) as client:
             try:
                 return client.show_block(hash)
             except F1r3flyClientException as e:
                 message = e.args[0]
-                raise GetBlockError(('show-block',), 1, message) from e
+                raise GetBlockError(("show-block",), 1, message) from e
 
     def _exec_run_with_timeout(self, cmd: Tuple[str, ...], stderr: bool = True) -> Tuple[int, str]:
         self.check_alive()
@@ -266,11 +260,11 @@ class Node:
 
         if exit_code != 0:
             for line in output.splitlines():
-                logging.info('%s: %s', self.name, line)
+                logging.info("%s: %s", self.name, line)
             logging.warning("EXITED %s %s %d", self.name, cmd, exit_code)
         else:
             for line in output.splitlines():
-                logging.debug('%s: %s', self.name, line)
+                logging.debug("%s: %s", self.name, line)
             logging.debug("EXITED %s %s %d", self.name, cmd, exit_code)
         return exit_code, output
 
@@ -281,23 +275,38 @@ class Node:
         return output
 
     def rnode_command(self, *node_args: str, stderr: bool = True) -> str:
-        return self.shell_out(rnode_binary, '--grpc-port=40402',
-                               *node_args, stderr=stderr)
+        return self.shell_out(rnode_binary, "--grpc-port=40402", *node_args, stderr=stderr)
 
     def eval(self, rho_file_path: str) -> str:
-        return self.rnode_command('eval', rho_file_path)
+        return self.rnode_command("eval", rho_file_path)
 
-    def deploy(self, rho_file_path: str, private_key: PrivateKey, phlo_limit: int = DEFAULT_PHLO_LIMIT,
-               phlo_price: int = DEFAULT_PHLO_PRICE, valid_after_block_no: Optional[int] = None,
-               shard_id: str = default_shard_id) -> str:
+    def deploy(
+        self,
+        rho_file_path: str,
+        private_key: PrivateKey,
+        phlo_limit: int = DEFAULT_PHLO_LIMIT,
+        phlo_price: int = DEFAULT_PHLO_PRICE,
+        valid_after_block_no: Optional[int] = None,
+        shard_id: str = default_shard_id,
+    ) -> str:
         return self.deploy_string(
-            self.view_file(rho_file_path), private_key, phlo_limit, phlo_price,
-            valid_after_block_no, shard_id,
+            self.view_file(rho_file_path),
+            private_key,
+            phlo_limit,
+            phlo_price,
+            valid_after_block_no,
+            shard_id,
         )
 
-    def deploy_string(self, rholang_code: str, private_key: PrivateKey, phlo_limit: int = DEFAULT_PHLO_LIMIT,
-                      phlo_price: int = DEFAULT_PHLO_PRICE, valid_after_block_no: Optional[int] = None,
-                      shard_id: str = default_shard_id) -> str:
+    def deploy_string(
+        self,
+        rholang_code: str,
+        private_key: PrivateKey,
+        phlo_limit: int = DEFAULT_PHLO_LIMIT,
+        phlo_price: int = DEFAULT_PHLO_PRICE,
+        valid_after_block_no: Optional[int] = None,
+        shard_id: str = default_shard_id,
+    ) -> str:
         self.check_alive()
         if valid_after_block_no is None or valid_after_block_no < 0:
             # Keep deploy validity near chain tip to avoid stale deploy filtering.
@@ -305,10 +314,17 @@ class Node:
         try:
             now_time = int(time.time() * 1000)
             deploy_data = create_deploy_data(
-                private_key, rholang_code, phlo_price, phlo_limit,
-                valid_after_block_no, now_time, shard_id,
+                private_key,
+                rholang_code,
+                phlo_price,
+                phlo_limit,
+                valid_after_block_no,
+                now_time,
+                shard_id,
             )
-            with F1r3flyClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
+            with F1r3flyClient(
+                "localhost", self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS
+            ) as client:
                 return client.send_deploy(deploy_data)
         except F1r3flyClientException as e:
             message = e.args[0]
@@ -317,19 +333,24 @@ class Node:
             raise e
 
     def get_vdag(self) -> str:
-        return self.rnode_command('vdag', stderr=False)
+        return self.rnode_command("vdag", stderr=False)
 
     def get_mvdag(self) -> str:
-        return self.rnode_command('mvdag', stderr=False)
+        return self.rnode_command("mvdag", stderr=False)
 
     def get_parsed_mvdag(self) -> Dict[str, Set[str]]:
         return parse_mvdag_str(self.get_mvdag())
 
-    def deploy_contract_with_substitution(self, substitute_dict: Dict[str, str], rho_file_path: str,
-                                          private_key: PrivateKey, phlo_limit: int = DEFAULT_PHLO_LIMIT,
-                                          phlo_price: int = DEFAULT_PHLO_PRICE,
-                                          shard_id: str = default_shard_id,
-                                          valid_after_block_no: Optional[int] = None) -> str:
+    def deploy_contract_with_substitution(
+        self,
+        substitute_dict: Dict[str, str],
+        rho_file_path: str,
+        private_key: PrivateKey,
+        phlo_limit: int = DEFAULT_PHLO_LIMIT,
+        phlo_price: int = DEFAULT_PHLO_PRICE,
+        shard_id: str = default_shard_id,
+        valid_after_block_no: Optional[int] = None,
+    ) -> str:
         """Deploy a contract with string substitutions applied.
 
         Reads the .rho template from the local filesystem, applies
@@ -352,18 +373,26 @@ class Node:
         if not os.path.isabs(rho_file_path) and not os.path.exists(rho_file_path):
             integration_tests_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             resolved_path = os.path.join(integration_tests_dir, rho_file_path)
-        with open(resolved_path, 'r') as f:
+        with open(resolved_path, "r") as f:
             contract_content = f.read()
 
         for key, value in substitute_dict.items():
             contract_content = contract_content.replace(key, value)
 
-        return self.deploy_string(contract_content, private_key, phlo_limit, phlo_price,
-                                  valid_after_block_no=valid_after_block_no, shard_id=shard_id)
+        return self.deploy_string(
+            contract_content,
+            private_key,
+            phlo_limit,
+            phlo_price,
+            valid_after_block_no=valid_after_block_no,
+            shard_id=shard_id,
+        )
 
     def find_deploy(self, deploy_id: str) -> LightBlockInfo:
         self.check_alive()
-        with F1r3flyClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
+        with F1r3flyClient(
+            "localhost", self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS
+        ) as client:
             return client.find_deploy(deploy_id)
 
     def propose(self, retries: int = 5, retry_delay: float = 3.0) -> str:
@@ -376,7 +405,9 @@ class Node:
         for attempt in range(retries):
             self.check_alive()
             try:
-                with F1r3flyClient('localhost', self.get_internal_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
+                with F1r3flyClient(
+                    "localhost", self.get_internal_grpc_port(), grpc_options=_GRPC_OPTIONS
+                ) as client:
                     return client.propose()
             except F1r3flyClientException as e:
                 message = e.args[0]
@@ -384,46 +415,65 @@ class Node:
                     if attempt < retries - 1:
                         logging.info(
                             "Propose contention (attempt %d/%d), retrying in %.1fs",
-                            attempt + 1, retries, retry_delay,
+                            attempt + 1,
+                            retries,
+                            retry_delay,
                         )
                         time.sleep(retry_delay)
                         continue
                     raise e
-                if "Must wait for more blocks from other validators" in message or "NotEnoughNewBlocks" in message:
-                    raise SynchronyConstraintError(command=('propose',), exit_code=1, output=message) from e
+                if (
+                    "Must wait for more blocks from other validators" in message
+                    or "NotEnoughNewBlocks" in message
+                ):
+                    raise SynchronyConstraintError(
+                        command=("propose",), exit_code=1, output=message
+                    ) from e
                 if "ReadOnlyMode" in message:
-                    raise NotAnActiveValidatorError(command=('propose',), exit_code=1, output=message) from e
+                    raise NotAnActiveValidatorError(
+                        command=("propose",), exit_code=1, output=message
+                    ) from e
                 if "Validator does not have a latest message" in message:
-                    raise ValidatorNotContainsLatestMes(command=('propose',), exit_code=1, output=message) from e
+                    raise ValidatorNotContainsLatestMes(
+                        command=("propose",), exit_code=1, output=message
+                    ) from e
                 raise e
         raise RuntimeError("propose: exhausted retries")
 
     def last_finalized_block(self) -> BlockInfo:
         self.check_alive()
-        with F1r3flyClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
+        with F1r3flyClient(
+            "localhost", self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS
+        ) as client:
             return client.last_finalized_block()
 
     def repl(self, rholang_code: str, stderr: bool = False) -> str:
         quoted_rholang_code = shlex.quote(rholang_code)
         exit_code, output = self._exec_run_with_timeout(
             (
-                'sh',
-                '-c',
-                f'echo {quoted_rholang_code} | {rnode_binary} --grpc-port=40402 repl',
+                "sh",
+                "-c",
+                f"echo {quoted_rholang_code} | {rnode_binary} --grpc-port=40402 repl",
             ),
             stderr=stderr,
         )
         if stderr and exit_code != 0:
             raise NonZeroExitCodeError(
-                command=('sh', '-c', f'echo {quoted_rholang_code} | {rnode_binary} --grpc-port=40402 repl'),
+                command=(
+                    "sh",
+                    "-c",
+                    f"echo {quoted_rholang_code} | {rnode_binary} --grpc-port=40402 repl",
+                ),
                 exit_code=exit_code,
-                output=output
+                output=output,
             )
         return output
 
     __timestamp_rx = "\\d\\d:\\d\\d:\\d\\d\\.\\d\\d\\d"
-    __log_message_rx = re.compile("^{timestamp_rx} (.*?)(?={timestamp_rx})"
-                                  .format(timestamp_rx=__timestamp_rx), re.MULTILINE | re.DOTALL)
+    __log_message_rx = re.compile(
+        "^{timestamp_rx} (.*?)(?={timestamp_rx})".format(timestamp_rx=__timestamp_rx),
+        re.MULTILINE | re.DOTALL,
+    )
 
     def log_lines(self) -> List[str]:
         log_content = self.logs()
@@ -431,7 +481,9 @@ class Node:
 
 
 class LoggingThread(threading.Thread):
-    def __init__(self, terminate_thread_event: Event, container: Container, logger: logging.Logger) -> None:
+    def __init__(
+        self, terminate_thread_event: Event, container: Container, logger: logging.Logger
+    ) -> None:
         super().__init__()
         self.terminate_thread_event = terminate_thread_event
         self.container = container
@@ -444,6 +496,8 @@ class LoggingThread(threading.Thread):
                 if self.terminate_thread_event.is_set():
                     break
                 line = next(containers_log_lines_generator)
-                self.logger.info('%11s: %s', self.container.name[-11:], line.decode('utf-8').rstrip())
+                self.logger.info(
+                    "%11s: %s", self.container.name[-11:], line.decode("utf-8").rstrip()
+                )
         except StopIteration:
             pass

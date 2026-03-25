@@ -18,8 +18,8 @@ import pytest
 from docker.client import DockerClient
 
 from .conftest import (
-    assert_containers_running,
     ALL_CONTAINERS,
+    assert_containers_running,
 )
 from .rnode import Node
 
@@ -28,9 +28,7 @@ pytestmark = pytest.mark.xdist_group("shard")
 log = logging.getLogger(__name__)
 
 # Matches "Approved Block #0 (cb0d904a0d...) with empty parents" in logs
-_GENESIS_HASH_PATTERN = re.compile(
-    r'Approved Block #0 \(([a-f0-9]+)\.\.\.\) with empty parents'
-)
+_GENESIS_HASH_PATTERN = re.compile(r"Approved Block #0 \(([a-f0-9]+)\.\.\.\) with empty parents")
 
 
 def test_successful_genesis_ceremony(
@@ -55,8 +53,7 @@ def test_successful_genesis_ceremony(
     """
     assert_containers_running(docker_client, ALL_CONTAINERS)
 
-    all_nodes = [bootstrap_node, validator1_node, validator2_node,
-                 validator3_node, readonly_node]
+    all_nodes = [bootstrap_node, validator1_node, validator2_node, validator3_node, readonly_node]
 
     # All nodes should have at least 1 block (genesis)
     for node in all_nodes:
@@ -99,8 +96,7 @@ def test_successful_genesis_ceremony(
 
     if genesis_block_info is not None:
         assert len(genesis_block_info.parentsHashList) == 0, (
-            f"Genesis block should have no parents, got: "
-            f"{list(genesis_block_info.parentsHashList)}"
+            f"Genesis block should have no parents, got: {list(genesis_block_info.parentsHashList)}"
         )
     else:
         # Genesis may not appear in show_blocks if depth doesn't reach it.

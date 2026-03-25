@@ -1,9 +1,8 @@
 """Docker Compose management wrapper."""
 
 import subprocess
-import sys
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional
 
 from rich.console import Console
 
@@ -118,20 +117,28 @@ class ComposeManager:
             if "already in use by container" in error_output:
                 console.print("\n[red]Error: Container name conflict[/red]")
                 console.print("[yellow]Some containers with the same names already exist.[/yellow]")
-                console.print("Try running: [bold]poetry run shardctl down[/bold] first to clean up existing containers.")
+                console.print(
+                    "Try running: [bold]poetry run shardctl down[/bold] first to clean up existing containers."
+                )
             elif "address already in use" in error_output:
                 console.print("\n[red]Error: Port conflict[/red]")
                 console.print("[yellow]One or more ports are already in use.[/yellow]")
-                console.print("Try running: [bold]poetry run shardctl down[/bold] first, or check for other services using the same ports.")
+                console.print(
+                    "Try running: [bold]poetry run shardctl down[/bold] first, or check for other services using the same ports."
+                )
             elif "no such service" in error_output:
                 console.print("\n[red]Error: Unknown service[/red]")
-                console.print("[yellow]The specified service was not found in the compose files.[/yellow]")
+                console.print(
+                    "[yellow]The specified service was not found in the compose files.[/yellow]"
+                )
             else:
                 console.print(f"\n[red]Error running docker compose for {compose_file.name}:[/red]")
                 if error_output:
                     console.print(f"[yellow]{error_output.strip()}[/yellow]")
                 else:
-                    console.print("[yellow]No error output captured. Try running the command manually.[/yellow]")
+                    console.print(
+                        "[yellow]No error output captured. Try running the command manually.[/yellow]"
+                    )
                     console.print(f"[dim]Command was: {' '.join(cmd)}[/dim]")
             raise SystemExit(1)
 
@@ -142,7 +149,7 @@ class ComposeManager:
         compose_file: Path,
         services: Optional[List[str]] = None,
         detached: bool = True,
-        build: bool = False
+        build: bool = False,
     ):
         """Start services from a single compose file.
 
@@ -217,9 +224,7 @@ class ComposeManager:
         if tail is not None:
             args.extend(["--tail", str(tail)])
 
-        return self._run_single_file_command(
-            compose_file, args, capture_output=False
-        )
+        return self._run_single_file_command(compose_file, args, capture_output=False)
 
     def restart_single_file(self, compose_file: Path):
         """Restart services from a single compose file.
