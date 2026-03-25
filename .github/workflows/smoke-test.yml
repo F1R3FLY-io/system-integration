@@ -515,6 +515,59 @@ jobs:
             sleep 5
           done
           [ "$LFB" -ge "$TARGET" ] 2>/dev/null || (echo "FAIL: LFB only at #$LFB after 300s" && exit 1)
+      - name: Start monitoring
+        run: |
+          poetry run shardctl up monitoring
+          sleep 20
+      - name: Verify monitoring stack (light shard)
+        run: |
+          echo "--- Prometheus targets ---"
+          curl -sf http://localhost:9090/api/v1/targets | python3 -c "
+          import sys,json; t=json.load(sys.stdin)['data']['activeTargets']
+          up=sum(1 for x in t if x['health']=='up')
+          down=sum(1 for x in t if x['health']=='down')
+          [print(f'  {x[\"labels\"].get(\"instance\",x[\"labels\"].get(\"job\",\"?\"))}: {x[\"health\"]}') for x in t]
+          print(f'UP={up} DOWN={down}')
+          assert up >= 3, f'expected >=3 UP targets (light shard), got {up}'
+          assert down == 0, f'expected 0 DOWN targets, got {down}'
+          "
+
+          echo "--- Recording rules ---"
+          curl -sf http://localhost:9090/api/v1/rules | python3 -c "
+          import sys,json; g=json.load(sys.stdin)['data']['groups']
+          total=sum(len(x['rules']) for x in g)
+          print(f'Recording rules: {total}')
+          assert total > 0, 'no recording rules loaded'
+          "
+
+          echo "--- Node metric data ---"
+          curl -sf -G http://localhost:9090/api/v1/query --data-urlencode 'query=up{job="f1r3node"}' | python3 -c "
+          import sys,json; r=json.load(sys.stdin)['data']['result']
+          [print(f'  {x[\"metric\"].get(\"instance\",\"?\")}: {x[\"value\"][1]}') for x in r]
+          assert len(r) >= 1, 'no node metric data in Prometheus'
+          "
+
+          echo "--- cAdvisor container metrics ---"
+          curl -sf -G http://localhost:9090/api/v1/query --data-urlencode 'query=container_memory_usage_bytes{name=~"rnode.*"}' | python3 -c "
+          import sys,json; r=json.load(sys.stdin)['data']['result']
+          [print(f'  {x[\"metric\"][\"name\"]}: {int(float(x[\"value\"][1]))/1048576:.0f} MB') for x in r]
+          assert len(r) >= 1, 'no cAdvisor metrics for rnode containers'
+          "
+
+          echo "--- Grafana dashboards ---"
+          curl -sf http://localhost:3000/api/health
+          curl -sf -u admin:admin http://localhost:3000/api/search | python3 -c "
+          import sys,json; ds=json.load(sys.stdin)
+          [print(f'  {d[\"title\"]}') for d in ds]
+          assert len(ds) >= 2, f'expected >=2 dashboards, got {len(ds)}'
+          "
+
+          echo "--- Grafana -> Prometheus connectivity ---"
+          curl -sf -u admin:admin -G 'http://localhost:3000/api/datasources/proxy/uid/prometheus/api/v1/query' --data-urlencode 'query=up' | python3 -c "
+          import sys,json; status=json.load(sys.stdin)['status']
+          print(f'Grafana -> Prometheus: {status}')
+          assert status == 'success', 'Grafana cannot query Prometheus'
+          "
       - name: Collect logs
         if: always()
         run: |
@@ -532,7 +585,9 @@ jobs:
           retention-days: 7
       - name: Cleanup
         if: always()
-        run: poetry run shardctl reset -y || true
+        run: |
+          poetry run shardctl down monitoring || true
+          poetry run shardctl reset -y || true
 
   # ===========================================================
   # Integration Tests (each on its own runner)
