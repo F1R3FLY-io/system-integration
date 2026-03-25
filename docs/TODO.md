@@ -56,3 +56,28 @@ The current approach of inlining 40+ F1R3_* env vars in compose YAML `environmen
 1. Evaluate whether `.env.node` should be the single source for all F1R3_* values (uncommented) with the compose YAML only declaring `${VAR}` without `:-default` fallbacks
 2. Or keep the current split but document clearly which vars are safe in `.env.node` vs which must be compose-only
 3. Ensure f1r3node-rust `docker/.env` and system-integration `.env.node` stay in sync
+
+## shardctl commands not tested in CI
+
+The following shardctl commands are not exercised in CI. Commands marked interactive or destructive are impractical to test in CI; the rest could be added when feasible.
+
+### Could be tested
+
+| Command | Reason not tested yet |
+|---------|----------------------|
+| `restart` | Needs a running shard + verify it comes back healthy |
+| `pull` | CI uses `docker pull` directly; could switch to `shardctl pull` |
+| `compose` | Generic passthrough; hard to assert on |
+
+### Impractical to test in CI
+
+| Command | Reason |
+|---------|--------|
+| `clone` / `setup` | Requires SSH keys for private repos |
+| `build` / `build-service` | Source builds take 30+ minutes |
+| `exec` / `shell` | Interactive (requires TTY) |
+| `clean` | Destructive; nothing to clean in CI |
+
+### Tested in CI
+
+`up`, `wait`, `status`, `down`, `reset`, `logs`, `test`, `test-report`, `test-reset`, `ps`, `--help`

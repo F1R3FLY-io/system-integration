@@ -40,8 +40,9 @@ poetry run shardctl status
 ### 3. Stop
 
 ```bash
-poetry run shardctl down          # Stop containers
-poetry run shardctl reset -y      # Stop and wipe data volumes
+poetry run shardctl down monitoring  # Stop monitoring first (if running)
+poetry run shardctl down             # Stop containers
+poetry run shardctl reset -y         # Stop and wipe data volumes
 ```
 
 > **No Poetry?** Shards can be run directly with Docker Compose:

@@ -50,8 +50,8 @@ jobs:
       - name: Verify shardctl CLI
         run: |
           poetry run shardctl --help
-          poetry run shardctl status || true
-          poetry run shardctl ps || true
+          poetry run shardctl status
+          poetry run shardctl ps
 
   # ===========================================================
   # Topology Health Checks (10 finalized blocks each)
@@ -75,6 +75,11 @@ jobs:
           poetry run shardctl up f1r3node-rust
           poetry run shardctl wait --timeout 300
           poetry run shardctl status
+      - name: Verify shardctl logs
+        run: |
+          OUTPUT=$(poetry run shardctl logs --tail 5 2>&1)
+          echo "$OUTPUT" | head -20
+          [ -n "$OUTPUT" ] || (echo "FAIL: shardctl logs returned empty" && exit 1)
       - name: Wait for 10 finalized blocks
         run: |
           TARGET=${{ env.FINALIZED_BLOCK_TARGET }}
@@ -156,11 +161,21 @@ jobs:
           name: logs-rust-shard
           path: /tmp/logs/
           retention-days: 7
-      - name: Cleanup
+      - name: Verify monitoring teardown
         if: always()
         run: |
-          poetry run shardctl down monitoring || true
-          poetry run shardctl reset -y || true
+          poetry run shardctl down monitoring
+          # Verify monitoring containers are gone
+          for c in prometheus grafana cadvisor; do
+            if docker ps -q --filter "name=$c" | grep -q .; then
+              echo "FAIL: $c still running after shardctl down monitoring"
+              exit 1
+            fi
+          done
+          echo "Monitoring teardown verified"
+      - name: Cleanup
+        if: always()
+        run: poetry run shardctl reset -y
 
   rust-standalone:
     name: Rust Standalone (10 finalized)
@@ -181,6 +196,11 @@ jobs:
           poetry run shardctl up f1r3node-rust-standalone
           poetry run shardctl wait --timeout 120
           poetry run shardctl status
+      - name: Verify shardctl logs
+        run: |
+          OUTPUT=$(poetry run shardctl logs --tail 5 2>&1)
+          echo "$OUTPUT" | head -20
+          [ -n "$OUTPUT" ] || (echo "FAIL: shardctl logs returned empty" && exit 1)
       - name: Wait for 10 finalized blocks
         run: |
           TARGET=${{ env.FINALIZED_BLOCK_TARGET }}
@@ -262,11 +282,20 @@ jobs:
           name: logs-rust-standalone
           path: /tmp/logs/
           retention-days: 7
-      - name: Cleanup
+      - name: Verify monitoring teardown
         if: always()
         run: |
-          poetry run shardctl down monitoring || true
-          poetry run shardctl reset -y || true
+          poetry run shardctl down monitoring
+          for c in prometheus grafana cadvisor; do
+            if docker ps -q --filter "name=$c" | grep -q .; then
+              echo "FAIL: $c still running after shardctl down monitoring"
+              exit 1
+            fi
+          done
+          echo "Monitoring teardown verified"
+      - name: Cleanup
+        if: always()
+        run: poetry run shardctl reset -y
 
   scala-shard:
     # Unstable on 2-core/7GB GitHub runners: 5 Scala JVMs compete for CPU/RAM
@@ -291,6 +320,9 @@ jobs:
           poetry run shardctl up f1r3node
           poetry run shardctl wait --timeout 420
           poetry run shardctl status
+          OUTPUT=$(poetry run shardctl logs --tail 5 2>&1)
+          echo "$OUTPUT" | head -20
+          [ -n "$OUTPUT" ] || echo "WARN: shardctl logs returned empty"
           TARGET=${{ env.FINALIZED_BLOCK_TARGET }}
           for i in $(seq 1 60); do
             LFB=$(curl -sf http://localhost:40413/api/last-finalized-block 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('blockInfo',{}).get('blockNumber',0))" 2>/dev/null || echo 0)
@@ -371,11 +403,20 @@ jobs:
           name: logs-scala-shard
           path: /tmp/logs/
           retention-days: 7
+      - name: Verify monitoring teardown
+        if: always()
+        continue-on-error: true
+        run: |
+          poetry run shardctl down monitoring
+          for c in prometheus grafana cadvisor; do
+            if docker ps -q --filter "name=$c" | grep -q .; then
+              echo "WARN: $c still running after shardctl down monitoring"
+            fi
+          done
+          echo "Monitoring teardown checked"
       - name: Cleanup
         if: always()
-        run: |
-          poetry run shardctl down monitoring || true
-          poetry run shardctl reset -y || true
+        run: poetry run shardctl reset -y
 
   scala-standalone:
     name: Scala Standalone (10 finalized)
@@ -396,6 +437,11 @@ jobs:
           poetry run shardctl up f1r3node-standalone
           poetry run shardctl wait --timeout 120
           poetry run shardctl status
+      - name: Verify shardctl logs
+        run: |
+          OUTPUT=$(poetry run shardctl logs --tail 5 2>&1)
+          echo "$OUTPUT" | head -20
+          [ -n "$OUTPUT" ] || (echo "FAIL: shardctl logs returned empty" && exit 1)
       - name: Wait for 10 finalized blocks
         run: |
           TARGET=${{ env.FINALIZED_BLOCK_TARGET }}
@@ -477,11 +523,20 @@ jobs:
           name: logs-scala-standalone
           path: /tmp/logs/
           retention-days: 7
-      - name: Cleanup
+      - name: Verify monitoring teardown
         if: always()
         run: |
-          poetry run shardctl down monitoring || true
-          poetry run shardctl reset -y || true
+          poetry run shardctl down monitoring
+          for c in prometheus grafana cadvisor; do
+            if docker ps -q --filter "name=$c" | grep -q .; then
+              echo "FAIL: $c still running after shardctl down monitoring"
+              exit 1
+            fi
+          done
+          echo "Monitoring teardown verified"
+      - name: Cleanup
+        if: always()
+        run: poetry run shardctl reset -y
 
   scala-light:
     name: Scala Light Shard (10 finalized)
@@ -502,6 +557,11 @@ jobs:
           poetry run shardctl up f1r3node-shard-light
           poetry run shardctl wait --timeout 300
           poetry run shardctl status
+      - name: Verify shardctl logs
+        run: |
+          OUTPUT=$(poetry run shardctl logs --tail 5 2>&1)
+          echo "$OUTPUT" | head -20
+          [ -n "$OUTPUT" ] || (echo "FAIL: shardctl logs returned empty" && exit 1)
       - name: Wait for 10 finalized blocks
         run: |
           TARGET=${{ env.FINALIZED_BLOCK_TARGET }}
@@ -583,11 +643,20 @@ jobs:
           name: logs-scala-light
           path: /tmp/logs/
           retention-days: 7
-      - name: Cleanup
+      - name: Verify monitoring teardown
         if: always()
         run: |
-          poetry run shardctl down monitoring || true
-          poetry run shardctl reset -y || true
+          poetry run shardctl down monitoring
+          for c in prometheus grafana cadvisor; do
+            if docker ps -q --filter "name=$c" | grep -q .; then
+              echo "FAIL: $c still running after shardctl down monitoring"
+              exit 1
+            fi
+          done
+          echo "Monitoring teardown verified"
+      - name: Cleanup
+        if: always()
+        run: poetry run shardctl reset -y
 
   # ===========================================================
   # Integration Tests (each on its own runner)
@@ -608,6 +677,11 @@ jobs:
       - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
       - name: Run test
         run: poetry run shardctl test --rust test_web_api ${{ env.PYTEST_TIMEOUT_ARGS }}
+      - name: Test report
+        if: always()
+        run: |
+          [ -f integration-tests/report.json ] || (echo "FAIL: report.json not generated" && exit 1)
+          poetry run shardctl test-report
       - name: Collect logs
         if: always()
         run: |
@@ -627,8 +701,8 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          poetry run shardctl reset -y || true
-          poetry run shardctl test-reset || true
+          poetry run shardctl reset -y
+          poetry run shardctl test-reset
 
   rust-test-standalone:
     name: "Rust: test_heartbeat (standalone)"
@@ -646,6 +720,11 @@ jobs:
       - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
       - name: Run test
         run: poetry run shardctl test --rust "test_heartbeat_creates_blocks_when_idle and not shard" ${{ env.PYTEST_TIMEOUT_ARGS }}
+      - name: Test report
+        if: always()
+        run: |
+          [ -f integration-tests/report.json ] || (echo "FAIL: report.json not generated" && exit 1)
+          poetry run shardctl test-report
       - name: Collect logs
         if: always()
         run: |
@@ -665,8 +744,8 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          poetry run shardctl reset -y || true
-          poetry run shardctl test-reset || true
+          poetry run shardctl reset -y
+          poetry run shardctl test-reset
 
   rust-test-custom:
     name: "Rust: test_synchrony (custom)"
@@ -684,6 +763,11 @@ jobs:
       - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
       - name: Run test
         run: poetry run shardctl test --rust test_synchrony_constraint ${{ env.PYTEST_TIMEOUT_ARGS }}
+      - name: Test report
+        if: always()
+        run: |
+          [ -f integration-tests/report.json ] || (echo "FAIL: report.json not generated" && exit 1)
+          poetry run shardctl test-report
       - name: Collect logs
         if: always()
         run: |
@@ -703,8 +787,8 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          poetry run shardctl reset -y || true
-          poetry run shardctl test-reset || true
+          poetry run shardctl reset -y
+          poetry run shardctl test-reset
 
   scala-test-shard:
     # Unstable on 2-core/7GB GitHub runners: Scala shard startup can exceed
@@ -725,6 +809,11 @@ jobs:
       - name: Run test
         continue-on-error: true
         run: poetry run shardctl test --scala test_web_api ${{ env.PYTEST_TIMEOUT_ARGS }}
+      - name: Test report
+        if: always()
+        run: |
+          [ -f integration-tests/report.json ] || (echo "FAIL: report.json not generated" && exit 1)
+          poetry run shardctl test-report
       - name: Collect logs
         if: always()
         run: |
@@ -744,8 +833,8 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          poetry run shardctl reset -y || true
-          poetry run shardctl test-reset || true
+          poetry run shardctl reset -y
+          poetry run shardctl test-reset
 
   scala-test-standalone:
     name: "Scala: test_heartbeat (standalone)"
@@ -763,6 +852,11 @@ jobs:
       - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
       - name: Run test
         run: poetry run shardctl test --scala "test_heartbeat_creates_blocks_when_idle and not shard" ${{ env.PYTEST_TIMEOUT_ARGS }}
+      - name: Test report
+        if: always()
+        run: |
+          [ -f integration-tests/report.json ] || (echo "FAIL: report.json not generated" && exit 1)
+          poetry run shardctl test-report
       - name: Collect logs
         if: always()
         run: |
@@ -782,8 +876,8 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          poetry run shardctl reset -y || true
-          poetry run shardctl test-reset || true
+          poetry run shardctl reset -y
+          poetry run shardctl test-reset
 
   scala-test-custom:
     name: "Scala: test_synchrony (custom)"
@@ -801,6 +895,11 @@ jobs:
       - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
       - name: Run test
         run: poetry run shardctl test --scala test_synchrony_constraint ${{ env.PYTEST_TIMEOUT_ARGS }}
+      - name: Test report
+        if: always()
+        run: |
+          [ -f integration-tests/report.json ] || (echo "FAIL: report.json not generated" && exit 1)
+          poetry run shardctl test-report
       - name: Collect logs
         if: always()
         run: |
@@ -820,8 +919,8 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          poetry run shardctl reset -y || true
-          poetry run shardctl test-reset || true
+          poetry run shardctl reset -y
+          poetry run shardctl test-reset
 # =============================================================
 # Not yet covered:
 # - shardctl clone / setup / build-service (requires source builds, ~30min+)
