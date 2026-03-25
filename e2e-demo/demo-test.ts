@@ -16,18 +16,6 @@
 
 import { execSync } from "node:child_process";
 
-// Polyfill WebSocket for Node.js (required by EmbersEvents).
-// The SDK constructs WebSocket URLs from the HTTP basePath (http://...).
-// In browsers this auto-upgrades; the ws library needs ws:// explicitly.
-import WebSocket from "ws";
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const g = globalThis as any;
-g.WebSocket = function PatchedWebSocket(url: string, protocols?: string | string[]) {
-  const wsUrl = url.replace(/^http:\/\//, "ws://").replace(/^https:\/\//, "wss://");
-  return new WebSocket(wsUrl, protocols);
-};
-g.WebSocket.prototype = WebSocket.prototype;
-
 import {
   EmbersApiSdk,
   PrivateKey,
@@ -151,7 +139,6 @@ async function phase2_createTeam(
   const id = prepareResponse.response.id;
   const version = prepareResponse.response.version;
   log("PHASE 2", `Team created: id=${id}, version=${version}`);
-  log("PHASE 2", "Waiting for finalization...");
 
   await waitForFinalization;
   log("PHASE 2", "Create finalized");
@@ -205,7 +192,6 @@ async function phase3_saveGraph(
 
   const version = prepareResponse.response.version;
   log("PHASE 3", `Save prepared: new version=${version}`);
-  log("PHASE 3", "Waiting for finalization...");
 
   await waitForFinalization;
   log("PHASE 3", "Save finalized");
@@ -243,32 +229,21 @@ async function phase4_deploy(
   const registryKey = PrivateKey.new();
   const registryVersion = BigInt(1);
 
-  let waitForFinalization: Promise<void>;
-  try {
-    ({ waitForFinalization } = await sdk.agentsTeams.deploy(
-      id,
-      version,
-      { value: config.phloLimit } as { value: bigint },
-      registryVersion,
-      registryKey,
-    ));
-  } catch (err) {
-    // Get details from the API directly
-    const address = sdk.agentsTeams.address.toString();
-    const res = await fetch(
-      `${config.embersApiUrl}/api/ai-agents-teams/${address}/${id}/versions/${version}`,
-    );
-    const body = await res.text();
-    log("PHASE 4", `Team state: ${res.status} ${body.slice(0, 500)}`);
-    throw err;
-  }
+  const { waitForFinalization } = await sdk.agentsTeams.deploy(
+    id,
+    version,
+    { value: config.phloLimit } as { value: bigint },
+    registryVersion,
+    registryKey,
+  );
 
   log("PHASE 4", "Waiting for deploy finalization...");
   await waitForFinalization;
   log("PHASE 4", "Deploy finalized");
 
-  // Poll for URI (recordDeploy may take extra time)
-  log("PHASE 4", "Polling for URI...");
+  // Poll for URI — recordDeploy is a SECOND deploy that also needs to finalize.
+  // Give it enough time (up to 15 retries × 2s = 30s after main deploy).
+  log("PHASE 4", "Polling for URI (waiting for recordDeploy)...");
   const address = sdk.agentsTeams.address.toString();
   let uri: string | null = null;
 
@@ -288,13 +263,13 @@ async function phase4_deploy(
         "PHASE 4",
         `URI not set yet, retry ${i + 1}/${config.timeouts.uriPollRetries}...`,
       );
-      await sleep(config.timeouts.uriPollInterval);
+      await sleep(config.timeouts.pollInterval);
     }
   }
 
   if (!uri) {
     throw new Error(
-      "Deploy finalized but URI not set (recordDeploy may have failed)",
+      "Deploy finalized but URI not set after 30s (recordDeploy may have failed)",
     );
   }
 
@@ -337,34 +312,13 @@ async function phase6_publish(
   const handle = `e2e-${suffix}.test`;
   log("PHASE 6", `Publishing to F1R3Sky as ${handle}...`);
 
-  let waitForFinalization: Promise<void>;
-  try {
-    ({ waitForFinalization } = await sdk.agentsTeams.publishToFiresky(id, {
-      pdsUrl: config.pdsInternalUrl,
-      handle,
-      email: config.fireskyAgentEmail,
-      password: config.fireskyAgentPassword,
-    }));
-  } catch (err) {
-    // SDK swallows response body — get details via direct call
-    const address = sdk.agentsTeams.address.toString();
-    const res = await fetch(
-      `${config.embersApiUrl}/api/ai-agents-teams/${address}/${id}/publish-to-firesky/prepare`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pds_url: config.pdsInternalUrl,
-          handle,
-          email: config.fireskyAgentEmail,
-          password: config.fireskyAgentPassword,
-        }),
-      },
-    );
-    const body = await res.text();
-    log("PHASE 6", `Diagnostic: ${res.status} ${body.slice(0, 300)}`);
-    throw err;
-  }
+  const email = `e2e-${suffix}@test.invalid`;
+  const { waitForFinalization } = await sdk.agentsTeams.publishToFiresky(id, {
+    pdsUrl: config.pdsInternalUrl,
+    handle,
+    email,
+    password: config.fireskyAgentPassword,
+  });
 
   log("PHASE 6", "Waiting for publish finalization...");
   await waitForFinalization;

@@ -18,7 +18,8 @@ check() {
     local port="$2"
     local url="$3"
 
-    local status=$(docker ps -a --filter "name=^${name}$" --format '{{.Status}}' 2>/dev/null)
+    # Match compose container names (compose-{name}-1) or plain names
+    local status=$(docker ps -a --filter "name=${name}" --format '{{.Names}} {{.Status}}' 2>/dev/null | head -1)
     if [ -z "$status" ]; then
         echo -e "  ${RED}[DOWN]${NC} $name (no container)"
     elif echo "$status" | grep -q "Up"; then
@@ -44,24 +45,12 @@ for node in rnode.bootstrap rnode.validator1 rnode.validator2 rnode.validator3 r
 done
 
 echo ""
-echo "Embers:"
+echo "Services:"
 check embers 8080 "http://localhost:8080/api/service/ready"
 check embers-frontend 8081 "http://localhost:8081"
-
-echo ""
-echo "F1R3Sky:"
-# postgres and redis are internal-only (no host port), just check container status
-for svc in f1r3sky-postgres f1r3sky-redis; do
-    status=$(docker ps -a --filter "name=^${svc}$" --format '{{.Status}}' 2>/dev/null)
-    if [ -z "$status" ]; then
-        echo -e "  ${RED}[DOWN]${NC} $svc (no container)"
-    elif echo "$status" | grep -q "Up"; then
-        echo -e "  ${GREEN}[ UP ]${NC} $svc"
-    else
-        echo -e "  ${RED}[DOWN]${NC} $svc — $status"
-    fi
-done
-check f1r3sky 2583 "http://localhost:2583/xrpc/_health"
+check f1r3sky-postgres 5432 "n/a"
+check f1r3sky-redis 6379 "n/a"
+check "f1r3sky-1\|f1r3sky$" 2583 "http://localhost:2583/xrpc/_health"
 check f1r3sky-frontend 8100 "http://localhost:8100"
 
 echo ""
@@ -78,7 +67,7 @@ for endpoint in \
     elif echo "$result" | grep -q '"agents_teams"\|"agents"\|"oslfs"\|"balance"'; then
         echo -e "  ${GREEN}[ OK ]${NC} $name"
     else
-        echo -e "  ${YELLOW}[????]${NC} $name — $result"
+        echo -e "  ${YELLOW}[????]${NC} $name — $(echo "$result" | head -c 100)"
     fi
 done
 

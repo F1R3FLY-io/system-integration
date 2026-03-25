@@ -1,0 +1,81 @@
+new rl(`rho:registry:lookup`),
+    stdout(`rho:io:stdout`),
+    treeHashMapCh,
+    visit,
+    recordDeploy,
+    readData
+in {
+    // Init treeHashMap (same as agents_teams/init.rho)
+    rl!(`rho:lang:treeHashMap`, *treeHashMapCh) |
+    for(treeHashMap <- treeHashMapCh) {
+        treeHashMap!("init", 3, *treeHashMapCh) |
+        for(@map <- treeHashMapCh) {
+            treeHashMapCh!(*treeHashMap, map) |
+            stdout!("init: treeHashMapCh ready") |
+
+            // visit level 1: consume + resend
+            contract visit(@"level1", @key, f, notFound) = {
+                for(treeHashMap, @map <- treeHashMapCh) {
+                    treeHashMapCh!(*treeHashMap, map) |
+                    treeHashMap!("getOrElse", map, key, *f, *notFound)
+                }
+            } |
+
+            // visit level 2: calls visit level 1, then consumes again
+            contract visit(@"level2", @key1, @key2, f, notFound) = {
+                new foundCh in {
+                    visit!("level1", key1, *foundCh, *notFound) |
+                    for(@nested <- foundCh; treeHashMap, @map <- treeHashMapCh) {
+                        treeHashMapCh!(*treeHashMap, map) |
+                        treeHashMap!("getOrElse", nested, key2, *f, *notFound)
+                    }
+                }
+            } |
+
+            // recordDeploy-like: visit level2 + third consume
+            contract recordDeploy(@key1, @key2, @value, ret) = {
+                new valueCh, errCh in {
+                    stdout!(["recordDeploy: starting", key1, key2]) |
+                    visit!("level2", key1, key2, *valueCh, *errCh) |
+
+                    for(@versions <- valueCh; treeHashMap, @map <- treeHashMapCh) {
+                        treeHashMapCh!(*treeHashMap, map) |
+                        stdout!(["recordDeploy: got treeHashMapCh (3rd consume), updating"]) |
+                        treeHashMap!("set", versions, "latest", value, *ret)
+                    } |
+
+                    for(<- errCh) {
+                        stdout!(["recordDeploy: ERROR - key not found", key1, key2]) |
+                        ret!("error")
+                    }
+                }
+            } |
+
+            // readData: single consume to check state
+            contract readData(@key, ret) = {
+                new valueCh, nilCh in {
+                    visit!("level1", key, *valueCh, *nilCh) |
+                    for(@data <- valueCh) {
+                        ret!(data)
+                    } |
+                    for(<- nilCh) {
+                        ret!("not-found")
+                    }
+                }
+            } |
+
+            // Setup: create nested structure (like agents_teams create)
+            new teamsCh, versionsCh in {
+                treeHashMap!("init", 3, *teamsCh) |
+                treeHashMap!("init", 3, *versionsCh) |
+                for(@teams <- teamsCh & @versions <- versionsCh) {
+                    treeHashMap!("set", map, "addr1", teams, *stdout) |
+                    treeHashMap!("set", teams, "team1", versions, *stdout) |
+                    treeHashMap!("set", versions, "v1", {"name": "Alpha", "deployed": false}, *stdout) |
+                    treeHashMap!("set", versions, "latest", {"name": "Alpha", "version": "v1", "deployed": false}, *stdout) |
+                    stdout!("setup: nested structure created")
+                }
+            }
+        }
+    }
+}
