@@ -1740,8 +1740,10 @@ def add_peer_to_shard(
         # _force_cleanup_custom_containers() here would destroy the active
         # shard and its Docker network, causing "network not found" when
         # the joiner container tries to start.
+        # timeout=120: Linux TIME_WAIT is up to 60s; the default 60s
+        # timeout races with it and can fail on busy CI runners.
         _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'],
-                                  force_cleanup=False)
+                                  timeout=120.0, force_cleanup=False)
 
         # Match the custom shard's JVM tuning so the joiner doesn't
         # claim more RAM than its share (see _generate_custom_compose).
