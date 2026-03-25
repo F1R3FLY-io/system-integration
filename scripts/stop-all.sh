@@ -5,21 +5,21 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+COMPOSE_FILE="$ROOT_DIR/compose/services.yml"
+
 CLEAN=false
 if [[ "${1:-}" == "--clean" ]]; then
     CLEAN=true
 fi
 
-echo "Stopping embers and f1r3sky services..."
-docker rm -f embers embers-frontend f1r3sky-frontend f1r3sky f1r3sky-redis f1r3sky-postgres 2>/dev/null || true
-
+echo "Stopping services..."
 if $CLEAN; then
-    echo "Removing associated volumes..."
-    docker volume ls -q --filter dangling=true | xargs -r docker volume rm 2>/dev/null || true
-    echo "Pruning build cache..."
-    docker builder prune -f 2>/dev/null | tail -1 || true
+    docker compose -f "$COMPOSE_FILE" down -v 2>&1 | grep -v "^$" || true
     echo "Done. Containers and volumes removed."
 else
+    docker compose -f "$COMPOSE_FILE" down 2>&1 | grep -v "^$" || true
     echo "Done. Containers removed (volumes preserved)."
     echo "  Use --clean to also remove volumes"
 fi

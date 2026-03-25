@@ -18,17 +18,7 @@ err() { echo -e "${RED}[x]${NC} $1"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-EMBERS_DIR="$ROOT_DIR/services/embers"
-
-# Docker image tags:
-#   f1r3flyio/embers:local          — built from local source (docker build -f docker/embers.dockerfile)
-#   f1r3flyio/embers-frontend:local — pre-built from Docker Hub
-#   f1r3flyindustries/firesky-ts:local — built from f1r3sky-backend source (must match frontend)
-#   f1r3flyio/firesky-frontend:local — built locally with EXPO_PUBLIC_EMBERS_API_URL
-#   postgres:16-alpine, redis:7-alpine — standard images
-#
-# If you change embers code, rebuild first:
-#   cd services/embers && docker build -f docker/embers.dockerfile -t f1r3flyio/embers:local .
+COMPOSE_FILE="$ROOT_DIR/compose/services.yml"
 
 # Check shard is running
 if ! docker ps --format '{{.Names}}' | grep -q 'rnode.bootstrap'; then
@@ -39,76 +29,27 @@ fi
 
 log "Shard is running"
 
-# Clean up any existing containers
-log "Cleaning up existing containers..."
-docker rm -f f1r3sky-postgres f1r3sky-redis f1r3sky embers embers-frontend f1r3sky-frontend 2>/dev/null || true
+# Start all services via compose (idempotent — reuses existing containers)
+log "Starting services..."
+docker compose -f "$COMPOSE_FILE" up -d 2>&1 | grep -v "^$" || true
 
-# Start f1r3sky infrastructure
-log "Starting f1r3sky PostgreSQL..."
-docker run -d --name f1r3sky-postgres --network f1r3fly \
-  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=atproto \
-  postgres:16-alpine >/dev/null
+# Wait for embers API to become healthy
+# Bootstrap deploys 5 init contracts sequentially (~20-30s each on fresh shard)
+log "Waiting for embers to bootstrap (this may take a few minutes on fresh shard)..."
+for i in $(seq 1 180); do
+    if curl -s http://localhost:8080/api/service/ready >/dev/null 2>&1; then
+        log "Embers API is healthy"
+        break
+    fi
+    if [ "$i" -eq 180 ]; then
+        err "Embers API not responding after 6 minutes"
+        docker logs compose-embers-1 2>&1 | grep -E "ERROR|WARN|finalized|errored" | tail -10
+        exit 1
+    fi
+    sleep 2
+done
 
-log "Starting f1r3sky Redis..."
-docker run -d --name f1r3sky-redis --network f1r3fly \
-  redis:7-alpine >/dev/null
-
-log "Waiting for PostgreSQL to be ready..."
-sleep 5
-
-# Start f1r3sky backend (AT Protocol dev-env)
-log "Starting f1r3sky backend (PDS:2583, BSKY:2584, Ozone:2587)..."
-docker run -d --name f1r3sky --network f1r3fly \
-  -p 2581:2581 -p 2582:2582 -p 2583:2583 -p 2584:2584 -p 2587:2587 \
-  -e ENABLE_PDS=1 \
-  -e DB_POSTGRES_URL=postgresql://postgres:postgres@f1r3sky-postgres:5432/atproto \
-  -e REDIS_HOST=f1r3sky-redis \
-  -e PDS_HOSTNAME=f1r3sky \
-  f1r3flyindustries/firesky-ts:local >/dev/null
-
-log "Waiting for f1r3sky to start..."
-sleep 10
-
-# Get f1r3sky IP for localhost alias
-F1R3SKY_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' f1r3sky)
-
-# Start embers
-log "Starting embers (port 8080)..."
-docker run -d --name embers \
-  --env-file "$EMBERS_DIR/embers.env" \
-  --network f1r3fly \
-  -p 8080:3000 \
-  --add-host "localhost:$F1R3SKY_IP" \
-  f1r3flyio/embers:local >/dev/null
-
-# Start embers frontend
-log "Starting embers frontend (port 8081)..."
-docker run -d --name embers-frontend \
-  -p 8081:80 \
-  -e API_URL="http://localhost:8080" \
-  f1r3flyio/embers-frontend:local >/dev/null
-
-# Start f1r3sky frontend
-log "Starting f1r3sky frontend (port 8100)..."
-docker run -d --name f1r3sky-frontend --network f1r3fly \
-  -p 8100:8100 \
-  -e HTTP_ADDRESS=:8100 \
-  -e ATP_APPVIEW_HOST=http://f1r3sky:2583 \
-  f1r3flyio/firesky-frontend:local \
-  /usr/bin/bskyweb serve >/dev/null
-
-# Wait for embers to bootstrap
-log "Waiting for embers to bootstrap..."
-sleep 10
-
-# Verify embers is healthy
-if curl -s http://localhost:8080/api/service/ready >/dev/null 2>&1; then
-    log "Embers API is healthy"
-else
-    warn "Embers API not responding yet — may need more time for init deploys to finalize"
-fi
-
-# Create f1r3sky user account
+# Create f1r3sky user account (idempotent — ignores if exists)
 log "Creating f1r3sky user account (user1.test)..."
 RESULT=$(curl -s -X POST http://localhost:2583/xrpc/com.atproto.server.createAccount \
   -H 'Content-Type: application/json' \
@@ -120,18 +61,21 @@ else
     warn "Account creation failed (may already exist): $(echo "$RESULT" | head -1)"
 fi
 
-# Wait for embers init deploys to finalize
+# Wait for init deploys to finalize (agents_teams endpoint returns 200)
 log "Waiting for blockchain init deploys to finalize..."
-sleep 15
-
-# Verify agents_teams endpoint
-RESPONSE=$(curl -s http://localhost:8080/api/ai-agents-teams/1111AtahZeefej4tvVR6ti9TJtv8yxLebT31SCEVDCKMNikBk5r3g 2>&1)
-if echo "$RESPONSE" | grep -q 'agents_teams'; then
-    log "Agents teams endpoint working"
-else
-    warn "Agents teams endpoint not ready: $RESPONSE"
-    warn "Init deploys may still be finalizing — wait 30s and try again"
-fi
+for i in $(seq 1 60); do
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/ai-agents-teams/1111AtahZeefej4tvVR6ti9TJtv8yxLebT31SCEVDCKMNikBk5r3g 2>&1)
+    BODY=$(curl -s http://localhost:8080/api/ai-agents-teams/1111AtahZeefej4tvVR6ti9TJtv8yxLebT31SCEVDCKMNikBk5r3g 2>&1)
+    if [ "$HTTP_CODE" = "200" ] && echo "$BODY" | grep -q 'agents_teams'; then
+        log "Agents teams endpoint working"
+        break
+    fi
+    if [ "$i" -eq 60 ]; then
+        err "Init deploys did not finalize after 120s (status: $HTTP_CODE)"
+        exit 1
+    fi
+    sleep 2
+done
 
 echo ""
 echo "========================================="

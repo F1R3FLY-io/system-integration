@@ -1,0 +1,21 @@
+{
+  "name": "e2e-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx demo-test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@atproto/api": "^0.15.11",
+    "@f1r3fly-io/embers-client-sdk": "file:../services/embers-frontend/packages/client",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/ws": "^8.18.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}
