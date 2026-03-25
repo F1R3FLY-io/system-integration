@@ -220,13 +220,20 @@ Per-role CLI flags used in compose files:
 ```bash
 poetry run shardctl up f1r3node-rust    # Start shard first
 poetry run shardctl up monitoring       # Then monitoring stack
+poetry run shardctl down monitoring     # Stop monitoring (shard stays running)
 ```
 
 | Component | URL | Description |
 |---|---|---|
-| Prometheus | http://localhost:9090 | Metrics collection (targets, recording rules) |
+| Prometheus | http://localhost:9090 | Metrics collection, recording rules, target health |
 | Grafana | http://localhost:3000 | Dashboards (admin/admin) |
-| cAdvisor | http://localhost:8080 | Container resource metrics |
+| cAdvisor | http://localhost:8080 | Container CPU/memory/IO metrics |
+
+Prometheus uses DNS-based service discovery on the Docker network. Only nodes that are actually running get scraped — no false DOWN targets when running light shard or standalone.
+
+**Dashboards** (auto-provisioned):
+- **F1R3FLY Node** — block finalization, validator status, consensus metrics
+- **Block Transfer** — block download/validation timing, transport metrics
 
 Config: `monitoring/prometheus.yml`, `monitoring/prometheus-rules.yml`, `monitoring/grafana/provisioning/`.
 

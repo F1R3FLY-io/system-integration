@@ -546,11 +546,289 @@ jobs:
           poetry run shardctl reset -y || true
           poetry run shardctl test-reset || true
 
+  # ===========================================================
+  # Monitoring Stack Validation
+  # ===========================================================
+  # Verifies Prometheus DNS discovery, recording rules, and Grafana
+  # dashboard provisioning against each topology.
+
+  monitoring-rust-shard:
+    name: "Monitoring: Rust Shard"
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: |
+          pip install poetry
+          poetry install
+      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+      - name: Start shard
+        run: |
+          poetry run shardctl up f1r3node-rust
+          poetry run shardctl wait --timeout 300
+      - name: Start monitoring
+        run: |
+          poetry run shardctl up monitoring
+          sleep 20
+      - name: Verify Prometheus targets
+        run: |
+          UP=$(curl -sf http://localhost:9090/api/v1/targets | \
+            python3 -c "import sys,json; t=json.load(sys.stdin)['data']['activeTargets']; print(sum(1 for x in t if x['health']=='up'))")
+          DOWN=$(curl -sf http://localhost:9090/api/v1/targets | \
+            python3 -c "import sys,json; t=json.load(sys.stdin)['data']['activeTargets']; print(sum(1 for x in t if x['health']=='down'))")
+          echo "Targets UP=$UP DOWN=$DOWN"
+          [ "$UP" -ge 5 ] || (echo "FAIL: expected >=5 UP targets, got $UP" && exit 1)
+          [ "$DOWN" -eq 0 ] || (echo "FAIL: expected 0 DOWN targets, got $DOWN" && exit 1)
+      - name: Verify recording rules
+        run: |
+          RULES=$(curl -sf http://localhost:9090/api/v1/rules | \
+            python3 -c "import sys,json; g=json.load(sys.stdin)['data']['groups']; print(sum(len(x['rules']) for x in g))")
+          echo "Recording rules: $RULES"
+          [ "$RULES" -gt 0 ] || (echo "FAIL: no recording rules loaded" && exit 1)
+      - name: Verify metric data end-to-end
+        run: |
+          echo "--- Node metrics in Prometheus ---"
+          SERIES=$(curl -sf 'http://localhost:9090/api/v1/query?query=up{job="f1r3node"}' | \
+            python3 -c "import sys,json; r=json.load(sys.stdin)['data']['result']; [print(f'  {x[\"metric\"].get(\"instance\",\"?\")}: {x[\"value\"][1]}') for x in r]; print(len(r))")
+          [ "$SERIES" -ge 1 ] || (echo "FAIL: no node metric data in Prometheus" && exit 1)
+
+          echo "--- cAdvisor container metrics ---"
+          CADVISOR=$(curl -sf 'http://localhost:9090/api/v1/query?query=container_memory_usage_bytes{name=~"rnode.*"}' | \
+            python3 -c "import sys,json; r=json.load(sys.stdin)['data']['result']; [print(f'  {x[\"metric\"][\"name\"]}: {int(float(x[\"value\"][1]))/1048576:.0f} MB') for x in r]; print(len(r))")
+          [ "$CADVISOR" -ge 1 ] || (echo "FAIL: no cAdvisor metrics for rnode containers" && exit 1)
+      - name: Verify Grafana dashboards and datasource
+        run: |
+          curl -sf http://localhost:3000/api/health
+          DASHBOARDS=$(curl -sf -u admin:admin http://localhost:3000/api/search | \
+            python3 -c "import sys,json; ds=json.load(sys.stdin); [print(f'  {d[\"title\"]}') for d in ds]; print(len(ds))")
+          [ "$DASHBOARDS" -ge 2 ] || (echo "FAIL: expected >=2 dashboards, got $DASHBOARDS" && exit 1)
+
+          echo "--- Grafana -> Prometheus connectivity ---"
+          GF_QUERY=$(curl -sf -u admin:admin \
+            'http://localhost:3000/api/datasources/proxy/uid/prometheus/api/v1/query?query=up' | \
+            python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+          [ "$GF_QUERY" = "success" ] || (echo "FAIL: Grafana cannot query Prometheus" && exit 1)
+          echo "Grafana -> Prometheus: $GF_QUERY"
+      - name: Cleanup
+        if: always()
+        run: |
+          poetry run shardctl down monitoring || true
+          poetry run shardctl reset -y || true
+
+  monitoring-rust-standalone:
+    name: "Monitoring: Rust Standalone"
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: |
+          pip install poetry
+          poetry install
+      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+      - name: Start standalone
+        run: |
+          poetry run shardctl up f1r3node-rust-standalone
+          poetry run shardctl wait --timeout 120
+      - name: Start monitoring
+        run: |
+          poetry run shardctl up monitoring
+          sleep 20
+      - name: Verify Prometheus targets (no false DOWN)
+        run: |
+          UP=$(curl -sf http://localhost:9090/api/v1/targets | \
+            python3 -c "import sys,json; t=json.load(sys.stdin)['data']['activeTargets']; print(sum(1 for x in t if x['health']=='up'))")
+          DOWN=$(curl -sf http://localhost:9090/api/v1/targets | \
+            python3 -c "import sys,json; t=json.load(sys.stdin)['data']['activeTargets']; print(sum(1 for x in t if x['health']=='down'))")
+          echo "Targets UP=$UP DOWN=$DOWN"
+          [ "$UP" -ge 1 ] || (echo "FAIL: expected >=1 UP target, got $UP" && exit 1)
+          [ "$DOWN" -eq 0 ] || (echo "FAIL: expected 0 DOWN targets, got $DOWN (issue #32 regression)" && exit 1)
+      - name: Verify recording rules
+        run: |
+          RULES=$(curl -sf http://localhost:9090/api/v1/rules | \
+            python3 -c "import sys,json; g=json.load(sys.stdin)['data']['groups']; print(sum(len(x['rules']) for x in g))")
+          echo "Recording rules: $RULES"
+          [ "$RULES" -gt 0 ] || (echo "FAIL: no recording rules loaded" && exit 1)
+      - name: Verify metric data end-to-end
+        run: |
+          echo "--- Node metrics in Prometheus ---"
+          SERIES=$(curl -sf 'http://localhost:9090/api/v1/query?query=up{job="f1r3node"}' | \
+            python3 -c "import sys,json; r=json.load(sys.stdin)['data']['result']; [print(f'  {x[\"metric\"].get(\"instance\",\"?\")}: {x[\"value\"][1]}') for x in r]; print(len(r))")
+          [ "$SERIES" -ge 1 ] || (echo "FAIL: no node metric data in Prometheus" && exit 1)
+
+          echo "--- cAdvisor container metrics ---"
+          CADVISOR=$(curl -sf 'http://localhost:9090/api/v1/query?query=container_memory_usage_bytes{name=~"rnode.*"}' | \
+            python3 -c "import sys,json; r=json.load(sys.stdin)['data']['result']; [print(f'  {x[\"metric\"][\"name\"]}: {int(float(x[\"value\"][1]))/1048576:.0f} MB') for x in r]; print(len(r))")
+          [ "$CADVISOR" -ge 1 ] || (echo "FAIL: no cAdvisor metrics for rnode containers" && exit 1)
+      - name: Verify Grafana dashboards and datasource
+        run: |
+          curl -sf http://localhost:3000/api/health
+          DASHBOARDS=$(curl -sf -u admin:admin http://localhost:3000/api/search | \
+            python3 -c "import sys,json; ds=json.load(sys.stdin); [print(f'  {d[\"title\"]}') for d in ds]; print(len(ds))")
+          [ "$DASHBOARDS" -ge 2 ] || (echo "FAIL: expected >=2 dashboards, got $DASHBOARDS" && exit 1)
+
+          echo "--- Grafana -> Prometheus connectivity ---"
+          GF_QUERY=$(curl -sf -u admin:admin \
+            'http://localhost:3000/api/datasources/proxy/uid/prometheus/api/v1/query?query=up' | \
+            python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+          [ "$GF_QUERY" = "success" ] || (echo "FAIL: Grafana cannot query Prometheus" && exit 1)
+          echo "Grafana -> Prometheus: $GF_QUERY"
+      - name: Cleanup
+        if: always()
+        run: |
+          poetry run shardctl down monitoring || true
+          poetry run shardctl reset -y || true
+
+  monitoring-scala-standalone:
+    name: "Monitoring: Scala Standalone"
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: |
+          pip install poetry
+          poetry install
+      - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+      - name: Start standalone
+        run: |
+          poetry run shardctl up f1r3node-standalone
+          poetry run shardctl wait --timeout 180
+      - name: Start monitoring
+        run: |
+          poetry run shardctl up monitoring
+          sleep 20
+      - name: Verify Prometheus targets (no false DOWN)
+        run: |
+          UP=$(curl -sf http://localhost:9090/api/v1/targets | \
+            python3 -c "import sys,json; t=json.load(sys.stdin)['data']['activeTargets']; print(sum(1 for x in t if x['health']=='up'))")
+          DOWN=$(curl -sf http://localhost:9090/api/v1/targets | \
+            python3 -c "import sys,json; t=json.load(sys.stdin)['data']['activeTargets']; print(sum(1 for x in t if x['health']=='down'))")
+          echo "Targets UP=$UP DOWN=$DOWN"
+          [ "$UP" -ge 1 ] || (echo "FAIL: expected >=1 UP target, got $UP" && exit 1)
+          [ "$DOWN" -eq 0 ] || (echo "FAIL: expected 0 DOWN targets, got $DOWN" && exit 1)
+      - name: Verify recording rules
+        run: |
+          RULES=$(curl -sf http://localhost:9090/api/v1/rules | \
+            python3 -c "import sys,json; g=json.load(sys.stdin)['data']['groups']; print(sum(len(x['rules']) for x in g))")
+          echo "Recording rules: $RULES"
+          [ "$RULES" -gt 0 ] || (echo "FAIL: no recording rules loaded" && exit 1)
+      - name: Verify metric data end-to-end
+        run: |
+          echo "--- Node metrics in Prometheus ---"
+          SERIES=$(curl -sf 'http://localhost:9090/api/v1/query?query=up{job="f1r3node"}' | \
+            python3 -c "import sys,json; r=json.load(sys.stdin)['data']['result']; [print(f'  {x[\"metric\"].get(\"instance\",\"?\")}: {x[\"value\"][1]}') for x in r]; print(len(r))")
+          [ "$SERIES" -ge 1 ] || (echo "FAIL: no node metric data in Prometheus" && exit 1)
+
+          echo "--- cAdvisor container metrics ---"
+          CADVISOR=$(curl -sf 'http://localhost:9090/api/v1/query?query=container_memory_usage_bytes{name=~"rnode.*"}' | \
+            python3 -c "import sys,json; r=json.load(sys.stdin)['data']['result']; [print(f'  {x[\"metric\"][\"name\"]}: {int(float(x[\"value\"][1]))/1048576:.0f} MB') for x in r]; print(len(r))")
+          [ "$CADVISOR" -ge 1 ] || (echo "FAIL: no cAdvisor metrics for rnode containers" && exit 1)
+      - name: Verify Grafana dashboards and datasource
+        run: |
+          curl -sf http://localhost:3000/api/health
+          DASHBOARDS=$(curl -sf -u admin:admin http://localhost:3000/api/search | \
+            python3 -c "import sys,json; ds=json.load(sys.stdin); [print(f'  {d[\"title\"]}') for d in ds]; print(len(ds))")
+          [ "$DASHBOARDS" -ge 2 ] || (echo "FAIL: expected >=2 dashboards, got $DASHBOARDS" && exit 1)
+
+          echo "--- Grafana -> Prometheus connectivity ---"
+          GF_QUERY=$(curl -sf -u admin:admin \
+            'http://localhost:3000/api/datasources/proxy/uid/prometheus/api/v1/query?query=up' | \
+            python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+          [ "$GF_QUERY" = "success" ] || (echo "FAIL: Grafana cannot query Prometheus" && exit 1)
+          echo "Grafana -> Prometheus: $GF_QUERY"
+      - name: Cleanup
+        if: always()
+        run: |
+          poetry run shardctl down monitoring || true
+          poetry run shardctl reset -y || true
+
+  monitoring-scala-shard:
+    # Unstable on 2-core/7GB GitHub runners (f1r3node#452).
+    name: "Monitoring: Scala Shard"
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: |
+          pip install poetry
+          poetry install
+      - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+      - name: Start shard
+        continue-on-error: true
+        id: start_shard
+        run: |
+          poetry run shardctl up f1r3node
+          poetry run shardctl wait --timeout 420
+      - name: Start monitoring and verify
+        continue-on-error: true
+        if: steps.start_shard.outcome == 'success'
+        run: |
+          poetry run shardctl up monitoring
+          sleep 20
+
+          echo "=== Prometheus Targets ==="
+          UP=$(curl -sf http://localhost:9090/api/v1/targets | \
+            python3 -c "import sys,json; t=json.load(sys.stdin)['data']['activeTargets']; print(sum(1 for x in t if x['health']=='up'))")
+          DOWN=$(curl -sf http://localhost:9090/api/v1/targets | \
+            python3 -c "import sys,json; t=json.load(sys.stdin)['data']['activeTargets']; print(sum(1 for x in t if x['health']=='down'))")
+          echo "Targets UP=$UP DOWN=$DOWN"
+          [ "$UP" -ge 5 ] || (echo "WARN: expected >=5 UP targets, got $UP" && exit 1)
+          [ "$DOWN" -eq 0 ] || (echo "WARN: expected 0 DOWN targets, got $DOWN" && exit 1)
+
+          echo "=== Recording Rules ==="
+          RULES=$(curl -sf http://localhost:9090/api/v1/rules | \
+            python3 -c "import sys,json; g=json.load(sys.stdin)['data']['groups']; print(sum(len(x['rules']) for x in g))")
+          echo "Recording rules: $RULES"
+          [ "$RULES" -gt 0 ] || (echo "WARN: no recording rules loaded" && exit 1)
+
+          echo "=== Node metric data ==="
+          SERIES=$(curl -sf 'http://localhost:9090/api/v1/query?query=up{job="f1r3node"}' | \
+            python3 -c "import sys,json; r=json.load(sys.stdin)['data']['result']; [print(f'  {x[\"metric\"].get(\"instance\",\"?\")}: {x[\"value\"][1]}') for x in r]; print(len(r))")
+          [ "$SERIES" -ge 1 ] || (echo "WARN: no node metric data in Prometheus" && exit 1)
+
+          echo "=== cAdvisor container metrics ==="
+          CADVISOR=$(curl -sf 'http://localhost:9090/api/v1/query?query=container_memory_usage_bytes{name=~"rnode.*"}' | \
+            python3 -c "import sys,json; r=json.load(sys.stdin)['data']['result']; [print(f'  {x[\"metric\"][\"name\"]}: {int(float(x[\"value\"][1]))/1048576:.0f} MB') for x in r]; print(len(r))")
+          [ "$CADVISOR" -ge 1 ] || (echo "WARN: no cAdvisor metrics for rnode containers" && exit 1)
+
+          echo "=== Grafana Dashboards ==="
+          curl -sf http://localhost:3000/api/health
+          DASHBOARDS=$(curl -sf -u admin:admin http://localhost:3000/api/search | \
+            python3 -c "import sys,json; ds=json.load(sys.stdin); [print(f'  {d[\"title\"]}') for d in ds]; print(len(ds))")
+          [ "$DASHBOARDS" -ge 2 ] || (echo "WARN: expected >=2 dashboards, got $DASHBOARDS" && exit 1)
+
+          echo "=== Grafana -> Prometheus connectivity ==="
+          GF_QUERY=$(curl -sf -u admin:admin \
+            'http://localhost:3000/api/datasources/proxy/uid/prometheus/api/v1/query?query=up' | \
+            python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+          [ "$GF_QUERY" = "success" ] || (echo "WARN: Grafana cannot query Prometheus" && exit 1)
+          echo "Grafana -> Prometheus: $GF_QUERY"
+      - name: Cleanup
+        if: always()
+        run: |
+          poetry run shardctl down monitoring || true
+          poetry run shardctl reset -y || true
+
 # =============================================================
 # Not yet covered:
 # - shardctl clone / setup / build-service (requires source builds, ~30min+)
 # - shardctl exec / shell (interactive)
-# - Embers, F1R3Sky, monitoring topologies (separate service images)
+# - Embers, F1R3Sky (separate service images)
 #
 # TODO: Once rust-client has a published binary or fast compile:
 #   - Test shardctl clone to pull service repos

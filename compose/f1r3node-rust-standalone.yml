@@ -94,4 +94,5 @@ volumes:
 
 networks:
   f1r3fly-standalone:
+    name: f1r3fly
     driver: bridge

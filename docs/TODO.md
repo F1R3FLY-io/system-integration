@@ -34,24 +34,20 @@ The topology compose files (`compose/f1r3node-rust.yml`) declare these vars in t
 
 Any `F1R3_*` var that could interfere with per-validator CLI settings in integration tests must be commented out in `.env.node` and set only in compose YAML `environment:` sections.
 
-## Monitoring stack alignment across repos
+## ~~Monitoring stack alignment across repos~~ (Done)
 
-The monitoring setup (Prometheus, Grafana, cAdvisor) is inconsistent across the three repos:
+Aligned in config consolidation PRs (#35, f1r3node#447, f1r3node#448):
 
-| Aspect | system-integration | f1r3node-rust | f1r3node (Scala) |
-|---|---|---|---|
-| **Prometheus targets** | `rnode.bootstrap`, `rnode.validator1-3`, `rnode.readonly` | `boot`, `validator1-3` (no `rnode.` prefix, different job split) | Same as system-integration but no cAdvisor |
-| **Recording rules** | Loaded via `rule_files` | Same rules + header comment | `rule_files` directive missing — rules not loaded |
-| **cAdvisor** | Yes (separate compose) | No | No |
-| **Compose** | `compose/monitoring.yml` (external network) | Embedded in `shard.yml` | `shard-monitoring.yml` overlay |
+- All three repos use identical `prometheus.yml` with DNS-based service discovery (no hardcoded targets, no false DOWN targets for light/standalone — fixes [#32](https://github.com/F1R3FLY-io/system-integration/issues/32))
+- `rule_files` added to both f1r3node repos (was missing — recording rules were on disk but never loaded)
+- `block-transfer.json` dashboard moved to provisioning directory (was unmounted/undiscoverable)
+- Network naming aligned: all shard compose files use `name: f1r3fly`, monitoring compose uses external `f1r3fly`
+- cAdvisor remains system-integration only (orchestration concern, not per-repo)
 
-### Needs
+### Remaining monitoring follow-ups
 
-1. Align container names in prometheus.yml targets across all three
-2. Add `rule_files` to Scala prometheus.yml so recording rules are loaded
-3. Decide whether cAdvisor belongs in f1r3node repos or only in system-integration
-4. Test monitoring locally: start shard + monitoring, verify Prometheus targets UP, Grafana dashboards load
-5. Add monitoring health check to CI (Prometheus targets UP after shard start)
+- **Rust metric dashboard queries** ([system-integration#22](https://github.com/F1R3FLY-io/system-integration/pull/22)): `f1r3node.json` panels use Scala Kamon metric names (`rchain_*`). Rust node uses `metric_name{source="f1r3fly.*"}`. Dashboard queries need rewriting for Rust — blocked on [f1r3node#405](https://github.com/F1R3FLY-io/f1r3node/pull/405) (Phase 1 observability gauges)
+- **CI monitoring validation**: Add a smoke-test job that starts shard + monitoring and verifies Prometheus targets UP, rules loaded, Grafana dashboards present
 
 ## F1R3_* env var handling cleanup
 
