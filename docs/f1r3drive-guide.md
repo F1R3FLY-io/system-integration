@@ -236,10 +236,10 @@ The core F1R3Drive app gives you everything you need at a basic level:
 - ✅ Read, write, and manage files and folders normally
 - ✅ Access the hidden `.token` folder to manage permissions manually
 
-For a more native, **Dropbox-style** experience directly inside Finder, install the [**F1R3Drive Finder Extension**](https://github.com/F1R3FLY-io/f1r3drive-extension). It adds:
+For a more native experience directly inside Finder, install the [**F1R3Drive Finder Extension**](https://github.com/F1R3FLY-io/f1r3drive-extension). It adds:
 
-- 🎨 **Status Badges** — see which files are synced or pending right on their icons.
-- 🖱️ **Context Menus** — right-click any file or folder to manage `.token` configuration, share links, or control permissions without opening the terminal.
+- 🖱️ **Context Menu for `.token` files** — right-click a `.token` file and select "Change" to switch it to a lower denomination via gRPC, without editing the file manually.
+- 🔓 **Folder Unlock Popup** — when you navigate into a `LOCKED-REMOTE-REV-` folder, a popup window prompts you for the private key to unlock the remote REV wallet folder.
 
 ---
 

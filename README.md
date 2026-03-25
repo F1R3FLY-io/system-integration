@@ -572,7 +572,7 @@ If you are running the `f1r3drive` native service, your host operating system mu
 - **macOS:** Install [macFUSE](https://github.com/macfuse/macfuse/wiki/Getting-Started)
 - **Linux & Windows:** See the [jnr-fuse installation guide](https://github.com/SerCeMan/jnr-fuse?tab=readme-ov-file#installation)
 
-> 🍎 **macOS Users:** Basic `f1r3drive` file and folder operations work right out of the box (including unlocking folders and basic reads/writes). If you want an advanced, native experience with sync status badges and right-click context menus (e.g., to manage `.token` permissions easily), install the [**F1R3Drive Finder Extension**](https://github.com/F1R3FLY-io/f1r3drive-extension)!
+> 🍎 **macOS Users:** Basic `f1r3drive` file and folder operations work right out of the box (including unlocking folders and basic reads/writes). For a more native Finder experience, install the [**F1R3Drive Finder Extension**](https://github.com/F1R3FLY-io/f1r3drive-extension) — it adds a context menu for changing `.token` denominations and a popup window for unlocking remote REV wallet folders.
 
 ## CLI Commands
 
