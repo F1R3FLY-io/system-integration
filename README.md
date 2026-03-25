@@ -455,6 +455,7 @@ All commands require `poetry run` prefix (or activate shell with `poetry shell` 
 | `poetry run shardctl up f1r3node-rust-standalone`          | Start Rust standalone node                                       |
 | `poetry run shardctl up embers`                            | Start Embers API + frontend                                      |
 | `poetry run shardctl up f1r3sky`                           | Start F1R3Sky AT Protocol services                               |
+| `poetry run shardctl up f1r3drive`                         | Start F1r3Drive native FUSE service                              |
 | `poetry run shardctl down f1r3node`                        | Stop and remove node containers                                  |
 | `poetry run shardctl logs f1r3node`                        | View node container logs                                         |
 | `poetry run shardctl logs f1r3node -f`                     | Follow node logs                                                 |
@@ -547,6 +548,31 @@ poetry run shardctl up monitoring
 ```
 
 See [Monitoring (Prometheus + Grafana + cAdvisor)](#monitoring-prometheus--grafana--cadvisor) for details.
+
+### Native Services (No Docker)
+
+Some services run natively on your machine instead of inside Docker. These services are defined in `services.yml` with a `run_command` directive and are orchestrated by `shardctl up` / `shardctl down` just like Docker services.
+
+Currently supported native services:
+
+| Service | Description |
+|---------|-------------|
+| `f1r3drive` | FUSE-based blockchain filesystem (requires Java 17+ and FUSE) |
+
+To use a native service:
+
+1. Ensure its dependencies are installed (see below).
+2. Build it: `shardctl build-service f1r3drive`
+3. Start it: `shardctl up f1r3drive`
+4. Press `Ctrl+C` to gracefully stop the native service.
+
+### F1r3Drive Prerequisites (FUSE)
+
+If you are running the `f1r3drive` native service, your host operating system must have a FUSE (Filesystem in Userspace) library installed before you can successfully start it:
+- **macOS:** Install [macFUSE](https://github.com/macfuse/macfuse/wiki/Getting-Started)
+- **Linux & Windows:** See the [jnr-fuse installation guide](https://github.com/SerCeMan/jnr-fuse?tab=readme-ov-file#installation)
+
+> 🍎 **macOS Users:** Basic `f1r3drive` file and folder operations work right out of the box (including unlocking folders and basic reads/writes). If you want an advanced, native experience with sync status badges and right-click context menus (e.g., to manage `.token` permissions easily), install the [**F1R3Drive Finder Extension**](https://github.com/F1R3FLY-io/f1r3drive-extension)!
 
 ## CLI Commands
 

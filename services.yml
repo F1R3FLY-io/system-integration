@@ -32,6 +32,10 @@ repositories:
   rust-client:
     url: git@github.com:F1R3FLY-io/rust-client.git
     branch: dev
+  f1r3drive:
+    url: git@github.com:F1R3FLY-io/f1r3drive.git
+    branch: dev
+    enabled: true
   f1r3sky-backend:
     url: git@github.com:F1R3FLY-io/f1r3sky-backend.git
     branch: main
@@ -133,6 +137,30 @@ builds:
     # - Connects to F1R3FLY nodes (typically running in Docker)
     # - No containerization needed - runs locally
     # - Uses f1r3fly-models, f1r3fly-crypto, f1r3fly-rholang dependencies
+
+  f1r3drive:
+    # F1r3Drive FUSE application built with Java
+    # Main build command
+    build_command: "./gradlew shadowJar -x test"
+
+    # No dedicated Docker build (Runs locally natively to mount FUSE)
+    docker_build_command: null
+
+    # Build environment
+    environment: "nix" # Uses nix develop shell from f1r3drive's flake.nix
+
+    # Native run command (no Docker — runs via existing script)
+    # Runs in foreground (FUSE needs process alive). Ctrl-C to stop.
+    run_command: "./scripts/run_f1r3drive.sh"
+
+    # Build dependencies
+    dependencies:
+      - "java >= 17"
+
+    # Notes:
+    # - Java FUSE implementation connecting to F1R3FLY Node
+    # - Requires MacFUSE or jnr-fuse
+    # - Compiled JAR will be output to build/libs/
 
   f1r3sky-backend-bsky:
     # AT Protocol AppView service (app.bsky.* API endpoints)
