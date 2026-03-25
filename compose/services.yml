@@ -62,12 +62,14 @@ services:
     depends_on:
       f1r3sky:
         condition: service_started
+    # Override localhost to point to f1r3sky for AT Protocol DID resolution.
+    # The PDS DID is did:web:localhost, so the atproto client inside embers
+    # resolves the PDS endpoint to localhost:2583.
+    # F1R3SKY_IP must be set before running compose (start-all.sh handles this).
+    extra_hosts:
+      - "localhost:${F1R3SKY_IP}"
     networks:
-      f1r3fly:
-        aliases:
-          - embers
-    # localhost must resolve to f1r3sky for AT Protocol DID resolution.
-    # Docker compose DNS handles this via the service name "f1r3sky".
+      - f1r3fly
 
   embers-frontend:
     image: f1r3flyio/embers-frontend:local

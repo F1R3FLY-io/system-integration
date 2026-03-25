@@ -156,6 +156,29 @@ async function phase2_createTeam(
   await waitForFinalization;
   log("PHASE 2", "Create finalized");
 
+  // Wait until the team is visible on the observer before proceeding.
+  // The create deploy may have finalized but the observer's explore-deploy
+  // may not have caught up yet. Without this, the save Rholang would abort.
+  const address = sdk.agentsTeams.address.toString();
+  log("PHASE 2", "Verifying team visible on observer...");
+  await retry(
+    async () => {
+      const res = await fetch(
+        `${config.embersApiUrl}/api/ai-agents-teams/${address}`,
+      );
+      if (!res.ok) throw new Error(`list: ${res.status}`);
+      const data = (await res.json()) as {
+        agents_teams: { id: string }[];
+      };
+      const found = data.agents_teams.some((t) => t.id === id);
+      if (!found) throw new Error(`team ${id} not in list yet`);
+    },
+    30,
+    2_000,
+    "PHASE 2",
+  );
+  log("PHASE 2", "Team confirmed visible");
+
   return { id, version };
 }
 
@@ -186,6 +209,22 @@ async function phase3_saveGraph(
 
   await waitForFinalization;
   log("PHASE 3", "Save finalized");
+
+  // Verify the saved version is readable before proceeding to deploy
+  const address = sdk.agentsTeams.address.toString();
+  log("PHASE 3", "Verifying saved version visible on observer...");
+  await retry(
+    async () => {
+      const res = await fetch(
+        `${config.embersApiUrl}/api/ai-agents-teams/${address}/${id}/versions/${version}`,
+      );
+      if (!res.ok) throw new Error(`get version: ${res.status}`);
+    },
+    30,
+    2_000,
+    "PHASE 3",
+  );
+  log("PHASE 3", "Saved version confirmed visible");
 
   return { version, graph };
 }
@@ -298,65 +337,34 @@ async function phase6_publish(
   const handle = `e2e-${suffix}.test`;
   log("PHASE 6", `Publishing to F1R3Sky as ${handle}...`);
 
-  // Use direct fetch to get proper error messages (SDK swallows response body)
-  const address = sdk.agentsTeams.address.toString();
-  const publishReq = {
-    pds_url: config.pdsInternalUrl,
-    handle,
-    email: config.fireskyAgentEmail,
-    password: config.fireskyAgentPassword,
-  };
-  const prepareRes = await fetch(
-    `${config.embersApiUrl}/api/ai-agents-teams/${address}/${id}/publish-to-firesky/prepare`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(publishReq),
-    },
-  );
-  if (!prepareRes.ok) {
-    const body = await prepareRes.text();
-    throw new Error(`Publish prepare: ${prepareRes.status} ${body.slice(0, 500)}`);
+  let waitForFinalization: Promise<void>;
+  try {
+    ({ waitForFinalization } = await sdk.agentsTeams.publishToFiresky(id, {
+      pdsUrl: config.pdsInternalUrl,
+      handle,
+      email: config.fireskyAgentEmail,
+      password: config.fireskyAgentPassword,
+    }));
+  } catch (err) {
+    // SDK swallows response body — get details via direct call
+    const address = sdk.agentsTeams.address.toString();
+    const res = await fetch(
+      `${config.embersApiUrl}/api/ai-agents-teams/${address}/${id}/publish-to-firesky/prepare`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pds_url: config.pdsInternalUrl,
+          handle,
+          email: config.fireskyAgentEmail,
+          password: config.fireskyAgentPassword,
+        }),
+      },
+    );
+    const body = await res.text();
+    log("PHASE 6", `Diagnostic: ${res.status} ${body.slice(0, 300)}`);
+    throw err;
   }
-  const prepareData = (await prepareRes.json()) as {
-    response: { contract: string };
-    token: string;
-  };
-  log("PHASE 6", "Publish prepared, signing...");
-
-  // Sign and send using SDK internals
-  const { signContract } = await import("@f1r3fly-io/embers-client-sdk");
-  const privateKey = PrivateKey.tryFromHex(config.privateKeyHex);
-  const contractBytes = new Uint8Array(
-    Buffer.from(prepareData.response.contract, "base64"),
-  );
-  const signedContract = signContract(contractBytes, privateKey);
-
-  const sendRes = await fetch(
-    `${config.embersApiUrl}/api/ai-agents-teams/${address}/${id}/publish-to-firesky/send`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prepareRequest: publishReq,
-        prepareResponse: prepareData.response,
-        request: signedContract,
-        token: prepareData.token,
-      }),
-    },
-  );
-  if (!sendRes.ok) {
-    const body = await sendRes.text();
-    throw new Error(`Publish send: ${sendRes.status} ${body.slice(0, 500)}`);
-  }
-  log("PHASE 6", "Publish sent, waiting for finalization...");
-
-  // Subscribe for finalization using the signature as deploy ID
-  const deployId = Buffer.from(signedContract.sig).toString("hex");
-  const waitForFinalization = sdk.events.subscribeForDeploy(
-    deployId,
-    config.timeouts.publishFinalize,
-  );
 
   log("PHASE 6", "Waiting for publish finalization...");
   await waitForFinalization;
@@ -461,6 +469,7 @@ function teardown(): void {
 // ---------------------------------------------------------------------------
 
 const noTeardown = process.argv.includes("--no-teardown");
+const skipStart = process.argv.includes("--skip-start");
 
 async function main(): Promise<void> {
   log("MAIN", `=== E2E Demo Test Starting ===${noTeardown ? " (no-teardown)" : ""}`);
@@ -469,8 +478,12 @@ async function main(): Promise<void> {
 
   try {
     // Phase 0: Start services
-    await phase0_startServices();
-    shouldTeardown = true;
+    if (skipStart) {
+      log("PHASE 0", "Skipping service startup (--skip-start)");
+    } else {
+      await phase0_startServices();
+      shouldTeardown = true;
+    }
 
     // Phase 1: Pre-flight
     await phase1_preflight();

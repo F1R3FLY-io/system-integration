@@ -29,7 +29,19 @@ fi
 
 log "Shard is running"
 
-# Start all services via compose (idempotent — reuses existing containers)
+# Start infra first to get f1r3sky IP for embers localhost override
+log "Starting infrastructure..."
+docker compose -f "$COMPOSE_FILE" up -d f1r3sky-postgres f1r3sky-redis f1r3sky 2>&1 | grep -v "^$" || true
+
+# Get f1r3sky container IP for localhost mapping in embers
+export F1R3SKY_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' compose-f1r3sky-1 2>/dev/null || echo "")
+if [ -z "$F1R3SKY_IP" ]; then
+    err "Could not resolve f1r3sky container IP"
+    exit 1
+fi
+log "F1R3Sky IP: $F1R3SKY_IP"
+
+# Start remaining services (embers gets localhost -> f1r3sky mapping)
 log "Starting services..."
 docker compose -f "$COMPOSE_FILE" up -d 2>&1 | grep -v "^$" || true
 
