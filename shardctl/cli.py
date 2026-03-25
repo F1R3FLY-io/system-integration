@@ -254,11 +254,26 @@ def down(
                 compose_services.append(svc)
 
         if native_found:
+            import subprocess
             for svc in native_found:
-                console.print(
-                    f"[yellow]{svc} is a native service (runs in foreground). "
-                    "Stop it with Ctrl-C in its terminal.[/yellow]"
-                )
+                if svc == "f1r3drive":
+                    console.print(f"[yellow]Attempting to stop native service: {svc}[/yellow]")
+                    try:
+                        # Find and kill the f1r3drive java process
+                        subprocess.run(
+                            ["pkill", "-f", "f1r3drive-app.jar"],
+                            check=True,
+                            stderr=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL
+                        )
+                        console.print(f"[green]✓[/green] Successfully sent kill signal to {svc}")
+                    except subprocess.CalledProcessError:
+                        console.print(f"[dim]No running {svc} process found.[/dim]")
+                else:
+                    console.print(
+                        f"[yellow]{svc} is a native service (runs in foreground). "
+                        "Stop it with Ctrl-C in its terminal.[/yellow]"
+                    )
 
             if not compose_services:
                 return

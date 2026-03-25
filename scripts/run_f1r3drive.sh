@@ -58,9 +58,9 @@ echo "Press Ctrl+C to stop and unmount."
 # Cleanup on exit (including Ctrl-C)
 cleanup() {
     echo ""
-    echo "F1r3Drive stopped. To clean up the mount point, run:"
-    echo "  diskutil umount force $MOUNT_DIR  # or: umount $MOUNT_DIR"
-    echo "  rm -rf $DATA_DIR"
+    echo "F1r3Drive stopped. Cleaning up the mount point..."
+    umount "$MOUNT_DIR" 2>/dev/null || diskutil umount force "$MOUNT_DIR" 2>/dev/null || true
+    rm -rf "$DATA_DIR"
 }
 trap cleanup EXIT
 
