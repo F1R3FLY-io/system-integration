@@ -482,7 +482,7 @@ def build_service(
         if not use_nix:
             # Stream piped output in real-time
             for line in process.stdout:
-                console.print(line, end='')
+                console.print(line, end="")
 
         # Wait for completion
         returncode = process.wait()
@@ -521,9 +521,7 @@ def build_service(
         return False
 
 
-def run_native_service(
-    service_name: str, root_dir: Path, run_config: dict
-) -> bool:
+def run_native_service(service_name: str, root_dir: Path, run_config: dict) -> bool:
     """Run a native (non-Docker) service in the foreground.
 
     For services like f1r3drive that run natively via FUSE + Java
