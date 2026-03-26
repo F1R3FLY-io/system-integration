@@ -69,24 +69,24 @@ mr_status:
 ---
 epoch_id: EPOCH-001
 title: "Rust Shard Integration via f1r3node-rust"
-status: pending
+status: in_progress
 priority: p1
 user_story: US-001
 blocked_by: []
 created_at: 2026-03-25
-claimed_by: null
-claimed_at: null
+claimed_by: claude-session
+claimed_at: 2026-03-25T00:00:00Z
 tasks:
   - id: TASK-001-1
     title: "Add f1r3node-rust repo to services.yml"
-    status: pending
+    status: complete
     acceptance:
       - "f1r3node-rust entry exists in services.yml with correct git URL and branch"
       - "shardctl clone pulls the f1r3node-rust repo into services/"
 
   - id: TASK-001-2
     title: "Create compose/f1r3node-rust.yml for Rust shard deployment"
-    status: pending
+    status: complete
     blocked_by: [TASK-001-1]
     acceptance:
       - "compose/f1r3node-rust.yml builds and deploys the Rust shard from services/f1r3node-rust"

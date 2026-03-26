@@ -25,8 +25,8 @@ repositories:
     url: git@github.com:F1R3FLY-io/f1r3node.git
     branch: dev
   f1r3node-rust:
-    url: git@github.com:F1R3FLY-io/f1r3node.git
-    branch: rust/dev
+    url: git@github.com:F1R3FLY-io/f1r3node-rust.git
+    branch: dev
   monitoring:
     enabled: true
   rust-client:
@@ -85,11 +85,11 @@ builds:
     # - Nix flake provides complete dev environment
 
   f1r3node-rust:
-    # Rust node build configuration (chosen branch)
-    # Main build command (compiles Scala and stages executable)
+    # Rust node build configuration (standalone f1r3node-rust repository)
+    # Main build command (compiles Rust workspace)
     build_command: "cargo build --release -p node"
 
-    # Docker build command (includes Rust library compilation)
+    # Docker build command (multi-stage Dockerfile in node/)
     docker_build_command: "./node/docker-commands.sh build-local"
 
     # Build environment
@@ -100,7 +100,7 @@ builds:
       - "rustup default stable" # Configure Rust toolchain
 
     # Docker image produced
-    docker_image: "f1r3flyindustries/f1r3fly-rust-node:latest"
+    docker_image: "f1r3flyindustries/f1r3node-rust:latest"
 
     # Build dependencies
     dependencies:
@@ -109,8 +109,9 @@ builds:
       - "nix (optional but recommended)"
 
     # Notes:
-    # - Requires Rust for native libraries (rspace, rholang)
-    # - Nix flake provides complete dev environment: nix develop
+    # - Standalone Rust implementation of the F1R3FLY blockchain node
+    # - Separate repo from f1r3node (Scala): github.com/F1R3FLY-io/f1r3node-rust
+    # - Cargo workspace: node, casper, comm, rholang, rspace++, models, crypto
     # - Multi-architecture support: AMD64 and AARCH64
     # - Docker entrypoint auto-detects architecture
 
