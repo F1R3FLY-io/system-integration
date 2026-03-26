@@ -21,11 +21,11 @@ from .common import (
     TestingContext,
 )
 from .conftest import (
-    assert_containers_running,
+    ALL_CONTAINERS,
     VALIDATOR1_KEY,
     VALIDATOR2_KEY,
     VALIDATOR3_KEY,
-    ALL_CONTAINERS,
+    assert_containers_running,
 )
 from .rnode import Node
 
@@ -60,7 +60,8 @@ def test_finalizes_block(
     initial_lfb_number = initial_lfb.blockInfo.blockNumber
     logging.info(
         "Initial LFB: block #%d (%s)",
-        initial_lfb_number, initial_lfb.blockInfo.blockHash[:16],
+        initial_lfb_number,
+        initial_lfb.blockInfo.blockHash[:16],
     )
 
     # Deploy contracts to stimulate meaningful block creation beyond
@@ -103,19 +104,22 @@ def test_finalizes_block(
         node_lfb = node.last_finalized_block()
         node_lfb_number = node_lfb.blockInfo.blockNumber
         assert node_lfb_number >= initial_lfb_number, (
-            f"Node {node.name} LFB #{node_lfb_number} is behind initial "
-            f"LFB #{initial_lfb_number}"
+            f"Node {node.name} LFB #{node_lfb_number} is behind initial LFB #{initial_lfb_number}"
         )
         logging.info(
             "Node %s LFB: block #%d (%s)",
-            node.name, node_lfb_number, node_lfb.blockInfo.blockHash[:16],
+            node.name,
+            node_lfb_number,
+            node_lfb.blockInfo.blockHash[:16],
         )
 
     # Verify the finalized block has valid FT exceeding the threshold (0.99)
     finalized_block = validator1_node.get_block(final_lfb_hash)
     ft = float(finalized_block.blockInfo.faultTolerance)
     logging.info(
-        "Finalized block #%d FT: %f", final_lfb_number, ft,
+        "Finalized block #%d FT: %f",
+        final_lfb_number,
+        ft,
     )
     assert ft > 0.99, (
         f"Finalized block #{final_lfb_number} has FT={ft}, expected > 0.99 "

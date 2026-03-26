@@ -1,5 +1,6 @@
 from typing import Tuple
 
+
 class RNodeAddressNotFoundError(Exception):
     def __init__(self, regex: str) -> None:
         super().__init__()
@@ -23,4 +24,3 @@ class UnexpectedProposeOutputFormatError(Exception):
     def __init__(self, output: str) -> None:
         super().__init__()
         self.output = output
-

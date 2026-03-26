@@ -9,9 +9,11 @@ the shared genesis/wallets.txt. All validator keys have funded wallets:
 
 Deploys and proposes go through validator1.
 """
+
 import re
 import time
 from typing import Pattern, Tuple
+
 import pytest
 from f1r3fly.crypto import PrivateKey
 
@@ -20,14 +22,13 @@ from .common import (
     TransderFundsError,
     random_string,
 )
-from .rnode import Node, default_shard_id
 from .conftest import (
     VALIDATOR1_KEY,
     VALIDATOR2_KEY,
     VALIDATOR3_KEY,
-    _is_rust_node,
 )
 from .http_client import HttpClient, HttpRequestException
+from .rnode import Node, default_shard_id
 from .wait import (
     wait_for_log_match_result,
     wait_for_log_match_result_raise,
@@ -36,20 +37,30 @@ from .wait import (
 pytestmark = pytest.mark.xdist_group("shard")
 
 
-def wait_transfer_result(context: TestingContext, node: Node,
-                         transfer_funds_result_pattern: Pattern) -> None:
+def wait_transfer_result(
+    context: TestingContext, node: Node, transfer_funds_result_pattern: Pattern
+) -> None:
     transfer_result_match = wait_for_log_match_result_raise(
-        context, node, transfer_funds_result_pattern,
+        context,
+        node,
+        transfer_funds_result_pattern,
     )
-    reason = transfer_result_match.group('reason')
+    reason = transfer_result_match.group("reason")
     if reason != "Nil":
         raise TransderFundsError(reason)
 
 
-def deploy_transfer(log_marker: str, node: Node, from_vault_addr: str,
-                    to_vault_addr: str, amount: int, private_key: PrivateKey,
-                    phlo_limit: int, phlo_price: int,
-                    valid_after_block_no: int | None = None) -> str:
+def deploy_transfer(
+    log_marker: str,
+    node: Node,
+    from_vault_addr: str,
+    to_vault_addr: str,
+    amount: int,
+    private_key: PrivateKey,
+    phlo_limit: int,
+    phlo_price: int,
+    valid_after_block_no: int | None = None,
+) -> str:
     return node.deploy_contract_with_substitution(
         substitute_dict={
             "%FROM": from_vault_addr,
@@ -66,10 +77,17 @@ def deploy_transfer(log_marker: str, node: Node, from_vault_addr: str,
     )
 
 
-def transfer_funds(context: TestingContext, node: Node, from_vault_addr: str,
-                   to_vault_addr: str, amount: int, private_key: PrivateKey,
-                   phlo_limit: int, phlo_price: int,
-                   valid_after_block_no: int | None = None) -> None:
+def transfer_funds(
+    context: TestingContext,
+    node: Node,
+    from_vault_addr: str,
+    to_vault_addr: str,
+    amount: int,
+    private_key: PrivateKey,
+    phlo_limit: int,
+    phlo_price: int,
+    valid_after_block_no: int | None = None,
+) -> None:
     """Transfer tokens from one vault to another vault.
 
     If the transfer is processed successfully, returns None.
@@ -80,16 +98,27 @@ def transfer_funds(context: TestingContext, node: Node, from_vault_addr: str,
         f'"{log_marker} (Successfully|Failing) reason: (?P<reason>[a-zA-Z0-9 ]*)"'
     )
     deploy_transfer(
-        log_marker, node, from_vault_addr, to_vault_addr, amount,
-        private_key, phlo_limit, phlo_price,
+        log_marker,
+        node,
+        from_vault_addr,
+        to_vault_addr,
+        amount,
+        private_key,
+        phlo_limit,
+        phlo_price,
         valid_after_block_no=valid_after_block_no,
     )
     wait_transfer_result(context, node, transfer_funds_result_pattern)
 
 
-def get_vault_balance(context: TestingContext, node: Node, vault_addr: str,
-                      private_key: PrivateKey, phlo_limit: int,
-                      phlo_price: int) -> Tuple[str, int]:
+def get_vault_balance(
+    context: TestingContext,
+    node: Node,
+    vault_addr: str,
+    private_key: PrivateKey,
+    phlo_limit: int,
+    phlo_price: int,
+) -> Tuple[str, int]:
     log_marker = random_string(context, 10)
     check_balance_pattern = re.compile(
         f'"{log_marker} Vault (?P<vault_addr>[a-zA-Z0-9]*) balance is (?P<balance>[0-9]*)"'
@@ -106,8 +135,7 @@ def get_vault_balance(context: TestingContext, node: Node, vault_addr: str,
     return (block_hash, int(check_balance_match.group("balance")))
 
 
-def test_validator1_pay_validator2(testing_context: TestingContext,
-                                   validator1_node: Node) -> None:
+def test_validator1_pay_validator2(testing_context: TestingContext, validator1_node: Node) -> None:
     """Validator1 transfers tokens to Validator2. Both have funded wallets in genesis."""
     context = testing_context
     node = validator1_node
@@ -117,27 +145,49 @@ def test_validator1_pay_validator2(testing_context: TestingContext,
     v2_vault_address = VALIDATOR2_KEY.get_public_key().get_vault_address()
 
     _, v1_balance_before = get_vault_balance(
-        context, node, v1_vault_address, VALIDATOR1_KEY, 1000000, 1,
+        context,
+        node,
+        v1_vault_address,
+        VALIDATOR1_KEY,
+        1000000,
+        1,
     )
     assert v1_balance_before > 0
 
     _, v2_balance_before = get_vault_balance(
-        context, node, v2_vault_address, VALIDATOR1_KEY, 1000000, 1,
+        context,
+        node,
+        v2_vault_address,
+        VALIDATOR1_KEY,
+        1000000,
+        1,
     )
 
     transfer_funds(
-        context, node, v1_vault_address, v2_vault_address,
-        transfer_amount, VALIDATOR1_KEY, 1000000, 1,
+        context,
+        node,
+        v1_vault_address,
+        v2_vault_address,
+        transfer_amount,
+        VALIDATOR1_KEY,
+        1000000,
+        1,
     )
 
     _, v2_balance_after = get_vault_balance(
-        context, node, v2_vault_address, VALIDATOR1_KEY, 1000000, 1,
+        context,
+        node,
+        v2_vault_address,
+        VALIDATOR1_KEY,
+        1000000,
+        1,
     )
     assert v2_balance_after == v2_balance_before + transfer_amount
 
 
-def test_transfer_failed_with_invalid_key(testing_context: TestingContext,
-                                           validator1_node: Node) -> None:
+def test_transfer_failed_with_invalid_key(
+    testing_context: TestingContext, validator1_node: Node
+) -> None:
     """Transferring from Validator3's vault with Validator2's key fails."""
     context = testing_context
     node = validator1_node
@@ -148,8 +198,14 @@ def test_transfer_failed_with_invalid_key(testing_context: TestingContext,
     with pytest.raises(TransderFundsError) as e:
         # Sign with VALIDATOR2_KEY but try to transfer FROM VALIDATOR3's vault
         transfer_funds(
-            context, node, v3_vault_address, v2_vault_address,
-            100, VALIDATOR2_KEY, 1000000, 1,
+            context,
+            node,
+            v3_vault_address,
+            v2_vault_address,
+            100,
+            VALIDATOR2_KEY,
+            1000000,
+            1,
         )
     assert e.value.reason == "Invalid AuthKey"
 
@@ -167,7 +223,12 @@ def test_transfer_failed_with_insufficient_funds(
 
     # Get current sender balance, then overdraw by 1 token.
     _, v1_balance = get_vault_balance(
-        context, node, v1_vault_address, VALIDATOR1_KEY, 1000000, 1,
+        context,
+        node,
+        v1_vault_address,
+        VALIDATOR1_KEY,
+        1000000,
+        1,
     )
     assert v1_balance > 0
     overdraw_amount = v1_balance + 1
@@ -175,16 +236,27 @@ def test_transfer_failed_with_insufficient_funds(
     # Signed by VALIDATOR1_KEY; transfer amount exceeds sender balance.
     with pytest.raises(TransderFundsError) as e:
         transfer_funds(
-            context, node, v1_vault_address, v2_vault_address,
-            overdraw_amount, VALIDATOR1_KEY, 1000000, 1,
+            context,
+            node,
+            v1_vault_address,
+            v2_vault_address,
+            overdraw_amount,
+            VALIDATOR1_KEY,
+            1000000,
+            1,
         )
     assert e.value.reason == "Insufficient funds"
 
 
 def transfer_funds_with_block_hash(
-    context: TestingContext, node: Node, from_vault_addr: str,
-    to_vault_addr: str, amount: int, private_key: PrivateKey,
-    phlo_limit: int, phlo_price: int,
+    context: TestingContext,
+    node: Node,
+    from_vault_addr: str,
+    to_vault_addr: str,
+    amount: int,
+    private_key: PrivateKey,
+    phlo_limit: int,
+    phlo_price: int,
 ) -> str:
     """Transfer tokens from one vault to another and return the block hash.
 
@@ -199,8 +271,14 @@ def transfer_funds_with_block_hash(
         f'"{log_marker} (Successfully|Failing) reason: (?P<reason>[a-zA-Z0-9 ]*)"'
     )
     deploy_id = deploy_transfer(
-        log_marker, node, from_vault_addr, to_vault_addr, amount,
-        private_key, phlo_limit, phlo_price,
+        log_marker,
+        node,
+        from_vault_addr,
+        to_vault_addr,
+        amount,
+        private_key,
+        phlo_limit,
+        phlo_price,
     )
     wait_transfer_result(context, node, transfer_funds_result_pattern)
 
@@ -218,9 +296,7 @@ def transfer_funds_with_block_hash(
             pass
         time.sleep(3)
 
-    raise AssertionError(
-        f"Deploy {deploy_id} not included in any block within {find_timeout}s"
-    )
+    raise AssertionError(f"Deploy {deploy_id} not included in any block within {find_timeout}s")
 
 
 def test_block_api_returns_transfer_info(
@@ -250,8 +326,14 @@ def test_block_api_returns_transfer_info(
 
     # Perform transfer and get the block hash
     block_hash = transfer_funds_with_block_hash(
-        context, node, v1_vault_address, v2_vault_address,
-        transfer_amount, VALIDATOR1_KEY, 1000000, 1,
+        context,
+        node,
+        v1_vault_address,
+        v2_vault_address,
+        transfer_amount,
+        VALIDATOR1_KEY,
+        1000000,
+        1,
     )
 
     # Query the read-only node's HTTP API for block info with transfers.
@@ -259,7 +341,7 @@ def test_block_api_returns_transfer_info(
     # on read-only nodes when dev-mode is disabled.
     # The block may not have propagated to the readonly node yet, so we
     # catch HttpRequestException (e.g. 404) and retry within the loop.
-    http_client = HttpClient('localhost', readonly_node.get_http_port())
+    http_client = HttpClient("localhost", readonly_node.get_http_port())
     deploy_with_transfers = None
     api_timeout = int(120 * context.timeout_scale)
     deadline = time.time() + api_timeout
@@ -305,12 +387,8 @@ def test_block_api_returns_transfer_info(
     assert "success" in transfer, "Transfer should have success"
     assert "failReason" in transfer, "Transfer should have failReason"
 
-    assert transfer["fromAddr"] == v1_vault_address, \
-        f"fromAddr should be {v1_vault_address}"
-    assert transfer["toAddr"] == v2_vault_address, \
-        f"toAddr should be {v2_vault_address}"
-    assert transfer["amount"] == transfer_amount, \
-        f"amount should be {transfer_amount}"
+    assert transfer["fromAddr"] == v1_vault_address, f"fromAddr should be {v1_vault_address}"
+    assert transfer["toAddr"] == v2_vault_address, f"toAddr should be {v2_vault_address}"
+    assert transfer["amount"] == transfer_amount, f"amount should be {transfer_amount}"
     assert transfer["success"] is True, "Transfer should be successful"
-    assert transfer["failReason"] == "", \
-        "Successful transfer should have empty failReason"
+    assert transfer["failReason"] == "", "Successful transfer should have empty failReason"

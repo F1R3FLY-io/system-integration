@@ -1,11 +1,11 @@
 import dataclasses
+import logging
 import os
 import shutil
 import socket
 import subprocess
 import tempfile
 import time
-import logging
 from contextlib import contextmanager
 from random import Random
 from typing import (
@@ -17,14 +17,14 @@ from typing import (
     Tuple,
 )
 
+import docker as docker_py
 import pytest
 import yaml
-from _pytest.terminal import TerminalReporter
-from _pytest.reports import TestReport
 from _pytest.config.argparsing import Parser
-from f1r3fly.crypto import PrivateKey
-import docker as docker_py
+from _pytest.reports import TestReport
+from _pytest.terminal import TerminalReporter
 from docker.client import DockerClient
+from f1r3fly.crypto import PrivateKey
 
 from .common import (
     CommandLineOptions,
@@ -33,22 +33,20 @@ from .common import (
 from .rnode import (
     DEFAULT_IMAGE,
     Node,
-    COMPOSE_PORT_MAPPINGS,
 )
 
-
 # Silence unwanted noise in logs produced at the DEBUG level
-logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
-logging.getLogger('connectionpool.py').setLevel(logging.WARNING)
-logging.getLogger('docker.utils.config').setLevel(logging.WARNING)
-logging.getLogger('docker.auth').setLevel(logging.WARNING)
+logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+logging.getLogger("connectionpool.py").setLevel(logging.WARNING)
+logging.getLogger("docker.utils.config").setLevel(logging.WARNING)
+logging.getLogger("docker.auth").setLevel(logging.WARNING)
 
 # Container names matching the docker-compose defaults
-BOOTSTRAP_CONTAINER = 'rnode.bootstrap'
-VALIDATOR1_CONTAINER = 'rnode.validator1'
-VALIDATOR2_CONTAINER = 'rnode.validator2'
-VALIDATOR3_CONTAINER = 'rnode.validator3'
-READONLY_CONTAINER = 'rnode.readonly'
+BOOTSTRAP_CONTAINER = "rnode.bootstrap"
+VALIDATOR1_CONTAINER = "rnode.validator1"
+VALIDATOR2_CONTAINER = "rnode.validator2"
+VALIDATOR3_CONTAINER = "rnode.validator3"
+READONLY_CONTAINER = "rnode.readonly"
 
 ALL_CONTAINERS = [
     BOOTSTRAP_CONTAINER,
@@ -67,19 +65,27 @@ VALIDATOR_CONTAINERS = [
 # Compose project and network names -- distinct project names prevent
 # `docker-compose down --remove-orphans` from killing containers managed
 # by the other project.
-SHARD_PROJECT_NAME = 'f1r3fly-shard'
-STANDALONE_PROJECT_NAME = 'f1r3fly-standalone'
-COMPOSE_NETWORK = 'f1r3fly-test-shard'
-STANDALONE_NETWORK = 'f1r3fly-test-standalone'
+SHARD_PROJECT_NAME = "f1r3fly-shard"
+STANDALONE_PROJECT_NAME = "f1r3fly-standalone"
+COMPOSE_NETWORK = "f1r3fly-test-shard"
+STANDALONE_NETWORK = "f1r3fly-test-standalone"
 
 # Standalone node
-STANDALONE_CONTAINER = 'rnode.standalone'
+STANDALONE_CONTAINER = "rnode.standalone"
 
 # Keys from .env.node -- matching genesis/bonds.txt and genesis/wallets.txt
-BOOTSTRAP_KEY = PrivateKey.from_hex("5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657")
-VALIDATOR1_KEY = PrivateKey.from_hex("357cdc4201a5650830e0bc5a03299a30038d9934ba4c7ab73ec164ad82471ff9")
-VALIDATOR2_KEY = PrivateKey.from_hex("2c02138097d019d263c1d5383fcaddb1ba6416a0f4e64e3a617fe3af45b7851d")
-VALIDATOR3_KEY = PrivateKey.from_hex("b67533f1f99c0ecaedb7d829e430b1c0e605bda10f339f65d5567cb5bd77cbcb")
+BOOTSTRAP_KEY = PrivateKey.from_hex(
+    "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
+)
+VALIDATOR1_KEY = PrivateKey.from_hex(
+    "357cdc4201a5650830e0bc5a03299a30038d9934ba4c7ab73ec164ad82471ff9"
+)
+VALIDATOR2_KEY = PrivateKey.from_hex(
+    "2c02138097d019d263c1d5383fcaddb1ba6416a0f4e64e3a617fe3af45b7851d"
+)
+VALIDATOR3_KEY = PrivateKey.from_hex(
+    "b67533f1f99c0ecaedb7d829e430b1c0e605bda10f339f65d5567cb5bd77cbcb"
+)
 
 # Genesis wallet balances from genesis/wallets.txt (vault addresses derived from the keys above)
 # BOOTSTRAP  = 1111AtahZeefej... = 50000000000000000
@@ -92,7 +98,9 @@ VALIDATOR2_GENESIS_BALANCE = 50000000000000000
 VALIDATOR3_GENESIS_BALANCE = 500000000000000000
 
 # Legacy aliases used by older tests
-STANDALONE_KEY = PrivateKey.from_hex("ff2ba092524bafdbc85fa0c7eddb2b41c69bc9bf066a4711a8a16f749199e5be")
+STANDALONE_KEY = PrivateKey.from_hex(
+    "ff2ba092524bafdbc85fa0c7eddb2b41c69bc9bf066a4711a8a16f749199e5be"
+)
 
 # Standalone node private key (matches .env.node STANDALONE_PRIVATE_KEY and standalone genesis)
 STANDALONE_PRIVATE_KEY = "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
@@ -169,9 +177,12 @@ def _compose_cmd(*args: str) -> List[str]:
     compose_file = _get_compose_file()
     return [
         "docker-compose",
-        "--project-name", SHARD_PROJECT_NAME,
-        "--env-file", os.path.join(tests_dir, ".env.node"),
-        "-f", os.path.join(tests_dir, compose_file),
+        "--project-name",
+        SHARD_PROJECT_NAME,
+        "--env-file",
+        os.path.join(tests_dir, ".env.node"),
+        "-f",
+        os.path.join(tests_dir, compose_file),
         *args,
     ]
 
@@ -192,10 +203,15 @@ def _compose_up() -> None:
         stderr = result.stderr.decode("utf-8", errors="replace").strip()
         logging.error(
             "docker-compose up failed (exit %d):\nstdout: %s\nstderr: %s",
-            result.returncode, stdout, stderr,
+            result.returncode,
+            stdout,
+            stderr,
         )
         raise subprocess.CalledProcessError(
-            result.returncode, result.args, result.stdout, result.stderr,
+            result.returncode,
+            result.args,
+            result.stdout,
+            result.stderr,
         )
 
 
@@ -223,9 +239,12 @@ def _standalone_compose_cmd(*args: str, override_file: Optional[str] = None) -> 
     compose_file = _get_standalone_compose_file()
     cmd = [
         "docker-compose",
-        "--project-name", STANDALONE_PROJECT_NAME,
-        "--env-file", os.path.join(tests_dir, ".env.node"),
-        "-f", os.path.join(tests_dir, compose_file),
+        "--project-name",
+        STANDALONE_PROJECT_NAME,
+        "--env-file",
+        os.path.join(tests_dir, ".env.node"),
+        "-f",
+        os.path.join(tests_dir, compose_file),
     ]
     if override_file:
         cmd.extend(["-f", override_file])
@@ -249,10 +268,15 @@ def _standalone_compose_up(override_file: Optional[str] = None) -> None:
         stderr = result.stderr.decode("utf-8", errors="replace").strip()
         logging.error(
             "docker-compose up (standalone) failed (exit %d):\nstdout: %s\nstderr: %s",
-            result.returncode, stdout, stderr,
+            result.returncode,
+            stdout,
+            stderr,
         )
         raise subprocess.CalledProcessError(
-            result.returncode, result.args, result.stdout, result.stderr,
+            result.returncode,
+            result.args,
+            result.stdout,
+            result.stderr,
         )
 
 
@@ -261,8 +285,9 @@ def _standalone_compose_down(override_file: Optional[str] = None) -> None:
     logging.info("Stopping standalone node via docker-compose...")
     tests_dir = _get_tests_dir()
     subprocess.run(
-        _standalone_compose_cmd("down", "--volumes", "--remove-orphans",
-                                override_file=override_file),
+        _standalone_compose_cmd(
+            "down", "--volumes", "--remove-orphans", override_file=override_file
+        ),
         cwd=tests_dir,
         check=False,
     )
@@ -284,10 +309,10 @@ def _build_standalone_override(
     tests_dir = _get_tests_dir()
     compose_file = _get_standalone_compose_file()
     compose_path = os.path.join(tests_dir, compose_file)
-    with open(compose_path, 'r') as f:
+    with open(compose_path, "r") as f:
         base_compose = yaml.safe_load(f)
 
-    base_command = base_compose['services']['standalone']['command']
+    base_command = base_compose["services"]["standalone"]["command"]
 
     # Build extended command with CLI overrides
     extended_command = list(base_command)
@@ -300,15 +325,15 @@ def _build_standalone_override(
 
     # Generate override YAML
     override = {
-        'services': {
-            'standalone': {
-                'command': extended_command,
+        "services": {
+            "standalone": {
+                "command": extended_command,
             }
         }
     }
 
-    fd, path = tempfile.mkstemp(prefix='standalone-override-', suffix='.yml')
-    with os.fdopen(fd, 'w') as f:
+    fd, path = tempfile.mkstemp(prefix="standalone-override-", suffix=".yml")
+    with os.fdopen(fd, "w") as f:
         yaml.dump(override, f, default_flow_style=False)
 
     logging.info("Generated standalone compose override: %s", path)
@@ -381,10 +406,10 @@ def start_standalone_node(
 def _make_standalone_node(docker_client: DockerClient, command_timeout: int) -> Node:
     """Create a Node wrapper for the standalone container."""
     container = docker_client.containers.get(STANDALONE_CONTAINER)
-    networks = container.attrs.get('NetworkSettings', {}).get('Networks', {})
-    network = ''
+    networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+    network = ""
     for net_name in networks:
-        if 'standalone' in net_name or 'f1r3fly' in net_name:
+        if "standalone" in net_name or "f1r3fly" in net_name:
             network = net_name
             break
     if not network and networks:
@@ -398,9 +423,12 @@ def _make_standalone_node(docker_client: DockerClient, command_timeout: int) -> 
     )
 
 
-def _wait_for_running_state(docker_client: DockerClient, container_name: str,
-                             timeout: int,
-                             data_volume: Optional[str] = None) -> None:
+def _wait_for_running_state(
+    docker_client: DockerClient,
+    container_name: str,
+    timeout: int,
+    data_volume: Optional[str] = None,
+) -> None:
     """Wait for a node container to reach the Running state.
 
     Polls container logs every 5 seconds for the Running state marker. Also
@@ -418,7 +446,7 @@ def _wait_for_running_state(docker_client: DockerClient, container_name: str,
     wasted CI time per container compared to blindly polling until timeout.
     """
     container = docker_client.containers.get(container_name)
-    running_marker = 'Making a transition to Running state.'
+    running_marker = "Making a transition to Running state."
     start = time.time()
     restart_attempted = False
 
@@ -428,16 +456,19 @@ def _wait_for_running_state(docker_client: DockerClient, container_name: str,
 
         # Early crash detection: if the container has exited, either restart
         # it once or fail immediately if we already tried.
-        if container.status in ('exited', 'dead'):
-            exit_code = container.attrs.get('State', {}).get('ExitCode', '?')
-            log_tail = container.logs(tail=30).decode('utf-8', errors='replace').strip()
+        if container.status in ("exited", "dead"):
+            exit_code = container.attrs.get("State", {}).get("ExitCode", "?")
+            log_tail = container.logs(tail=30).decode("utf-8", errors="replace").strip()
 
             if not restart_attempted:
                 logging.warning(
                     "Container %s crashed (status=%s, exit_code=%s), "
                     "attempting restart (%.1fs elapsed). Last 30 log lines:\n%s",
-                    container_name, container.status, exit_code,
-                    time.time() - start, log_tail,
+                    container_name,
+                    container.status,
+                    exit_code,
+                    time.time() - start,
+                    log_tail,
                 )
                 # Clean the data volume before restart. A partially-written
                 # genesis or DAG state from the crashed run can prevent the
@@ -445,8 +476,17 @@ def _wait_for_running_state(docker_client: DockerClient, container_name: str,
                 if data_volume:
                     logging.info("Cleaning data volume before restart: %s", data_volume)
                     subprocess.run(
-                        ["docker", "run", "--rm", "-v", f"{data_volume}:/data",
-                         "alpine", "sh", "-c", "rm -rf /data/*"],
+                        [
+                            "docker",
+                            "run",
+                            "--rm",
+                            "-v",
+                            f"{data_volume}:/data",
+                            "alpine",
+                            "sh",
+                            "-c",
+                            "rm -rf /data/*",
+                        ],
                         check=False,
                     )
                 container.restart()
@@ -461,27 +501,27 @@ def _wait_for_running_state(docker_client: DockerClient, container_name: str,
                 )
 
         # Check for the Running state marker in container logs
-        logs = container.logs().decode('utf-8')
+        logs = container.logs().decode("utf-8")
         if running_marker in logs:
             elapsed = time.time() - start
             restarted = " (after restart)" if restart_attempted else ""
-            logging.info("Container %s reached Running state (%.1fs%s)",
-                         container_name, elapsed, restarted)
+            logging.info(
+                "Container %s reached Running state (%.1fs%s)", container_name, elapsed, restarted
+            )
             return
 
         time.sleep(5)
 
     # Timeout: collect diagnostics before raising
     container.reload()
-    log_tail = container.logs(tail=30).decode('utf-8', errors='replace').strip()
+    log_tail = container.logs(tail=30).decode("utf-8", errors="replace").strip()
     raise TimeoutError(
         f"Container {container_name} did not reach Running state within {timeout}s "
         f"(status={container.status}). Last 30 log lines:\n{log_tail}"
     )
 
 
-def assert_containers_running(docker_client: DockerClient,
-                               container_names: List[str]) -> None:
+def assert_containers_running(docker_client: DockerClient, container_names: List[str]) -> None:
     """Assert that all named containers are in a running state.
 
     Raises AssertionError with details about any containers that are not running,
@@ -496,12 +536,11 @@ def assert_containers_running(docker_client: DockerClient,
             continue
 
         status = container.status
-        if status != 'running':
-            exit_code = container.attrs.get('State', {}).get('ExitCode', 'unknown')
-            log_tail = container.logs(tail=20).decode('utf-8', errors='replace')
+        if status != "running":
+            exit_code = container.attrs.get("State", {}).get("ExitCode", "unknown")
+            log_tail = container.logs(tail=20).decode("utf-8", errors="replace")
             failures.append(
-                f"{name}: status={status}, exit_code={exit_code}\n"
-                f"  Last 20 log lines:\n{log_tail}"
+                f"{name}: status={status}, exit_code={exit_code}\n  Last 20 log lines:\n{log_tail}"
             )
 
     if failures:
@@ -555,8 +594,8 @@ def pytest_collection_modifyitems(config, items: list) -> None:
     # Find the last shard test in the ordered sequence.
     global _last_shard_test_nodeid
     for item in reversed(items):
-        marker = item.get_closest_marker('xdist_group')
-        if marker and marker.args and marker.args[0] == 'shard':
+        marker = item.get_closest_marker("xdist_group")
+        if marker and marker.args and marker.args[0] == "shard":
             _last_shard_test_nodeid = item.nodeid
             break
 
@@ -603,10 +642,12 @@ def pytest_runtest_setup(item) -> None:
     for name in ALL_CONTAINERS:
         try:
             container = client.containers.get(name)
-            if container.status != 'running':
-                exit_code = container.attrs.get('State', {}).get('ExitCode', '?')
-                log_tail = container.logs(tail=5).decode('utf-8', errors='replace').strip()
-                crashed.append(f"{name}: status={container.status}, exit_code={exit_code}\n  {log_tail}")
+            if container.status != "running":
+                exit_code = container.attrs.get("State", {}).get("ExitCode", "?")
+                log_tail = container.logs(tail=5).decode("utf-8", errors="replace").strip()
+                crashed.append(
+                    f"{name}: status={container.status}, exit_code={exit_code}\n  {log_tail}"
+                )
         except docker_py.errors.NotFound:
             crashed.append(f"{name}: container not found")
 
@@ -645,20 +686,54 @@ def pytest_runtest_teardown(item, nextitem) -> None:
 
 
 def pytest_addoption(parser: Parser) -> None:
-    parser.addoption("--startup-timeout", type=int, action="store", default=60 * 8,
-                     help="timeout in seconds for starting a node")
-    parser.addoption("--converge-timeout", type=int, action="store", default=60 * 5,
-                     help="timeout in seconds for network converge")
-    parser.addoption("--receive-timeout", type=int, action="store", default=30,
-                     help="timeout in seconds for receiving a single block")
-    parser.addoption("--command-timeout", type=int, action="store", default=60 * 3,
-                     help="timeout in seconds for executing a rnode call")
-    parser.addoption("--random-seed", type=int, action="store", default=None,
-                     help="seed for the random numbers generator used in integration tests")
-    parser.addoption("--timeout-scale", type=float, action="store", default=1.0,
-                     help="multiplier for hardcoded polling timeouts (e.g. 3.0 for CI)")
-    parser.addoption("--skip-setup", action="store_true", default=False,
-                     help="skip shard setup (assume already running)")
+    parser.addoption(
+        "--startup-timeout",
+        type=int,
+        action="store",
+        default=60 * 8,
+        help="timeout in seconds for starting a node",
+    )
+    parser.addoption(
+        "--converge-timeout",
+        type=int,
+        action="store",
+        default=60 * 5,
+        help="timeout in seconds for network converge",
+    )
+    parser.addoption(
+        "--receive-timeout",
+        type=int,
+        action="store",
+        default=30,
+        help="timeout in seconds for receiving a single block",
+    )
+    parser.addoption(
+        "--command-timeout",
+        type=int,
+        action="store",
+        default=60 * 3,
+        help="timeout in seconds for executing a rnode call",
+    )
+    parser.addoption(
+        "--random-seed",
+        type=int,
+        action="store",
+        default=None,
+        help="seed for the random numbers generator used in integration tests",
+    )
+    parser.addoption(
+        "--timeout-scale",
+        type=float,
+        action="store",
+        default=1.0,
+        help="multiplier for hardcoded polling timeouts (e.g. 3.0 for CI)",
+    )
+    parser.addoption(
+        "--skip-setup",
+        action="store_true",
+        default=False,
+        help="skip shard setup (assume already running)",
+    )
 
 
 def pytest_terminal_summary(terminalreporter: TerminalReporter) -> None:
@@ -680,7 +755,7 @@ def pytest_terminal_summary(terminalreporter: TerminalReporter) -> None:
         tr.write_line(f"Total: {total_second:8.2f}s, {detail_duration}    {nodeid}")
 
 
-@pytest.fixture(scope='session')
+@pytest.fixture(scope="session")
 def command_line_options(request) -> Generator[CommandLineOptions, None, None]:
     startup_timeout = int(request.config.getoption("--startup-timeout"))
     converge_timeout = int(request.config.getoption("--converge-timeout"))
@@ -699,7 +774,7 @@ def command_line_options(request) -> Generator[CommandLineOptions, None, None]:
     )
 
 
-@pytest.fixture(scope='session')
+@pytest.fixture(scope="session")
 def docker_client() -> Generator[DockerClient, None, None]:
     client = docker_py.from_env()
     try:
@@ -708,17 +783,21 @@ def docker_client() -> Generator[DockerClient, None, None]:
         pass  # Don't prune -- compose manages lifecycle
 
 
-@pytest.fixture(scope='session')
+@pytest.fixture(scope="session")
 def random_generator(command_line_options: CommandLineOptions) -> Generator[Random, None, None]:
-    random_seed = time.time() if command_line_options.random_seed is None else command_line_options.random_seed
+    random_seed = (
+        time.time()
+        if command_line_options.random_seed is None
+        else command_line_options.random_seed
+    )
     logging.critical("Using tests random number generator seed: %d", random_seed)
     yield Random(random_seed)
 
 
-@pytest.fixture(scope='session')
-def testing_context(command_line_options: CommandLineOptions,
-                    random_generator: Random,
-                    docker_client: DockerClient) -> Generator[TestingContext, None, None]:
+@pytest.fixture(scope="session")
+def testing_context(
+    command_line_options: CommandLineOptions, random_generator: Random, docker_client: DockerClient
+) -> Generator[TestingContext, None, None]:
     """Session-scoped testing context for compose-based tests."""
     yield TestingContext(
         node_startup_timeout=command_line_options.node_startup_timeout,
@@ -731,9 +810,10 @@ def testing_context(command_line_options: CommandLineOptions,
     )
 
 
-@pytest.fixture(scope='session')
-def shard(request, command_line_options: CommandLineOptions,
-          docker_client: DockerClient) -> Generator[None, None, None]:
+@pytest.fixture(scope="session")
+def shard(
+    request, command_line_options: CommandLineOptions, docker_client: DockerClient
+) -> Generator[None, None, None]:
     """Session-scoped fixture that brings up the test shard and tears it down.
 
     Starts the full shard topology (boot + 3 validators + readonly) using
@@ -781,14 +861,13 @@ def shard(request, command_line_options: CommandLineOptions,
             _shard_started = False
 
 
-def _make_node(docker_client: DockerClient, container_name: str,
-               command_timeout: int) -> Node:
+def _make_node(docker_client: DockerClient, container_name: str, command_timeout: int) -> Node:
     """Create a Node wrapper for a compose-managed container."""
     container = docker_client.containers.get(container_name)
-    networks = container.attrs.get('NetworkSettings', {}).get('Networks', {})
-    network = ''
+    networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+    network = ""
     for net_name in networks:
-        if 'test-shard' in net_name or 'f1r3fly' in net_name:
+        if "test-shard" in net_name or "f1r3fly" in net_name:
             network = net_name
             break
     if not network and networks:
@@ -802,70 +881,74 @@ def _make_node(docker_client: DockerClient, container_name: str,
     )
 
 
-@pytest.fixture(scope='session')
-def bootstrap_node(shard, docker_client: DockerClient,
-                   command_line_options: CommandLineOptions) -> Generator[Node, None, None]:
+@pytest.fixture(scope="session")
+def bootstrap_node(
+    shard, docker_client: DockerClient, command_line_options: CommandLineOptions
+) -> Generator[Node, None, None]:
     """The bootstrap (ceremony master) node. Not a validator."""
-    node = _make_node(docker_client, BOOTSTRAP_CONTAINER,
-                      command_line_options.command_timeout)
+    node = _make_node(docker_client, BOOTSTRAP_CONTAINER, command_line_options.command_timeout)
     yield node
     node.stop_logging()
 
 
-@pytest.fixture(scope='session')
-def validator1_node(shard, docker_client: DockerClient,
-                    command_line_options: CommandLineOptions) -> Generator[Node, None, None]:
+@pytest.fixture(scope="session")
+def validator1_node(
+    shard, docker_client: DockerClient, command_line_options: CommandLineOptions
+) -> Generator[Node, None, None]:
     """Validator 1 node."""
-    node = _make_node(docker_client, VALIDATOR1_CONTAINER,
-                      command_line_options.command_timeout)
+    node = _make_node(docker_client, VALIDATOR1_CONTAINER, command_line_options.command_timeout)
     yield node
     node.stop_logging()
 
 
-@pytest.fixture(scope='session')
-def validator2_node(shard, docker_client: DockerClient,
-                    command_line_options: CommandLineOptions) -> Generator[Node, None, None]:
+@pytest.fixture(scope="session")
+def validator2_node(
+    shard, docker_client: DockerClient, command_line_options: CommandLineOptions
+) -> Generator[Node, None, None]:
     """Validator 2 node."""
-    node = _make_node(docker_client, VALIDATOR2_CONTAINER,
-                      command_line_options.command_timeout)
+    node = _make_node(docker_client, VALIDATOR2_CONTAINER, command_line_options.command_timeout)
     yield node
     node.stop_logging()
 
 
-@pytest.fixture(scope='session')
-def validator3_node(shard, docker_client: DockerClient,
-                    command_line_options: CommandLineOptions) -> Generator[Node, None, None]:
+@pytest.fixture(scope="session")
+def validator3_node(
+    shard, docker_client: DockerClient, command_line_options: CommandLineOptions
+) -> Generator[Node, None, None]:
     """Validator 3 node."""
-    node = _make_node(docker_client, VALIDATOR3_CONTAINER,
-                      command_line_options.command_timeout)
+    node = _make_node(docker_client, VALIDATOR3_CONTAINER, command_line_options.command_timeout)
     yield node
     node.stop_logging()
 
 
-@pytest.fixture(scope='session')
-def readonly_node(shard, docker_client: DockerClient,
-                  command_line_options: CommandLineOptions) -> Generator[Node, None, None]:
+@pytest.fixture(scope="session")
+def readonly_node(
+    shard, docker_client: DockerClient, command_line_options: CommandLineOptions
+) -> Generator[Node, None, None]:
     """The read-only (observer) node."""
-    node = _make_node(docker_client, READONLY_CONTAINER,
-                      command_line_options.command_timeout)
+    node = _make_node(docker_client, READONLY_CONTAINER, command_line_options.command_timeout)
     yield node
     node.stop_logging()
 
 
-@pytest.fixture(scope='session')
-def validator_nodes(validator1_node: Node, validator2_node: Node,
-                    validator3_node: Node) -> List[Node]:
+@pytest.fixture(scope="session")
+def validator_nodes(
+    validator1_node: Node, validator2_node: Node, validator3_node: Node
+) -> List[Node]:
     """All three validator nodes as a list."""
     return [validator1_node, validator2_node, validator3_node]
 
 
-@pytest.fixture(scope='session')
-def all_nodes(bootstrap_node: Node, validator1_node: Node,
-              validator2_node: Node, validator3_node: Node,
-              readonly_node: Node) -> List[Node]:
+@pytest.fixture(scope="session")
+def all_nodes(
+    bootstrap_node: Node,
+    validator1_node: Node,
+    validator2_node: Node,
+    validator3_node: Node,
+    readonly_node: Node,
+) -> List[Node]:
     """All five nodes as a list."""
-    return [bootstrap_node, validator1_node, validator2_node,
-            validator3_node, readonly_node]
+    return [bootstrap_node, validator1_node, validator2_node, validator3_node, readonly_node]
 
 
 # ── Custom Shard Infrastructure ─────────────────────────────────────
@@ -873,23 +956,23 @@ def all_nodes(bootstrap_node: Node, validator1_node: Node,
 # Used by Phase 6 tests (asymmetric bonds, synchrony constraints,
 # bonding/unbonding, state trimming, slashing).
 
-CUSTOM_PROJECT_NAME = 'f1r3fly-custom'
-CUSTOM_NETWORK = 'f1r3fly-test-custom'
-CUSTOM_BOOT_CONTAINER = 'rnode.custom.boot'
-CUSTOM_JOINER_CONTAINER = 'rnode.custom.joiner'
+CUSTOM_PROJECT_NAME = "f1r3fly-custom"
+CUSTOM_NETWORK = "f1r3fly-test-custom"
+CUSTOM_BOOT_CONTAINER = "rnode.custom.boot"
+CUSTOM_JOINER_CONTAINER = "rnode.custom.joiner"
 
-BOOTSTRAP_NODE_ID = '1e780e5dfbe0a3d9470a2b414f502d59402e09c2'
-BOOTSTRAP_PRIVATE_KEY_HEX = '5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657'
+BOOTSTRAP_NODE_ID = "1e780e5dfbe0a3d9470a2b414f502d59402e09c2"
+BOOTSTRAP_PRIVATE_KEY_HEX = "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
 
 # Port base offsets for custom shard nodes (host ports).
 # Each node uses 6 consecutive ports: protocol, ext-gRPC, int-gRPC,
 # HTTP, discovery, admin-HTTP.
 _CUSTOM_PORT_BASES = {
-    'boot': 40500,
-    'validator1': 40510,
-    'validator2': 40520,
-    'validator3': 40530,
-    'joiner': 40540,
+    "boot": 40500,
+    "validator1": 40510,
+    "validator2": 40520,
+    "validator3": 40530,
+    "joiner": 40540,
 }
 
 
@@ -900,6 +983,7 @@ class ValidatorIdentity:
     Bundles a PrivateKey (for signing deploys in tests) with the raw hex
     representations needed for genesis files and docker-compose commands.
     """
+
     key: PrivateKey
     private_hex: str
     public_hex: str
@@ -922,7 +1006,9 @@ VALIDATOR3_ID = ValidatorIdentity(
     public_hex="0457febafcc25dd34ca5e5c025cd445f60e5ea6918931a54eb8c3a204f51760248090b0c757c2bdad7b8c4dca757e109f8ef64737d90712724c8216c94b4ae661c",
 )
 
-VALIDATOR4_KEY = PrivateKey.from_hex("5ff3514bf79a7d18e8dd974c699678ba63b7762ce8d78c532346e52f0ad219cd")
+VALIDATOR4_KEY = PrivateKey.from_hex(
+    "5ff3514bf79a7d18e8dd974c699678ba63b7762ce8d78c532346e52f0ad219cd"
+)
 VALIDATOR4_ID = ValidatorIdentity(
     key=VALIDATOR4_KEY,
     private_hex="5ff3514bf79a7d18e8dd974c699678ba63b7762ce8d78c532346e52f0ad219cd",
@@ -937,6 +1023,7 @@ class CustomShard:
     Provides access to nodes, network details, and genesis configuration
     needed by add_peer_to_shard to attach joiner nodes mid-test.
     """
+
     nodes: Dict[str, Node]
     network_name: str
     genesis_dir: str
@@ -963,27 +1050,29 @@ def _generate_custom_genesis(
 
     Returns the absolute path to the temporary genesis directory.
     """
-    genesis_dir = tempfile.mkdtemp(prefix='custom-genesis-')
+    genesis_dir = tempfile.mkdtemp(prefix="custom-genesis-")
 
-    bonds_path = os.path.join(genesis_dir, 'bonds.txt')
-    with open(bonds_path, 'w') as f:
+    bonds_path = os.path.join(genesis_dir, "bonds.txt")
+    with open(bonds_path, "w") as f:
         for identity, stake in bonds:
             f.write(f"{identity.public_hex} {stake}\n")
 
     tests_dir = _get_tests_dir()
-    default_wallets = os.path.join(tests_dir, 'genesis', 'wallets.txt')
-    wallets_path = os.path.join(genesis_dir, 'wallets.txt')
+    default_wallets = os.path.join(tests_dir, "genesis", "wallets.txt")
+    wallets_path = os.path.join(genesis_dir, "wallets.txt")
     shutil.copy2(default_wallets, wallets_path)
 
     if extra_wallets:
-        with open(wallets_path, 'a') as f:
+        with open(wallets_path, "a") as f:
             for vault_addr, balance in extra_wallets:
                 f.write(f"{vault_addr},{balance}\n")
 
-    logging.info("Generated custom genesis in %s (bonds: %s, extra_wallets: %d)",
-                 genesis_dir,
-                 ", ".join(f"{v.public_hex[:8]}...={s}" for v, s in bonds),
-                 len(extra_wallets or []))
+    logging.info(
+        "Generated custom genesis in %s (bonds: %s, extra_wallets: %d)",
+        genesis_dir,
+        ", ".join(f"{v.public_hex[:8]}...={s}" for v, s in bonds),
+        len(extra_wallets or []),
+    )
     return genesis_dir
 
 
@@ -1017,12 +1106,11 @@ def _generate_custom_compose(
 
     image = DEFAULT_IMAGE
     bootstrap_url = (
-        f"rnode://{BOOTSTRAP_NODE_ID}@{CUSTOM_BOOT_CONTAINER}"
-        f"?protocol=40400&discovery=40404"
+        f"rnode://{BOOTSTRAP_NODE_ID}@{CUSTOM_BOOT_CONTAINER}?protocol=40400&discovery=40404"
     )
 
-    abs_conf = os.path.join(tests_dir, 'conf')
-    abs_certs = os.path.join(tests_dir, 'certs')
+    abs_conf = os.path.join(tests_dir, "conf")
+    abs_certs = os.path.join(tests_dir, "certs")
 
     global_opts = global_cli_options or {}
     per_node_opts = per_node_cli_options or {}
@@ -1057,57 +1145,75 @@ def _generate_custom_compose(
     else:
         total_containers = len(bonds) + 1  # boot + validators
         max_ram_pct = 90.0 / total_containers
-        java_options = (
-            f'-XX:MaxRAMPercentage={max_ram_pct:.1f} -XX:MaxDirectMemorySize=128M'
-        )
+        java_options = f"-XX:MaxRAMPercentage={max_ram_pct:.1f} -XX:MaxDirectMemorySize=128M"
         logging.info(
             "Custom shard JVM tuning: %d containers, MaxRAMPercentage=%.1f%%",
-            total_containers, max_ram_pct,
+            total_containers,
+            max_ram_pct,
         )
 
     services: Dict = {}
 
     # ── Bootstrap node ──
     boot_host = CUSTOM_BOOT_CONTAINER
-    boot_base = _CUSTOM_PORT_BASES['boot']
-    boot_command = ([] if rust else [
-        "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
-    ]) + [
-        "run",
-        f"--host={boot_host}",
-        f"--bootstrap={bootstrap_url}",
-        "--allow-private-addresses",
-        f"--validator-private-key={BOOTSTRAP_PRIVATE_KEY_HEX}",
-        f"--fault-tolerance-threshold={ftt}",
-        f"--required-signatures={required_signatures}",
-        "--approve-duration=180seconds",
-    ] + _extra_cli("boot")
+    boot_base = _CUSTOM_PORT_BASES["boot"]
+    boot_command = (
+        (
+            []
+            if rust
+            else [
+                "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
+            ]
+        )
+        + [
+            "run",
+            f"--host={boot_host}",
+            f"--bootstrap={bootstrap_url}",
+            "--allow-private-addresses",
+            f"--validator-private-key={BOOTSTRAP_PRIVATE_KEY_HEX}",
+            f"--fault-tolerance-threshold={ftt}",
+            f"--required-signatures={required_signatures}",
+            "--approve-duration=180seconds",
+        ]
+        + _extra_cli("boot")
+    )
 
-    services['boot'] = {
-        'image': image,
-        'pull_policy': 'never',
-        'user': 'root',
-        'restart': 'no',
-        'container_name': boot_host,
-        'networks': [CUSTOM_NETWORK],
-        'command': boot_command,
-        'ports': [f"{boot_base + p}:4040{p}" for p in range(6)],
-        'volumes': [
-            'boot-data:/var/lib/rnode',
+    services["boot"] = {
+        "image": image,
+        "pull_policy": "never",
+        "user": "root",
+        "restart": "no",
+        "container_name": boot_host,
+        "networks": [CUSTOM_NETWORK],
+        "command": boot_command,
+        "ports": [f"{boot_base + p}:4040{p}" for p in range(6)],
+        "volumes": [
+            "boot-data:/var/lib/rnode",
             f"{abs_conf}/bootstrap-ceremony.conf:/var/lib/rnode/rnode.conf",
             f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
             f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
-        ] + ([] if rust else [
-            f"{abs_conf}/logback.xml:/var/lib/rnode/logback.xml",
-        ]) + [
+        ]
+        + (
+            []
+            if rust
+            else [
+                f"{abs_conf}/logback.xml:/var/lib/rnode/logback.xml",
+            ]
+        )
+        + [
             f"{abs_certs}/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
             f"{abs_certs}/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro",
         ],
-        'environment': [
-            'OPENAI_ENABLED=false',
-        ] + ([] if rust else [
-            f'_JAVA_OPTIONS={java_options}',
-        ]),
+        "environment": [
+            "OPENAI_ENABLED=false",
+        ]
+        + (
+            []
+            if rust
+            else [
+                f"_JAVA_OPTIONS={java_options}",
+            ]
+        ),
     }
 
     # ── Validator nodes ──
@@ -1118,62 +1224,81 @@ def _generate_custom_compose(
         cert_dir = f"validator{slot}"
         base_port = _CUSTOM_PORT_BASES[node_key]
 
-        validator_command = ([] if rust else [
-            "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
-        ]) + [
-            "run",
-            f"--host={host}",
-            "--allow-private-addresses",
-            f"--bootstrap={bootstrap_url}",
-            f"--validator-public-key={identity.public_hex}",
-            f"--validator-private-key={identity.private_hex}",
-            "--genesis-validator",
-            f"--fault-tolerance-threshold={ftt}",
-            f"--required-signatures={required_signatures}",
-        ] + _extra_cli(node_key)
+        validator_command = (
+            (
+                []
+                if rust
+                else [
+                    "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
+                ]
+            )
+            + [
+                "run",
+                f"--host={host}",
+                "--allow-private-addresses",
+                f"--bootstrap={bootstrap_url}",
+                f"--validator-public-key={identity.public_hex}",
+                f"--validator-private-key={identity.private_hex}",
+                "--genesis-validator",
+                f"--fault-tolerance-threshold={ftt}",
+                f"--required-signatures={required_signatures}",
+            ]
+            + _extra_cli(node_key)
+        )
 
         services[node_key] = {
-            'image': image,
-            'pull_policy': 'never',
-            'user': 'root',
-            'restart': 'no',
-            'container_name': host,
-            'depends_on': ['boot'],
-            'networks': [CUSTOM_NETWORK],
-            'command': validator_command,
-            'ports': [f"{base_port + p}:4040{p}" for p in range(6)],
-            'volumes': [
-                f'{node_key}-data:/var/lib/rnode',
+            "image": image,
+            "pull_policy": "never",
+            "user": "root",
+            "restart": "no",
+            "container_name": host,
+            "depends_on": ["boot"],
+            "networks": [CUSTOM_NETWORK],
+            "command": validator_command,
+            "ports": [f"{base_port + p}:4040{p}" for p in range(6)],
+            "volumes": [
+                f"{node_key}-data:/var/lib/rnode",
                 f"{abs_conf}/shared-rnode.conf:/var/lib/rnode/rnode.conf",
                 f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
                 f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
-            ] + ([] if rust else [
-                f"{abs_conf}/logback.xml:/var/lib/rnode/logback.xml",
-            ]) + [
+            ]
+            + (
+                []
+                if rust
+                else [
+                    f"{abs_conf}/logback.xml:/var/lib/rnode/logback.xml",
+                ]
+            )
+            + [
                 f"{abs_certs}/{cert_dir}/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
                 f"{abs_certs}/{cert_dir}/node.key.pem:/var/lib/rnode/node.key.pem:ro",
             ],
-            'environment': [
-                'OPENAI_ENABLED=false',
-            ] + ([] if rust else [
-                f'_JAVA_OPTIONS={java_options}',
-            ]),
+            "environment": [
+                "OPENAI_ENABLED=false",
+            ]
+            + (
+                []
+                if rust
+                else [
+                    f"_JAVA_OPTIONS={java_options}",
+                ]
+            ),
         }
 
-    volume_names = ['boot-data'] + [f'validator{i+1}-data' for i in range(len(bonds))]
+    volume_names = ["boot-data"] + [f"validator{i + 1}-data" for i in range(len(bonds))]
     compose = {
-        'services': services,
-        'volumes': {name: None for name in volume_names},
-        'networks': {
+        "services": services,
+        "volumes": {name: None for name in volume_names},
+        "networks": {
             CUSTOM_NETWORK: {
-                'name': CUSTOM_NETWORK,
-                'driver': 'bridge',
+                "name": CUSTOM_NETWORK,
+                "driver": "bridge",
             }
         },
     }
 
-    fd, compose_path = tempfile.mkstemp(prefix='custom-shard-', suffix='.yml')
-    with os.fdopen(fd, 'w') as f:
+    fd, compose_path = tempfile.mkstemp(prefix="custom-shard-", suffix=".yml")
+    with os.fdopen(fd, "w") as f:
         yaml.dump(compose, f, default_flow_style=False, sort_keys=False)
 
     logging.info("Generated custom shard compose: %s", compose_path)
@@ -1185,9 +1310,12 @@ def _custom_compose_cmd(compose_file: str, *args: str) -> List[str]:
     tests_dir = _get_tests_dir()
     return [
         "docker-compose",
-        "--project-name", CUSTOM_PROJECT_NAME,
-        "--env-file", os.path.join(tests_dir, ".env.node"),
-        "-f", compose_file,
+        "--project-name",
+        CUSTOM_PROJECT_NAME,
+        "--env-file",
+        os.path.join(tests_dir, ".env.node"),
+        "-f",
+        compose_file,
         *args,
     ]
 
@@ -1213,10 +1341,15 @@ def _custom_compose_up(compose_file: str, *services: str) -> None:
         stderr = result.stderr.decode("utf-8", errors="replace").strip()
         logging.error(
             "docker-compose up (custom) failed (exit %d):\nstdout: %s\nstderr: %s",
-            result.returncode, stdout, stderr,
+            result.returncode,
+            stdout,
+            stderr,
         )
         raise subprocess.CalledProcessError(
-            result.returncode, result.args, result.stdout, result.stderr,
+            result.returncode,
+            result.args,
+            result.stdout,
+            result.stderr,
         )
 
 
@@ -1259,19 +1392,13 @@ def _describe_port_owner(port: int) -> str:
     outputs: List[str] = []
     for cmd in commands:
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, check=False
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         except FileNotFoundError:
             continue
         if result.stdout.strip():
-            outputs.append(
-                f"$ {' '.join(cmd)}\n{result.stdout.strip()}"
-            )
+            outputs.append(f"$ {' '.join(cmd)}\n{result.stdout.strip()}")
         if result.stderr.strip():
-            outputs.append(
-                f"$ {' '.join(cmd)} (stderr)\n{result.stderr.strip()}"
-            )
+            outputs.append(f"$ {' '.join(cmd)} (stderr)\n{result.stderr.strip()}")
     return "\n\n".join(outputs).strip()
 
 
@@ -1300,8 +1427,7 @@ def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
     owner = _describe_port_owner(port)
     details = f"\nPort owner diagnostics:\n{owner}" if owner else ""
     raise RuntimeError(
-        f"Port {port} still in use after {timeout}s -- "
-        f"leftover container or TIME_WAIT?{details}"
+        f"Port {port} still in use after {timeout}s -- leftover container or TIME_WAIT?{details}"
     )
 
 
@@ -1321,7 +1447,7 @@ def _wait_for_custom_ports_free(num_validators: int, timeout: float = 60.0) -> N
 
     Previous custom shard teardown leaves kernel sockets in TIME_WAIT.
     """
-    node_keys = ['boot'] + [f'validator{i + 1}' for i in range(num_validators)]
+    node_keys = ["boot"] + [f"validator{i + 1}" for i in range(num_validators)]
     for key in node_keys:
         base = _CUSTOM_PORT_BASES[key]
         _wait_for_port_range_free(base, timeout=timeout)
@@ -1352,9 +1478,7 @@ def _wait_for_port_listening(host: str, port: int, timeout: float = 120.0) -> No
                 return
             except (ConnectionRefusedError, OSError):
                 time.sleep(2)
-    raise RuntimeError(
-        f"Port {host}:{port} not listening after {timeout}s"
-    )
+    raise RuntimeError(f"Port {host}:{port} not listening after {timeout}s")
 
 
 def _custom_compose_down(compose_file: str) -> None:
@@ -1368,8 +1492,9 @@ def _custom_compose_down(compose_file: str) -> None:
     )
 
 
-def _make_custom_node(docker_client: DockerClient, container_name: str,
-                      command_timeout: int) -> Node:
+def _make_custom_node(
+    docker_client: DockerClient, container_name: str, command_timeout: int
+) -> Node:
     """Create a Node wrapper for a custom shard container."""
     return Node.from_container_name(
         docker_client=docker_client,
@@ -1480,7 +1605,9 @@ def start_custom_shard(
             effective_global_opts.setdefault("--heartbeat-disabled", "")
 
         compose_file = _generate_custom_compose(
-            tests_dir, bonds, genesis_dir,
+            tests_dir,
+            bonds,
+            genesis_dir,
             ftt=ftt,
             required_signatures=required_signatures,
             global_cli_options=effective_global_opts,
@@ -1501,7 +1628,7 @@ def start_custom_shard(
         # the joiner container but doesn't wait for its ports, so a previous
         # test's joiner may still hold 40540-40545 in TIME_WAIT.
         _wait_for_custom_ports_free(len(bonds))
-        _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
+        _wait_for_port_range_free(_CUSTOM_PORT_BASES["joiner"])
 
         # ── Staggered startup: boot first, then validators ──
         # Starting all JVM containers simultaneously creates a memory
@@ -1513,13 +1640,13 @@ def start_custom_shard(
 
         def _do_staggered_startup() -> None:
             # Phase 1: start boot alone
-            _custom_compose_up(compose_file, 'boot')
-            boot_http_port = _CUSTOM_PORT_BASES['boot'] + 3  # HTTP API port
+            _custom_compose_up(compose_file, "boot")
+            boot_http_port = _CUSTOM_PORT_BASES["boot"] + 3  # HTTP API port
             logging.info(
                 "Waiting for boot HTTP port %d to accept connections...",
                 boot_http_port,
             )
-            _wait_for_port_listening('localhost', boot_http_port, timeout=120)
+            _wait_for_port_listening("localhost", boot_http_port, timeout=120)
             logging.info("Boot HTTP port is listening, starting validators...")
             # Phase 2: start validators (boot is already running)
             _custom_compose_up(compose_file)
@@ -1531,7 +1658,7 @@ def start_custom_shard(
             _force_cleanup_custom_containers()
             _custom_compose_down(compose_file)
             _wait_for_custom_ports_free(len(bonds))
-            _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
+            _wait_for_port_range_free(_CUSTOM_PORT_BASES["joiner"])
             _do_staggered_startup()
 
         logging.info(
@@ -1539,15 +1666,16 @@ def start_custom_shard(
             timeout,
         )
         for i, name in enumerate(container_names):
-            volume_name = 'boot-data' if i == 0 else f'validator{i}-data'
-            _wait_for_running_state(docker_client, name, timeout,
-                                    data_volume=volume_name)
+            volume_name = "boot-data" if i == 0 else f"validator{i}-data"
+            _wait_for_running_state(docker_client, name, timeout, data_volume=volume_name)
         logging.info("All custom shard nodes are in Running state.")
 
         for i, name in enumerate(container_names):
             key = "boot" if i == 0 else f"validator{i}"
             nodes[key] = _make_custom_node(
-                docker_client, name, command_line_options.command_timeout,
+                docker_client,
+                name,
+                command_line_options.command_timeout,
             )
 
         yield CustomShard(
@@ -1563,7 +1691,7 @@ def start_custom_shard(
         if compose_file:
             _custom_compose_down(compose_file)
         _wait_for_custom_ports_free(len(bonds))
-        _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
+        _wait_for_port_range_free(_CUSTOM_PORT_BASES["joiner"])
         if genesis_dir and os.path.exists(genesis_dir):
             shutil.rmtree(genesis_dir, ignore_errors=True)
         if compose_file and os.path.exists(compose_file):
@@ -1610,15 +1738,14 @@ def add_peer_to_shard(
                 joiner.deploy_string(...)
     """
     tests_dir = _get_tests_dir()
-    abs_conf = os.path.join(tests_dir, 'conf')
+    abs_conf = os.path.join(tests_dir, "conf")
     timeout = command_line_options.node_startup_timeout
 
     container_name = CUSTOM_JOINER_CONTAINER
-    joiner_volume = 'joiner-data'
+    joiner_volume = "joiner-data"
 
     bootstrap_url = (
-        f"rnode://{BOOTSTRAP_NODE_ID}@{shard.bootstrap_host}"
-        f"?protocol=40400&discovery=40404"
+        f"rnode://{BOOTSTRAP_NODE_ID}@{shard.bootstrap_host}?protocol=40400&discovery=40404"
     )
 
     # The joiner is not a genesis validator (it joins post-genesis). We mount
@@ -1629,9 +1756,13 @@ def add_peer_to_shard(
     # We cannot use shared-rnode.conf because genesis-validator-mode = true
     # and the --genesis-validator CLI flag is a presence-only toggle.
     rust = _is_rust_node()
-    command = ([] if rust else [
-        "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
-    ]) + [
+    command = (
+        []
+        if rust
+        else [
+            "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
+        ]
+    ) + [
         "run",
         f"--host={container_name}",
         "--allow-private-addresses",
@@ -1651,28 +1782,33 @@ def add_peer_to_shard(
             else:
                 command.append(k)
 
-    base_port = _CUSTOM_PORT_BASES['joiner']
+    base_port = _CUSTOM_PORT_BASES["joiner"]
     ports = {f"4040{p}/tcp": base_port + p for p in range(6)}
 
     # Use shared-rnode-runtime.conf (genesis-validator-mode = false,
     # ceremony-master-mode = false) for the joiner.
     volumes = {
         joiner_volume: {
-            'bind': '/var/lib/rnode/', 'mode': 'rw',
+            "bind": "/var/lib/rnode/",
+            "mode": "rw",
         },
-        os.path.join(abs_conf, 'shared-rnode-runtime.conf'): {
-            'bind': '/var/lib/rnode/rnode.conf', 'mode': 'ro',
+        os.path.join(abs_conf, "shared-rnode-runtime.conf"): {
+            "bind": "/var/lib/rnode/rnode.conf",
+            "mode": "ro",
         },
-        os.path.join(shard.genesis_dir, 'bonds.txt'): {
-            'bind': '/var/lib/rnode/genesis/bonds.txt', 'mode': 'ro',
+        os.path.join(shard.genesis_dir, "bonds.txt"): {
+            "bind": "/var/lib/rnode/genesis/bonds.txt",
+            "mode": "ro",
         },
-        os.path.join(shard.genesis_dir, 'wallets.txt'): {
-            'bind': '/var/lib/rnode/genesis/wallets.txt', 'mode': 'ro',
+        os.path.join(shard.genesis_dir, "wallets.txt"): {
+            "bind": "/var/lib/rnode/genesis/wallets.txt",
+            "mode": "ro",
         },
     }
     if not rust:
-        volumes[os.path.join(abs_conf, 'logback.xml')] = {
-            'bind': '/var/lib/rnode/logback.xml', 'mode': 'ro',
+        volumes[os.path.join(abs_conf, "logback.xml")] = {
+            "bind": "/var/lib/rnode/logback.xml",
+            "mode": "ro",
         }
 
     container = None
@@ -1683,27 +1819,25 @@ def add_peer_to_shard(
 
         # Wait for joiner ports to be released (kernel TIME_WAIT from a
         # previous test's joiner container that was recently stopped).
-        _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
+        _wait_for_port_range_free(_CUSTOM_PORT_BASES["joiner"])
 
         # Match the custom shard's JVM tuning so the joiner doesn't
         # claim more RAM than its share (see _generate_custom_compose).
-        joiner_env = ['OPENAI_ENABLED=false']
+        joiner_env = ["OPENAI_ENABLED=false"]
         if not rust:
             joiner_total = len(shard.nodes) + 1  # existing nodes + joiner
             joiner_ram_pct = 90.0 / joiner_total
             joiner_java_opts = (
-                f'-XX:MaxRAMPercentage={joiner_ram_pct:.1f}'
-                f' -XX:MaxDirectMemorySize=128M'
+                f"-XX:MaxRAMPercentage={joiner_ram_pct:.1f} -XX:MaxDirectMemorySize=128M"
             )
-            joiner_env.append(f'_JAVA_OPTIONS={joiner_java_opts}')
+            joiner_env.append(f"_JAVA_OPTIONS={joiner_java_opts}")
 
-        logging.info("Starting joiner %s on network %s ...",
-                     container_name, shard.network_name)
+        logging.info("Starting joiner %s on network %s ...", container_name, shard.network_name)
         _ensure_image_available(docker_client, DEFAULT_IMAGE)
         container = docker_client.containers.run(
             image=DEFAULT_IMAGE,
             name=container_name,
-            user='root',
+            user="root",
             network=shard.network_name,
             command=command,
             ports=ports,
@@ -1715,7 +1849,9 @@ def add_peer_to_shard(
         _wait_for_running_state(docker_client, container_name, timeout)
 
         node = _make_custom_node(
-            docker_client, container_name, command_line_options.command_timeout,
+            docker_client,
+            container_name,
+            command_line_options.command_timeout,
         )
         yield node
 
@@ -1735,4 +1871,4 @@ def add_peer_to_shard(
             docker_client.volumes.get(joiner_volume).remove()
         except Exception:
             pass
-        _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
+        _wait_for_port_range_free(_CUSTOM_PORT_BASES["joiner"])

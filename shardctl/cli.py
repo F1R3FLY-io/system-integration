@@ -10,6 +10,7 @@ import typer
 from rich.console import Console
 from rich.prompt import Confirm
 
+from . import node as node_module
 from .compose import ComposeManager
 from .config import Config
 from .utils import (
@@ -18,10 +19,10 @@ from .utils import (
     clone_services,
     create_services_config_example,
     get_docker_compose_command,
+    run_native_service,
     sync_service_branch,
     validate_environment,
 )
-from . import node as node_module
 
 app = typer.Typer(
     name="shardctl",
@@ -44,7 +45,9 @@ def _resolve_compose_files(config: Config, services: Optional[List[str]]) -> Lis
             compose_file = config.resolve_compose_file(svc)
             if not compose_file.exists():
                 console.print(f"[red]Compose file not found: {compose_file}[/red]")
-                console.print(f"[dim]Available: {', '.join(f.stem for f in sorted(config.compose_dir.glob('*.yml')))}[/dim]")
+                console.print(
+                    f"[dim]Available: {', '.join(f.stem for f in sorted(config.compose_dir.glob('*.yml')))}[/dim]"
+                )
                 raise typer.Exit(1)
             files.append(compose_file)
         return files
@@ -68,15 +71,10 @@ def get_manager(profile: Optional[str] = None) -> ComposeManager:
 def clone(
     services: Optional[List[str]] = typer.Argument(None, help="Specific services to clone"),
     force: bool = typer.Option(
-        False,
-        "--force",
-        "-f",
-        help="Remove existing service directories before cloning"
+        False, "--force", "-f", help="Remove existing service directories before cloning"
     ),
     include_disabled: bool = typer.Option(
-        False,
-        "--include-disabled",
-        help="Include disabled services (default: enabled only)"
+        False, "--include-disabled", help="Include disabled services (default: enabled only)"
     ),
 ):
     """Clone service repositories with their configured branches.
@@ -138,9 +136,13 @@ def clone(
 
     # Clone services
     if services:
-        console.print(f"[bold blue]Cloning {len(service_repos)} service(s): {', '.join(service_repos.keys())}...[/bold blue]\n")
+        console.print(
+            f"[bold blue]Cloning {len(service_repos)} service(s): {', '.join(service_repos.keys())}...[/bold blue]\n"
+        )
     elif include_disabled:
-        console.print("[bold blue]Cloning all service repositories (including disabled)...[/bold blue]\n")
+        console.print(
+            "[bold blue]Cloning all service repositories (including disabled)...[/bold blue]\n"
+        )
     else:
         console.print("[bold blue]Cloning enabled service repositories...[/bold blue]\n")
     clone_services(service_repos, config.services_dir, force=force)
@@ -149,14 +151,19 @@ def clone(
 
 @app.command()
 def up(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to start (maps to compose/<service>.yml)"),
-    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
+    services: Optional[List[str]] = typer.Argument(
+        None, help="Services to start (maps to compose/<service>.yml)"
+    ),
+    profile: Optional[str] = typer.Option(
+        None, "--profile", "-p", help="Compose profile (dev/prod)"
+    ),
     foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground"),
     build: bool = typer.Option(False, "--build", "-b", help="Build images before starting"),
 ):
     """Start services (detached by default).
 
-    Each service name maps to a compose file in compose/<service>.yml.
+    Each service name maps to a compose file in compose/<service>.yml,
+    or to a native run_command (for services like f1r3drive that run locally).
     When no services are specified, starts all services in startup_order from services.yml.
 
     Examples:
@@ -164,13 +171,44 @@ def up(
         poetry run shardctl up f1r3node           # Scala shard (default)
         poetry run shardctl up f1r3node-rust      # Rust shard
         poetry run shardctl up f1r3node-standalone # Scala standalone
+        poetry run shardctl up f1r3drive          # F1r3Drive (native, foreground)
         poetry run shardctl up embers             # Embers API + frontend
         poetry run shardctl up f1r3node embers    # Multiple services
     """
+    config = Config()
+
+    # Check if any requested service is a native (non-Docker) service
+    if services:
+        native_services = []
+        compose_services = []
+
+        for svc in services:
+            native_config = config.get_native_run_config(svc)
+            if native_config:
+                native_services.append((svc, native_config))
+            else:
+                compose_services.append(svc)
+
+        # Run native services (foreground, one at a time)
+        if native_services:
+            for svc_name, run_config in native_services:
+                console.print(f"[bold blue]Starting {svc_name} (native, foreground)...[/bold blue]")
+                console.print("[dim]Press Ctrl-C to stop[/dim]\n")
+                run_native_service(svc_name, config.root_dir, run_config)
+
+            # If there were also compose services, warn the user
+            if compose_services:
+                console.print(
+                    f"\n[yellow]Note: Compose services ({', '.join(compose_services)}) "
+                    "were not started because native services run in foreground.[/yellow]\n"
+                    f"[dim]Start them separately: sc up {' '.join(compose_services)}[/dim]"
+                )
+            return
+
+    # Standard Docker Compose flow
     if not validate_environment():
         raise typer.Exit(1)
 
-    config = Config()
     manager = get_manager(profile)
 
     compose_files = _resolve_compose_files(config, services)
@@ -196,8 +234,12 @@ def up(
 
 @app.command()
 def down(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to stop (maps to compose/<service>.yml)"),
-    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
+    services: Optional[List[str]] = typer.Argument(
+        None, help="Services to stop (maps to compose/<service>.yml)"
+    ),
+    profile: Optional[str] = typer.Option(
+        None, "--profile", "-p", help="Compose profile (dev/prod)"
+    ),
     volumes: bool = typer.Option(False, "--volumes", "-v", help="Remove named volumes"),
     keep_orphans: bool = typer.Option(False, "--keep-orphans", help="Keep orphan containers"),
 ):
@@ -208,10 +250,34 @@ def down(
         poetry run shardctl down f1r3node     # Stop scala shard
         poetry run shardctl down embers       # Stop embers
     """
+    config = Config()
+
+    # Check for native services first
+    if services:
+        native_found = []
+        compose_services = []
+        for svc in services:
+            if config.get_native_run_config(svc):
+                native_found.append(svc)
+            else:
+                compose_services.append(svc)
+
+        if native_found:
+            for svc in native_found:
+                console.print(
+                    f"[yellow]{svc} is a native service (runs in foreground). "
+                    "Stop it with Ctrl-C in its terminal.[/yellow]"
+                )
+
+            if not compose_services:
+                return
+
+            # Continue with remaining compose services
+            services = compose_services
+
     if not validate_environment():
         raise typer.Exit(1)
 
-    config = Config()
     manager = get_manager(profile)
 
     compose_files = _resolve_compose_files(config, services)
@@ -254,8 +320,12 @@ def clean(
 
 @app.command()
 def ps(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to list (maps to compose/<service>.yml)"),
-    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
+    services: Optional[List[str]] = typer.Argument(
+        None, help="Services to list (maps to compose/<service>.yml)"
+    ),
+    profile: Optional[str] = typer.Option(
+        None, "--profile", "-p", help="Compose profile (dev/prod)"
+    ),
 ):
     """List running containers.
 
@@ -279,8 +349,12 @@ def ps(
 
 @app.command()
 def logs(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to show logs for (maps to compose/<service>.yml)"),
-    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
+    services: Optional[List[str]] = typer.Argument(
+        None, help="Services to show logs for (maps to compose/<service>.yml)"
+    ),
+    profile: Optional[str] = typer.Option(
+        None, "--profile", "-p", help="Compose profile (dev/prod)"
+    ),
     follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output"),
     tail: Optional[int] = typer.Option(None, "--tail", "-n", help="Number of lines to show"),
 ):
@@ -305,8 +379,12 @@ def logs(
 
 @app.command()
 def restart(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to restart (maps to compose/<service>.yml)"),
-    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
+    services: Optional[List[str]] = typer.Argument(
+        None, help="Services to restart (maps to compose/<service>.yml)"
+    ),
+    profile: Optional[str] = typer.Option(
+        None, "--profile", "-p", help="Compose profile (dev/prod)"
+    ),
 ):
     """Restart services."""
     if not validate_environment():
@@ -328,17 +406,15 @@ def restart(
 @app.command()
 def build(
     services: Optional[List[str]] = typer.Argument(None, help="Services to build"),
-    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
+    profile: Optional[str] = typer.Option(
+        None, "--profile", "-p", help="Compose profile (dev/prod)"
+    ),
     no_cache: bool = typer.Option(False, "--no-cache", help="Do not use cache when building"),
     no_docker: bool = typer.Option(
-        False,
-        "--no-docker",
-        help="Skip building Docker images (only build from source)"
+        False, "--no-docker", help="Skip building Docker images (only build from source)"
     ),
     docker_only: bool = typer.Option(
-        False,
-        "--docker-only",
-        help="Only build Docker images (skip source build)"
+        False, "--docker-only", help="Only build Docker images (skip source build)"
     ),
 ):
     """Build services using build commands from services.yml.
@@ -369,11 +445,17 @@ def build(
             return
 
         if no_docker:
-            console.print(f"[bold blue]Building {len(build_configs)} enabled service(s) from source...[/bold blue]\n")
+            console.print(
+                f"[bold blue]Building {len(build_configs)} enabled service(s) from source...[/bold blue]\n"
+            )
         elif docker_only:
-            console.print(f"[bold blue]Building Docker images for {len(build_configs)} enabled service(s)...[/bold blue]\n")
+            console.print(
+                f"[bold blue]Building Docker images for {len(build_configs)} enabled service(s)...[/bold blue]\n"
+            )
         else:
-            console.print(f"[bold blue]Building {len(build_configs)} enabled service(s) (source + Docker)...[/bold blue]\n")
+            console.print(
+                f"[bold blue]Building {len(build_configs)} enabled service(s) (source + Docker)...[/bold blue]\n"
+            )
 
         for svc_name, build_config in build_configs.items():
             console.print(f"[cyan]Building {svc_name}...[/cyan]")
@@ -389,20 +471,24 @@ def build(
             if not docker_only:
                 success = build_service(svc_name, service_path, build_config, docker=False)
                 if not success:
-                    console.print(f"[red]✗[/red] Build failed, stopping")
+                    console.print("[red]✗[/red] Build failed, stopping")
                     raise typer.Exit(1)
 
             # Build Docker image if not skipped
             if not no_docker:
                 if build_config.get("docker_build_command"):
-                    success_docker = build_service(svc_name, service_path, build_config, docker=True)
+                    success_docker = build_service(
+                        svc_name, service_path, build_config, docker=True
+                    )
                     if not success_docker:
-                        console.print(f"[red]✗[/red] Docker build failed, stopping")
+                        console.print("[red]✗[/red] Docker build failed, stopping")
                         raise typer.Exit(1)
                 elif not docker_only:
                     pass  # No docker build command, that's okay
                 else:
-                    console.print(f"[dim]No Docker build command configured for {svc_name}, skipping[/dim]")
+                    console.print(
+                        f"[dim]No Docker build command configured for {svc_name}, skipping[/dim]"
+                    )
 
             console.print()  # Empty line between services
 
@@ -444,9 +530,13 @@ def build(
                 if not success_docker:
                     raise typer.Exit(1)
             elif docker_only:
-                console.print(f"[dim]No Docker build command configured for {svc_name}, skipping[/dim]")
+                console.print(
+                    f"[dim]No Docker build command configured for {svc_name}, skipping[/dim]"
+                )
             else:
-                console.print(f"[dim]No Docker build command configured for {svc_name}, skipping Docker build[/dim]")
+                console.print(
+                    f"[dim]No Docker build command configured for {svc_name}, skipping Docker build[/dim]"
+                )
 
         console.print()
 
@@ -455,8 +545,12 @@ def build(
 
 @app.command()
 def pull(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to pull (maps to compose/<service>.yml)"),
-    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
+    services: Optional[List[str]] = typer.Argument(
+        None, help="Services to pull (maps to compose/<service>.yml)"
+    ),
+    profile: Optional[str] = typer.Option(
+        None, "--profile", "-p", help="Compose profile (dev/prod)"
+    ),
 ):
     """Pull service images.
 
@@ -522,8 +616,12 @@ def shell(
 
 @app.command()
 def status(
-    services: Optional[List[str]] = typer.Argument(None, help="Services to show status for (maps to compose/<service>.yml)"),
-    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
+    services: Optional[List[str]] = typer.Argument(
+        None, help="Services to show status for (maps to compose/<service>.yml)"
+    ),
+    profile: Optional[str] = typer.Option(
+        None, "--profile", "-p", help="Compose profile (dev/prod)"
+    ),
 ):
     """Display service status.
 
@@ -548,20 +646,13 @@ def status(
 @app.command()
 def setup(
     force: bool = typer.Option(
-        False,
-        "--force",
-        "-f",
-        help="Remove existing service directories before cloning"
+        False, "--force", "-f", help="Remove existing service directories before cloning"
     ),
     include_disabled: bool = typer.Option(
-        False,
-        "--include-disabled",
-        help="Include disabled services (default: enabled only)"
+        False, "--include-disabled", help="Include disabled services (default: enabled only)"
     ),
     create_config: bool = typer.Option(
-        False,
-        "--create-config",
-        help="Create an example services.yml configuration file"
+        False, "--create-config", help="Create an example services.yml configuration file"
     ),
 ):
     """Clone service repositories into the services/ directory.
@@ -607,7 +698,9 @@ def setup(
 
     # Clone services
     if include_disabled:
-        console.print("[bold blue]Setting up all service repositories (including disabled)...[/bold blue]\n")
+        console.print(
+            "[bold blue]Setting up all service repositories (including disabled)...[/bold blue]\n"
+        )
     else:
         console.print("[bold blue]Setting up enabled service repositories...[/bold blue]\n")
     clone_services(service_repos, config.services_dir, force=force)
@@ -618,31 +711,22 @@ def setup(
 def build_service_cmd(
     service: Optional[str] = typer.Argument(None, help="Specific service name to build"),
     no_docker: bool = typer.Option(
-        False,
-        "--no-docker",
-        help="Skip building Docker images (only build from source)"
+        False, "--no-docker", help="Skip building Docker images (only build from source)"
     ),
     docker_only: bool = typer.Option(
-        False,
-        "--docker-only",
-        help="Only build Docker images (skip source build)"
+        False, "--docker-only", help="Only build Docker images (skip source build)"
     ),
     sync: bool = typer.Option(
         False,
         "--sync",
         "-s",
-        help="Fetch and checkout the branch configured in services.yml before building"
+        help="Fetch and checkout the branch configured in services.yml before building",
     ),
     list_services: bool = typer.Option(
-        False,
-        "--list",
-        "-l",
-        help="List services with build configurations"
+        False, "--list", "-l", help="List services with build configurations"
     ),
     include_disabled: bool = typer.Option(
-        False,
-        "--include-disabled",
-        help="Include disabled services (default: enabled only)"
+        False, "--include-disabled", help="Include disabled services (default: enabled only)"
     ),
 ):
     """Build a service using its configured build commands.
@@ -714,11 +798,17 @@ def build_service_cmd(
             return
 
         if no_docker:
-            console.print(f"[bold blue]Building {len(build_configs)} enabled service(s) from source...[/bold blue]\n")
+            console.print(
+                f"[bold blue]Building {len(build_configs)} enabled service(s) from source...[/bold blue]\n"
+            )
         elif docker_only:
-            console.print(f"[bold blue]Building Docker images for {len(build_configs)} enabled service(s)...[/bold blue]\n")
+            console.print(
+                f"[bold blue]Building Docker images for {len(build_configs)} enabled service(s)...[/bold blue]\n"
+            )
         else:
-            console.print(f"[bold blue]Building {len(build_configs)} enabled service(s) (source + Docker)...[/bold blue]\n")
+            console.print(
+                f"[bold blue]Building {len(build_configs)} enabled service(s) (source + Docker)...[/bold blue]\n"
+            )
 
         # Get repository configs for branch info if syncing
         repos = config.get_service_repos() if sync else {}
@@ -749,22 +839,26 @@ def build_service_cmd(
             if not docker_only:
                 success = build_service(svc_name, service_path, build_config, docker=False)
                 if not success:
-                    console.print(f"[red]✗[/red] Build failed, stopping")
+                    console.print("[red]✗[/red] Build failed, stopping")
                     raise typer.Exit(1)
 
             # Build Docker image if not skipped
             if not no_docker:
                 # Check if docker build command exists
                 if build_config.get("docker_build_command"):
-                    success_docker = build_service(svc_name, service_path, build_config, docker=True)
+                    success_docker = build_service(
+                        svc_name, service_path, build_config, docker=True
+                    )
                     if not success_docker:
-                        console.print(f"[red]✗[/red] Docker build failed, stopping")
+                        console.print("[red]✗[/red] Docker build failed, stopping")
                         raise typer.Exit(1)
                 elif not docker_only:
                     # If no docker build command, that's okay - just skip it
                     pass
                 else:
-                    console.print(f"[dim]No Docker build command configured for {svc_name}, skipping[/dim]")
+                    console.print(
+                        f"[dim]No Docker build command configured for {svc_name}, skipping[/dim]"
+                    )
 
             console.print()  # Empty line between services
 
@@ -774,7 +868,9 @@ def build_service_cmd(
     # Require service argument if not listing and not building all
     if not service:
         console.print("[red]Error: SERVICE argument is required[/red]")
-        console.print("[dim]Use --list to see available services; omit SERVICE to build all enabled services[/dim]")
+        console.print(
+            "[dim]Use --list to see available services; omit SERVICE to build all enabled services[/dim]"
+        )
         raise typer.Exit(1)
 
     # Get build configuration for the service (works regardless of enabled status)
@@ -823,14 +919,18 @@ def build_service_cmd(
         elif docker_only:
             console.print(f"[dim]No Docker build command configured for {service}, skipping[/dim]")
         else:
-            console.print(f"[dim]No Docker build command configured for {service}, skipping Docker build[/dim]")
+            console.print(
+                f"[dim]No Docker build command configured for {service}, skipping Docker build[/dim]"
+            )
 
 
 @app.command()
 def compose(
     service: str = typer.Argument(..., help="Service name (maps to compose/<service>.yml)"),
     args: List[str] = typer.Argument(..., help="Docker compose command and arguments"),
-    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Compose profile (dev/prod)"),
+    profile: Optional[str] = typer.Option(
+        None, "--profile", "-p", help="Compose profile (dev/prod)"
+    ),
 ):
     """Run a custom docker-compose command against a service's compose file.
 
@@ -852,9 +952,7 @@ def compose(
 
 @app.command(name="wait")
 def wait_cmd(
-    timeout: int = typer.Option(
-        300, "--timeout", "-t", help="Timeout in seconds (default: 300)"
-    ),
+    timeout: int = typer.Option(300, "--timeout", "-t", help="Timeout in seconds (default: 300)"),
 ):
     """Wait for all F1R3FLY nodes to reach Running state (with timing).
 
@@ -881,9 +979,7 @@ def wait_cmd(
 
 @app.command(name="reset")
 def reset_cmd(
-    yes: bool = typer.Option(
-        False, "--yes", "-y", help="Skip confirmation prompt"
-    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
 ):
     """Stop F1R3FLY containers and remove blockchain data volumes.
 
@@ -922,28 +1018,22 @@ def reset_cmd(
 @app.command(name="test")
 def test_cmd(
     suite: Optional[str] = typer.Argument(
-        None,
-        help="Test suite to run (e.g., test_wallets, test_web_api). Omit to run all."
+        None, help="Test suite to run (e.g., test_wallets, test_web_api). Omit to run all."
     ),
     image: Optional[str] = typer.Option(
         None,
         "--image",
         "-i",
-        help="Docker image for test shard nodes (default: f1r3flyindustries/f1r3fly-scala-node)"
+        help="Docker image for test shard nodes (default: f1r3flyindustries/f1r3fly-scala-node)",
     ),
     scala: bool = typer.Option(False, "--scala", help="Use Scala node image"),
     rust: bool = typer.Option(False, "--rust", help="Use Rust node image"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose pytest output"),
     skip_setup: bool = typer.Option(
-        False,
-        "--skip-setup",
-        help="Skip shard bring-up/teardown (assume shard is already running)"
+        False, "--skip-setup", help="Skip shard bring-up/teardown (assume shard is already running)"
     ),
     extra_args: Optional[List[str]] = typer.Option(
-        None,
-        "--pytest-args",
-        "-a",
-        help="Additional arguments to pass to pytest"
+        None, "--pytest-args", "-a", help="Additional arguments to pass to pytest"
     ),
 ):
     """Run integration tests against a full F1R3FLY shard (boot + 3 validators + readonly).
@@ -974,16 +1064,16 @@ def test_cmd(
     if image:
         docker_image = image
     elif rust:
-        docker_image = "f1r3flyindustries/f1r3fly-rust-node:latest"
+        docker_image = "f1r3flyindustries/f1r3node-rust:latest"
     else:
         docker_image = "f1r3flyindustries/f1r3fly-scala-node:latest"
 
-    console.print(f"[bold blue]Running integration tests[/bold blue]")
+    console.print("[bold blue]Running integration tests[/bold blue]")
     console.print(f"  Image: [cyan]{docker_image}[/cyan]")
     if suite:
         console.print(f"  Suite: [cyan]{suite}[/cyan]")
     if skip_setup:
-        console.print(f"  Mode:  [yellow]skip-setup (using running shard)[/yellow]")
+        console.print("  Mode:  [yellow]skip-setup (using running shard)[/yellow]")
     console.print()
 
     # Build pytest command
@@ -1056,14 +1146,23 @@ def test_reset_cmd():
     for compose_file, project_name in shard_compose_files + standalone_compose_files:
         compose_path = tests_dir / compose_file
         if compose_path.exists():
-            console.print(f"[dim]Stopping containers from {compose_file} (project: {project_name})...[/dim]")
+            console.print(
+                f"[dim]Stopping containers from {compose_file} (project: {project_name})...[/dim]"
+            )
             cmd = get_docker_compose_command()  # Dynamic version detection
-            cmd.extend([
-                "--project-name", project_name,
-                "--env-file", str(tests_dir / ".env.node"),
-                "-f", str(compose_path),
-                "down", "--volumes", "--remove-orphans",
-            ])
+            cmd.extend(
+                [
+                    "--project-name",
+                    project_name,
+                    "--env-file",
+                    str(tests_dir / ".env.node"),
+                    "-f",
+                    str(compose_path),
+                    "down",
+                    "--volumes",
+                    "--remove-orphans",
+                ]
+            )
             subprocess.run(
                 cmd,
                 cwd=tests_dir,
@@ -1137,7 +1236,10 @@ def test_report_cmd(
         help="Path to report.json (default: integration-tests/report.json)",
     ),
     failures_only: bool = typer.Option(
-        False, "--failures", "-f", help="Show only failed tests",
+        False,
+        "--failures",
+        "-f",
+        help="Show only failed tests",
     ),
 ):
     """Parse and display integration test results from report.json.
@@ -1153,7 +1255,9 @@ def test_report_cmd(
     import json
 
     config = Config()
-    report_path = Path(report_file) if report_file else config.root_dir / "integration-tests" / "report.json"
+    report_path = (
+        Path(report_file) if report_file else config.root_dir / "integration-tests" / "report.json"
+    )
 
     if not report_path.exists():
         console.print(f"[red]Report file not found: {report_path}[/red]")
@@ -1165,7 +1269,9 @@ def test_report_cmd(
             data = json.load(f)
         except json.JSONDecodeError as exc:
             console.print(f"[red]Report file is malformed or incomplete: {exc}[/red]")
-            console.print("[dim]The test run may have been interrupted before writing a valid report.[/dim]")
+            console.print(
+                "[dim]The test run may have been interrupted before writing a valid report.[/dim]"
+            )
             raise typer.Exit(1)
 
     # Support both flat pytest-json-report and JSON:API wrapper formats
@@ -1173,11 +1279,7 @@ def test_report_cmd(
         tests = data["tests"]
         summary = data.get("summary", {})
     elif "data" in data and "included" in data:
-        tests = [
-            item["attributes"]
-            for item in data["included"]
-            if item.get("type") == "test"
-        ]
+        tests = [item["attributes"] for item in data["included"] if item.get("type") == "test"]
         summary = data["data"][0]["attributes"].get("summary", {}) if data["data"] else {}
     else:
         console.print("[red]Unrecognized report format[/red]")

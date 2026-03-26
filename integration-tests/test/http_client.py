@@ -1,17 +1,18 @@
 import time
 from dataclasses import dataclass
-from typing import Optional, List, Union, Dict
+from typing import Dict, List, Optional, Union
+
 import requests
 from f1r3fly.crypto import PrivateKey
-from f1r3fly.util import sign_deploy_data
 from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto  # pylint: disable=no-name-in-module
+from f1r3fly.util import sign_deploy_data
 
 
 class HttpRequestException(Exception):
-   def __init__(self, status_code: int, content: str):
-       super().__init__()
-       self.status_code = status_code
-       self.content = content
+    def __init__(self, status_code: int, content: str):
+        super().__init__()
+        self.status_code = status_code
+        self.content = content
 
 
 @dataclass
@@ -41,100 +42,120 @@ class DataResponse:
     exprs: List[Union[str, int]]
     length: int
 
+
 def _check_reponse(response: requests.Response) -> None:
     if response.status_code != requests.codes.ok:  # pylint: disable=no-member
         raise HttpRequestException(response.status_code, response.text)
 
-class HttpClient():
+
+class HttpClient:
     def __init__(self, host: str, port: int):
         super().__init__()
         self.host = host
         self.port = port
         self.url = f"http://{host}:{port}/api"
 
-
     def status(self) -> ApiStatus:
-        status_url = self.url+'/status'
+        status_url = self.url + "/status"
         rep = requests.get(status_url, timeout=60)
         _check_reponse(rep)
         message = rep.json()
         # Handle both Rust format (with networkId/shardId) and Scala format (may have different structure)
         # Rust format: version is an object with api/node, has networkId, shardId
         # Scala format: version is a string, may not have networkId/shardId
-        if isinstance(message.get('version'), dict):
+        if isinstance(message.get("version"), dict):
             # Rust format
             version_info = VersionInfo(
-                api=message['version']['api'],
-                node=message['version']['node'])
-            network_id = message.get('networkId', message.get('network_id', ''))
-            shard_id = message.get('shardId', message.get('shard_id', ''))
+                api=message["version"]["api"], node=message["version"]["node"]
+            )
+            network_id = message.get("networkId", message.get("network_id", ""))
+            shard_id = message.get("shardId", message.get("shard_id", ""))
         else:
             # Scala format - version is a string
-            version_str = message.get('version', '')
-            version_info = VersionInfo(api='1', node=version_str)
-            network_id = message.get('networkId', message.get('network_id', ''))
-            shard_id = message.get('shardId', message.get('shard_id', ''))
+            version_str = message.get("version", "")
+            version_info = VersionInfo(api="1", node=version_str)
+            network_id = message.get("networkId", message.get("network_id", ""))
+            shard_id = message.get("shardId", message.get("shard_id", ""))
 
         return ApiStatus(
             version=version_info,
-            address=message['address'],
+            address=message["address"],
             network_id=network_id,
             shard_id=shard_id,
-            peers=message['peers'],
-            nodes=message['nodes'])
+            peers=message["peers"],
+            nodes=message["nodes"],
+        )
 
-    def prepare_deploy(self, deployer: Optional[str] =None, timestamp: Optional[int] = None, name_qty: Optional[int] = None) -> PrepareResponse:
-        prepare_deploy_url = self.url + '/prepare-deploy'
+    def prepare_deploy(
+        self,
+        deployer: Optional[str] = None,
+        timestamp: Optional[int] = None,
+        name_qty: Optional[int] = None,
+    ) -> PrepareResponse:
+        prepare_deploy_url = self.url + "/prepare-deploy"
         if deployer and timestamp and name_qty:
-            data = {
-                "deployer":deployer,
-                "timestamp": timestamp,
-                "nameQty": name_qty
-            }
+            data = {"deployer": deployer, "timestamp": timestamp, "nameQty": name_qty}
             rep = requests.post(prepare_deploy_url, json=data, timeout=60)
         else:
             rep = requests.get(prepare_deploy_url, timeout=60)
         _check_reponse(rep)
         message = rep.json()
-        return PrepareResponse(names=message['names'], seq_number=message['seqNumber'])
+        return PrepareResponse(names=message["names"], seq_number=message["seqNumber"])
 
-    def deploy(self, term: str, phlo_limit: int, phlo_price: int, valid_after_block_number: int, deployer: PrivateKey, shard_id: str = '') -> str:  # pylint: disable=too-many-positional-arguments
-        timestamp = int(time.time()* 1000)
+    def deploy(
+        self,
+        term: str,
+        phlo_limit: int,
+        phlo_price: int,
+        valid_after_block_number: int,
+        deployer: PrivateKey,
+        shard_id: str = "",
+    ) -> str:  # pylint: disable=too-many-positional-arguments
+        timestamp = int(time.time() * 1000)
         deploy_data = {
             "term": term,
             "timestamp": timestamp,
             "phloLimit": phlo_limit,
             "phloPrice": phlo_price,
             "validAfterBlockNumber": valid_after_block_number,
-            "shardId": shard_id
+            "shardId": shard_id,
         }
-        deploy_proto = DeployDataProto(term=term, timestamp=timestamp, phloLimit=phlo_limit, phloPrice=phlo_price, validAfterBlockNumber=valid_after_block_number, shardId=shard_id)
+        deploy_proto = DeployDataProto(
+            term=term,
+            timestamp=timestamp,
+            phloLimit=phlo_limit,
+            phloPrice=phlo_price,
+            validAfterBlockNumber=valid_after_block_number,
+            shardId=shard_id,
+        )
         deploy_req = {
             "data": deploy_data,
             "deployer": deployer.get_public_key().to_hex(),
             "signature": sign_deploy_data(deployer, deploy_proto).hex(),
-            "sigAlgorithm": "secp256k1"
+            "sigAlgorithm": "secp256k1",
         }
-        deploy_url = self.url + '/deploy'
+        deploy_url = self.url + "/deploy"
         rep = requests.post(deploy_url, json=deploy_req, timeout=60)
         _check_reponse(rep)
         return rep.text
 
     def data_at_name(self, name: str, depth: int, name_type: str) -> DataResponse:
-        data_at_name_url = self.url + '/data-at-name'
-        rep =requests.post(data_at_name_url, json={"name": {name_type: {"data": name}}, "depth": depth}, timeout=60)
+        data_at_name_url = self.url + "/data-at-name"
+        rep = requests.post(
+            data_at_name_url, json={"name": {name_type: {"data": name}}, "depth": depth}, timeout=60
+        )
         _check_reponse(rep)
         message = rep.json()
-        return DataResponse(exprs=message['exprs'], length=message['length'])
+        return DataResponse(exprs=message["exprs"], length=message["length"])
 
     def last_finalized_block(self) -> Dict:
-        last_finalized_block_url = self.url + '/last-finalized-block'
+        last_finalized_block_url = self.url + "/last-finalized-block"
         rep = requests.get(last_finalized_block_url, timeout=60)
         _check_reponse(rep)
         return rep.json()
 
     def get_block(self, block_hash: str) -> Dict:
-        block_url = self.url + '/block/' + block_hash
+        block_url = self.url + "/block/" + block_hash
         rep = requests.get(block_url, timeout=60)
         _check_reponse(rep)
         return rep.json()

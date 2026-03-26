@@ -34,7 +34,6 @@ import time
 
 import pytest
 from docker.client import DockerClient
-from f1r3fly.client import F1r3flyClientException
 
 from .common import (
     CommandLineOptions,
@@ -54,7 +53,9 @@ from .rnode import Node
 pytestmark = pytest.mark.xdist_group("custom")
 
 
-def _poll_block_visible(node: Node, block_hash: str, timeout: int = 120, scale: float = 1.0) -> None:
+def _poll_block_visible(
+    node: Node, block_hash: str, timeout: int = 120, scale: float = 1.0
+) -> None:
     """Poll until a block is visible on the given node."""
     scaled_timeout = int(timeout * scale)
     deadline = time.time() + scaled_timeout
@@ -85,7 +86,8 @@ def test_synchrony_constraint(
     ]
 
     with start_custom_shard(
-        docker_client, command_line_options,
+        docker_client,
+        command_line_options,
         bonds=bonds,
         ftt=-1,
         heartbeat=False,

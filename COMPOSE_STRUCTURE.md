@@ -59,6 +59,9 @@ poetry run shardctl up embers             # Embers API + frontend
 poetry run shardctl up f1r3sky            # AT Protocol services
 poetry run shardctl up monitoring         # Prometheus + Grafana
 
+# Native services (run foreground directly via shardctl using services.yml run_command)
+poetry run shardctl up f1r3drive          # F1r3Drive FUSE application
+
 # Multiple services
 poetry run shardctl up f1r3node embers
 

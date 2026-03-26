@@ -35,11 +35,6 @@ from .conftest import (
     VALIDATOR3_ID,
     VALIDATOR3_KEY,
     start_custom_shard,
-    CustomShard,
-)
-from .rnode import Node
-from .wait import (
-    wait_for_blocks_count_at_least,
 )
 
 pytestmark = pytest.mark.xdist_group("custom")
@@ -63,7 +58,8 @@ def test_fault_tolerance_asymmetric_bonds(
     accounts for unequal stakes when computing fault tolerance.
     """
     with start_custom_shard(
-        docker_client, command_line_options,
+        docker_client,
+        command_line_options,
         bonds=_ASYMMETRIC_BONDS,
         ftt=0.5,
     ) as shard:
@@ -87,21 +83,16 @@ def test_fault_tolerance_asymmetric_bonds(
             time.sleep(5)
 
         blocks = v1.get_blocks(50)
-        assert len(blocks) >= 10, (
-            f"Expected at least 10 blocks, got {len(blocks)}"
-        )
+        assert len(blocks) >= 10, f"Expected at least 10 blocks, got {len(blocks)}"
 
         # Verify multi-parent blocks exist
-        multi_parent_count = sum(
-            1 for b in blocks if len(b.parentsHashList) > 1
-        )
+        multi_parent_count = sum(1 for b in blocks if len(b.parentsHashList) > 1)
         logging.info(
             "Asymmetric DAG: %d blocks, %d multi-parent",
-            len(blocks), multi_parent_count,
+            len(blocks),
+            multi_parent_count,
         )
-        assert multi_parent_count > 0, (
-            "No multi-parent blocks in asymmetric-bond DAG"
-        )
+        assert multi_parent_count > 0, "No multi-parent blocks in asymmetric-bond DAG"
 
         # Verify FT is non-increasing by block height
         sorted_blocks = sorted(blocks, key=lambda b: b.blockNumber)
@@ -137,7 +128,8 @@ def test_finalization_asymmetric_bonds(
     should happen within 60 seconds with heartbeat active.
     """
     with start_custom_shard(
-        docker_client, command_line_options,
+        docker_client,
+        command_line_options,
         bonds=_ASYMMETRIC_BONDS,
         ftt=0.5,
     ) as shard:
@@ -149,7 +141,8 @@ def test_finalization_asymmetric_bonds(
         initial_lfb_number = initial_lfb.blockInfo.blockNumber
         logging.info(
             "Initial LFB: block #%d (%s)",
-            initial_lfb_number, initial_lfb.blockInfo.blockHash[:16],
+            initial_lfb_number,
+            initial_lfb.blockInfo.blockHash[:16],
         )
 
         # Deploy to stimulate block creation
@@ -167,7 +160,8 @@ def test_finalization_asymmetric_bonds(
             if current_lfb_number > initial_lfb_number:
                 logging.info(
                     "Finalization advanced: block #%d -> #%d",
-                    initial_lfb_number, current_lfb_number,
+                    initial_lfb_number,
+                    current_lfb_number,
                 )
                 finalized = True
                 break
@@ -201,7 +195,8 @@ def test_cross_validator_state_agreement_asymmetric(
     results across all validators.
     """
     with start_custom_shard(
-        docker_client, command_line_options,
+        docker_client,
+        command_line_options,
         bonds=_ASYMMETRIC_BONDS,
         ftt=0.5,
     ) as shard:
@@ -249,21 +244,20 @@ def test_cross_validator_state_agreement_asymmetric(
                 except Exception:
                     logging.warning(
                         "Block %s not found on %s",
-                        block_hash[:16], node.name,
+                        block_hash[:16],
+                        node.name,
                     )
 
             unique_states = set(post_states.values())
             if len(post_states) >= 2:
                 assert len(unique_states) == 1, (
-                    f"Post-state mismatch for block {block_hash[:16]}...: "
-                    f"{post_states}"
+                    f"Post-state mismatch for block {block_hash[:16]}...: {post_states}"
                 )
                 logging.info(
                     "Block %s: %d validators agree on post-state %s",
-                    block_hash[:16], len(post_states),
+                    block_hash[:16],
+                    len(post_states),
                     list(unique_states)[0][:16],
                 )
 
-        logging.info(
-            "Cross-validator state agreement verified with asymmetric bonds"
-        )
+        logging.info("Cross-validator state agreement verified with asymmetric bonds")

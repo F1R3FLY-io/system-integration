@@ -1,39 +1,34 @@
 import logging
 from concurrent import futures
 from contextlib import contextmanager
-from queue import Queue, Empty
-from typing import Generator, Iterator
 from pathlib import Path
+from queue import Empty, Queue
+from typing import Generator, Iterator
+
 import grpc
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePrivateKey
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from docker import DockerClient
 from eth_hash.auto import keccak
 from f1r3fly.pb import CasperMessage_pb2
-from f1r3fly.pb.CasperMessage_pb2 import BlockMessageProto as BlockMessage, BlockRequestProto as BlockRequest  # pylint: disable=no-name-in-module
-from f1r3fly.pb.routing_pb2 import (
-    Chunk,
-    Header,
-    Node,
-    Ack,
-    Packet,
-    Protocol,
-    TLRequest,
-    TLResponse
+from f1r3fly.pb.CasperMessage_pb2 import (  # pylint: disable=no-name-in-module
+    BlockMessageProto as BlockMessage,
 )
+from f1r3fly.pb.CasperMessage_pb2 import BlockRequestProto as BlockRequest
+from f1r3fly.pb.routing_pb2 import Ack, Chunk, Header, Node, Packet, Protocol, TLRequest, TLResponse
 from f1r3fly.pb.routing_pb2_grpc import (
     TransportLayerServicer,
     TransportLayerStub,
-    add_TransportLayerServicer_to_server
+    add_TransportLayerServicer_to_server,
 )
-from docker import DockerClient
 
-from .utils import get_node_ip_of_network, get_free_tcp_port
-from .rnode import Node as RNode
 from .common import TestingContext
+from .rnode import Node as RNode
+from .utils import get_free_tcp_port, get_node_ip_of_network
 
 DEFAULT_TRANSPORT_SERVER_PORT = 40400
-DEFAULT_NETWORK_ID = 'testnet'
+DEFAULT_NETWORK_ID = "testnet"
 
 logger = logging.getLogger("node_client")
 
@@ -47,7 +42,7 @@ class BlockNotFound(Exception):
 
 def get_node_id_raw(key: EllipticCurvePrivateKey) -> bytes:
     curve = key.public_key().public_numbers()
-    pk_bytes = curve.x.to_bytes(32, 'big') + curve.y.to_bytes(32, 'big')
+    pk_bytes = curve.x.to_bytes(32, "big") + curve.y.to_bytes(32, "big")
     return keccak(pk_bytes)[12:]
 
 
@@ -67,15 +62,17 @@ class TransportServer(TransportLayerServicer):
     def Send(self, request: TLRequest, context: grpc.ServicerContext) -> TLResponse:
         return TLResponse(noResponse=Ack(header=self.header))
 
-    def Stream(self, request_iterator: Iterator[Chunk], context: grpc.ServicerContext) -> TLResponse:
+    def Stream(
+        self, request_iterator: Iterator[Chunk], context: grpc.ServicerContext
+    ) -> TLResponse:
         message_cls = None
-        data = b''
+        data = b""
         for chunk in request_iterator:
-            content_type = chunk.WhichOneof('content')
-            if content_type == 'header':
+            content_type = chunk.WhichOneof("content")
+            if content_type == "header":
                 typeId = chunk.header.typeId
                 message_cls = getattr(CasperMessage_pb2, f"{typeId}Proto")
-            elif content_type == 'data':
+            elif content_type == "data":
                 data = chunk.data.contentData
             else:
                 raise NotImplementedError()
@@ -87,11 +84,20 @@ class TransportServer(TransportLayerServicer):
 
 
 class NodeClient:
-    def __init__(self, node_pem_cert: bytes, node_pem_key: bytes, host: str, network_name: str, receive_timeout: int,  # pylint: disable=too-many-positional-arguments
-                 network_id: str = DEFAULT_NETWORK_ID):
+    def __init__(
+        self,
+        node_pem_cert: bytes,
+        node_pem_key: bytes,
+        host: str,
+        network_name: str,
+        receive_timeout: int,  # pylint: disable=too-many-positional-arguments
+        network_id: str = DEFAULT_NETWORK_ID,
+    ):
         self.node_pem_cert = node_pem_cert
         self.node_pem_key = node_pem_key
-        self.ec_key = load_pem_private_key(self.node_pem_key, password=None, backend=default_backend())
+        self.ec_key = load_pem_private_key(
+            self.node_pem_key, password=None, backend=default_backend()
+        )
         self.network_id = network_id
 
         self.host = host
@@ -100,14 +106,19 @@ class NodeClient:
         self.network_name = network_name  # docker network name
         self._receive_timeout = receive_timeout
 
-        self.return_queue = Queue() # type: ignore
+        self.return_queue = Queue()  # type: ignore
 
         self.server = self._start_transport_server()
 
     @property
     def node_pb(self) -> Node:
         node_id = get_node_id_raw(self.ec_key)
-        return Node(id=node_id, host=self.host.encode('utf8'), tcp_port=self.tcp_port, udp_port=self.udp_port)
+        return Node(
+            id=node_id,
+            host=self.host.encode("utf8"),
+            tcp_port=self.tcp_port,
+            udp_port=self.udp_port,
+        )
 
     @property
     def header_pb(self) -> Header:
@@ -119,14 +130,18 @@ class NodeClient:
     def _start_transport_server(self) -> grpc.Server:
         server_credential = grpc.ssl_server_credentials([(self.node_pem_key, self.node_pem_cert)])
         server = grpc.server(futures.ThreadPoolExecutor())
-        add_TransportLayerServicer_to_server(TransportServer(self.node_pb, self.network_id, self.return_queue), server)
+        add_TransportLayerServicer_to_server(
+            TransportServer(self.node_pb, self.network_id, self.return_queue), server
+        )
         self.tcp_port = server.add_secure_port(f"{self.host}:0", server_credential)
         server.start()
         return server
 
     def block_request(self, block_hash: str, rnode: RNode) -> BlockMessage:
         block_request = BlockRequest(hash=bytes.fromhex(block_hash))
-        request_msg_packet = Packet(typeId="BlockRequest", content=block_request.SerializeToString())
+        request_msg_packet = Packet(
+            typeId="BlockRequest", content=block_request.SerializeToString()
+        )
         protocol = Protocol(header=self.header_pb, packet=request_msg_packet)
         request = TLRequest(protocol=protocol)
         self.send_request(request, rnode)
@@ -136,14 +151,22 @@ class NodeClient:
             raise BlockNotFound(block_hash, rnode) from e
 
     def send_request(self, request: TLRequest, rnode: RNode) -> None:
-        credential = grpc.ssl_channel_credentials(rnode.get_node_pem_cert(), self.node_pem_key, self.node_pem_cert)
+        credential = grpc.ssl_channel_credentials(
+            rnode.get_node_pem_cert(), self.node_pem_key, self.node_pem_cert
+        )
         # only linux system can connect to the docker container through the container name
         rnode_ip = self.get_peer_node_ip(rnode)
         channel = grpc.secure_channel(
             f"{rnode_ip}:{DEFAULT_TRANSPORT_SERVER_PORT}",
             credential,
-            options=(('grpc.ssl_target_name_override',
-                      get_node_id_str(load_pem_private_key(rnode.get_node_pem_key(), None, default_backend()))),)
+            options=(
+                (
+                    "grpc.ssl_target_name_override",
+                    get_node_id_str(
+                        load_pem_private_key(rnode.get_node_pem_key(), None, default_backend())
+                    ),
+                ),
+            ),
         )
         try:
             stub = TransportLayerStub(channel)
@@ -162,7 +185,9 @@ class NodeClient:
 
 
 @contextmanager
-def node_protocol_client(network_name: str, docker_client: DockerClient, context: TestingContext) -> Generator[NodeClient, None, None]:
+def node_protocol_client(
+    network_name: str, docker_client: DockerClient, context: TestingContext
+) -> Generator[NodeClient, None, None]:
     cert = Path("resources/bootstrap_certificate/protocol.cert.pem").read_bytes()
     key = Path("resources/bootstrap_certificate/protocol.key.pem").read_bytes()
 

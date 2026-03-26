@@ -1,15 +1,13 @@
+import dataclasses
 import os
 import random
 import string
 import tempfile
 from typing import (
-    List,
-    Tuple,
-    Optional,
     TYPE_CHECKING,
+    Optional,
+    Tuple,
 )
-import dataclasses
-from f1r3fly.crypto import PrivateKey
 
 from docker.client import DockerClient
 
@@ -28,7 +26,7 @@ class CommandLineOptions:
     timeout_scale: float = 1.0
 
 
-@dataclasses.dataclass # pylint: disable=too-many-instance-attributes
+@dataclasses.dataclass  # pylint: disable=too-many-instance-attributes
 class TestingContext:
     """Context for compose-based integration tests.
 
@@ -36,6 +34,7 @@ class TestingContext:
     used across the test session. Bonds and wallets are managed by the
     shared genesis files in the integration-tests directory.
     """
+
     __test__ = False
 
     node_startup_timeout: int
@@ -62,20 +61,25 @@ class GetBlockError(NonZeroExitCodeError):
 class ParsingError(NonZeroExitCodeError):
     pass
 
+
 class SynchronyConstraintError(NonZeroExitCodeError):
     pass
+
 
 class NotAnActiveValidatorError(NonZeroExitCodeError):
     pass
 
+
 class ValidatorNotContainsLatestMes(NonZeroExitCodeError):
     pass
 
+
 class WaitTimeoutError(Exception):
-    def __init__(self, predicate: 'PredicateProtocol', timeout: int) -> None:
+    def __init__(self, predicate: "PredicateProtocol", timeout: int) -> None:
         super().__init__()
         self.predicate = predicate
         self.timeout = timeout
+
 
 class TransderFundsError(Exception):
     def __init__(self, reason: str) -> None:
@@ -85,23 +89,22 @@ class TransderFundsError(Exception):
 
 class NodeCrashedError(Exception):
     """Raised when a node container has stopped or crashed mid-operation."""
-    def __init__(self, node_name: str, status: str, exit_code: str = '?') -> None:
+
+    def __init__(self, node_name: str, status: str, exit_code: str = "?") -> None:
         self.node_name = node_name
         self.status = status
         self.exit_code = exit_code
-        super().__init__(
-            f"Node {node_name} has crashed: status={status}, exit_code={exit_code}"
-        )
+        super().__init__(f"Node {node_name} has crashed: status={status}, exit_code={exit_code}")
 
 
 def random_string(context: TestingContext, length: int) -> str:
-    return ''.join(context.random_generator.choice(string.ascii_letters) for m in range(length))
+    return "".join(context.random_generator.choice(string.ascii_letters) for m in range(length))
 
 
 def make_tempfile(prefix: str, content: str) -> str:
     fd, path = tempfile.mkstemp(prefix=prefix)
 
-    with os.fdopen(fd, 'w') as tmp:
+    with os.fdopen(fd, "w") as tmp:
         tmp.write(content)
 
     return path

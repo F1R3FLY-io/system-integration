@@ -1,14 +1,14 @@
+import logging
 import re
 import time
-import logging
-from typing import TYPE_CHECKING, Pattern, Match
-import typing_extensions
+from typing import TYPE_CHECKING, Match, Pattern
 
 import pytest
+import typing_extensions
 
 from .common import (
-    TestingContext,
     GetBlockError,
+    TestingContext,
     WaitTimeoutError,
 )
 from .network import (
@@ -31,68 +31,69 @@ class PredicateProtocol(typing_extensions.Protocol):
 
 
 class LogsContainMessage:
-    def __init__(self, node: 'Node', message: str) -> None:
+    def __init__(self, node: "Node", message: str) -> None:
         self.node = node
         self.message = message
 
     def __str__(self) -> str:
-        args = ', '.join(repr(a) for a in (self.node.name, self.message))
-        return f'<{self.__class__.__name__}({args})>'
+        args = ", ".join(repr(a) for a in (self.node.name, self.message))
+        return f"<{self.__class__.__name__}({args})>"
 
     def is_satisfied(self) -> bool:
         return self.message in self.node.logs()
 
 
 class NodeStarted(LogsContainMessage):
-    def __init__(self, node: 'Node') -> None:
-        super().__init__(node, 'Listening for traffic on rnode')
+    def __init__(self, node: "Node") -> None:
+        super().__init__(node, "Listening for traffic on rnode")
 
 
 class RunningStateEntered(LogsContainMessage):
-    def __init__(self, node: 'Node') -> None:
+    def __init__(self, node: "Node") -> None:
         # Match both Scala format: "Making a transition to Running state. Approved ..."
         # and Rust format: "Making a transition to Running state. Approved {}"
         # The substring "Making a transition to Running state." should match both
-        super().__init__(node, 'Making a transition to Running state.')
+        super().__init__(node, "Making a transition to Running state.")
 
 
 class ApprovedBlockReceived(LogsContainMessage):
-    def __init__(self, node: 'Node') -> None:
+    def __init__(self, node: "Node") -> None:
         # Match Rust format: "Valid approved block {} received. Restoring approved state."
         # or Scala format: "Valid ApprovedBlock received!"
-        super().__init__(node, 'Valid approved block')
+        super().__init__(node, "Valid approved block")
 
 
 class SentUnapprovedBlock(LogsContainMessage):
-    def __init__(self, node: 'Node') -> None:
-        super().__init__(node, 'Broadcasting UnapprovedBlock')
+    def __init__(self, node: "Node") -> None:
+        super().__init__(node, "Broadcasting UnapprovedBlock")
 
 
 class BlockApproval(LogsContainMessage):
-    def __init__(self, node: 'Node') -> None:
-        super().__init__(node, 'Received block approval from')
+    def __init__(self, node: "Node") -> None:
+        super().__init__(node, "Received block approval from")
 
 
 class SentApprovedBlock(LogsContainMessage):
-    def __init__(self, node: 'Node') -> None:
-        super().__init__(node, 'Sending ApprovedBlock')
+    def __init__(self, node: "Node") -> None:
+        super().__init__(node, "Sending ApprovedBlock")
 
 
 class LogsReMatch:
-    def __init__(self, node: 'Node', pattern: Pattern) -> None:
+    def __init__(self, node: "Node", pattern: Pattern) -> None:
         self.node = node
         self.pattern = pattern
 
     def __str__(self) -> str:
-        args = ', '.join(repr(a) for a in (self.node.name, self.pattern))
-        return f'<{self.__class__.__name__}({args})>'
+        args = ", ".join(repr(a) for a in (self.node.name, self.pattern))
+        return f"<{self.__class__.__name__}({args})>"
 
     def is_satisfied(self) -> bool:
         match = self.pattern.search(self.node.logs())
         return bool(match)
 
+
 class LogsReMatchWithResult(LogsReMatch):
-    def __init__(self, node: 'Node', pattern: Pattern) -> None:
+    def __init__(self, node: "Node", pattern: Pattern) -> None:
         super().__init__(node, pattern)
         self.result: Match
 
@@ -102,20 +103,21 @@ class LogsReMatchWithResult(LogsReMatch):
             self.result = match
         return bool(match)
 
+
 class HasAtLeastPeers:
-    def __init__(self, node: 'Node', minimum_peers_number: int) -> None:
+    def __init__(self, node: "Node", minimum_peers_number: int) -> None:
         self.node = node
         self.minimum_peers_number = minimum_peers_number
         # Rust metrics format: peers{source="f1r3fly.comm.rp.connect"} 1.0
         # Also support Scala format: f1r3fly_comm_rp_connect_peers 1.0
         self.metric_regex = re.compile(
             r"^(?:peers\{source=\"[^\"]+\"\}|f1r3fly_comm_rp_connect_peers)\s+(\d+)(?:\.0)?\s*$",
-            re.MULTILINE | re.DOTALL
+            re.MULTILINE | re.DOTALL,
         )
 
     def __str__(self) -> str:
-        args = ', '.join(repr(a) for a in (self.node.name, self.minimum_peers_number))
-        return f'<{self.__class__.__name__}({args})>'
+        args = ", ".join(repr(a) for a in (self.node.name, self.minimum_peers_number))
+        return f"<{self.__class__.__name__}({args})>"
 
     def is_satisfied(self) -> bool:
         output = self.node.get_connected_peers_metric_value()
@@ -127,13 +129,13 @@ class HasAtLeastPeers:
 
 
 class NodeSeesBlock:
-    def __init__(self, node: 'Node', block_hash: str) -> None:
+    def __init__(self, node: "Node", block_hash: str) -> None:
         self.node = node
         self.block_hash = block_hash
 
     def __str__(self) -> str:
-        args = ', '.join(repr(a) for a in (self.node.name, self.block_hash))
-        return f'<{self.__class__.__name__}({args})>'
+        args = ", ".join(repr(a) for a in (self.node.name, self.block_hash))
+        return f"<{self.__class__.__name__}({args})>"
 
     def is_satisfied(self) -> bool:
         try:
@@ -144,14 +146,14 @@ class NodeSeesBlock:
 
 
 class BlockContainsString:
-    def __init__(self, node: 'Node', block_hash: str, expected_string: str) -> None:
+    def __init__(self, node: "Node", block_hash: str, expected_string: str) -> None:
         self.node = node
         self.block_hash = block_hash
         self.expected_string = expected_string
 
     def __str__(self) -> str:
-        args = ', '.join(repr(a) for a in (self.node.name, self.block_hash, self.expected_string))
-        return f'<{self.__class__.__name__}({args})>'
+        args = ", ".join(repr(a) for a in (self.node.name, self.block_hash, self.expected_string))
+        return f"<{self.__class__.__name__}({args})>"
 
     def is_satisfied(self) -> bool:
         try:
@@ -162,13 +164,13 @@ class BlockContainsString:
 
 
 class BlocksCountAtLeast:
-    def __init__(self, node: 'Node', blocks_count: int) -> None:
+    def __init__(self, node: "Node", blocks_count: int) -> None:
         self.node = node
         self.blocks_count = blocks_count
 
     def __str__(self) -> str:
-        args = ', '.join(repr(a) for a in (self.node.name, self.blocks_count))
-        return f'<{self.__class__.__name__}({args})>'
+        args = ", ".join(repr(a) for a in (self.node.name, self.blocks_count))
+        return f"<{self.__class__.__name__}({args})>"
 
     def is_satisfied(self) -> bool:
         actual_blocks_count = self.node.get_blocks_count(self.blocks_count)
@@ -176,16 +178,18 @@ class BlocksCountAtLeast:
 
 
 class BlockFinalized:
-    def __init__(self, node: 'Node', block_hash_prefix: str) -> None:
+    def __init__(self, node: "Node", block_hash_prefix: str) -> None:
         self.node = node
         self.block_hash_prefix = block_hash_prefix
 
     def __str__(self) -> str:
-        args = ', '.join(repr(a) for a in (self.node.name, self.block_hash_prefix))
-        return f'<{self.__class__.__name__}({args})>'
+        args = ", ".join(repr(a) for a in (self.node.name, self.block_hash_prefix))
+        return f"<{self.__class__.__name__}({args})>"
 
     def is_satisfied(self) -> bool:
-        return self.node.last_finalized_block().blockInfo.blockHash.startswith(self.block_hash_prefix)
+        return self.node.last_finalized_block().blockInfo.blockHash.startswith(
+            self.block_hash_prefix
+        )
 
 
 def wait_using_wall_clock_time(predicate: PredicateProtocol, timeout: int) -> None:
@@ -214,34 +218,38 @@ def wait_using_wall_clock_time(predicate: PredicateProtocol, timeout: int) -> No
     raise WaitTimeoutError(predicate, timeout)
 
 
-def wait_using_wall_clock_time_or_fail(predicate: PredicateProtocol, timeout: int) ->None:
+def wait_using_wall_clock_time_or_fail(predicate: PredicateProtocol, timeout: int) -> None:
     try:
         wait_using_wall_clock_time(predicate, timeout)
     except WaitTimeoutError:
-        pytest.fail(f'Failed to satisfy {predicate} after {timeout}s')
+        pytest.fail(f"Failed to satisfy {predicate} after {timeout}s")
 
 
-def wait_for_node_sees_block(context: TestingContext, node: 'Node', block_hash: str) -> None:
+def wait_for_node_sees_block(context: TestingContext, node: "Node", block_hash: str) -> None:
     predicate = NodeSeesBlock(node, block_hash)
     wait_using_wall_clock_time_or_fail(predicate, context.node_startup_timeout)
 
 
-def wait_for_block_contains(context: TestingContext, node: 'Node', block_hash: str, expected_string: str) -> None:
+def wait_for_block_contains(
+    context: TestingContext, node: "Node", block_hash: str, expected_string: str
+) -> None:
     predicate = BlockContainsString(node, block_hash, expected_string)
     wait_using_wall_clock_time_or_fail(predicate, context.receive_timeout)
 
 
-def wait_for_blocks_count_at_least(context: TestingContext, node: 'Node', expected_blocks_count: int) -> None:
+def wait_for_blocks_count_at_least(
+    context: TestingContext, node: "Node", expected_blocks_count: int
+) -> None:
     predicate = BlocksCountAtLeast(node, expected_blocks_count)
     wait_using_wall_clock_time_or_fail(predicate, context.receive_timeout * expected_blocks_count)
 
 
-def wait_for_node_started(context: TestingContext, node: 'Node') -> None:
+def wait_for_node_started(context: TestingContext, node: "Node") -> None:
     predicate = NodeStarted(node)
     wait_using_wall_clock_time_or_fail(predicate, context.node_startup_timeout)
 
 
-def wait_for_approved_block_received_handler_state(context: TestingContext, node: 'Node') -> None:
+def wait_for_approved_block_received_handler_state(context: TestingContext, node: "Node") -> None:
     predicate = RunningStateEntered(node)
     wait_using_wall_clock_time_or_fail(predicate, context.node_startup_timeout)
 
@@ -249,7 +257,9 @@ def wait_for_approved_block_received_handler_state(context: TestingContext, node
 def wait_for_approved_block_received(context: TestingContext, network: Network) -> None:
     for peer in network.peers:
         predicate = ApprovedBlockReceived(peer)
-        wait_using_wall_clock_time_or_fail(predicate, context.node_startup_timeout + context.receive_timeout)
+        wait_using_wall_clock_time_or_fail(
+            predicate, context.node_startup_timeout + context.receive_timeout
+        )
 
 
 def wait_for_started_network(context: TestingContext, network: Network) -> None:
@@ -257,7 +267,9 @@ def wait_for_started_network(context: TestingContext, network: Network) -> None:
         wait_for_node_started(context, peer)
 
 
-def wait_for_converged_network(context: TestingContext, network: Network, peer_connections: int) -> None:
+def wait_for_converged_network(
+    context: TestingContext, network: Network, peer_connections: int
+) -> None:
     bootstrap_predicate = HasAtLeastPeers(network.bootstrap, len(network.peers))
     wait_using_wall_clock_time_or_fail(bootstrap_predicate, context.network_converge_timeout)
 
@@ -266,47 +278,52 @@ def wait_for_converged_network(context: TestingContext, network: Network, peer_c
         wait_using_wall_clock_time_or_fail(peer_predicate, context.network_converge_timeout)
 
 
-def wait_for_peers_count_at_least(context: TestingContext, node: 'Node', npeers: int) -> None:
+def wait_for_peers_count_at_least(context: TestingContext, node: "Node", npeers: int) -> None:
     predicate = HasAtLeastPeers(node, npeers)
     wait_using_wall_clock_time_or_fail(predicate, context.network_converge_timeout)
 
 
-def wait_for_sent_unapproved_block(context: TestingContext, node: 'Node') -> None:
+def wait_for_sent_unapproved_block(context: TestingContext, node: "Node") -> None:
     predicate = SentUnapprovedBlock(node)
     wait_using_wall_clock_time_or_fail(predicate, context.network_converge_timeout)
 
 
-def wait_for_block_approval(context: TestingContext, node: 'Node') -> None:
+def wait_for_block_approval(context: TestingContext, node: "Node") -> None:
     predicate = BlockApproval(node)
     wait_using_wall_clock_time_or_fail(predicate, context.network_converge_timeout)
 
 
-def wait_for_sent_approved_block(context: TestingContext, node: 'Node') -> None:
+def wait_for_sent_approved_block(context: TestingContext, node: "Node") -> None:
     predicate = SentApprovedBlock(node)
     wait_using_wall_clock_time_or_fail(predicate, context.network_converge_timeout)
 
 
-def wait_for_approved_block_received_handler(context: TestingContext, node: 'Node') -> None:
+def wait_for_approved_block_received_handler(context: TestingContext, node: "Node") -> None:
     predicate = RunningStateEntered(node)
     wait_using_wall_clock_time(predicate, context.network_converge_timeout)
 
 
-def wait_for_log_match(context: TestingContext, node: 'Node', pattern: Pattern) -> None:
+def wait_for_log_match(context: TestingContext, node: "Node", pattern: Pattern) -> None:
     predicate = LogsReMatch(node, pattern)
     wait_using_wall_clock_time_or_fail(predicate, context.command_timeout)
 
 
-def wait_for_log_match_result(context: TestingContext, node: 'Node', pattern: Pattern) -> Match:
+def wait_for_log_match_result(context: TestingContext, node: "Node", pattern: Pattern) -> Match:
     predicate = LogsReMatchWithResult(node, pattern)
     wait_using_wall_clock_time_or_fail(predicate, context.command_timeout)
     return predicate.result
 
-def wait_for_log_match_result_raise(context: TestingContext, node: 'Node', pattern: Pattern) -> Match:
+
+def wait_for_log_match_result_raise(
+    context: TestingContext, node: "Node", pattern: Pattern
+) -> Match:
     predicate = LogsReMatchWithResult(node, pattern)
     wait_using_wall_clock_time(predicate, context.command_timeout)
     return predicate.result
 
 
-def wait_for_block_finalized(context: TestingContext, node: 'Node', *, block_hash_prefix: str) -> None:
+def wait_for_block_finalized(
+    context: TestingContext, node: "Node", *, block_hash_prefix: str
+) -> None:
     predicate = BlockFinalized(node, block_hash_prefix)
     wait_using_wall_clock_time_or_fail(predicate, context.network_converge_timeout)
