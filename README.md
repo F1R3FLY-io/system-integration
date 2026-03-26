@@ -32,15 +32,11 @@ Genesis takes ~2-3 minutes. `shardctl wait` blocks until all nodes report Runnin
 poetry run shardctl status
 ```
 
-| Service | URL |
-|---------|-----|
-| F1R3node API (validator1) | http://localhost:40413 |
-| F1R3node Read-only | http://localhost:40453 |
+Once all nodes show Running, the HTTP API is available on each node's port 40403 (bootstrap), 40413 (validator1), etc. See [COMPOSE_STRUCTURE.md](COMPOSE_STRUCTURE.md) for the full port map.
 
 ### 3. Stop
 
 ```bash
-poetry run shardctl down monitoring  # Stop monitoring first (if running)
 poetry run shardctl down             # Stop containers
 poetry run shardctl reset -y         # Stop and wipe data volumes
 ```

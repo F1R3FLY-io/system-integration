@@ -42,12 +42,12 @@ Aligned in config consolidation PRs (#35, f1r3node#447, f1r3node#448):
 - `rule_files` added to both f1r3node repos (was missing — recording rules were on disk but never loaded)
 - `block-transfer.json` dashboard moved to provisioning directory (was unmounted/undiscoverable)
 - Network naming aligned: all shard compose files use `name: f1r3fly`, monitoring compose uses external `f1r3fly`
-- cAdvisor remains system-integration only (orchestration concern, not per-repo)
+- cAdvisor added to all three repos (system-integration, f1r3node-rust, f1r3node Scala)
 
 ### Remaining monitoring follow-ups
 
 - **Rust metric dashboard queries** ([system-integration#22](https://github.com/F1R3FLY-io/system-integration/pull/22)): `f1r3node.json` panels use Scala Kamon metric names (`rchain_*`). Rust node uses `metric_name{source="f1r3fly.*"}`. Dashboard queries need rewriting for Rust — blocked on [f1r3node#405](https://github.com/F1R3FLY-io/f1r3node/pull/405) (Phase 1 observability gauges)
-- **CI monitoring validation**: Add a smoke-test job that starts shard + monitoring and verifies Prometheus targets UP, rules loaded, Grafana dashboards present
+- ~~**CI monitoring validation**~~: Done — monitoring e2e assertions added to all 5 topology jobs in smoke-test.yml (targets UP, 0 DOWN, rules loaded, metric data, cAdvisor, Grafana dashboards, Grafana->Prometheus connectivity)
 
 ## F1R3_* env var handling cleanup
 
