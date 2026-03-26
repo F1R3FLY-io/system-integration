@@ -246,3 +246,20 @@ class Config:
         if default.exists():
             return [default]
         return []
+
+    def get_native_run_config(self, service_name: str) -> Optional[Dict]:
+        """Get native run configuration for a service.
+
+        Checks if a service has a run_command in its build configuration,
+        indicating it runs natively (not via Docker Compose).
+
+        Args:
+            service_name: Name of the service.
+
+        Returns:
+            Dict with run_command, environment, etc. or None if not a native service.
+        """
+        build_config = self.get_service_build_config(service_name)
+        if build_config and build_config.get("run_command"):
+            return build_config
+        return None
