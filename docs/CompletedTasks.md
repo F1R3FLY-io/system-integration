@@ -1,7 +1,7 @@
 ---
 doc_type: completed_tasks
 version: "1.0"
-last_updated: [DATE]
+last_updated: 2026-03-25
 ---
 
 # Completed Tasks
@@ -38,43 +38,49 @@ See [Task Tracking Standard]([RELATIVE_PATH]/top-level-gitlab-profile/docs/commo
 
 ---
 
-### EPOCH-XXX: [PROJECT_SPECIFIC: Epoch Title]
+### EPOCH-001: Rust Shard Integration via f1r3node-rust
 
 ```yaml
 ---
-epoch_id: EPOCH-XXX
-title: "[PROJECT_SPECIFIC: Epoch Title]"
+epoch_id: EPOCH-001
+title: "Rust Shard Integration via f1r3node-rust"
 status: complete
 priority: p1
-user_story: US-XXX
-completed_at: [DATE]
-completed_by: [SESSION_ID or contributor]
-mr_pr: "[PROJECT_SPECIFIC: MR/PR link if applicable]"
+user_story: US-001
+completed_at: 2026-03-25
+completed_by: claude-session
+mr_pr: "https://github.com/F1R3FLY-io/system-integration/pull/new/feature/f1r3node-rust-integration-option"
 tasks:
-  - id: TASK-XXX-1
-    title: "[PROJECT_SPECIFIC: Task 1 title]"
+  - id: TASK-001-1
+    title: "Add f1r3node-rust repo to services.yml"
     status: complete
-    completed_at: [DATE]
+    completed_at: 2026-03-25
 
-  - id: TASK-XXX-2
-    title: "[PROJECT_SPECIFIC: Task 2 title]"
+  - id: TASK-001-2
+    title: "Create compose/f1r3node-rust.yml for Rust shard deployment"
     status: complete
-    completed_at: [DATE]
+    completed_at: 2026-03-25
+
+  - id: TASK-001-3
+    title: "Add shardctl support for Rust shard status and lifecycle"
+    status: complete
+    completed_at: 2026-03-25
+
+  - id: TASK-001-4
+    title: "Document Rust shard deployment option"
+    status: complete
+    completed_at: 2026-03-25
 ---
 ```
 
-**Summary:** [PROJECT_SPECIFIC: Brief summary of what was accomplished]
+**Summary:** Migrated the f1r3node-rust service from a branch of f1r3node.git to the standalone f1r3node-rust.git repository. Updated all compose files, shardctl CLI, and documentation.
 
 **Key Changes:**
-- [PROJECT_SPECIFIC: Change 1]
-- [PROJECT_SPECIFIC: Change 2]
-
-**Lessons Learned:**
-- [PROJECT_SPECIFIC: What went well or what to do differently]
-
----
-
-<!-- Add more completed epochs following the same format -->
+- services.yml: URL changed to f1r3node-rust.git, branch dev
+- Docker image renamed from f1r3fly-rust-node to f1r3node-rust
+- F1R3FLY_RUST_IMAGE env var renamed to F1R3FLY_IMAGE across all compose files
+- compose/f1r3node-rust.yml aligned with upstream (F1R3_* runtime tuning, --required-signatures)
+- shardctl node.py pull() and cli.py test image references updated
 
 ---
 

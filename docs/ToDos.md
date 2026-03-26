@@ -61,66 +61,7 @@ mr_status:
 
 <!-- Epochs are ordered by priority. Work on the highest priority epoch first. -->
 
----
-
-### EPOCH-001: Rust Shard Integration via f1r3node-rust
-
-```yaml
----
-epoch_id: EPOCH-001
-title: "Rust Shard Integration via f1r3node-rust"
-status: complete
-priority: p1
-user_story: US-001
-blocked_by: []
-created_at: 2026-03-25
-claimed_by: claude-session
-claimed_at: 2026-03-25T00:00:00Z
-tasks:
-  - id: TASK-001-1
-    title: "Add f1r3node-rust repo to services.yml"
-    status: complete
-    acceptance:
-      - "f1r3node-rust entry exists in services.yml with correct git URL and branch"
-      - "shardctl clone pulls the f1r3node-rust repo into services/"
-
-  - id: TASK-001-2
-    title: "Create compose/f1r3node-rust.yml for Rust shard deployment"
-    status: complete
-    blocked_by: [TASK-001-1]
-    acceptance:
-      - "compose/f1r3node-rust.yml builds and deploys the Rust shard from services/f1r3node-rust"
-      - "Rust shard container connects to the f1r3fly Docker network"
-
-  - id: TASK-001-3
-    title: "Add shardctl support for Rust shard status and lifecycle"
-    status: complete
-    blocked_by: [TASK-001-2]
-    acceptance:
-      - "shardctl status shows Rust shard health"
-      - "shardctl up/down manages Rust shard alongside other services"
-
-  - id: TASK-001-4
-    title: "Document Rust shard deployment option"
-    status: complete
-    blocked_by: [TASK-001-2]
-    acceptance:
-      - "README.md documents how to deploy the Rust shard as an alternative to Scala"
----
-```
-
-**Context:** The f1r3node currently runs a Scala-based shard by default. A Rust implementation exists in a separate `f1r3node-rust` repository. Node operators need the option to deploy either implementation, giving them flexibility in performance characteristics and operational preferences.
-
-**Scope:**
-- Add f1r3node-rust as a clonable service repo
-- Create Docker Compose configuration for the Rust shard
-- Integrate Rust shard lifecycle into shardctl
-- Document the deployment option
-- Excluded: modifying the Rust shard codebase itself
-
----
-
-<!-- Add more epochs following the same format -->
+<!-- Add new epochs here. See Epoch Template below. -->
 
 ---
 

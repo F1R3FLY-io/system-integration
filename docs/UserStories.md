@@ -35,14 +35,6 @@ This document captures user stories that drive feature development. User stories
 
 ## Completed Stories
 
-<!-- Add completed user stories here -->
-
----
-
-## Planned Stories
-
-Stories below are candidates for future epochs. Move to "Completed Stories" when implemented.
-
 #### US-001: Deploy Rust Shard via f1r3node-rust
 
 > As a **node operator**, I want **to deploy the Rust-based shard from the f1r3node-rust repository** so that **I have flexibility in choosing shard implementations for my deployment**.
@@ -56,6 +48,14 @@ Stories below are candidates for future epochs. Move to "Completed Stories" when
 - [x] shardctl status shows Rust shard health
 
 **Completed:** 2026-03-25
+
+---
+
+## Planned Stories
+
+Stories below are candidates for future epochs. Move to "Completed Stories" when implemented.
+
+<!-- Add planned user stories here -->
 
 ---
 
