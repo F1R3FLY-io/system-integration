@@ -434,7 +434,7 @@ def build_service(
 
     process = None
 
-    def cleanup_process_group():
+    def cleanup_build_process():
         """Kill entire process group on exit."""
         if process and process.pid:
             try:
@@ -448,23 +448,38 @@ def build_service(
             except (ProcessLookupError, PermissionError):
                 pass  # Process already terminated
 
-    try:
-        # Use Popen with process group for better signal handling
-        process = subprocess.Popen(
-            build_command,
-            shell=True,
-            cwd=service_path,
-            env=run_env,
-            preexec_fn=os.setpgrp,  # Create new process group
+    # Build Popen kwargs — nix commands need different stdio handling
+    popen_kwargs = dict(
+        shell=True,
+        cwd=service_path,
+        env=run_env,
+    )
+
+    if use_nix:
+        # For nix-wrapped commands, inherit the terminal's stdio directly.
+        # 1. No os.setpgrp: nix develop needs foreground terminal access;
+        #    a background process group causes SIGTTIN/SIGTTOU which silently
+        #    stops the process.
+        # 2. No stdout PIPE: nix writes progress using \r (carriage returns)
+        #    without \n, which deadlocks Python's line-based pipe reading.
+        pass  # Inherit stdio, no setpgrp
+    else:
+        # For non-nix builds, pipe output through rich console
+        popen_kwargs.update(
+            preexec_fn=os.setpgrp,  # Separate process group for clean kill
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1
         )
 
-        # Stream output in real-time
-        for line in process.stdout:
-            console.print(line, end='')
+    try:
+        process = subprocess.Popen(build_command, **popen_kwargs)
+
+        if not use_nix:
+            # Stream piped output in real-time
+            for line in process.stdout:
+                console.print(line, end="")
 
         # Wait for completion
         returncode = process.wait()
@@ -491,15 +506,96 @@ def build_service(
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Build interrupted by user (CTRL-C)[/yellow]")
-        cleanup_process_group()
+        cleanup_build_process()
         return False
     except subprocess.CalledProcessError as e:
-        cleanup_process_group()
+        cleanup_build_process()
         console.print(f"[red]✗ Build failed with exit code {e.returncode}[/red]")
         return False
     except Exception as e:
-        cleanup_process_group()
+        cleanup_build_process()
         console.print(f"[red]✗ Build error: {e}[/red]")
+        return False
+
+
+def run_native_service(service_name: str, root_dir: Path, run_config: dict) -> bool:
+    """Run a native (non-Docker) service in the foreground.
+
+    For services like f1r3drive that run natively via FUSE + Java
+    instead of Docker Compose. The process runs in the foreground
+    with inherited stdio. Ctrl-C stops the service.
+
+    Args:
+        service_name: Name of the service.
+        root_dir: Root directory of the integration repo.
+        run_config: Build configuration dict containing run_command, environment, etc.
+
+    Returns:
+        True if service ran and exited cleanly, False otherwise.
+    """
+    run_command = run_config.get("run_command")
+    if not run_command:
+        console.print(f"[red]No run_command configured for {service_name}[/red]")
+        return False
+
+    environment = run_config.get("environment")
+    use_nix = False
+
+    if environment == "nix":
+        try:
+            subprocess.run(["nix", "--version"], capture_output=True, check=True)
+            use_nix = True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            console.print(
+                "[yellow]Warning: Nix not found, running without Nix environment[/yellow]"
+            )
+
+    # Wrap in nix develop if needed
+    if use_nix:
+        flake_dir = f"./services/{service_name}"
+        run_command = (
+            f"nix --extra-experimental-features nix-command"
+            f" --extra-experimental-features flakes"
+            f" develop {flake_dir} --command bash -c '{run_command}'"
+        )
+
+    console.print(f"[dim]$ {run_command}[/dim]")
+
+    process = None
+
+    try:
+        # Run in foreground with inherited stdio (no pipe, no setpgrp).
+        process = subprocess.Popen(
+            run_command,
+            shell=True,
+            cwd=root_dir,
+            env=os.environ.copy(),
+        )
+
+        # Block until process exits or user presses Ctrl-C
+        returncode = process.wait()
+
+        if returncode != 0:
+            console.print(f"[red]✗ {service_name} exited with code {returncode}[/red]")
+            return False
+
+        console.print(f"[green]✓[/green] {service_name} stopped")
+        return True
+
+    except KeyboardInterrupt:
+        console.print(f"\n[yellow]{service_name} interrupted by user (CTRL-C)[/yellow]")
+        if process and process.poll() is None:
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            except KeyboardInterrupt:
+                pass
+        return True
+    except Exception as e:
+        console.print(f"[red]✗ Error running {service_name}: {e}[/red]")
+        if process and process.poll() is None:
+            process.terminate()
         return False
 
 

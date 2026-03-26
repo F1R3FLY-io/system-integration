@@ -524,6 +524,16 @@ def assert_containers_running(docker_client: DockerClient,
         raise AssertionError(f"Expected all containers running, but:\n{detail}")
 
 
+def _ensure_image_available(docker_client: DockerClient, image: str) -> None:
+    """Ensure `image` exists locally without relying on run(..., pull=...)."""
+    try:
+        docker_client.images.get(image)
+        return
+    except docker_py.errors.ImageNotFound:
+        logging.info("Pulling missing image: %s", image)
+        docker_client.images.pull(image)
+
+
 # ── Shard health guard ──────────────────────────────────────────────
 # ---------------------------------------------------------------------------
 # Test ordering: enforce the sequence from pyproject.toml [tool.pytest.ini_options]
@@ -1759,6 +1769,7 @@ def add_peer_to_shard(
 
         logging.info("Starting joiner %s on network %s ...",
                      container_name, shard.network_name)
+        _ensure_image_available(docker_client, DEFAULT_IMAGE)
         container = docker_client.containers.run(
             image=DEFAULT_IMAGE,
             name=container_name,

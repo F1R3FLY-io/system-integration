@@ -67,6 +67,20 @@ See [COMPOSE_STRUCTURE.md](COMPOSE_STRUCTURE.md) for details on each compose fil
 
 All commands require `poetry run` prefix unless you activate the shell with `poetry shell`.
 
+### Native Services
+
+Some services run natively on the host instead of in Docker. They are defined in `services.yml` with a `run_command` and orchestrated by `shardctl up` / `shardctl down`.
+
+| Command | Description |
+|---------|-------------|
+| `shardctl up f1r3drive` | F1R3Drive FUSE filesystem (foreground, Ctrl-C to stop) |
+
+F1R3Drive requires Java 17+ and a FUSE library:
+- **macOS:** [macFUSE](https://github.com/macfuse/macfuse/wiki/Getting-Started)
+- **Linux:** `libfuse-dev` / [jnr-fuse](https://github.com/SerCeMan/jnr-fuse?tab=readme-ov-file#installation)
+
+See [docs/f1r3drive-guide.md](docs/f1r3drive-guide.md) for full setup and usage.
+
 ### Custom Docker Images
 
 Override the default image with env vars:
