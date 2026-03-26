@@ -1,0 +1,6 @@
+new ret, rl(`rho:registry:lookup`), agentsTeamsCh in {
+    rl!(`rho:id:qsd4ygzo961c5ebhpxf1b1ys33mjhghz5945iyc9d19ngh377cd3bt`, *agentsTeamsCh) |
+    for(@(_, agentsTeams) <- agentsTeamsCh) {
+        @agentsTeams!("list", "1111AtahZeefej4tvVR6ti9TJtv8yxLebT31SCEVDCKMNikBk5r3g", *ret)
+    }
+}

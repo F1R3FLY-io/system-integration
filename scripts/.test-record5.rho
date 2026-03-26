@@ -1,0 +1,4 @@
+new ret, stdout(`rho:io:stdout`) in {
+    stdout!("=== recordDeploy call 5 ===") |
+    @"recordDeploy"!("addr1", "team1", {"name": "Alpha", "version": "v1", "deployed": true, "uri": "rho:id:test5"}, *ret)
+}

@@ -1,0 +1,3 @@
+new stdout(`rho:io:stdout`) in {
+    stdout!("errored-flag-test: SUCCESS deploy")
+}

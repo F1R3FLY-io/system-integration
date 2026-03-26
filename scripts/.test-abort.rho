@@ -1,0 +1,4 @@
+new abort(`rho:execution:abort`), stdout(`rho:io:stdout`) in {
+    stdout!("errored-flag-test: ABOUT TO ABORT") |
+    abort!("intentional test abort")
+}

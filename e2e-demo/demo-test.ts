@@ -127,46 +127,19 @@ async function phase1_preflight(): Promise<void> {
 
 async function phase2_createTeam(
   sdk: EmbersApiSdk,
-): Promise<{ id: string; version: string }> {
+): Promise<{ id: string; version: string; blockNumber: number }> {
   log("PHASE 2", "Creating agent team...");
 
-  const { prepareResponse, waitForFinalization } =
-    await sdk.agentsTeams.create({
-      name: `E2E Demo Team ${Date.now()}`,
-      description: "Automated E2E test team",
-    });
+  const { prepareResponse, blockNumber } = await sdk.agentsTeams.create({
+    name: `E2E Demo Team ${Date.now()}`,
+    description: "Automated E2E test team",
+  });
 
   const id = prepareResponse.response.id;
   const version = prepareResponse.response.version;
-  log("PHASE 2", `Team created: id=${id}, version=${version}`);
+  log("PHASE 2", `Team created: id=${id}, finalized at block ${blockNumber}`);
 
-  await waitForFinalization;
-  log("PHASE 2", "Create finalized");
-
-  // Wait until the team is visible on the observer before proceeding.
-  // The create deploy may have finalized but the observer's explore-deploy
-  // may not have caught up yet. Without this, the save Rholang would abort.
-  const address = sdk.agentsTeams.address.toString();
-  log("PHASE 2", "Verifying team visible on observer...");
-  await retry(
-    async () => {
-      const res = await fetch(
-        `${config.embersApiUrl}/api/ai-agents-teams/${address}`,
-      );
-      if (!res.ok) throw new Error(`list: ${res.status}`);
-      const data = (await res.json()) as {
-        agents_teams: { id: string }[];
-      };
-      const found = data.agents_teams.some((t) => t.id === id);
-      if (!found) throw new Error(`team ${id} not in list yet`);
-    },
-    30,
-    2_000,
-    "PHASE 2",
-  );
-  log("PHASE 2", "Team confirmed visible");
-
-  return { id, version };
+  return { id, version, blockNumber };
 }
 
 // ---------------------------------------------------------------------------
@@ -176,43 +149,26 @@ async function phase2_createTeam(
 async function phase3_saveGraph(
   sdk: EmbersApiSdk,
   id: string,
-): Promise<{ version: string; graph: Graph }> {
+  validAfterBlockNumber: number,
+): Promise<{ version: string; graph: Graph; blockNumber: number }> {
   log("PHASE 3", "Building demo graph (input -> text-model -> output)...");
   const graph = buildDemoGraph();
 
-  log("PHASE 3", "Saving graph to agent team...");
-  const { prepareResponse, waitForFinalization } = await sdk.agentsTeams.save(
+  log("PHASE 3", `Saving graph (valid_after=${validAfterBlockNumber})...`);
+  const { prepareResponse, blockNumber } = await sdk.agentsTeams.save(
     id,
     {
       name: `E2E Demo Team ${Date.now()}`,
       description: "Automated E2E test team",
       graph,
     },
+    { validAfterBlockNumber },
   );
 
   const version = prepareResponse.response.version;
-  log("PHASE 3", `Save prepared: new version=${version}`);
+  log("PHASE 3", `Save finalized at block ${blockNumber}, version=${version}`);
 
-  await waitForFinalization;
-  log("PHASE 3", "Save finalized");
-
-  // Verify the saved version is readable before proceeding to deploy
-  const address = sdk.agentsTeams.address.toString();
-  log("PHASE 3", "Verifying saved version visible on observer...");
-  await retry(
-    async () => {
-      const res = await fetch(
-        `${config.embersApiUrl}/api/ai-agents-teams/${address}/${id}/versions/${version}`,
-      );
-      if (!res.ok) throw new Error(`get version: ${res.status}`);
-    },
-    30,
-    2_000,
-    "PHASE 3",
-  );
-  log("PHASE 3", "Saved version confirmed visible");
-
-  return { version, graph };
+  return { version, graph, blockNumber };
 }
 
 // ---------------------------------------------------------------------------
@@ -223,23 +179,23 @@ async function phase4_deploy(
   sdk: EmbersApiSdk,
   id: string,
   version: string,
-): Promise<string> {
-  log("PHASE 4", "Deploying agent team...");
+  validAfterBlockNumber: number,
+): Promise<{ uri: string; blockNumber: number }> {
+  log("PHASE 4", `Deploying (valid_after=${validAfterBlockNumber})...`);
 
   const registryKey = PrivateKey.new();
   const registryVersion = BigInt(1);
 
-  const { waitForFinalization } = await sdk.agentsTeams.deploy(
+  const { blockNumber } = await sdk.agentsTeams.deploy(
     id,
     version,
     { value: config.phloLimit } as { value: bigint },
     registryVersion,
     registryKey,
+    { validAfterBlockNumber },
   );
 
-  log("PHASE 4", "Waiting for deploy finalization...");
-  await waitForFinalization;
-  log("PHASE 4", "Deploy finalized");
+  log("PHASE 4", `Deploy finalized at block ${blockNumber}`);
 
   // Poll for URI — recordDeploy is a SECOND deploy that also needs to finalize.
   // Give it enough time (up to 15 retries × 2s = 30s after main deploy).
@@ -274,7 +230,7 @@ async function phase4_deploy(
   }
 
   log("PHASE 4", `Deploy URI: ${uri}`);
-  return uri;
+  return { uri, blockNumber };
 }
 
 // ---------------------------------------------------------------------------
@@ -306,24 +262,25 @@ async function phase5_run(
 async function phase6_publish(
   sdk: EmbersApiSdk,
   id: string,
+  validAfterBlockNumber: number,
 ): Promise<string> {
-  // AT Protocol handles have length limits — keep it short
   const suffix = Date.now().toString(36);
   const handle = `e2e-${suffix}.test`;
-  log("PHASE 6", `Publishing to F1R3Sky as ${handle}...`);
+  log("PHASE 6", `Publishing as ${handle} (valid_after=${validAfterBlockNumber})...`);
 
   const email = `e2e-${suffix}@test.invalid`;
-  const { waitForFinalization } = await sdk.agentsTeams.publishToFiresky(id, {
-    pdsUrl: config.pdsInternalUrl,
-    handle,
-    email,
-    password: config.fireskyAgentPassword,
-  });
+  const { blockNumber } = await sdk.agentsTeams.publishToFiresky(
+    id,
+    {
+      pdsUrl: config.pdsInternalUrl,
+      handle,
+      email,
+      password: config.fireskyAgentPassword,
+    },
+    { validAfterBlockNumber },
+  );
 
-  log("PHASE 6", "Waiting for publish finalization...");
-  await waitForFinalization;
-  log("PHASE 6", `Published as ${handle}`);
-
+  log("PHASE 6", `Published as ${handle}, finalized at block ${blockNumber}`);
   return handle;
 }
 
@@ -451,23 +408,22 @@ async function main(): Promise<void> {
     });
     log("MAIN", `Wallet address: ${sdk.agentsTeams.address.toString()}`);
 
-    // Give WebSocket time to connect
-    await sleep(2_000);
+    // Phase 2: Create — returns block number for causal chaining
+    const { id, blockNumber: createBlock } = await phase2_createTeam(sdk);
 
-    // Phase 2: Create
-    const { id } = await phase2_createTeam(sdk);
+    // Phase 3: Save — uses create's block number
+    const { version: saveVersion, blockNumber: saveBlock } =
+      await phase3_saveGraph(sdk, id, createBlock);
 
-    // Phase 3: Save graph
-    const { version: saveVersion } = await phase3_saveGraph(sdk, id);
-
-    // Phase 4: Deploy
-    const uri = await phase4_deploy(sdk, id, saveVersion);
+    // Phase 4: Deploy — uses save's block number
+    const { uri, blockNumber: deployBlock } =
+      await phase4_deploy(sdk, id, saveVersion, saveBlock);
 
     // Phase 5: Run
     await phase5_run(sdk, uri);
 
-    // Phase 6: Publish
-    const agentHandle = await phase6_publish(sdk, id);
+    // Phase 6: Publish — uses deploy's block number
+    const agentHandle = await phase6_publish(sdk, id, deployBlock);
 
     // Phase 7: Verify publish
     const agentDid = await phase7_verifyPublish(agentHandle);
