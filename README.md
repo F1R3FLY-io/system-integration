@@ -428,20 +428,21 @@ Each service maps to a compose file in `compose/<service>.yml`. Use `shardctl up
 ### Quick Start
 
 ```bash
-# Scala shard (default multi-node network)
-poetry run shardctl up f1r3node
+# Rust shard (recommended — bootstrap + 3 validators + observer)
+poetry run shardctl up f1r3node-rust
 
-# Other configurations
-poetry run shardctl up f1r3node-standalone         # Scala standalone (fastest for dev)
-poetry run shardctl up f1r3node-rust-standalone     # Rust standalone (experimental)
-poetry run shardctl up f1r3node-rust                # Rust multi-node network
-
-# Start all services (uses startup_order from services.yml)
-poetry run shardctl up
+# Rust standalone (single node, fastest for dev)
+poetry run shardctl up f1r3node-rust-standalone
 
 # After starting a shard, wait for all nodes to be ready
 poetry run shardctl wait
+
+# Scala shard (deprecated — will be removed in a future release)
+poetry run shardctl up f1r3node
 ```
+
+> **Note:** The Scala node implementation is deprecated. The `f1r3node-rust` service uses a
+> [standalone Rust repository](https://github.com/F1R3FLY-io/f1r3node-rust) (not a branch of f1r3node).
 
 ### Node Commands
 
@@ -449,10 +450,10 @@ All commands require `poetry run` prefix (or activate shell with `poetry shell` 
 
 | Command                                                    | Description                                                      |
 | ---------------------------------------------------------- | ---------------------------------------------------------------- |
-| `poetry run shardctl up f1r3node`                          | Start Scala shard (default)                                      |
-| `poetry run shardctl up f1r3node-standalone`               | Start Scala standalone node                                      |
-| `poetry run shardctl up f1r3node-rust`                     | Start Rust multi-node shard                                      |
-| `poetry run shardctl up f1r3node-rust-standalone`          | Start Rust standalone node                                       |
+| `poetry run shardctl up f1r3node-rust`                     | Start Rust multi-node shard (recommended)                        |
+| `poetry run shardctl up f1r3node-rust-standalone`          | Start Rust standalone node (fastest for dev)                     |
+| `poetry run shardctl up f1r3node`                          | Start Scala shard (deprecated)                                   |
+| `poetry run shardctl up f1r3node-standalone`               | Start Scala standalone node (deprecated)                         |
 | `poetry run shardctl up embers`                            | Start Embers API + frontend                                      |
 | `poetry run shardctl up f1r3sky`                           | Start F1R3Sky AT Protocol services                               |
 | `poetry run shardctl up f1r3drive`                         | Start F1r3Drive native FUSE service                              |

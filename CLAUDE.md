@@ -52,8 +52,11 @@ poetry install
 # Clone all service repositories with correct branches
 poetry run shardctl clone
 
-# Start services
-poetry run shardctl up
+# Start Rust shard (recommended — Scala is deprecated)
+poetry run shardctl up f1r3node-rust
+
+# Start Rust standalone (single node, fastest for dev)
+poetry run shardctl up f1r3node-rust-standalone
 
 # View status
 poetry run shardctl status
@@ -64,6 +67,9 @@ poetry run shardctl logs --follow
 # Stop services
 poetry run shardctl down
 ```
+
+> **Note:** The Scala node (`shardctl up f1r3node`) is deprecated. Use the Rust shard commands above.
+> The bare `shardctl up` still starts Scala by default (from `startup_order` in services.yml).
 
 ## Service Repositories
 
