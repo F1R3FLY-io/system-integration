@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.0"
-last_updated: [DATE]
+last_updated: 2026-03-25
 mr_status:
   ready: false
   target_branch: main
@@ -63,44 +63,60 @@ mr_status:
 
 ---
 
-### EPOCH-001: [PROJECT_SPECIFIC: Epoch Title]
+### EPOCH-001: Rust Shard Integration via f1r3node-rust
 
 ```yaml
 ---
 epoch_id: EPOCH-001
-title: "[PROJECT_SPECIFIC: Epoch Title]"
-status: pending          # pending | in_progress | blocked | review | complete
-priority: p1             # p0 (critical) | p1 (high) | p2 (medium) | p3 (low)
-user_story: US-XXX       # Link to user story in docs/UserStories.md
-blocked_by: []           # List of blocking epoch IDs
-created_at: [DATE]
-claimed_by: null         # Implementer ID: human-{email}, {tool}-session[-{id}], or {team}/{role}
+title: "Rust Shard Integration via f1r3node-rust"
+status: pending
+priority: p1
+user_story: US-001
+blocked_by: []
+created_at: 2026-03-25
+claimed_by: null
 claimed_at: null
 tasks:
   - id: TASK-001-1
-    title: "[PROJECT_SPECIFIC: Task 1 title]"
-    status: pending      # pending | in_progress | complete | blocked
+    title: "Add f1r3node-rust repo to services.yml"
+    status: pending
     acceptance:
-      - "[PROJECT_SPECIFIC: Acceptance criterion 1]"
-      - "[PROJECT_SPECIFIC: Acceptance criterion 2]"
+      - "f1r3node-rust entry exists in services.yml with correct git URL and branch"
+      - "shardctl clone pulls the f1r3node-rust repo into services/"
 
   - id: TASK-001-2
-    title: "[PROJECT_SPECIFIC: Task 2 title]"
+    title: "Create compose/f1r3node-rust.yml for Rust shard deployment"
     status: pending
-    blocked_by: [TASK-001-1]  # Optional: task dependencies
+    blocked_by: [TASK-001-1]
     acceptance:
-      - "[PROJECT_SPECIFIC: Acceptance criterion 1]"
+      - "compose/f1r3node-rust.yml builds and deploys the Rust shard from services/f1r3node-rust"
+      - "Rust shard container connects to the f1r3fly Docker network"
+
+  - id: TASK-001-3
+    title: "Add shardctl support for Rust shard status and lifecycle"
+    status: pending
+    blocked_by: [TASK-001-2]
+    acceptance:
+      - "shardctl status shows Rust shard health"
+      - "shardctl up/down manages Rust shard alongside other services"
+
+  - id: TASK-001-4
+    title: "Document Rust shard deployment option"
+    status: pending
+    blocked_by: [TASK-001-2]
+    acceptance:
+      - "README.md documents how to deploy the Rust shard as an alternative to Scala"
 ---
 ```
 
-**Context:** [PROJECT_SPECIFIC: Why is this epoch needed? What problem does it solve?]
+**Context:** The f1r3node currently runs a Scala-based shard by default. A Rust implementation exists in a separate `f1r3node-rust` repository. Node operators need the option to deploy either implementation, giving them flexibility in performance characteristics and operational preferences.
 
 **Scope:**
-- [PROJECT_SPECIFIC: What's included]
-- [PROJECT_SPECIFIC: What's explicitly excluded]
-
-**Notes:**
-- [PROJECT_SPECIFIC: Implementation notes, gotchas, references]
+- Add f1r3node-rust as a clonable service repo
+- Create Docker Compose configuration for the Rust shard
+- Integrate Rust shard lifecycle into shardctl
+- Document the deployment option
+- Excluded: modifying the Rust shard codebase itself
 
 ---
 

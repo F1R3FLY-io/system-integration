@@ -1,7 +1,7 @@
 ---
 doc_type: user_stories
 version: "1.0"
-last_updated: "[DATE]"
+last_updated: "2026-03-25"
 ---
 
 # User Stories
@@ -43,7 +43,19 @@ This document captures user stories that drive feature development. User stories
 
 Stories below are candidates for future epochs. Move to "Completed Stories" when implemented.
 
-<!-- Add planned user stories here -->
+#### US-001: Deploy Rust Shard via f1r3node-rust
+
+> As a **node operator**, I want **to deploy the Rust-based shard from the f1r3node-rust repository** so that **I have flexibility in choosing shard implementations for my deployment**.
+
+**Implemented in:** EPOCH-001
+
+**Acceptance Criteria:**
+- [ ] shardctl can clone the f1r3node-rust repo
+- [ ] compose/f1r3node-rust.yml deploys the Rust shard from the f1r3node-rust repo
+- [ ] Rust shard connects to the f1r3fly Docker network
+- [ ] shardctl status shows Rust shard health
+
+**Completed:** Planned
 
 ---
 
