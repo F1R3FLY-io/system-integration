@@ -94,7 +94,7 @@ tasks:
 
   - id: TASK-001-3
     title: "Add shardctl support for Rust shard status and lifecycle"
-    status: pending
+    status: complete
     blocked_by: [TASK-001-2]
     acceptance:
       - "shardctl status shows Rust shard health"

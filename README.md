@@ -285,7 +285,7 @@ This is useful when you've updated branch names in `services.yml` and want to bu
 
 This produces images such as:
 - f1r3flyindustries/f1r3fly-scala-node:latest (f1r3node Scala)
-- f1r3flyindustries/f1r3fly-rust-node:latest (f1r3node Rust)
+- f1r3flyindustries/f1r3node-rust:latest (f1r3node Rust)
 - f1r3flyindustries/embers:latest
 - f1r3flyindustries/f1r3sky-bsky:latest
 - f1r3flyindustries/f1r3sky-pds:latest
@@ -496,7 +496,7 @@ All compose files use env vars with sensible defaults for the node image. Overri
 
 ```bash
 # Use a specific Rust node tag
-F1R3FLY_RUST_IMAGE=f1r3flyindustries/f1r3fly-rust-node:dev poetry run shardctl up f1r3node-rust
+F1R3FLY_IMAGE=f1r3flyindustries/f1r3node-rust:dev poetry run shardctl up f1r3node-rust
 
 # Use a specific Scala node tag
 F1R3FLY_SCALA_IMAGE=f1r3flyindustries/f1r3fly-scala-node:v1.2.3 poetry run shardctl up f1r3node
@@ -506,7 +506,7 @@ Docker will use the local image if present, otherwise pull from the registry.
 
 | Variable | Default | Used by |
 |---|---|---|
-| `F1R3FLY_RUST_IMAGE` | `f1r3flyindustries/f1r3fly-rust-node:latest` | All Rust node compose files |
+| `F1R3FLY_IMAGE` | `f1r3flyindustries/f1r3node-rust:latest` | All Rust node compose files |
 | `F1R3FLY_SCALA_IMAGE` | `f1r3flyindustries/f1r3fly-scala-node:latest` | All Scala node compose files |
 
 These can also be set in a `.env` file at the repository root.

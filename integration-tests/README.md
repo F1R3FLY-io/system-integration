@@ -72,7 +72,7 @@ DEFAULT_IMAGE=f1r3flyindustries/f1r3fly-scala-node:latest \
   poetry run pytest integration-tests/test/ -v --tb=short --log-cli-level=WARNING
 
 # Rust
-DEFAULT_IMAGE=f1r3flyindustries/f1r3fly-rust-node:latest \
+DEFAULT_IMAGE=f1r3flyindustries/f1r3node-rust:latest \
   poetry run pytest integration-tests/test/ -v --tb=short --log-cli-level=WARNING
 ```
 
