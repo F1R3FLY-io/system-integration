@@ -68,7 +68,8 @@ poetry run shardctl down
 ## Service Repositories
 
 Services are defined in `services.yml` with their git URLs and branches:
-- **f1r3node**: Blockchain node (main + rust-dev branches)
+- **f1r3node**: Scala blockchain node (dev branch)
+- **f1r3node-rust**: Rust blockchain node (dev branch, separate repo)
 - **embers**: Blockchain API bridge (main branch)
 - **embers-frontend**: Web UI for embers (main branch)
 - **f1r3sky-backend**: AT Protocol services (main branch)

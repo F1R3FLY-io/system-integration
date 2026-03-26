@@ -69,7 +69,7 @@ mr_status:
 ---
 epoch_id: EPOCH-001
 title: "Rust Shard Integration via f1r3node-rust"
-status: in_progress
+status: complete
 priority: p1
 user_story: US-001
 blocked_by: []
@@ -102,7 +102,7 @@ tasks:
 
   - id: TASK-001-4
     title: "Document Rust shard deployment option"
-    status: pending
+    status: complete
     blocked_by: [TASK-001-2]
     acceptance:
       - "README.md documents how to deploy the Rust shard as an alternative to Scala"

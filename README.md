@@ -240,7 +240,7 @@ poetry run shardctl clone
 
 This will clone:
 - `f1r3node` (main branch) - Scala blockchain node
-- `f1r3node-rust` (rust/main branch) - Rust blockchain node
+- `f1r3node-rust` (dev branch) - Rust blockchain node (separate repo from f1r3node)
 - `rust-client` (main branch) - Rust CLI client
 - `f1r3sky-backend` (main branch) - AT Protocol services
 - `embers` (main branch) - Rust API bridge

@@ -50,12 +50,12 @@ Stories below are candidates for future epochs. Move to "Completed Stories" when
 **Implemented in:** EPOCH-001
 
 **Acceptance Criteria:**
-- [ ] shardctl can clone the f1r3node-rust repo
-- [ ] compose/f1r3node-rust.yml deploys the Rust shard from the f1r3node-rust repo
-- [ ] Rust shard connects to the f1r3fly Docker network
-- [ ] shardctl status shows Rust shard health
+- [x] shardctl can clone the f1r3node-rust repo
+- [x] compose/f1r3node-rust.yml deploys the Rust shard from the f1r3node-rust repo
+- [x] Rust shard connects to the f1r3fly Docker network
+- [x] shardctl status shows Rust shard health
 
-**Completed:** Planned
+**Completed:** 2026-03-25
 
 ---
 
