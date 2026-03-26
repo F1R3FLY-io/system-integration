@@ -43,6 +43,19 @@ logging.getLogger('connectionpool.py').setLevel(logging.WARNING)
 logging.getLogger('docker.utils.config').setLevel(logging.WARNING)
 logging.getLogger('docker.auth').setLevel(logging.WARNING)
 
+def _docker_compose_bin():
+    """Return the docker compose binary as a list.
+
+    Tries 'docker compose' (v2 plugin) first, falls back to 'docker-compose'.
+    """
+    try:
+        subprocess.run(["docker", "compose", "version"],
+                       capture_output=True, check=True)
+        return ["docker", "compose"]
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ["docker-compose"]
+
+
 # Container names matching the docker-compose defaults
 BOOTSTRAP_CONTAINER = 'rnode.bootstrap'
 VALIDATOR1_CONTAINER = 'rnode.validator1'
@@ -164,13 +177,14 @@ def _get_compose_file() -> str:
 
 
 def _compose_cmd(*args: str) -> List[str]:
-    """Build a docker-compose command with the correct env and compose file."""
+    """Build a docker compose command with the correct env and compose file."""
     tests_dir = _get_tests_dir()
+    repo_root = os.path.dirname(tests_dir)
     compose_file = _get_compose_file()
     return [
-        "docker-compose",
+        *_docker_compose_bin(),
         "--project-name", SHARD_PROJECT_NAME,
-        "--env-file", os.path.join(tests_dir, ".env.node"),
+        "--env-file", os.path.join(repo_root, ".env.node"),
         "-f", os.path.join(tests_dir, compose_file),
         *args,
     ]
@@ -220,11 +234,12 @@ def _get_standalone_compose_file() -> str:
 def _standalone_compose_cmd(*args: str, override_file: Optional[str] = None) -> List[str]:
     """Build a docker-compose command for the standalone node."""
     tests_dir = _get_tests_dir()
+    repo_root = os.path.dirname(tests_dir)
     compose_file = _get_standalone_compose_file()
     cmd = [
-        "docker-compose",
+        *_docker_compose_bin(),
         "--project-name", STANDALONE_PROJECT_NAME,
-        "--env-file", os.path.join(tests_dir, ".env.node"),
+        "--env-file", os.path.join(repo_root, ".env.node"),
         "-f", os.path.join(tests_dir, compose_file),
     ]
     if override_file:
@@ -1021,7 +1036,9 @@ def _generate_custom_compose(
         f"?protocol=40400&discovery=40404"
     )
 
-    abs_conf = os.path.join(tests_dir, 'conf')
+    repo_root = os.path.dirname(tests_dir)
+    abs_conf = os.path.join(repo_root, 'conf')
+    abs_local_conf = os.path.join(tests_dir, 'conf')
     abs_certs = os.path.join(tests_dir, 'certs')
 
     global_opts = global_cli_options or {}
@@ -1065,6 +1082,36 @@ def _generate_custom_compose(
             total_containers, max_ram_pct,
         )
 
+    # F1R3_* runtime tuning for Rust nodes (must match compose/f1r3node-rust.yml).
+    # These env vars are read via OnceLock on first use; Scala ignores them.
+    rust_env = [
+        # NOTE: All F1R3_SYNCHRONY_* vars intentionally omitted here.
+        # They override per-validator CLI settings at runtime via OnceLock, breaking
+        # test_synchrony_constraint which sets different thresholds per node.
+        # In particular, F1R3_SYNCHRONY_FINALIZED_BASELINE_ENABLED=1 enables a
+        # permissive check that bypasses the threshold the test expects to trigger.
+        # The static compose (docker-compose.rust.yml) sets these via x-rnode anchor.
+        'F1R3_HEARTBEAT_FRONTIER_CHASE_MAX_LAG=0',
+        'F1R3_HEARTBEAT_SELF_PROPOSE_COOLDOWN_MS=15000',
+        'F1R3_FINALIZER_WORK_BUDGET_MS=8000',
+        'F1R3_FINALIZER_CATCHUP_WORK_BUDGET_MS=8000',
+        'F1R3_FINALIZER_STEP_TIMEOUT_MS=1000',
+        'F1R3_FINALIZER_CATCHUP_STEP_TIMEOUT_MS=1000',
+        'F1R3_FINALIZER_MAX_CLIQUE_CANDIDATES=128',
+        'F1R3_FINALIZER_CANDIDATE_RANKING=recency_stake',
+        'F1R3_BLOCK_RETRIEVER_PEER_REQUERY_COOLDOWN_MS=500',
+        'F1R3_BLOCK_RETRIEVER_BROADCAST_ONLY_COOLDOWN_MS=500',
+        'F1R3_BLOCK_RETRIEVER_DEPENDENCY_RECOVERY_COOLDOWN_MS=500',
+        'F1R3_BLOCK_RETRIEVER_STALE_REQUEST_LIFETIME_MULTIPLIER=6',
+        'F1R3_BLOCK_RETRIEVER_MAX_RETRIES_PER_HASH=32',
+        'F1R3_BLOCK_RETRIEVER_KNOWN_PEER_REQUERY_SOFT_LIMIT=8',
+        'F1R3_BLOCK_RETRIEVER_MIN_REREQUEST_INTERVAL_MS=500',
+        'F1R3_BLOCK_RETRIEVER_RETRY_BUDGET_QUARANTINE_MS=10000',
+        'F1R3_BLOCK_RETRIEVER_DEDUP_QUERIED_PEERS=0',
+        'F1R3_MAX_BLOCKS_IN_PROCESSING=2048',
+        'F1R3_MAX_USER_DEPLOYS_PER_BLOCK=32',
+    ] if rust else []
+
     services: Dict = {}
 
     # ── Bootstrap node ──
@@ -1081,6 +1128,7 @@ def _generate_custom_compose(
         f"--fault-tolerance-threshold={ftt}",
         f"--required-signatures={required_signatures}",
         "--approve-duration=180seconds",
+        "--ceremony-master-mode",
     ] + _extra_cli("boot")
 
     services['boot'] = {
@@ -1094,18 +1142,18 @@ def _generate_custom_compose(
         'ports': [f"{boot_base + p}:4040{p}" for p in range(6)],
         'volumes': [
             'boot-data:/var/lib/rnode',
-            f"{abs_conf}/bootstrap-ceremony.conf:/var/lib/rnode/rnode.conf",
+            f"{abs_conf}/default.conf:/var/lib/rnode/rnode.conf",
             f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
             f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
         ] + ([] if rust else [
-            f"{abs_conf}/logback.xml:/var/lib/rnode/logback.xml",
+            f"{abs_local_conf}/logback.xml:/var/lib/rnode/logback.xml",
         ]) + [
             f"{abs_certs}/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
             f"{abs_certs}/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro",
         ],
         'environment': [
             'OPENAI_ENABLED=false',
-        ] + ([] if rust else [
+        ] + rust_env + ([] if rust else [
             f'_JAVA_OPTIONS={java_options}',
         ]),
     }
@@ -1144,18 +1192,18 @@ def _generate_custom_compose(
             'ports': [f"{base_port + p}:4040{p}" for p in range(6)],
             'volumes': [
                 f'{node_key}-data:/var/lib/rnode',
-                f"{abs_conf}/shared-rnode.conf:/var/lib/rnode/rnode.conf",
+                f"{abs_conf}/default.conf:/var/lib/rnode/rnode.conf",
                 f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
                 f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
             ] + ([] if rust else [
-                f"{abs_conf}/logback.xml:/var/lib/rnode/logback.xml",
+                f"{abs_local_conf}/logback.xml:/var/lib/rnode/logback.xml",
             ]) + [
                 f"{abs_certs}/{cert_dir}/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
                 f"{abs_certs}/{cert_dir}/node.key.pem:/var/lib/rnode/node.key.pem:ro",
             ],
             'environment': [
                 'OPENAI_ENABLED=false',
-            ] + ([] if rust else [
+            ] + rust_env + ([] if rust else [
                 f'_JAVA_OPTIONS={java_options}',
             ]),
         }
@@ -1183,10 +1231,11 @@ def _generate_custom_compose(
 def _custom_compose_cmd(compose_file: str, *args: str) -> List[str]:
     """Build a docker-compose command for the custom shard."""
     tests_dir = _get_tests_dir()
+    repo_root = os.path.dirname(tests_dir)
     return [
-        "docker-compose",
+        *_docker_compose_bin(),
         "--project-name", CUSTOM_PROJECT_NAME,
-        "--env-file", os.path.join(tests_dir, ".env.node"),
+        "--env-file", os.path.join(repo_root, ".env.node"),
         "-f", compose_file,
         *args,
     ]
@@ -1275,12 +1324,21 @@ def _describe_port_owner(port: int) -> str:
     return "\n\n".join(outputs).strip()
 
 
-def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
+def _wait_for_port_free(port: int, timeout: float = 15.0,
+                        force_cleanup: bool = True) -> None:
     """Wait until a TCP port is available for binding.
 
     After stopping containers, the kernel may hold ports in TIME_WAIT
     state for a few seconds.  This function polls until the port is free
     or raises RuntimeError after the timeout.
+
+    Args:
+        port: TCP port number to check.
+        timeout: Maximum seconds to wait.
+        force_cleanup: If True, call _force_cleanup_custom_containers()
+            as a last resort when ports are stuck.  Set to False when
+            called from within a running custom shard (e.g. add_peer_to_shard)
+            to avoid destroying the active shard and its network.
     """
     deadline = time.time() + timeout
     retry_cleanup_done = False
@@ -1293,7 +1351,8 @@ def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
             except OSError:
                 # One extra cleanup pass can clear lingering docker-proxy
                 # listeners from aborted/overlapping custom shard teardowns.
-                if not retry_cleanup_done and time.time() >= (deadline - timeout / 2):
+                if (force_cleanup and not retry_cleanup_done
+                        and time.time() >= (deadline - timeout / 2)):
                     _force_cleanup_custom_containers()
                     retry_cleanup_done = True
                 time.sleep(1)
@@ -1305,15 +1364,24 @@ def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
     )
 
 
-def _wait_for_port_range_free(base: int, count: int = 6, timeout: float = 60.0) -> None:
+def _wait_for_port_range_free(base: int, count: int = 6, timeout: float = 60.0,
+                              force_cleanup: bool = True) -> None:
     """Wait for a range of consecutive ports to be free.
 
     Each container binds 6 ports (protocol, ext-gRPC, int-gRPC, HTTP,
     discovery, admin-HTTP). The kernel releases each socket's TIME_WAIT
     independently, so checking only the base port is insufficient.
+
+    Args:
+        base: First port in the range.
+        count: Number of consecutive ports.
+        timeout: Maximum seconds to wait per port.
+        force_cleanup: Passed to _wait_for_port_free; set False when
+            called from within a running shard to avoid nuking it.
     """
     for offset in range(count):
-        _wait_for_port_free(base + offset, timeout=timeout)
+        _wait_for_port_free(base + offset, timeout=timeout,
+                            force_cleanup=force_cleanup)
 
 
 def _wait_for_custom_ports_free(num_validators: int, timeout: float = 60.0) -> None:
@@ -1610,7 +1678,9 @@ def add_peer_to_shard(
                 joiner.deploy_string(...)
     """
     tests_dir = _get_tests_dir()
-    abs_conf = os.path.join(tests_dir, 'conf')
+    repo_root = os.path.dirname(tests_dir)
+    abs_conf = os.path.join(repo_root, 'conf')
+    abs_local_conf = os.path.join(tests_dir, 'conf')
     timeout = command_line_options.node_startup_timeout
 
     container_name = CUSTOM_JOINER_CONTAINER
@@ -1621,13 +1691,10 @@ def add_peer_to_shard(
         f"?protocol=40400&discovery=40404"
     )
 
-    # The joiner is not a genesis validator (it joins post-genesis). We mount
-    # shared-rnode-runtime.conf which has genesis-validator-mode = false and
-    # ceremony-master-mode = false.  We cannot use bootstrap-ceremony.conf
-    # because that has ceremony-master-mode = true, which causes the joiner
-    # to create its own genesis block instead of accepting the existing one.
-    # We cannot use shared-rnode.conf because genesis-validator-mode = true
-    # and the --genesis-validator CLI flag is a presence-only toggle.
+    # The joiner uses default.conf (genesis-validator-mode = false,
+    # ceremony-master-mode = false by default). Role-specific behavior
+    # is controlled via CLI flags — joiner doesn't get --genesis-validator
+    # or --ceremony-master-mode.
     rust = _is_rust_node()
     command = ([] if rust else [
         "-Dlogback.configurationFile=/var/lib/rnode/logback.xml",
@@ -1638,9 +1705,7 @@ def add_peer_to_shard(
         f"--bootstrap={bootstrap_url}",
         f"--validator-public-key={joiner_identity.public_hex}",
         f"--validator-private-key={joiner_identity.private_hex}",
-        # Joiner is not a ceremony master so required-signatures is irrelevant,
-        # but the node still validates required_sigs < bonded_validators at
-        # startup.  The HOCON default (2) can exceed the actual bond count in
+        # The HOCON default (2) can exceed the actual bond count in
         # small custom shards, causing a silent crash.  Set to 0 to be safe.
         "--required-signatures=0",
     ]
@@ -1654,13 +1719,11 @@ def add_peer_to_shard(
     base_port = _CUSTOM_PORT_BASES['joiner']
     ports = {f"4040{p}/tcp": base_port + p for p in range(6)}
 
-    # Use shared-rnode-runtime.conf (genesis-validator-mode = false,
-    # ceremony-master-mode = false) for the joiner.
     volumes = {
         joiner_volume: {
             'bind': '/var/lib/rnode/', 'mode': 'rw',
         },
-        os.path.join(abs_conf, 'shared-rnode-runtime.conf'): {
+        os.path.join(abs_conf, 'default.conf'): {
             'bind': '/var/lib/rnode/rnode.conf', 'mode': 'ro',
         },
         os.path.join(shard.genesis_dir, 'bonds.txt'): {
@@ -1671,7 +1734,7 @@ def add_peer_to_shard(
         },
     }
     if not rust:
-        volumes[os.path.join(abs_conf, 'logback.xml')] = {
+        volumes[os.path.join(abs_local_conf, 'logback.xml')] = {
             'bind': '/var/lib/rnode/logback.xml', 'mode': 'ro',
         }
 
@@ -1683,7 +1746,14 @@ def add_peer_to_shard(
 
         # Wait for joiner ports to be released (kernel TIME_WAIT from a
         # previous test's joiner container that was recently stopped).
-        _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'])
+        # force_cleanup=False: the parent shard is still running — calling
+        # _force_cleanup_custom_containers() here would destroy the active
+        # shard and its Docker network, causing "network not found" when
+        # the joiner container tries to start.
+        # timeout=120: Linux TIME_WAIT is up to 60s; the default 60s
+        # timeout races with it and can fail on busy CI runners.
+        _wait_for_port_range_free(_CUSTOM_PORT_BASES['joiner'],
+                                  timeout=120.0, force_cleanup=False)
 
         # Match the custom shard's JVM tuning so the joiner doesn't
         # claim more RAM than its share (see _generate_custom_compose).

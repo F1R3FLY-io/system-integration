@@ -224,9 +224,9 @@ poetry run shardctl test-reset
 
 # Or manually:
 # Stop test containers and remove data volumes
-docker-compose --project-name f1r3fly-shard down --volumes --remove-orphans
-docker-compose --project-name f1r3fly-standalone down --volumes --remove-orphans
-docker-compose --project-name f1r3fly-custom down --volumes --remove-orphans
+docker compose --project-name f1r3fly-shard down --volumes --remove-orphans
+docker compose --project-name f1r3fly-standalone down --volumes --remove-orphans
+docker compose --project-name f1r3fly-custom down --volumes --remove-orphans
 ```
 
 ## Configuration
@@ -239,7 +239,8 @@ Key settings:
 - `timeout` -- Default per-test timeout (300s locally, CI overrides to 600s). Override with `@pytest.mark.timeout(N)`.
 - `markers` -- Registers the `xdist_group` marker for parallel execution.
 
-The `integration-tests/` directory also contains its own isolated copies of
-`conf/`, `genesis/`, `certs/`, and `.env.node`. These mirror the top-level
-configuration but are kept separate so test runs do not interfere with the
-dev stack.
+The `integration-tests/` directory contains its own `genesis/`, `certs/`, and
+`.env.node` for test isolation. Node config files (`default.conf`,
+`standalone-dev.conf`) are shared from the top-level `conf/` directory —
+role-specific behavior is controlled via CLI flags in compose commands and
+conftest.py. Only `logback.xml` remains in `integration-tests/conf/`.

@@ -11,7 +11,7 @@ services:
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
     networks:
-      - f1r3fly-shard
+      - f1r3fly
 
   prometheus:
     image: prom/prometheus:latest
@@ -20,7 +20,7 @@ services:
     depends_on:
       - cadvisor
     networks:
-      - f1r3fly-shard
+      - f1r3fly
     ports:
       - "9090:9090"
     volumes:
@@ -36,7 +36,7 @@ services:
     depends_on:
       - prometheus
     networks:
-      - f1r3fly-shard
+      - f1r3fly
     ports:
       - "3000:3000"
     environment:
@@ -46,5 +46,6 @@ services:
       - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
 
 networks:
-  f1r3fly-shard:
+  f1r3fly:
     external: true
+    name: f1r3fly
