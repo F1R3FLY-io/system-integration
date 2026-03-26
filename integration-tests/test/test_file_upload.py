@@ -101,7 +101,7 @@ def _download_file(node: Node, file_hash: str, offset: int = 0,
         'localhost', node.get_external_grpc_port(),
         grpc_options=_DOWNLOAD_GRPC_OPTIONS
     ) as client:
-        return client.download_file(file_hash, offset=offset, timeout=timeout)
+        return client.download_file(file_hash, offset=offset)
 
 
 def _wait_for_deploy_in_block(node: Node, deploy_id: str, timeout: float):
