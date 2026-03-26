@@ -421,20 +421,50 @@ shardctl up
 shardctl status
 ```
 
+### Using `just` (Recommended)
+
+The [`just`](https://github.com/casey/just) command runner provides quick shortcuts without needing Poetry:
+
+```bash
+# Rust shard (default - bootstrap + 3 validators + observer)
+just up
+
+# Rust standalone (single node, fastest for dev)
+just up-standalone
+
+# View status / follow logs
+just status
+just logs
+
+# Stop / stop and wipe data
+just down
+just reset
+
+# See all available commands
+just
+```
+
+> **Note:** The Scala node implementation is deprecated. Use `just up-scala` if you still need it.
+
 ## F1R3FLY Node Operations
 
-Each service maps to a compose file in `compose/<service>.yml`. Use `shardctl up <service>` to start.
+Each service maps to a compose file in `compose/<service>.yml`. Use `just up` or `shardctl up <service>` to start.
 
 ### Quick Start
 
 ```bash
-# Scala shard (default multi-node network)
-poetry run shardctl up f1r3node
+# Rust shard (default multi-node network)
+just up
 
-# Other configurations
-poetry run shardctl up f1r3node-standalone         # Scala standalone (fastest for dev)
-poetry run shardctl up f1r3node-rust-standalone     # Rust standalone (experimental)
-poetry run shardctl up f1r3node-rust                # Rust multi-node network
+# Rust standalone (single node, fastest for dev)
+just up-standalone
+
+# Scala shard (deprecated)
+just up-scala
+
+# Or using shardctl directly
+poetry run shardctl up f1r3node-rust
+poetry run shardctl up f1r3node-rust-standalone
 
 # Start all services (uses startup_order from services.yml)
 poetry run shardctl up
@@ -445,21 +475,42 @@ poetry run shardctl wait
 
 ### Node Commands
 
+#### `just` Commands (Recommended)
+
+| Command               | Description                                                      |
+| --------------------- | ---------------------------------------------------------------- |
+| `just up`             | Start Rust shard (default)                                       |
+| `just down`           | Stop Rust shard                                                  |
+| `just up-standalone`  | Start Rust standalone node (single node)                         |
+| `just down-standalone`| Stop Rust standalone node                                        |
+| `just status`         | Show Rust shard container status                                 |
+| `just logs`           | Follow Rust shard logs                                           |
+| `just reset`          | Stop Rust shard and remove all data volumes                      |
+| `just up-scala`       | Start Scala shard (deprecated)                                   |
+| `just up-monitoring`  | Start Prometheus + Grafana                                       |
+| `just up-embers`      | Start Embers API + frontend                                      |
+| `just ps`             | Show all running F1R3FLY containers                              |
+| `just down-all`       | Stop all containers across all compose files                     |
+| `just reset-all`      | Stop all and remove all data volumes                             |
+| `just clone`          | Clone all service repositories                                   |
+
+#### `shardctl` Commands
+
 All commands require `poetry run` prefix (or activate shell with `poetry shell` first).
 
 | Command                                                    | Description                                                      |
 | ---------------------------------------------------------- | ---------------------------------------------------------------- |
-| `poetry run shardctl up f1r3node`                          | Start Scala shard (default)                                      |
-| `poetry run shardctl up f1r3node-standalone`               | Start Scala standalone node                                      |
 | `poetry run shardctl up f1r3node-rust`                     | Start Rust multi-node shard                                      |
 | `poetry run shardctl up f1r3node-rust-standalone`          | Start Rust standalone node                                       |
+| `poetry run shardctl up f1r3node`                          | Start Scala shard (deprecated)                                   |
+| `poetry run shardctl up f1r3node-standalone`               | Start Scala standalone node (deprecated)                         |
 | `poetry run shardctl up embers`                            | Start Embers API + frontend                                      |
 | `poetry run shardctl up f1r3sky`                           | Start F1R3Sky AT Protocol services                               |
 | `poetry run shardctl up f1r3drive`                         | Start F1r3Drive native FUSE service                              |
-| `poetry run shardctl down f1r3node`                        | Stop and remove node containers                                  |
-| `poetry run shardctl logs f1r3node`                        | View node container logs                                         |
-| `poetry run shardctl logs f1r3node -f`                     | Follow node logs                                                 |
-| `poetry run shardctl status f1r3node`                      | Show node container status                                       |
+| `poetry run shardctl down f1r3node-rust`                   | Stop and remove node containers                                  |
+| `poetry run shardctl logs f1r3node-rust`                   | View node container logs                                         |
+| `poetry run shardctl logs f1r3node-rust -f`                | Follow node logs                                                 |
+| `poetry run shardctl status f1r3node-rust`                 | Show node container status                                       |
 | `poetry run shardctl wait`                                 | Wait for all nodes to be ready (timed)                           |
 | `poetry run shardctl wait --timeout 120`                   | Wait with custom timeout (seconds)                               |
 | `poetry run shardctl pull f1r3node`                        | Pull f1r3node images                                             |

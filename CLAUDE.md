@@ -50,19 +50,22 @@ This is a microservices integration repository for the F1R3FLY blockchain ecosys
 poetry install
 
 # Clone all service repositories with correct branches
-poetry run shardctl clone
+just clone
 
-# Start services
-poetry run shardctl up
+# Start Rust shard (default)
+just up
+
+# Start Rust standalone (single node, fastest for dev)
+just up-standalone
 
 # View status
-poetry run shardctl status
+just status
 
 # View logs
-poetry run shardctl logs --follow
+just logs
 
 # Stop services
-poetry run shardctl down
+just down
 ```
 
 ## Service Repositories
