@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# test-registry-sequential.sh — Test sequential deploys through a registered contract
+# test-registry-sequential-rust.sh — Test sequential deploys (Rust node compatible)
 #
-# Simulates the embers pattern:
-# 1. Init deploy: register a contract with treeHashMap (like agents_teams init)
+# Same as test-registry-sequential.sh but without rho:registry:insertRandom
+# which is not available on Rust nodes.
+#
+# Simulates the embers pattern with consume+resend:
+# 1. Init deploy: register a contract with treeHashMap
 # 2. Create deploy: call registered contract to create an entry
 # 3. Read deploy: call registered contract to read the entry
-#
-# This tests whether the registry + treeHashMap + consume+resend pattern
-# has ordering issues that simple channel writes don't.
 
 set -euo pipefail
 
@@ -16,10 +16,10 @@ NODE_CLI="$SCRIPT_DIR/../services/rust-client/target/release/node_cli"
 PRIVATE_KEY="5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
 
 # Configurable ports: ./test-registry-sequential.sh [iterations] [grpc_port] [http_port] [observer_grpc] [observer_http]
-GRPC_PORT="${2:-40411}"
-HTTP_PORT="${3:-40413}"
-OBS_GRPC="${4:-40451}"
-OBS_HTTP="${5:-40453}"
+GRPC_PORT="${2:-40462}"
+HTTP_PORT="${3:-40463}"
+OBS_GRPC="${4:-$GRPC_PORT}"
+OBS_HTTP="${5:-$HTTP_PORT}"
 OBSERVER="http://localhost:$OBS_HTTP"
 
 GREEN='\033[0;32m'
@@ -42,10 +42,8 @@ echo ""
 info "Step 1: Init — deploy contract with treeHashMap + consume+resend"
 cat << RHOEOF > "$SCRIPT_DIR/.test-reg-init.rho"
 new rl(\`rho:registry:lookup\`),
-    rr(\`rho:registry:insertRandom\`),
     stdout(\`rho:io:stdout\`),
-    treeHashMapCh,
-    dataCh
+    treeHashMapCh
 in {
     rl!(\`rho:lang:treeHashMap\`, *treeHashMapCh) |
     for(treeHashMap <- treeHashMapCh) {

@@ -1,9 +1,11 @@
 #!/bin/bash
-# start-all.sh — Start all services (embers, f1r3sky) against a running shard
-# Usage: ./scripts/start-all.sh
+# start-all.sh — Start all services (embers, f1r3sky) against a running node
+# Usage: ./scripts/start-all.sh [--node shard|rust-standalone|scala-standalone]
 #
-# Prerequisites: Rust shard must already be running on the f1r3fly Docker network
-# See: services/f1r3node-rust/docker/shard.yml
+# Modes:
+#   shard            (default) Rust shard on f1r3fly network
+#   rust-standalone  Rust standalone node
+#   scala-standalone Scala standalone node
 
 set -euo pipefail
 
@@ -18,23 +20,71 @@ err() { echo -e "${RED}[x]${NC} $1"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-COMPOSE_FILE="$ROOT_DIR/compose/services.yml"
 
-# Check shard is running
-if ! docker ps --format '{{.Names}}' | grep -q 'rnode.bootstrap'; then
-    err "Shard is not running. Start it first:"
-    echo "  cd services/f1r3node-rust/docker && docker compose -f shard.yml up -d"
+# Parse --node flag
+NODE_MODE="shard"
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --node) NODE_MODE="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+
+# Configure based on node mode
+case "$NODE_MODE" in
+    shard)
+        COMPOSE_FILE="$ROOT_DIR/compose/services.yml"
+        EMBERS_ENV="embers.env"
+        NODE_CHECK_CONTAINER="rnode.bootstrap"
+        NODE_NETWORK="f1r3fly"
+        COMPOSE_PREFIX="compose"
+        log "Mode: Rust shard"
+        ;;
+    rust-standalone)
+        COMPOSE_FILE="$ROOT_DIR/compose/services-standalone.yml"
+        EMBERS_ENV="embers.rust-standalone.env"
+        NODE_CHECK_CONTAINER="rnode.rust-standalone"
+        export NODE_NETWORK="rust-standalone_f1r3fly-standalone"
+        export EMBERS_ENV
+        COMPOSE_PREFIX="compose"
+        log "Mode: Rust standalone"
+        ;;
+    scala-standalone)
+        COMPOSE_FILE="$ROOT_DIR/compose/services-standalone.yml"
+        EMBERS_ENV="embers.scala-standalone.env"
+        NODE_CHECK_CONTAINER="rnode.standalone"
+        export NODE_NETWORK="scala-standalone_f1r3fly-standalone"
+        export EMBERS_ENV
+        COMPOSE_PREFIX="compose"
+        log "Mode: Scala standalone"
+        ;;
+    *)
+        err "Unknown node mode: $NODE_MODE"
+        echo "  Valid modes: shard, rust-standalone, scala-standalone"
+        exit 1
+        ;;
+esac
+
+# Check node is running
+if ! docker ps --format '{{.Names}}' | grep -q "$NODE_CHECK_CONTAINER"; then
+    err "Node '$NODE_CHECK_CONTAINER' is not running"
     exit 1
 fi
 
-log "Shard is running"
+log "Node is running ($NODE_CHECK_CONTAINER)"
 
 # Start infra first to get f1r3sky IP for embers localhost override
 log "Starting infrastructure..."
 docker compose -f "$COMPOSE_FILE" up -d f1r3sky-postgres f1r3sky-redis f1r3sky 2>&1 | grep -v "^$" || true
 
-# Get f1r3sky container IP for localhost mapping in embers
-export F1R3SKY_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' compose-f1r3sky-1 2>/dev/null || echo "")
+# Get f1r3sky container IP — try compose prefix patterns
+F1R3SKY_CONTAINER=$(docker ps --format '{{.Names}}' | grep "f1r3sky-1" | grep -v "postgres\|redis\|frontend" | head -1)
+if [ -z "$F1R3SKY_CONTAINER" ]; then
+    err "Could not find f1r3sky container"
+    exit 1
+fi
+
+export F1R3SKY_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$F1R3SKY_CONTAINER" 2>/dev/null || echo "")
 if [ -z "$F1R3SKY_IP" ]; then
     err "Could not resolve f1r3sky container IP"
     exit 1
@@ -46,8 +96,7 @@ log "Starting services..."
 docker compose -f "$COMPOSE_FILE" up -d 2>&1 | grep -v "^$" || true
 
 # Wait for embers API to become healthy
-# Bootstrap deploys 5 init contracts sequentially (~20-30s each on fresh shard)
-log "Waiting for embers to bootstrap (this may take a few minutes on fresh shard)..."
+log "Waiting for embers to bootstrap (this may take a few minutes on fresh node)..."
 for i in $(seq 1 180); do
     if curl -s http://localhost:8080/api/service/ready >/dev/null 2>&1; then
         log "Embers API is healthy"
@@ -55,7 +104,8 @@ for i in $(seq 1 180); do
     fi
     if [ "$i" -eq 180 ]; then
         err "Embers API not responding after 6 minutes"
-        docker logs compose-embers-1 2>&1 | grep -E "ERROR|WARN|finalized|errored" | tail -10
+        EMBERS_CONTAINER=$(docker ps --format '{{.Names}}' | grep "embers-1" | grep -v "frontend" | head -1)
+        docker logs "$EMBERS_CONTAINER" 2>&1 | grep -E "ERROR|WARN|finalized|errored" | tail -10
         exit 1
     fi
     sleep 2
@@ -91,7 +141,7 @@ done
 
 echo ""
 echo "========================================="
-echo "All services started"
+echo "All services started ($NODE_MODE)"
 echo "========================================="
 echo ""
 echo "  Embers Frontend:  http://localhost:8081"
