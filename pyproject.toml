@@ -27,7 +27,7 @@ urllib3 = ">=1.24.2"
 ecdsa = "*"
 eth-hash = { version = "*", extras = ["pycryptodome"] }
 pycryptodome = "*"
-pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git" }
+pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git", branch = "main" }
 requests = "*"
 pytest-timeout = "^2.4.0"
 
@@ -68,6 +68,7 @@ python_files = [
 	"test_dag_correctness.py",
 	"test_finalization.py",
 	"test_propose.py",
+	"test_file_upload.py",
 	"test_consensus_health.py",
 	"test_synchrony_constraint.py",
 	"test_asymmetric_bonds.py",

@@ -403,6 +403,21 @@ class Node:
         with F1r3flyClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
             return client.last_finalized_block()
 
+    def is_finalized(self, block_hash: str) -> bool:
+        """Check if a block is finalized by comparing its number to the LFB."""
+        self.check_alive()
+        try:
+            target_block = self.get_block(block_hash)
+            lfb_block = self.last_finalized_block()
+            
+            target_number = target_block.blockInfo.blockNumber
+            lfb_number = lfb_block.blockInfo.blockNumber
+            return lfb_number >= target_number
+        except Exception as e:
+            import logging
+            logging.debug("is_finalized check failed for %s: %s", block_hash[:16], e)
+            return False
+
     def repl(self, rholang_code: str, stderr: bool = False) -> str:
         quoted_rholang_code = shlex.quote(rholang_code)
         exit_code, output = self._exec_run_with_timeout(
