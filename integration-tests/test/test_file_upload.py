@@ -15,13 +15,14 @@ Uses the session-scoped shard fixture with heartbeat-driven block creation.
 
 import logging
 import time
+import os
 
 import grpc
 import pytest
 from docker.client import DockerClient
 from f1r3fly.client import F1r3flyClient, F1r3flyClientException
 from f1r3fly.pb.DeployServiceV1_pb2 import FileDownloadRequest
-from f1r3fly.util import blake2b_256_hex, create_file_upload_metadata
+from f1r3fly.util import blake2b_256_hex, blake2b_256_hex_file, create_file_upload_metadata
 
 from .common import TestingContext
 from .conftest import (
@@ -87,7 +88,7 @@ _DOWNLOAD_GRPC_OPTIONS: tuple = (
     ('grpc.keepalive_time_ms', 30000),
     ('grpc.keepalive_timeout_ms', 10000),
     ('grpc.keepalive_permit_without_calls', 1),
-    ('grpc.max_receive_message_length', 16 * 1024 * 1024),
+    ('grpc.max_receive_message_length', 32 * 1024 * 1024),
     ('grpc.http2.max_pings_without_data', 0),
     ('grpc.http2.min_time_between_pings_ms', 10000),
     ('grpc.http2.min_ping_interval_without_data_ms', 10000),
@@ -162,11 +163,14 @@ in {{
     for (_, deployerId, _ <- deployDataCh) {{
       deployerIdOps!("pubKeyBytes", *deployerId, *pubKeyCh) |
       for (@pubKeyBytes <- pubKeyCh) {{
+        stdout!(("DEBUG_PUBKEY", pubKeyBytes)) |
         @FileRegistry!("ownerAuthKey", "{file_hash}", *deployerId, *authKeyCh) |
         for (@authKey <- authKeyCh) {{
+          stdout!(("DEBUG_AUTHKEY", authKey)) |
           if (authKey != Nil) {{
             @FileRegistry!("lookup", "{file_hash}", *fileHandleCh) |
             for (@fileHandle <- fileHandleCh) {{
+              stdout!(("DEBUG_HANDLE", fileHandle)) |
               if (fileHandle != Nil) {{
                 @fileHandle!("delete", pubKeyBytes, authKey, *deleteCh) |
                 for (@deleteResult <- deleteCh) {{
@@ -213,7 +217,7 @@ class TestFileUploadE2E:
         """
         assert_containers_running(docker_client, ALL_CONTAINERS)
 
-        data = _generate_test_data(4096, salt='file1')
+        data = _generate_test_data(50 * 1024 * 1024, salt='file1')
         result = _upload_file(validator1_node, VALIDATOR1_KEY, data)
 
         # Wait for block inclusion on validator1
@@ -313,3 +317,116 @@ class TestFileUploadE2E:
         assert downloaded_file2 == data2, "Bob somehow successfully deleted Alice's file!"
         logging.info("Bob's unauthorized deletion correctly failed; File 2 is fully intact.")
 
+    def test_large_file_upload_streaming(
+        self,
+        docker_client: DockerClient,
+        testing_context: TestingContext,
+        bootstrap_node: Node,
+        validator1_node: Node,
+        validator2_node: Node,
+        validator3_node: Node,
+        readonly_node: Node,
+    ) -> None:
+        """Upload and download a 6GB file using client streaming methods."""
+        assert_containers_running(docker_client, ALL_CONTAINERS)
+
+        os.makedirs("test_data", exist_ok=True)
+        upload_path = "test_data/6gb_upload.bin"
+        download_path = "test_data/6gb_download.bin"
+        hash_path = "test_data/6gb_upload.bin.hash"
+        file_size_bytes = 6 * 1024 * 1024 * 1024
+
+        # 1. Create a 6GB sparse file locally if not cached
+        if not os.path.exists(upload_path) or os.path.getsize(upload_path) != file_size_bytes:
+            logging.info("Generating 6GB test file at %s", upload_path)
+            with open(upload_path, 'wb') as f:
+                f.seek(file_size_bytes - 1)
+                f.write(b'\0')
+        else:
+            logging.info("Using cached 6GB test file at %s", upload_path)
+
+        try:
+            # 2. Upload using streaming directly from path
+            phlo_limit = 100_000_000_000
+            phlo_price = 1
+            client_timeout = int(1800 * testing_context.timeout_scale)
+
+            with F1r3flyClient(
+                'localhost', validator1_node.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS
+            ) as client:
+                result = client.upload_file_from_path(
+                    key=VALIDATOR1_KEY,
+                    file_path=upload_path,
+                    phlo_price=phlo_price,
+                    phlo_limit=phlo_limit,
+                    shard_id=default_shard_id,
+                    timeout=client_timeout
+                )
+            
+            PREFIX = "[LARGE-FILE-TEST]"
+            logging.info("%s 6GB file streaming upload finished. Deploy ID: %s", PREFIX, result.deployId)
+
+            # Wait for block inclusion on validator1
+            find_timeout = int(1200 * testing_context.timeout_scale)
+            logging.info("%s Waiting up to %ds for deploy %s... to be included in a block on validator1", PREFIX, find_timeout, result.deployId[:16])
+            block = _wait_for_deploy_in_block(
+                validator1_node, result.deployId, find_timeout,
+            )
+            logging.info("%s Deploy %s... successfully included in block #%d (Hash: %s) on validator1", PREFIX, result.deployId[:16], block.blockNumber, block.blockHash)
+
+            # Wait for replication across the entire shard
+            for target_node, target_name in [
+                (bootstrap_node, "bootstrap"),
+                (validator2_node, "validator2"),
+                (validator3_node, "validator3"),
+                (readonly_node, "readonly_node"),
+            ]:
+                node_timeout = int(1200 * testing_context.timeout_scale)
+                logging.info("%s Waiting up to %ds for deploy %s... to be replicated to %s", PREFIX, node_timeout, result.deployId[:16], target_name)
+                rep_block = _wait_for_deploy_in_block(
+                    target_node, result.deployId, node_timeout,
+                )
+                logging.info("%s Deploy %s... replicated to %s in block #%d (Hash: %s)", PREFIX, result.deployId[:16], target_name, rep_block.blockNumber, rep_block.blockHash)
+
+                logging.info("Waiting up to %ds for block %s to be FINALIZED on %s...", node_timeout, rep_block.blockHash, target_name)
+                _wait_for_finalization(target_node, rep_block.blockHash, node_timeout)
+                logging.info("Block %s successfully FINALIZED on %s.", rep_block.blockHash, target_name)
+
+            # 3. Download using streaming to path from ALL nodes
+            if not os.path.exists(hash_path):
+                logging.info("Computing hash of 6GB upload file...")
+                original_hash = blake2b_256_hex_file(upload_path)
+                with open(hash_path, 'w') as f:
+                    f.write(original_hash)
+            else:
+                with open(hash_path, 'r') as f:
+                    original_hash = f.read().strip()
+
+            all_nodes = [
+                (readonly_node, "readonly_node"),
+            ]
+
+            for target_node, target_name in all_nodes:
+                logging.info("Downloading 6GB file from %s...", target_name)
+                with F1r3flyClient(
+                    'localhost', target_node.get_external_grpc_port(), grpc_options=_DOWNLOAD_GRPC_OPTIONS
+                ) as client:
+                    bytes_written = client.download_file_to_path(
+                        file_hash=result.fileHash,
+                        dest_path=download_path,
+                        timeout=client_timeout
+                    )
+                
+                assert bytes_written == file_size_bytes, f"File size mismatch on {target_name}!"
+                
+                logging.info("Computing hash of 6GB downloaded file from %s...", target_name)
+                downloaded_hash = blake2b_256_hex_file(download_path)
+                assert original_hash == downloaded_hash, f"Hashes do not match for 6GB file downloaded from {target_name}!"
+                logging.info("Success! File cleanly downloaded and verified from %s", target_name)
+                
+                # Delete so the next node does a fresh download
+                os.remove(download_path)
+
+        finally:
+            if os.path.exists(download_path):
+                os.remove(download_path)

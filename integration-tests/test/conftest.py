@@ -654,6 +654,10 @@ def pytest_runtest_teardown(item, nextitem) -> None:
     if item.nodeid != _last_shard_test_nodeid:
         return
 
+    if getattr(item.session, 'testsfailed', 0) > 0:
+        logging.info("Tests failed! Keeping shard alive for debugging.")
+        return
+
     logging.info("Last shard test completed -- tearing down shard environment.")
     _compose_down()
     _shard_started = False
@@ -792,8 +796,11 @@ def shard(request, command_line_options: CommandLineOptions,
         # were never cleaned up, leaving containers running and consuming
         # resources for all subsequent tests.
         if not skip_setup:
-            _compose_down()
-            _shard_started = False
+            if getattr(request.session, 'testsfailed', 0) > 0:
+                logging.info("Tests failed session! Keeping shard running for context/state debugging.")
+            else:
+                _compose_down()
+                _shard_started = False
 
 
 def _make_node(docker_client: DockerClient, container_name: str,
