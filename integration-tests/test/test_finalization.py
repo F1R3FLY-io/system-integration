@@ -103,9 +103,9 @@ def test_finalizes_block(
     for node in nodes:
         node_lfb = node.last_finalized_block()
         node_lfb_number = node_lfb.blockInfo.blockNumber
-        assert (
-            node_lfb_number >= initial_lfb_number
-        ), f"Node {node.name} LFB #{node_lfb_number} is behind initial LFB #{initial_lfb_number}"
+        assert node_lfb_number >= initial_lfb_number, (
+            f"Node {node.name} LFB #{node_lfb_number} is behind initial LFB #{initial_lfb_number}"
+        )
         logging.info(
             "Node %s LFB: block #%d (%s)",
             node.name,

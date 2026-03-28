@@ -190,9 +190,9 @@ def test_trim_state(
                 joiner_view = joiner.get_block(latest_v1_block.blockHash)
                 v1_state = latest_v1_block.postStateHash
                 joiner_state = joiner_view.blockInfo.postStateHash
-                assert (
-                    v1_state == joiner_state
-                ), f"Post-state mismatch: V1={v1_state[:16]}... joiner={joiner_state[:16]}..."
+                assert v1_state == joiner_state, (
+                    f"Post-state mismatch: V1={v1_state[:16]}... joiner={joiner_state[:16]}..."
+                )
                 logging.info(
                     "Post-state agreement confirmed: %s",
                     v1_state[:16],

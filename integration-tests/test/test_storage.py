@@ -99,9 +99,9 @@ def test_data_is_stored_and_served_by_node(
     assert read_match is not None, "Read pattern should match after wait_for_log_match"
 
     read_data = read_match.group("data")
-    assert (
-        read_data == random_data
-    ), f"Read data '{read_data}' should match stored data '{random_data}'"
+    assert read_data == random_data, (
+        f"Read data '{read_data}' should match stored data '{random_data}'"
+    )
 
 
 def test_data_stored_on_one_validator_served_by_another(
@@ -163,9 +163,9 @@ def test_data_stored_on_one_validator_served_by_another(
         except F1r3flyClientException:
             logging.info("find_deploy: block not committed yet, retrying...")
             time.sleep(2)
-    assert (
-        store_block is not None
-    ), f"Block containing store deploy {store_deploy_id[:24]}... not found within {find_timeout}s"
+    assert store_block is not None, (
+        f"Block containing store deploy {store_deploy_id[:24]}... not found within {find_timeout}s"
+    )
     store_block_number = store_block.blockNumber
 
     # Wait for the store block to propagate to validator2.

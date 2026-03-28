@@ -175,9 +175,9 @@ def test_finalization_asymmetric_bonds(
         # Verify V2 also sees finalization advancing
         v2_lfb = v2.last_finalized_block()
         v2_lfb_number = v2_lfb.blockInfo.blockNumber
-        assert (
-            v2_lfb_number >= initial_lfb_number
-        ), f"V2 LFB #{v2_lfb_number} behind initial #{initial_lfb_number}"
+        assert v2_lfb_number >= initial_lfb_number, (
+            f"V2 LFB #{v2_lfb_number} behind initial #{initial_lfb_number}"
+        )
         logging.info(
             "V2 LFB: block #%d -- finalization consistent across validators",
             v2_lfb_number,
@@ -225,9 +225,9 @@ def test_cross_validator_state_agreement_asymmetric(
                     break
                 except F1r3flyClientException:
                     time.sleep(3)
-            assert (
-                block is not None
-            ), f"Deploy {deploy_id[:24]}... not included in a block within {find_timeout}s"
+            assert block is not None, (
+                f"Deploy {deploy_id[:24]}... not included in a block within {find_timeout}s"
+            )
             block_hashes.append(block.blockHash)
 
         # Wait for propagation
@@ -250,9 +250,9 @@ def test_cross_validator_state_agreement_asymmetric(
 
             unique_states = set(post_states.values())
             if len(post_states) >= 2:
-                assert (
-                    len(unique_states) == 1
-                ), f"Post-state mismatch for block {block_hash[:16]}...: {post_states}"
+                assert len(unique_states) == 1, (
+                    f"Post-state mismatch for block {block_hash[:16]}...: {post_states}"
+                )
                 logging.info(
                     "Block %s: %d validators agree on post-state %s",
                     block_hash[:16],

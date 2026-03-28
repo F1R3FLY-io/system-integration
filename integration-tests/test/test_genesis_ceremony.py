@@ -58,9 +58,9 @@ def test_successful_genesis_ceremony(
     # All nodes should have at least 1 block (genesis)
     for node in all_nodes:
         block_count = node.get_blocks_count(5)
-        assert (
-            block_count >= 1
-        ), f"{node.name}: expected at least 1 block (genesis), got {block_count}"
+        assert block_count >= 1, (
+            f"{node.name}: expected at least 1 block (genesis), got {block_count}"
+        )
 
     # Extract genesis block hash from each node's logs.
     # The log line "Approved Block #0 (<hash>...) with empty parents" is
@@ -78,9 +78,9 @@ def test_successful_genesis_ceremony(
 
     # All nodes must agree on the genesis block hash prefix
     unique_prefixes = set(genesis_hashes.values())
-    assert (
-        len(unique_prefixes) == 1
-    ), f"All nodes should share the same genesis hash, but got: {genesis_hashes}"
+    assert len(unique_prefixes) == 1, (
+        f"All nodes should share the same genesis hash, but got: {genesis_hashes}"
+    )
 
     # Fetch the full genesis block and verify it has no parents
     genesis_prefix = unique_prefixes.pop()
@@ -95,9 +95,9 @@ def test_successful_genesis_ceremony(
             break
 
     if genesis_block_info is not None:
-        assert (
-            len(genesis_block_info.parentsHashList) == 0
-        ), f"Genesis block should have no parents, got: {list(genesis_block_info.parentsHashList)}"
+        assert len(genesis_block_info.parentsHashList) == 0, (
+            f"Genesis block should have no parents, got: {list(genesis_block_info.parentsHashList)}"
+        )
     else:
         # Genesis may not appear in show_blocks if depth doesn't reach it.
         # Fall back to show_block with the prefix.
@@ -109,6 +109,6 @@ def test_successful_genesis_ceremony(
 
     # Verify ceremony logs on bootstrap (ceremony master)
     boot_logs = bootstrap_node.logs()
-    assert (
-        "Making a transition to Running state" in boot_logs
-    ), "Bootstrap should have reached Running state"
+    assert "Making a transition to Running state" in boot_logs, (
+        "Bootstrap should have reached Running state"
+    )

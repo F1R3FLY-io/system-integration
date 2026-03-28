@@ -114,9 +114,9 @@ def test_bonding_validators(
         block_info = v1.get_block(b1)
         bonded_validators = {b.validator for b in block_info.blockInfo.bonds}
         joiner_pub_hex = VALIDATOR4_ID.public_hex
-        assert (
-            joiner_pub_hex not in bonded_validators
-        ), f"Joiner {joiner_pub_hex[:16]}... should not be bonded yet"
+        assert joiner_pub_hex not in bonded_validators, (
+            f"Joiner {joiner_pub_hex[:16]}... should not be bonded yet"
+        )
 
         # ── Add joiner node to the shard ──
         with add_peer_to_shard(
@@ -161,9 +161,9 @@ def test_bonding_validators(
             # Verify the bond is recorded in the bonds map
             block_info = v1.get_block(b2)
             bonds_map = {b.validator: b.stake for b in block_info.blockInfo.bonds}
-            assert (
-                bonds_map.get(joiner_pub_hex) == bond_amount
-            ), f"Expected joiner bond={bond_amount}, got {bonds_map.get(joiner_pub_hex)}"
+            assert bonds_map.get(joiner_pub_hex) == bond_amount, (
+                f"Expected joiner bond={bond_amount}, got {bonds_map.get(joiner_pub_hex)}"
+            )
             logging.info("Bond recorded: %s -> %d", joiner_pub_hex[:16], bond_amount)
 
             # ── Block 3: Filler deploy ──

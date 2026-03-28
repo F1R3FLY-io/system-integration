@@ -176,9 +176,9 @@ def test_cross_validator_post_state_agreement(
                 break
             except F1r3flyClientException:
                 time.sleep(3)
-        assert (
-            block is not None
-        ), f"Deploy {deploy_id[:24]}... not included in a block within {find_timeout}s"
+        assert block is not None, (
+            f"Deploy {deploy_id[:24]}... not included in a block within {find_timeout}s"
+        )
         block_hashes.append(block.blockHash)
 
     # Wait for block propagation -- give all blocks time to reach all nodes
@@ -202,9 +202,9 @@ def test_cross_validator_post_state_agreement(
         # Need at least 2 validators to compare
         unique_states = set(post_states.values())
         if len(post_states) >= 2:
-            assert (
-                len(unique_states) == 1
-            ), f"Post-state hash mismatch for block {block_hash[:16]}...: {post_states}"
+            assert len(unique_states) == 1, (
+                f"Post-state hash mismatch for block {block_hash[:16]}...: {post_states}"
+            )
             logging.info(
                 "Block %s: all %d validators agree on post-state %s",
                 block_hash[:16],
