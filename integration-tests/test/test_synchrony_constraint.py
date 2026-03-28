@@ -24,9 +24,12 @@ Bootstrap is not bonded (ceremony master only) and has zero weight in the
 synchrony calculation.
 
 Synchrony math (all weights among active/bonded validators only):
-    V1 (100): other-stake = 102+98 = 200. Need >= 0.67*200 = 134. V2 alone (102) is not enough; need V2+V3.
-    V2 (102): other-stake = 100+98 = 198. Need >= 0.33*198 = 65.3. V1 alone (100) suffices.
-    V3 (98):  other-stake = 100+102 = 202. Need >= 0.99*202 = 199.98. Need both V1 and V2.
+    V1 (100): other-stake = 200. Need >= 0.67*200 = 134.
+              V2 alone (102) not enough; need V2+V3.
+    V2 (102): other-stake = 198. Need >= 0.33*198 = 65.3.
+              V1 alone (100) suffices.
+    V3 (98):  other-stake = 202. Need >= 0.99*202 = 199.98.
+              Need both V1 and V2.
 """
 
 import logging
@@ -34,7 +37,6 @@ import time
 
 import pytest
 from docker.client import DockerClient
-from f1r3fly.client import F1r3flyClientException
 
 from .common import (
     CommandLineOptions,
@@ -54,7 +56,9 @@ from .rnode import Node
 pytestmark = pytest.mark.xdist_group("custom")
 
 
-def _poll_block_visible(node: Node, block_hash: str, timeout: int = 120, scale: float = 1.0) -> None:
+def _poll_block_visible(
+    node: Node, block_hash: str, timeout: int = 120, scale: float = 1.0
+) -> None:
     """Poll until a block is visible on the given node."""
     scaled_timeout = int(timeout * scale)
     deadline = time.time() + scaled_timeout
@@ -85,7 +89,8 @@ def test_synchrony_constraint(
     ]
 
     with start_custom_shard(
-        docker_client, command_line_options,
+        docker_client,
+        command_line_options,
         bonds=bonds,
         ftt=-1,
         heartbeat=False,

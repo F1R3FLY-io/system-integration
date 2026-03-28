@@ -19,11 +19,11 @@ from .common import (
     TestingContext,
 )
 from .conftest import (
-    assert_containers_running,
+    ALL_CONTAINERS,
     VALIDATOR1_KEY,
     VALIDATOR2_KEY,
     VALIDATOR3_KEY,
-    ALL_CONTAINERS,
+    assert_containers_running,
 )
 from .rnode import Node
 from .wait import (
@@ -55,7 +55,6 @@ def test_fault_tolerance(
     assert_containers_running(docker_client, ALL_CONTAINERS)
 
     context = testing_context
-    validators = [validator1_node, validator2_node, validator3_node]
 
     # Deploy contracts on different validators to stimulate block creation
     # with actual deploys (not just empty heartbeat blocks). Each uses a
@@ -71,19 +70,16 @@ def test_fault_tolerance(
 
     # Query the DAG from validator1
     blocks = validator1_node.get_blocks(50)
-    assert len(blocks) >= 10, (
-        f"Expected at least 10 blocks, got {len(blocks)}"
-    )
+    assert len(blocks) >= 10, f"Expected at least 10 blocks, got {len(blocks)}"
 
     # Verify multi-parent blocks exist. This is critical because our
     # determinism fixes target the multi-parent merge path. If all blocks
     # are single-parent, we're not exercising the fixed code.
-    multi_parent_count = sum(
-        1 for b in blocks if len(b.parentsHashList) > 1
-    )
+    multi_parent_count = sum(1 for b in blocks if len(b.parentsHashList) > 1)
     logging.info(
         "DAG has %d blocks, %d with multiple parents",
-        len(blocks), multi_parent_count,
+        len(blocks),
+        multi_parent_count,
     )
     # With 3 validators heartbeating concurrently, multi-parent blocks
     # should form within the first few rounds.
@@ -199,18 +195,19 @@ def test_cross_validator_post_state_agreement(
             except Exception:
                 logging.warning(
                     "Block %s not found on %s",
-                    block_hash[:16], node.name,
+                    block_hash[:16],
+                    node.name,
                 )
 
         # Need at least 2 validators to compare
         unique_states = set(post_states.values())
         if len(post_states) >= 2:
             assert len(unique_states) == 1, (
-                f"Post-state hash mismatch for block {block_hash[:16]}...: "
-                f"{post_states}"
+                f"Post-state hash mismatch for block {block_hash[:16]}...: {post_states}"
             )
             logging.info(
                 "Block %s: all %d validators agree on post-state %s",
-                block_hash[:16], len(post_states),
+                block_hash[:16],
+                len(post_states),
                 list(unique_states)[0][:16] if unique_states else "?",
             )

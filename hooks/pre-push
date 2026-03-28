@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+#
+# pre-push hook - Run lint and unit tests before pushing
+#
+# Runs ruff (lint + format) and fast unit tests (test_internal.py) before allowing push.
+# Integration tests (Docker-based) are NOT run here -- they require a running
+# shard and take 10-30+ minutes. Use `poetry run shardctl test` for those.
+#
+# To bypass (use sparingly): git push --no-verify
+#
+# Installation (run from repo root):
+#   ./scripts/setup-hooks.sh              # Recommended: uses git core.hooksPath
+#   ./scripts/setup-hooks.sh --copy       # Alternative: copies to .git/hooks/
+#
+# Environment variables:
+#   SKIP_LINT=1          - Skip all lint checks (ruff lint + format)
+#   SKIP_RUFF=1          - Skip ruff linting only
+#   SKIP_FORMAT=1        - Skip ruff formatting check only (legacy: SKIP_BLACK)
+#   SKIP_TESTS=1         - Skip pytest unit tests
+#   VERBOSE=1            - Show all test output (not just failures)
+#   QUICK=1              - Skip tests, lint only
+#   TEST_TIMEOUT=120     - Per-test timeout in seconds (default: 120)
+#
+# CI environment detection:
+#   Automatically skips in CI environments (CI, GITHUB_ACTIONS)
+#   since tests run separately in the pipeline.
+#
+
+set -euo pipefail
+
+# Diagnostic: trace hook exit to stderr so silent failures are visible.
+_hook_t0=$(date +%s)
+trap 'rc=$?; echo "[pre-push hook: exit $rc after $(($(date +%s) - _hook_t0))s]" >&2' EXIT
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Get the repository root
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Configuration from environment
+SKIP_LINT="${SKIP_LINT:-0}"
+SKIP_RUFF="${SKIP_RUFF:-0}"
+SKIP_FORMAT="${SKIP_FORMAT:-${SKIP_BLACK:-0}}"
+SKIP_TESTS="${SKIP_TESTS:-0}"
+VERBOSE="${VERBOSE:-0}"
+QUICK="${QUICK:-0}"
+TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
+
+# Skip in CI environments (tests run separately in pipeline)
+if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "Skipping pre-push hooks in CI environment"
+    exit 0
+fi
+
+# Guard against racing pushes: verify HEAD isn't already on the remote.
+# When two pushes overlap, the local tracking ref may be stale, causing
+# tests to run unnecessarily before the push is rejected by the remote.
+_qc_local_head=$(git rev-parse HEAD)
+_qc_remote_head=$(git ls-remote origin "$(git symbolic-ref HEAD)" 2>/dev/null | awk '{print $1}')
+if [ -n "$_qc_remote_head" ] && [ "$_qc_local_head" = "$_qc_remote_head" ]; then
+    echo "Already up to date with remote. Skipping pre-push checks."
+    exit 0
+fi
+
+# Check if there are actually new commits to push
+# Git sends push info on stdin: <local ref> <local oid> <remote ref> <remote oid>
+has_new_commits=0
+push_info=""
+while IFS=' ' read -r local_ref local_oid remote_ref remote_oid; do
+    push_info+="$local_ref $local_oid $remote_ref $remote_oid"$'\n'
+    zero="0000000000000000000000000000000000000000"
+    if [ "$local_oid" != "$remote_oid" ] && [ "$local_oid" != "$zero" ]; then
+        has_new_commits=1
+    fi
+done
+if [ -z "$push_info" ] || [ "$has_new_commits" -eq 0 ]; then
+    echo -e "${CYAN}No new commits to push. Skipping tests.${NC}"
+    exit 0
+fi
+
+# Unset git environment variables that leak from hook context into test scripts.
+unset GIT_DIR GIT_WORK_TREE 2>/dev/null || true
+
+# Temp directory for test results
+RESULTS_DIR="$(mktemp -d)"
+trap 'rc=$?; rm -rf "$RESULTS_DIR"; echo "[pre-push hook: exit $rc after $(($(date +%s) - _hook_t0))s]" >&2' EXIT
+
+# Save original stdout as fd 3 so background subshells can print progress
+exec 3>&1
+
+echo ""
+echo -e "${CYAN}Running pre-push checks...${NC}"
+echo "================================"
+
+# --- Lint checks (background) ---
+(
+    total=0; passed=0; failed=0; skipped=0; has_failure=0
+    if [[ "$SKIP_LINT" == "1" ]]; then
+        echo -e "  ${CYAN}[lint]${NC} ${YELLOW}SKIP${NC} (SKIP_LINT=1)" >&3
+        echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/lint.counts"
+        exit 0
+    fi
+
+    # Resolve ruff command once for both lint and format
+    if command -v poetry &> /dev/null && poetry run ruff --version &> /dev/null 2>&1; then
+        ruff_cmd="poetry run ruff"
+    elif command -v ruff &> /dev/null; then
+        ruff_cmd="ruff"
+    else
+        ruff_cmd=""
+    fi
+
+    # Ruff lint
+    if [[ "$SKIP_RUFF" == "1" ]]; then
+        echo -e "  ${CYAN}[lint]${NC}  ruff ${YELLOW}SKIP${NC} (SKIP_RUFF=1)" >&3
+    else
+        total=$((total + 1))
+        if [[ -n "$ruff_cmd" ]]; then
+            ruff_out="$RESULTS_DIR/ruff.out"
+            if $ruff_cmd check "$REPO_ROOT/shardctl" "$REPO_ROOT/integration-tests/test" > "$ruff_out" 2>&1; then
+                echo -e "  ${CYAN}[lint]${NC}  ruff ${GREEN}PASS${NC}" >&3
+                passed=$((passed + 1))
+            else
+                echo -e "  ${CYAN}[lint]${NC}  ruff ${RED}FAIL${NC}" >&3
+                failed=$((failed + 1))
+                has_failure=1
+                {
+                    echo ""
+                    echo -e "${RED}FAIL${NC}: ruff"
+                    echo "--- Output ---"
+                    cat "$ruff_out"
+                    echo "--------------"
+                } >> "$RESULTS_DIR/lint-failures.out"
+            fi
+            rm -f "$ruff_out"
+        else
+            echo -e "  ${CYAN}[lint]${NC}  ruff ${YELLOW}SKIP${NC} (not available)" >&3
+            skipped=$((skipped + 1))
+        fi
+    fi
+
+    # Ruff format check
+    if [[ "$SKIP_FORMAT" == "1" ]]; then
+        echo -e "  ${CYAN}[lint]${NC}  format ${YELLOW}SKIP${NC} (SKIP_FORMAT=1)" >&3
+    else
+        total=$((total + 1))
+        if [[ -n "$ruff_cmd" ]]; then
+            fmt_out="$RESULTS_DIR/ruff-fmt.out"
+            if $ruff_cmd format --check "$REPO_ROOT/shardctl" "$REPO_ROOT/integration-tests/test" > "$fmt_out" 2>&1; then
+                echo -e "  ${CYAN}[lint]${NC}  format ${GREEN}PASS${NC}" >&3
+                passed=$((passed + 1))
+            else
+                echo -e "  ${CYAN}[lint]${NC}  format ${RED}FAIL${NC}" >&3
+                failed=$((failed + 1))
+                has_failure=1
+                {
+                    echo ""
+                    echo -e "${RED}FAIL${NC}: ruff format"
+                    echo "--- Output ---"
+                    cat "$fmt_out"
+                    echo "--------------"
+                } >> "$RESULTS_DIR/lint-failures.out"
+            fi
+            rm -f "$fmt_out"
+        else
+            echo -e "  ${CYAN}[lint]${NC}  format ${YELLOW}SKIP${NC} (ruff not available)" >&3
+            skipped=$((skipped + 1))
+        fi
+    fi
+
+    echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/lint.counts"
+) &
+pid_lint=$!
+
+# --- Unit tests (background) ---
+(
+    total=0; passed=0; failed=0; skipped=0; has_failure=0
+    if [[ "$SKIP_TESTS" == "1" || "$QUICK" == "1" ]]; then
+        echo -e "  ${CYAN}[test]${NC} ${YELLOW}SKIP${NC} (SKIP_TESTS=1 or QUICK=1)" >&3
+        echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/test.counts"
+        exit 0
+    fi
+
+    pytest_cmd=""
+    if command -v poetry &> /dev/null && poetry run pytest --version &> /dev/null 2>&1; then
+        pytest_cmd="poetry run pytest"
+    elif command -v pytest &> /dev/null; then
+        pytest_cmd="pytest"
+    fi
+
+    if [[ -z "$pytest_cmd" ]]; then
+        echo -e "  ${CYAN}[test]${NC} ${YELLOW}SKIP${NC} (pytest not available)" >&3
+        echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/test.counts"
+        exit 0
+    fi
+
+    # Run test_internal.py - pure Python unit tests, no Docker needed
+    total=$((total + 1))
+    test_out="$RESULTS_DIR/test-internal.out"
+    if timeout "$TEST_TIMEOUT" $pytest_cmd "$REPO_ROOT/integration-tests/test/test_internal.py" -q --no-header --timeout=30 > "$test_out" 2>&1; then
+        echo -e "  ${CYAN}[test]${NC} test_internal ${GREEN}PASS${NC}" >&3
+        passed=$((passed + 1))
+    else
+        rc=$?
+        # Detect missing integration dependencies (f1r3fly, docker, etc.)
+        # pytest exit codes: 2=interrupted, 3=internal error, 4=usage error, 5=no tests
+        # Import errors during conftest loading can produce exit codes 2, 4, or 5
+        is_import_error=0
+        if grep -qE "ModuleNotFoundError|ImportError" "$test_out" 2>/dev/null; then
+            is_import_error=1
+        elif [[ $rc -eq 5 ]]; then
+            is_import_error=1  # no tests collected
+        fi
+
+        if [[ $is_import_error -eq 1 ]]; then
+            echo -e "  ${CYAN}[test]${NC} test_internal ${YELLOW}SKIP${NC} (missing integration deps)" >&3
+            skipped=$((skipped + 1))
+            total=$((total - 1))  # don't count as failure
+        elif [[ $rc -eq 124 ]]; then
+            echo -e "  ${CYAN}[test]${NC} test_internal ${RED}TIMEOUT${NC} (${TEST_TIMEOUT}s)" >&3
+            failed=$((failed + 1))
+            has_failure=1
+            {
+                echo ""
+                echo -e "${RED}FAIL${NC}: test_internal"
+                echo "--- Output ---"
+                cat "$test_out"
+                echo "--------------"
+            } >> "$RESULTS_DIR/test-failures.out"
+        else
+            echo -e "  ${CYAN}[test]${NC} test_internal ${RED}FAIL${NC}" >&3
+            failed=$((failed + 1))
+            has_failure=1
+            {
+                echo ""
+                echo -e "${RED}FAIL${NC}: test_internal"
+                echo "--- Output ---"
+                cat "$test_out"
+                echo "--------------"
+            } >> "$RESULTS_DIR/test-failures.out"
+        fi
+    fi
+    rm -f "$test_out"
+
+    echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/test.counts"
+) &
+pid_test=$!
+
+# Wait for all check suites to finish
+wait "$pid_lint" "$pid_test" 2>/dev/null || true
+
+# Close the saved fd
+exec 3>&-
+
+# Show failure details and aggregate results
+TESTS_TOTAL=0; TESTS_PASSED=0; TESTS_FAILED=0; TESTS_SKIPPED=0; FAILED=0
+for suite in lint test; do
+    # Show failure details if any
+    if [[ -f "$RESULTS_DIR/${suite}-failures.out" ]]; then
+        echo ""
+        echo -e "${CYAN}${suite^} Failure Details:${NC}"
+        cat "$RESULTS_DIR/${suite}-failures.out"
+    fi
+    if [[ -f "$RESULTS_DIR/$suite.counts" ]]; then
+        read -r t p f s fail < "$RESULTS_DIR/$suite.counts"
+        TESTS_TOTAL=$((TESTS_TOTAL + t))
+        TESTS_PASSED=$((TESTS_PASSED + p))
+        TESTS_FAILED=$((TESTS_FAILED + f))
+        TESTS_SKIPPED=$((TESTS_SKIPPED + s))
+        if [[ "$fail" == "1" ]]; then FAILED=1; fi
+    fi
+done
+
+# Summary
+echo ""
+echo "================================"
+echo -e "${CYAN}Pre-push Summary${NC}"
+echo "================================"
+echo "Total:   $TESTS_TOTAL"
+echo -e "Passed:  ${GREEN}$TESTS_PASSED${NC}"
+if [[ $TESTS_FAILED -gt 0 ]]; then
+    echo -e "Failed:  ${RED}$TESTS_FAILED${NC}"
+else
+    echo "Failed:  $TESTS_FAILED"
+fi
+if [[ $TESTS_SKIPPED -gt 0 ]]; then
+    echo -e "Skipped: ${YELLOW}$TESTS_SKIPPED${NC}"
+fi
+echo ""
+
+if [[ $FAILED -eq 0 ]]; then
+    echo -e "${GREEN}All checks passed! Proceeding with push.${NC}"
+    exit 0
+else
+    echo -e "${RED}Checks failed! Push aborted.${NC}"
+    echo ""
+    echo "Fix the failing checks and try again."
+    echo "To bypass (not recommended): git push --no-verify"
+    echo ""
+    echo "Options:"
+    echo "  VERBOSE=1 git push       - Show detailed output"
+    echo "  QUICK=1 git push         - Lint only, skip tests"
+    echo "  SKIP_LINT=1 git push     - Skip all lint checks"
+    echo "  SKIP_RUFF=1 git push     - Skip ruff lint only"
+    echo "  SKIP_FORMAT=1 git push   - Skip ruff format only"
+    echo "  SKIP_TESTS=1 git push    - Skip unit tests"
+    echo "  TEST_TIMEOUT=60          - Set per-test timeout (default: 120s)"
+    exit 1
+fi

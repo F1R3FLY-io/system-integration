@@ -13,6 +13,7 @@ from typing import List, Optional, Tuple
 
 import typer
 from rich.console import Console
+from rich.prompt import Confirm, Prompt
 
 from .utils import get_docker_compose_command
 
@@ -111,7 +112,9 @@ class NodeConfig:
         )
         lines = result.stdout.strip().split("\n") if result.stdout.strip() else []
 
-        if include_stopped and not any(l.split("\t")[0].startswith("rnode.") for l in lines if l):
+        if include_stopped and not any(
+            line.split("\t")[0].startswith("rnode.") for line in lines if line
+        ):
             result = subprocess.run(
                 ["docker", "ps", "-a", "--format", fmt],
                 capture_output=True,
@@ -276,12 +279,14 @@ def run_compose_command(
 ) -> subprocess.CompletedProcess:
     """Run a docker-compose command with the node env file."""
     cmd = get_docker_compose_command()  # Dynamic version detection
-    cmd.extend([
-        "--env-file",
-        str(config.env_file),
-        "-f",
-        str(compose_file),
-    ])
+    cmd.extend(
+        [
+            "--env-file",
+            str(config.env_file),
+            "-f",
+            str(compose_file),
+        ]
+    )
     cmd.extend(args)
 
     console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
@@ -290,7 +295,6 @@ def run_compose_command(
         return subprocess.run(cmd, capture_output=True, text=True, cwd=config.root_dir)
     else:
         return subprocess.run(cmd, cwd=config.root_dir)
-
 
 
 def up(
@@ -312,15 +316,9 @@ def up(
     shard: bool = typer.Option(False, "--shard", help="Shard topology"),
     observer: bool = typer.Option(False, "--observer", help="Observer topology"),
     validator4: bool = typer.Option(False, "--validator4", help="Validator4 topology"),
-    default: bool = typer.Option(
-        False, "--default", help="Use defaults (scala + shard)"
-    ),
-    interactive: bool = typer.Option(
-        False, "--interactive", "-i", help="Interactive selection"
-    ),
-    build: bool = typer.Option(
-        False, "--build", "-b", help="Build images before starting"
-    ),
+    default: bool = typer.Option(False, "--default", help="Use defaults (scala + shard)"),
+    interactive: bool = typer.Option(False, "--interactive", "-i", help="Interactive selection"),
+    build: bool = typer.Option(False, "--build", "-b", help="Build images before starting"),
 ):
     """Start F1R3FLY node containers."""
     config = NodeConfig()
@@ -384,9 +382,7 @@ def up(
         raise typer.Exit(1)
 
     console.print()
-    console.print(
-        f"[green]Starting {node_type.value} {topology.value} node...[/green]"
-    )
+    console.print(f"[green]Starting {node_type.value} {topology.value} node...[/green]")
     console.print(f"Using: [blue]{compose_file}[/blue]")
     console.print()
 
@@ -409,7 +405,6 @@ def up(
         raise typer.Exit(result.returncode)
 
 
-
 def down():
     """Stop all F1R3FLY node containers."""
     config = NodeConfig()
@@ -422,7 +417,8 @@ def down():
     all_ok = True
     for node_type, topology, compose_file in all_configs:
         console.print(
-            f"[yellow]Stopping {node_type.value} {topology.value} using {compose_file.name}...[/yellow]"
+            f"[yellow]Stopping {node_type.value} {topology.value}"
+            f" using {compose_file.name}...[/yellow]"
         )
         result = run_compose_command(config, compose_file, ["down"])
         if result.returncode != 0:
@@ -432,17 +428,10 @@ def down():
         console.print("[green]All containers stopped successfully![/green]")
 
 
-
 def logs(
-    services: Optional[List[str]] = typer.Argument(
-        None, help="Services to show logs for"
-    ),
-    follow: bool = typer.Option(
-        True, "--follow/--no-follow", "-f", help="Follow log output"
-    ),
-    tail: Optional[int] = typer.Option(
-        None, "--tail", "-n", help="Number of lines to show"
-    ),
+    services: Optional[List[str]] = typer.Argument(None, help="Services to show logs for"),
+    follow: bool = typer.Option(True, "--follow/--no-follow", "-f", help="Follow log output"),
+    tail: Optional[int] = typer.Option(None, "--tail", "-n", help="Number of lines to show"),
 ):
     """View F1R3FLY node logs.
 
@@ -474,7 +463,6 @@ def logs(
     subprocess.run(cmd, cwd=config.root_dir)
 
 
-
 def status():
     """Show F1R3FLY node container status."""
     config = NodeConfig()
@@ -485,17 +473,16 @@ def status():
         return
 
     for node_type, topology, compose_file in all_configs:
-        console.print(f"[blue]Configuration: {node_type.value} {topology.value} ({compose_file.name})[/blue]")
+        console.print(
+            f"[blue]Configuration: {node_type.value} {topology.value} ({compose_file.name})[/blue]"
+        )
         console.print()
         run_compose_command(config, compose_file, ["ps"])
         console.print()
 
 
-
 def wait_for_ready(
-    timeout: int = typer.Option(
-        300, "--timeout", "-t", help="Timeout in seconds (default: 300)"
-    ),
+    timeout: int = typer.Option(300, "--timeout", "-t", help="Timeout in seconds (default: 300)"),
 ):
     """Wait for all nodes to reach Running state (with timing).
 
@@ -559,8 +546,10 @@ def wait_for_ready(
 
         if elapsed_total >= timeout:
             console.print()
-            console.print(f"[red]Timeout after {timeout}s: not all nodes ready "
-                         f"({len(ready_services)}/{total_nodes})[/red]")
+            console.print(
+                f"[red]Timeout after {timeout}s: not all nodes ready "
+                f"({len(ready_services)}/{total_nodes})[/red]"
+            )
             raise typer.Exit(1)
 
         for service, container in service_containers.items():
@@ -595,11 +584,8 @@ def wait_for_ready(
         console.print(f"[green]All {total_nodes} node(s) ready![/green]")
 
 
-
 def reset(
-    yes: bool = typer.Option(
-        False, "--yes", "-y", help="Skip confirmation prompt"
-    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
 ):
     """Stop containers and remove blockchain data volumes."""
     config = NodeConfig()
@@ -612,7 +598,8 @@ def reset(
     if not yes:
         console.print()
         console.print(
-            "[red]This will stop all containers and permanently delete all blockchain data volumes[/red]"
+            "[red]This will stop all containers and permanently"
+            " delete all blockchain data volumes[/red]"
         )
         if not Confirm.ask("Are you sure?"):
             console.print("[yellow]Cancelled[/yellow]")
@@ -627,7 +614,6 @@ def reset(
     console.print("[green]Containers stopped and data volumes removed[/green]")
 
 
-
 def pull(node_type: Optional[NodeType] = None):
     """Pull latest node images.
 
@@ -639,7 +625,7 @@ def pull(node_type: Optional[NodeType] = None):
     if node_type is None or node_type == NodeType.SCALA:
         images_to_pull.append(("Scala", "f1r3flyindustries/f1r3fly-scala-node:latest"))
     if node_type is None or node_type == NodeType.RUST:
-        images_to_pull.append(("Rust", "f1r3flyindustries/f1r3fly-rust-node:latest"))
+        images_to_pull.append(("Rust", "f1r3flyindustries/f1r3node-rust:latest"))
 
     label = images_to_pull[0][0] if len(images_to_pull) == 1 else "all"
     console.print(f"[blue]Pulling latest {label} node image(s)...[/blue]")
@@ -661,7 +647,6 @@ def pull(node_type: Optional[NodeType] = None):
     for line in result.stdout.split("\n"):
         if "f1r3fly" in line.lower() and "node" in line.lower():
             console.print(line)
-
 
 
 def info():

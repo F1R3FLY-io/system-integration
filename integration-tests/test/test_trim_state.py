@@ -36,16 +36,17 @@ from .conftest import (
     VALIDATOR1_ID,
     VALIDATOR1_KEY,
     VALIDATOR2_ID,
-    VALIDATOR3_ID,
-    start_custom_shard,
     add_peer_to_shard,
+    start_custom_shard,
 )
 from .rnode import Node
 
 pytestmark = pytest.mark.xdist_group("custom")
 
 
-def _poll_block_visible(node: Node, block_hash: str, timeout: int = 180, scale: float = 1.0) -> None:
+def _poll_block_visible(
+    node: Node, block_hash: str, timeout: int = 180, scale: float = 1.0
+) -> None:
     """Poll until a block is visible on the given node."""
     scaled_timeout = int(timeout * scale)
     deadline = time.time() + scaled_timeout
@@ -67,7 +68,7 @@ _CONTRACTS = [
     '@"trim-test-c"!(3)',
     'new ch in { ch!(42) | for(@v <- ch) { @"result"!(v) } }',
     '@"trim-test-d"!(4)',
-    'new x in { x!(100) }',
+    "new x in { x!(100) }",
     '@"trim-test-e"!(5)',
     '@"trim-test-f"!(6)',
     '@"trim-test-g"!(7)',
@@ -91,7 +92,8 @@ def test_trim_state(
     ]
 
     with start_custom_shard(
-        docker_client, command_line_options,
+        docker_client,
+        command_line_options,
         bonds=bonds,
         ftt=-1,
         heartbeat=False,
@@ -108,12 +110,16 @@ def test_trim_state(
         latest_block_hash = None
         for i, contract in enumerate(_CONTRACTS):
             v1.deploy_string(
-                contract, VALIDATOR1_KEY,
-                phlo_limit=100_000_000, phlo_price=1,
+                contract,
+                VALIDATOR1_KEY,
+                phlo_limit=100_000_000,
+                phlo_price=1,
             )
             latest_block_hash = v1.propose()
             logging.info(
-                "Block %d: %s", i + 1, latest_block_hash[:16],
+                "Block %d: %s",
+                i + 1,
+                latest_block_hash[:16],
             )
 
         assert latest_block_hash is not None
@@ -122,9 +128,7 @@ def test_trim_state(
         lfb = v1.last_finalized_block()
         lfb_number = lfb.blockInfo.blockNumber
         logging.info("V1 LFB after phase 1: block #%d", lfb_number)
-        assert lfb_number > 0, (
-            f"Expected LFB > 0 with FTT=-1, got #{lfb_number}"
-        )
+        assert lfb_number > 0, f"Expected LFB > 0 with FTT=-1, got #{lfb_number}"
 
         # ── Phase 2: Add joiner and verify it syncs ──
         # Use VALIDATOR2_ID (which IS in genesis bonds) as the joiner identity.
@@ -132,8 +136,10 @@ def test_trim_state(
         # without needing to replay from genesis -- this tests real-world usage.
         logging.info("Phase 2: Adding joiner (V2) to the shard")
         with add_peer_to_shard(
-            docker_client, command_line_options,
-            shard, VALIDATOR2_ID,
+            docker_client,
+            command_line_options,
+            shard,
+            VALIDATOR2_ID,
             cli_options={
                 "--synchrony-constraint-threshold": "0",
                 "--fault-tolerance-threshold": "-1",
@@ -142,7 +148,8 @@ def test_trim_state(
             # The joiner should sync from LFS and see the latest block
             _poll_block_visible(joiner, latest_block_hash, timeout=240, scale=scale)
             logging.info(
-                "Joiner sees latest block %s", latest_block_hash[:16],
+                "Joiner sees latest block %s",
+                latest_block_hash[:16],
             )
 
             # ── Phase 3: Continue producing blocks and verify joiner keeps up ──
@@ -151,7 +158,8 @@ def test_trim_state(
                 v1.deploy_string(
                     f'@"post-join-{i}"!({i})',
                     VALIDATOR1_KEY,
-                    phlo_limit=100_000_000, phlo_price=1,
+                    phlo_limit=100_000_000,
+                    phlo_price=1,
                 )
                 block_hash = v1.propose()
                 logging.info("Post-join block %d: %s", i + 1, block_hash[:16])
@@ -183,16 +191,13 @@ def test_trim_state(
                 v1_state = latest_v1_block.postStateHash
                 joiner_state = joiner_view.blockInfo.postStateHash
                 assert v1_state == joiner_state, (
-                    f"Post-state mismatch: V1={v1_state[:16]}... "
-                    f"joiner={joiner_state[:16]}..."
+                    f"Post-state mismatch: V1={v1_state[:16]}... joiner={joiner_state[:16]}..."
                 )
                 logging.info(
                     "Post-state agreement confirmed: %s",
                     v1_state[:16],
                 )
             except Exception:
-                logging.warning(
-                    "Could not verify post-state agreement for latest block"
-                )
+                logging.warning("Could not verify post-state agreement for latest block")
 
             logging.info("Trim state test passed -- joiner synced from LFS")

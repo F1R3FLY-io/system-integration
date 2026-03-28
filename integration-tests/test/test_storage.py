@@ -23,10 +23,10 @@ from .common import (
     random_string,
 )
 from .conftest import (
-    assert_containers_running,
+    ALL_CONTAINERS,
     VALIDATOR1_KEY,
     VALIDATOR2_KEY,
-    ALL_CONTAINERS,
+    assert_containers_running,
 )
 from .rnode import Node
 from .wait import wait_for_log_match
@@ -34,22 +34,18 @@ from .wait import wait_for_log_match
 pytestmark = pytest.mark.xdist_group("shard")
 
 
-STORE_DATA_CONTRACT = os.path.join('resources', 'storage', 'store-data.rho')
-READ_DATA_CONTRACT = os.path.join('resources', 'storage', 'read-data.rho')
+STORE_DATA_CONTRACT = os.path.join("resources", "storage", "store-data.rho")
+READ_DATA_CONTRACT = os.path.join("resources", "storage", "read-data.rho")
 
 
 def _store_pattern_for(data: str) -> re.Pattern:
     """Build a store regex specific to the given data string."""
-    return re.compile(
-        rf'"Store data {re.escape(data)} in rho:id:(?P<id_address>[a-zA-Z0-9]+)"'
-    )
+    return re.compile(rf'"Store data {re.escape(data)} in rho:id:(?P<id_address>[a-zA-Z0-9]+)"')
 
 
 def _read_pattern_for(id_address: str) -> re.Pattern:
     """Build a read regex specific to the given registry ID."""
-    return re.compile(
-        rf'"Read data (?P<data>[a-zA-Z]+) from {re.escape(id_address)}"'
-    )
+    return re.compile(rf'"Read data (?P<data>[a-zA-Z]+) from {re.escape(id_address)}"')
 
 
 def test_data_is_stored_and_served_by_node(
@@ -75,7 +71,7 @@ def test_data_is_stored_and_served_by_node(
 
     # Deploy store contract -- heartbeat will auto-propose
     node.deploy_contract_with_substitution(
-        {'@store_data@': random_data},
+        {"@store_data@": random_data},
         STORE_DATA_CONTRACT,
         VALIDATOR1_KEY,
     )
@@ -86,12 +82,12 @@ def test_data_is_stored_and_served_by_node(
     store_match = store_pattern.search(node.logs())
     assert store_match is not None, "Store pattern should match after wait_for_log_match"
 
-    id_address = store_match.group('id_address')
+    id_address = store_match.group("id_address")
     read_pattern = _read_pattern_for(id_address)
 
     # Deploy read contract with the registry ID -- heartbeat will auto-propose
     node.deploy_contract_with_substitution(
-        {'@id_address@': id_address},
+        {"@id_address@": id_address},
         READ_DATA_CONTRACT,
         VALIDATOR1_KEY,
     )
@@ -102,7 +98,7 @@ def test_data_is_stored_and_served_by_node(
     read_match = read_pattern.search(node.logs())
     assert read_match is not None, "Read pattern should match after wait_for_log_match"
 
-    read_data = read_match.group('data')
+    read_data = read_match.group("data")
     assert read_data == random_data, (
         f"Read data '{read_data}' should match stored data '{random_data}'"
     )
@@ -138,7 +134,7 @@ def test_data_stored_on_one_validator_served_by_another(
 
     # Store on validator1
     store_deploy_id = validator1_node.deploy_contract_with_substitution(
-        {'@store_data@': random_data},
+        {"@store_data@": random_data},
         STORE_DATA_CONTRACT,
         VALIDATOR1_KEY,
     )
@@ -147,7 +143,7 @@ def test_data_stored_on_one_validator_served_by_another(
 
     store_match = store_pattern.search(validator1_node.logs())
     assert store_match is not None
-    id_address = store_match.group('id_address')
+    id_address = store_match.group("id_address")
 
     # Get the block number that included the store deploy. The read deploy
     # must set validAfterBlockNumber to this value so it is only included
@@ -192,7 +188,8 @@ def test_data_stored_on_one_validator_served_by_another(
         if lfb_number >= store_block_number:
             logging.info(
                 "LFB #%d >= store block #%d on validator2 -- finalization caught up",
-                lfb_number, store_block_number,
+                lfb_number,
+                store_block_number,
             )
             break
         time.sleep(5)
@@ -209,7 +206,7 @@ def test_data_stored_on_one_validator_served_by_another(
     # Combined with the finalization wait above, this ensures the read deploy
     # executes in a block whose merge base includes the store's registry state.
     validator2_node.deploy_contract_with_substitution(
-        {'@id_address@': id_address},
+        {"@id_address@": id_address},
         READ_DATA_CONTRACT,
         VALIDATOR2_KEY,
         valid_after_block_no=store_block_number,
@@ -220,7 +217,7 @@ def test_data_stored_on_one_validator_served_by_another(
 
     read_match = read_pattern.search(validator2_node.logs())
     assert read_match is not None
-    read_data = read_match.group('data')
+    read_data = read_match.group("data")
 
     assert read_data == random_data, (
         f"Data read on validator2 '{read_data}' should match data stored on "
