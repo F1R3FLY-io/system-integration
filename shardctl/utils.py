@@ -19,52 +19,42 @@ _docker_compose_command_cache = None
 
 def get_docker_compose_command():
     """
-    Detect Docker version and return appropriate compose command.
+    Detect available compose command.
 
+    Tries "docker compose" (v2 plugin) first, falls back to "docker-compose" (standalone).
     The result is cached after the first detection to avoid repeated subprocess calls.
 
     Returns:
-        list: ["docker", "compose"] for Docker >= 29, ["docker-compose"] for older versions
+        list: ["docker", "compose"] or ["docker-compose"]
     """
     global _docker_compose_command_cache
 
-    # Return cached value if available
+    # Return a copy of cached value to prevent callers from mutating it
     if _docker_compose_command_cache is not None:
-        return _docker_compose_command_cache
+        return list(_docker_compose_command_cache)
 
-    import re
-
+    # Try "docker compose" (v2 plugin, available since Docker ~20.10)
     try:
-        # Get Docker version
-        result = subprocess.run(["docker", "--version"], capture_output=True, text=True, check=True)
+        subprocess.run(["docker", "compose", "version"], capture_output=True, check=True)
+        _docker_compose_command_cache = ["docker", "compose"]
+        return list(_docker_compose_command_cache)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
 
-        # Parse version from output like "Docker version 24.0.7, build afdd53b"
-        version_match = re.search(r"Docker version (\d+)\.", result.stdout)
-        if version_match:
-            major_version = int(version_match.group(1))
-
-            # Docker 29+ uses "docker compose", older uses "docker-compose"
-            if major_version >= 29:
-                _docker_compose_command_cache = ["docker", "compose"]
-            else:
-                _docker_compose_command_cache = ["docker-compose"]
-        else:
-            # Fallback to docker-compose if version parsing fails
-            console.print(
-                "[yellow]Warning: Could not parse Docker version, using docker-compose[/yellow]",
-                style="dim",
-            )
-            _docker_compose_command_cache = ["docker-compose"]
-
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        # Fallback to docker-compose if docker command fails
-        console.print(
-            f"[yellow]Warning: Could not detect Docker version ({e}), using docker-compose[/yellow]",
-            style="dim",
-        )
+    # Fall back to "docker-compose" (standalone binary)
+    try:
+        subprocess.run(["docker-compose", "version"], capture_output=True, check=True)
         _docker_compose_command_cache = ["docker-compose"]
+        return list(_docker_compose_command_cache)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
 
-    return _docker_compose_command_cache
+    # Neither found — default to "docker compose" and let it fail with a clear error
+    console.print(
+        "[yellow]Warning: Neither 'docker compose' nor 'docker-compose' found[/yellow]", style="dim"
+    )
+    _docker_compose_command_cache = ["docker", "compose"]
+    return list(_docker_compose_command_cache)
 
 
 def clone_services(service_repos: Dict[str, Dict], services_dir: Path, force: bool = False) -> None:
@@ -131,7 +121,7 @@ def clone_services(service_repos: Dict[str, Dict], services_dir: Path, force: bo
                     clone_cmd.extend(["-b", branch])
                 clone_cmd.extend([repo_url, str(service_path)])
 
-                result = subprocess.run(clone_cmd, capture_output=True, text=True, check=True)
+                subprocess.run(clone_cmd, capture_output=True, text=True, check=True)
                 progress.update(task, completed=True)
 
                 success_msg = f"[green]✓[/green] Cloned {service_name}"
@@ -152,9 +142,7 @@ def check_docker_compose_installed() -> bool:
         True if docker-compose is available, False otherwise.
     """
     try:
-        result = subprocess.run(
-            ["docker", "compose", "version"], capture_output=True, text=True, check=True
-        )
+        subprocess.run(["docker", "compose", "version"], capture_output=True, text=True, check=True)
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
@@ -167,7 +155,7 @@ def check_git_installed() -> bool:
         True if git is available, False otherwise.
     """
     try:
-        result = subprocess.run(["git", "--version"], capture_output=True, text=True, check=True)
+        subprocess.run(["git", "--version"], capture_output=True, text=True, check=True)
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
@@ -318,7 +306,8 @@ def build_service(
     node18_prefix = ""
     #        'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"; '
     #        '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '
-    #        'if command -v nvm >/dev/null 2>&1; then nvm install 18 >/dev/null && nvm use 18 >/dev/null; fi; '
+    #        'if command -v nvm >/dev/null 2>&1; then '
+    #        'nvm install 18 >/dev/null && nvm use 18 >/dev/null; fi; '
     #        'corepack enable >/dev/null 2>&1; '
     #    )
 
@@ -340,7 +329,11 @@ def build_service(
 
             if use_nix:
                 # Run the command directly in nix develop environment
-                step_cmd = f'nix --extra-experimental-features nix-command --extra-experimental-features flakes develop --command bash -c "{step_core}"'
+                step_cmd = (
+                    f"nix --extra-experimental-features nix-command"
+                    f" --extra-experimental-features flakes"
+                    f' develop --command bash -c "{step_core}"'
+                )
             else:
                 step_cmd = step_core
 
@@ -398,7 +391,11 @@ def build_service(
         build_command = node18_prefix + build_command
 
     if use_nix:
-        build_command = f'nix --extra-experimental-features nix-command --extra-experimental-features flakes develop --command bash -c "{build_command}"'
+        build_command = (
+            f"nix --extra-experimental-features nix-command"
+            f" --extra-experimental-features flakes"
+            f' develop --command bash -c "{build_command}"'
+        )
 
     # Run the build command
     console.print(f"[dim]$ {build_command}[/dim]")
@@ -574,9 +571,11 @@ def clean_services(
     """Remove service directories from services/ folder.
 
     Args:
-        services_to_clean: List of specific services to clean. If None or empty, cleans based on all_services flag.
+        services_to_clean: List of specific services to clean. If None
+            or empty, cleans based on all_services flag.
         services_dir: Path to services directory.
-        all_services: If True (and no services_to_clean specified), remove all services. If False, remove nothing.
+        all_services: If True (and no services_to_clean specified),
+            remove all services. If False, remove nothing.
     """
     import shutil
 

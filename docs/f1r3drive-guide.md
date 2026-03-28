@@ -135,19 +135,18 @@ Once you see "Successfully mounted F1r3DriveFuse", the filesystem is ready.
 
 ## Step 4 — Use the Filesystem
 
-In a new terminal, navigate to the mount point:
+In a new terminal, navigate to the mount point. The root contains REV wallet address directories — you create files and folders **inside** a wallet directory:
 
 ```bash
 cd services/f1r3drive-data/mount/
-```
 
-You can use standard filesystem commands:
-
-```bash
-# List files
+# List wallet directories (populated from the blockchain)
 ls -la
 
-# Create a directory
+# Navigate into your wallet directory
+cd 111127RX5ZgiAdRaQy4AWy57RdvAAckdELReEBxzvWYVvdnR32PiHA/
+
+# Create a directory inside the wallet
 mkdir my-folder
 
 # Write a file
@@ -217,10 +216,11 @@ shardctl wait
 shardctl up f1r3drive
 
 # --- In a second terminal ---
-# 3. Use the filesystem
+# 3. Use the filesystem (write inside a wallet directory, not the root)
 ls services/f1r3drive-data/mount/
-echo "test data" > services/f1r3drive-data/mount/example.txt
-cat services/f1r3drive-data/mount/example.txt
+WALLET=$(ls services/f1r3drive-data/mount/ | head -1)
+echo "test data" > "services/f1r3drive-data/mount/$WALLET/example.txt"
+cat "services/f1r3drive-data/mount/$WALLET/example.txt"
 
 # 4. Stop F1R3Drive (Ctrl+C in the first terminal)
 # 5. Stop the node

@@ -46,7 +46,9 @@ def _resolve_compose_files(config: Config, services: Optional[List[str]]) -> Lis
             if not compose_file.exists():
                 console.print(f"[red]Compose file not found: {compose_file}[/red]")
                 console.print(
-                    f"[dim]Available: {', '.join(f.stem for f in sorted(config.compose_dir.glob('*.yml')))}[/dim]"
+                    "[dim]Available: "
+                    f"{', '.join(f.stem for f in sorted(config.compose_dir.glob('*.yml')))}"
+                    "[/dim]"
                 )
                 raise typer.Exit(1)
             files.append(compose_file)
@@ -79,8 +81,10 @@ def clone(
 ):
     """Clone service repositories with their configured branches.
 
-    By default, only enabled services are cloned. Use --include-disabled to also clone disabled services.
-    Specify service names to clone only specific services (overrides --include-disabled).
+    By default, only enabled services are cloned. Use --include-disabled
+    to also clone disabled services.
+    Specify service names to clone only specific services
+    (overrides --include-disabled).
 
     This command reads repository URLs and branches from services.yml and clones
     them into the services/ directory. Each service becomes an independent git
@@ -115,19 +119,22 @@ def clone(
             if not service_repos:
                 return
     else:
-        # Get service repositories from config (filter by enabled unless --include-disabled is specified)
+        # Get service repositories from config
+        # (filter by enabled unless --include-disabled is specified)
         service_repos = config.get_service_repos(only_enabled=not include_disabled)
 
         if not service_repos:
             if include_disabled:
                 console.print(
                     "[yellow]No service repositories configured.[/yellow]\n"
-                    "[dim]Check your services.yml file. It should have a 'repositories' section.[/dim]"
+                    "[dim]Check your services.yml file. "
+                    "It should have a 'repositories' section.[/dim]"
                 )
             else:
                 console.print(
                     "[yellow]No enabled service repositories found.[/yellow]\n"
-                    "[dim]Use --include-disabled to clone disabled services or check your services.yml file.[/dim]"
+                    "[dim]Use --include-disabled to clone disabled "
+                    "services or check your services.yml file.[/dim]"
                 )
             return
 
@@ -137,7 +144,8 @@ def clone(
     # Clone services
     if services:
         console.print(
-            f"[bold blue]Cloning {len(service_repos)} service(s): {', '.join(service_repos.keys())}...[/bold blue]\n"
+            f"[bold blue]Cloning {len(service_repos)} service(s): "
+            f"{', '.join(service_repos.keys())}...[/bold blue]\n"
         )
     elif include_disabled:
         console.print(
@@ -263,11 +271,27 @@ def down(
                 compose_services.append(svc)
 
         if native_found:
+            import subprocess
+
             for svc in native_found:
-                console.print(
-                    f"[yellow]{svc} is a native service (runs in foreground). "
-                    "Stop it with Ctrl-C in its terminal.[/yellow]"
-                )
+                if svc == "f1r3drive":
+                    console.print(f"[yellow]Attempting to stop native service: {svc}[/yellow]")
+                    try:
+                        # Find and kill the f1r3drive java process
+                        subprocess.run(
+                            ["pkill", "-f", "f1r3drive-app.jar"],
+                            check=True,
+                            stderr=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                        )
+                        console.print(f"[green]✓[/green] Successfully sent kill signal to {svc}")
+                    except subprocess.CalledProcessError:
+                        console.print(f"[dim]No running {svc} process found.[/dim]")
+                else:
+                    console.print(
+                        f"[yellow]{svc} is a native service (runs in foreground). "
+                        "Stop it with Ctrl-C in its terminal.[/yellow]"
+                    )
 
             if not compose_services:
                 return
@@ -446,15 +470,18 @@ def build(
 
         if no_docker:
             console.print(
-                f"[bold blue]Building {len(build_configs)} enabled service(s) from source...[/bold blue]\n"
+                f"[bold blue]Building {len(build_configs)} "
+                "enabled service(s) from source...[/bold blue]\n"
             )
         elif docker_only:
             console.print(
-                f"[bold blue]Building Docker images for {len(build_configs)} enabled service(s)...[/bold blue]\n"
+                "[bold blue]Building Docker images for "
+                f"{len(build_configs)} enabled service(s)...[/bold blue]\n"
             )
         else:
             console.print(
-                f"[bold blue]Building {len(build_configs)} enabled service(s) (source + Docker)...[/bold blue]\n"
+                f"[bold blue]Building {len(build_configs)} "
+                "enabled service(s) (source + Docker)...[/bold blue]\n"
             )
 
         for svc_name, build_config in build_configs.items():
@@ -535,7 +562,8 @@ def build(
                 )
             else:
                 console.print(
-                    f"[dim]No Docker build command configured for {svc_name}, skipping Docker build[/dim]"
+                    "[dim]No Docker build command configured "
+                    f"for {svc_name}, skipping Docker build[/dim]"
                 )
 
         console.print()
@@ -657,7 +685,8 @@ def setup(
 ):
     """Clone service repositories into the services/ directory.
 
-    By default, only enabled services are cloned. Use --include-disabled to also clone disabled services.
+    By default, only enabled services are cloned. Use --include-disabled
+    to also clone disabled services.
 
     This command reads repository URLs from services.yml and clones them
     into the services/ directory. Each service becomes an independent git
@@ -670,26 +699,31 @@ def setup(
         services_config_file = config.root_dir / "services.yml"
         if services_config_file.exists() and not force:
             console.print(
-                f"[yellow]Configuration file already exists at {services_config_file}[/yellow]\n"
+                "[yellow]Configuration file already exists at "
+                f"{services_config_file}[/yellow]\n"
                 "[dim]Use --force to overwrite[/dim]"
             )
         else:
             create_services_config_example(services_config_file)
         return
 
-    # Get service repositories from config (filter by enabled unless --include-disabled is specified)
+    # Get service repositories from config
+    # (filter by enabled unless --include-disabled is specified)
     service_repos = config.get_service_repos(only_enabled=not include_disabled)
 
     if not service_repos:
         if include_disabled:
             console.print(
                 "[yellow]No service repositories configured.[/yellow]\n"
-                "[dim]Run 'shardctl setup --create-config' to create an example configuration.[/dim]"
+                "[dim]Run 'shardctl setup --create-config' to "
+                "create an example configuration.[/dim]"
             )
         else:
             console.print(
                 "[yellow]No enabled service repositories found.[/yellow]\n"
-                "[dim]Use --include-disabled to clone disabled services or run 'shardctl setup --create-config' to create an example configuration.[/dim]"
+                "[dim]Use --include-disabled to clone disabled services "
+                "or run 'shardctl setup --create-config' to create an "
+                "example configuration.[/dim]"
             )
         return
 
@@ -731,7 +765,7 @@ def build_service_cmd(
 ):
     """Build a service using its configured build commands.
 
-    By default, this command builds all ENABLED services (both from source AND creates Docker images).
+    By default, builds all ENABLED services (source + Docker images).
     Use --no-docker to skip Docker image building.
     Use --docker-only to skip source build and only build Docker images.
     Use --sync to fetch and checkout the branch from services.yml before building.
@@ -742,18 +776,18 @@ def build_service_cmd(
     the appropriate build commands for the specified service(s).
 
     Examples:
-        shardctl build-service                              # Build all enabled services (source + Docker)
-        shardctl build-service --no-docker                  # Build all enabled services (source only)
-        shardctl build-service --docker-only                # Build all enabled services (Docker only)
-        shardctl build-service --sync                       # Sync branches from services.yml, then build
-        shardctl build-service --docker-only --sync         # Sync branches, then build Docker only
-        shardctl build-service --include-disabled           # Build all services including disabled (source + Docker)
-        shardctl build-service f1r3node                     # Build only f1r3node (source + Docker)
-        shardctl build-service f1r3node --no-docker         # Build only f1r3node (source only)
-        shardctl build-service f1r3node --docker-only       # Build only f1r3node (Docker only)
-        shardctl build-service f1r3node --sync              # Sync f1r3node branch, then build
-        shardctl build-service --list                       # List enabled services
-        shardctl build-service --list --include-disabled    # List all services (including disabled)
+        shardctl build-service                    # Build all (source + Docker)
+        shardctl build-service --no-docker        # Build all (source only)
+        shardctl build-service --docker-only      # Build all (Docker only)
+        shardctl build-service --sync             # Sync branches, then build
+        shardctl build-service --docker-only --sync  # Sync, Docker only
+        shardctl build-service --include-disabled # Build all incl. disabled
+        shardctl build-service f1r3node           # Build f1r3node
+        shardctl build-service f1r3node --no-docker  # f1r3node source only
+        shardctl build-service f1r3node --docker-only  # f1r3node Docker only
+        shardctl build-service f1r3node --sync    # Sync f1r3node, then build
+        shardctl build-service --list             # List enabled services
+        shardctl build-service --list --include-disabled  # List all
     """
     config = Config()
 
@@ -799,15 +833,20 @@ def build_service_cmd(
 
         if no_docker:
             console.print(
-                f"[bold blue]Building {len(build_configs)} enabled service(s) from source...[/bold blue]\n"
+                f"[bold blue]Building {len(build_configs)}"
+                " enabled service(s) from source...[/bold blue]\n"
             )
         elif docker_only:
             console.print(
-                f"[bold blue]Building Docker images for {len(build_configs)} enabled service(s)...[/bold blue]\n"
+                "[bold blue]Building Docker images for"
+                f" {len(build_configs)} enabled service(s)..."
+                "[/bold blue]\n"
             )
         else:
             console.print(
-                f"[bold blue]Building {len(build_configs)} enabled service(s) (source + Docker)...[/bold blue]\n"
+                f"[bold blue]Building {len(build_configs)}"
+                " enabled service(s) (source + Docker)..."
+                "[/bold blue]\n"
             )
 
         # Get repository configs for branch info if syncing
@@ -869,7 +908,8 @@ def build_service_cmd(
     if not service:
         console.print("[red]Error: SERVICE argument is required[/red]")
         console.print(
-            "[dim]Use --list to see available services; omit SERVICE to build all enabled services[/dim]"
+            "[dim]Use --list to see available services;"
+            " omit SERVICE to build all enabled services[/dim]"
         )
         raise typer.Exit(1)
 
@@ -878,8 +918,10 @@ def build_service_cmd(
 
     if not build_config:
         console.print(
-            f"[red]No build configuration found for service '{service}'[/red]\n"
-            f"[dim]Add build configuration to services.yml or use --list to see available services[/dim]"
+            f"[red]No build configuration found for"
+            f" service '{service}'[/red]\n"
+            "[dim]Add build configuration to services.yml"
+            " or use --list to see available services[/dim]"
         )
         raise typer.Exit(1)
 
@@ -920,7 +962,8 @@ def build_service_cmd(
             console.print(f"[dim]No Docker build command configured for {service}, skipping[/dim]")
         else:
             console.print(
-                f"[dim]No Docker build command configured for {service}, skipping Docker build[/dim]"
+                f"[dim]No Docker build command configured"
+                f" for {service}, skipping Docker build[/dim]"
             )
 
 
@@ -1000,7 +1043,8 @@ def reset_cmd(
     if not yes:
         console.print()
         console.print(
-            "[red]This will stop all containers and permanently delete all blockchain data volumes[/red]"
+            "[red]This will stop all containers and permanently"
+            " delete all blockchain data volumes[/red]"
         )
         if not Confirm.ask("Are you sure?"):
             console.print("[yellow]Cancelled[/yellow]")
@@ -1319,7 +1363,9 @@ def test_report_cmd(
             if longrepr:
                 lines = longrepr.strip().split("\n")
                 # Show last assertion lines (skip traceback)
-                tail_lines = [l for l in lines if l.startswith("E   ") or l.startswith("E\t")]
+                tail_lines = [
+                    line for line in lines if line.startswith("E   ") or line.startswith("E\t")
+                ]
                 if not tail_lines:
                     tail_lines = lines[-3:]
                 msg = "\n".join(tail_lines[:5])

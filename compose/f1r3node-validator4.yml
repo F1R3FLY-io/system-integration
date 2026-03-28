@@ -4,10 +4,10 @@
 # Runs Validator 4 as an additional node to join an existing shard network.
 #
 # Usage:
-#   docker-compose -f f1r3node-validator4.yml up -d
+#   docker compose --env-file ../.env.node -f compose/f1r3node-validator4.yml up -d
 #
 # PREREQUISITES:
-#   - A running shard network (bootstrap + validators)
+#   - A running shard network (bootstrap + validators on f1r3fly network)
 #   - Validator 4 must be bonded before it can participate in consensus
 #
 # See: https://github.com/F1R3FLY-io/rust-client/blob/main/VALIDATOR4_BONDING_GUIDE.md
@@ -20,7 +20,7 @@ services:
     user: root
     restart: always
     networks:
-      - f1r3fly-shard
+      - f1r3fly
     container_name: ${VALIDATOR4_HOST:-rnode.validator4}
     command:
       - -Dlogback.configurationFile=/var/lib/rnode/logback.xml
@@ -39,7 +39,7 @@ services:
       - "40445:40405"
     volumes:
       - validator4-data:/var/lib/rnode
-      - ../conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
@@ -57,6 +57,6 @@ volumes:
   validator4-data:
 
 networks:
-  f1r3fly-shard:
+  f1r3fly:
     external: true
-    name: compose_f1r3fly-shard
+    name: f1r3fly

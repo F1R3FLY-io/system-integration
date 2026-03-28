@@ -118,13 +118,16 @@ class ComposeManager:
                 console.print("\n[red]Error: Container name conflict[/red]")
                 console.print("[yellow]Some containers with the same names already exist.[/yellow]")
                 console.print(
-                    "Try running: [bold]poetry run shardctl down[/bold] first to clean up existing containers."
+                    "Try running: [bold]poetry run shardctl down[/bold]"
+                    " first to clean up existing containers."
                 )
             elif "address already in use" in error_output:
                 console.print("\n[red]Error: Port conflict[/red]")
                 console.print("[yellow]One or more ports are already in use.[/yellow]")
                 console.print(
-                    "Try running: [bold]poetry run shardctl down[/bold] first, or check for other services using the same ports."
+                    "Try running: [bold]poetry run shardctl down[/bold]"
+                    " first, or check for other services"
+                    " using the same ports."
                 )
             elif "no such service" in error_output:
                 console.print("\n[red]Error: Unknown service[/red]")
@@ -137,7 +140,8 @@ class ComposeManager:
                     console.print(f"[yellow]{error_output.strip()}[/yellow]")
                 else:
                     console.print(
-                        "[yellow]No error output captured. Try running the command manually.[/yellow]"
+                        "[yellow]No error output captured."
+                        " Try running the command manually.[/yellow]"
                     )
                     console.print(f"[dim]Command was: {' '.join(cmd)}[/dim]")
             raise SystemExit(1)

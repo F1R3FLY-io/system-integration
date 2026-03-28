@@ -1,7 +1,7 @@
 ---
 doc_type: user_stories
 version: "1.0"
-last_updated: "2026-03-25"
+last_updated: "[DATE]"
 ---
 
 # User Stories
@@ -35,19 +35,7 @@ This document captures user stories that drive feature development. User stories
 
 ## Completed Stories
 
-#### US-001: Deploy Rust Shard via f1r3node-rust
-
-> As a **node operator**, I want **to deploy the Rust-based shard from the f1r3node-rust repository** so that **I have flexibility in choosing shard implementations for my deployment**.
-
-**Implemented in:** EPOCH-001
-
-**Acceptance Criteria:**
-- [x] shardctl can clone the f1r3node-rust repo
-- [x] compose/f1r3node-rust.yml deploys the Rust shard from the f1r3node-rust repo
-- [x] Rust shard connects to the f1r3fly Docker network
-- [x] shardctl status shows Rust shard health
-
-**Completed:** 2026-03-25
+<!-- Add completed user stories here -->
 
 ---
 
@@ -55,7 +43,25 @@ This document captures user stories that drive feature development. User stories
 
 Stories below are candidates for future epochs. Move to "Completed Stories" when implemented.
 
-<!-- Add planned user stories here -->
+#### US-001: Migrate to Rust-Only f1r3node
+
+> As a **developer**, I want **the system-integration tooling to use the standalone f1r3node-rust repository as the sole node implementation** so that **the build system is simpler (no Nix/SBT), maintenance is reduced to one codebase, and the Scala/Rust duality is eliminated from shardctl and compose files**.
+
+**Implemented in:** EPOCH-001
+
+**Acceptance Criteria:**
+- [ ] `services.yml` points to `f1r3node-rust.git` (not `f1r3node.git rust/dev`)
+- [ ] `shardctl up` starts Rust nodes by default without `--rust` flag
+- [ ] `--scala`/`--rust`/`--node-type` flags removed from shardctl CLI
+- [ ] All `compose/f1r3node-rust-*.yml` files removed; `compose/f1r3node*.yml` uses Rust image
+- [ ] Genesis files (wallets.txt, bonds.txt) are identical between repos
+- [ ] Integration tests pass against the Rust node image
+- [ ] Scala-specific files removed (logback.xml, SBT build config, Scala CI runner scripts)
+- [ ] Documentation updated (README, CLAUDE.md) with no Scala references
+
+**Completed:** Planned
+
+**Migration plan:** [docs/migration-to-rust-node.md](migration-to-rust-node.md)
 
 ---
 

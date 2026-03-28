@@ -60,7 +60,8 @@ class HttpClient:
         rep = requests.get(status_url, timeout=60)
         _check_reponse(rep)
         message = rep.json()
-        # Handle both Rust format (with networkId/shardId) and Scala format (may have different structure)
+        # Handle both Rust format (with networkId/shardId) and
+        # Scala format (may have different structure)
         # Rust format: version is an object with api/node, has networkId, shardId
         # Scala format: version is a string, may not have networkId/shardId
         if isinstance(message.get("version"), dict):

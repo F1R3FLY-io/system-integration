@@ -12,6 +12,9 @@ This is a microservices integration repository for the F1R3FLY blockchain ecosys
 │   ├── embers-frontend/        # Embers UI (React 19)
 │   ├── f1r3sky-backend/        # AT Protocol backend (Node.js)
 │   └── rust-client/            # Rust CLI client
+├── .github/workflows/          # CI (GitHub Actions)
+├── hooks/                      # Git hooks (pre-commit, pre-push)
+├── scripts/                    # Setup scripts (setup-hooks.sh)
 ├── shardctl/                   # CLI tool package
 ├── compose/                    # Docker Compose files (one per service)
 │   ├── f1r3node.yml            # Scala shard (default)
@@ -68,8 +71,21 @@ poetry run shardctl logs --follow
 poetry run shardctl down
 ```
 
-> **Note:** The Scala node (`shardctl up f1r3node`) is deprecated. Use the Rust shard commands above.
-> The bare `shardctl up` still starts Scala by default (from `startup_order` in services.yml).
+## Git Hooks
+
+Pre-commit and pre-push hooks enforce code quality. Install with:
+
+```bash
+./scripts/setup-hooks.sh           # Uses core.hooksPath (recommended)
+./scripts/setup-hooks.sh --copy    # Copies to .git/hooks/ (alternative)
+./scripts/setup-hooks.sh --status  # Show current configuration
+```
+
+
+- **pre-commit**: ruff lint + format on staged Python files
+- **pre-push**: ruff lint + format on full codebase, `test_internal.py` unit tests
+
+Bypass with `--no-verify` (not recommended).
 
 ## Service Repositories
 

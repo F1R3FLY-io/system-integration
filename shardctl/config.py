@@ -185,12 +185,10 @@ class Config:
 
         for build_name, build_config in builds.items():
             # Check if this build's parent service is enabled
-            parent_service = None
             parent_enabled = True  # Default to True if no parent found
 
             for service_name, builds_list in service_to_builds.items():
                 if build_name in builds_list:
-                    parent_service = service_name
                     parent_enabled = service_enabled.get(service_name, True)
                     break
 
