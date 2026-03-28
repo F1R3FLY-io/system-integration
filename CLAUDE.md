@@ -78,19 +78,11 @@ Pre-commit and pre-push hooks enforce code quality. Install with:
 ./scripts/setup-hooks.sh --status  # Show current configuration
 ```
 
-- **pre-commit**: ruff lint + format, YAML validation on staged files
+
+- **pre-commit**: ruff lint + format on staged Python files
 - **pre-push**: ruff lint + format on full codebase, `test_internal.py` unit tests
 
-Bypass with `--no-verify` (not recommended). Skip individual checks with env vars:
-`SKIP_LINT=1`, `SKIP_RUFF=1`, `SKIP_FORMAT=1`, `SKIP_YAML=1`, `SKIP_TESTS=1`, `QUICK=1`.
-
-## CI
-
-GitHub Actions runs the same checks as the git hooks on pushes and PRs to `dev` and `main`:
-- **Lint job**: ruff lint + format + YAML validation (runs on `ubuntu-latest`)
-- **Test job**: `test_internal.py` unit tests with full integration deps
-
-Workflow: `.github/workflows/ci.yml`
+Bypass with `--no-verify` (not recommended).
 
 ## Service Repositories
 

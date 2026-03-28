@@ -3,8 +3,8 @@ Genesis Ceremony Integration Test
 
 Validates that the shard's genesis ceremony completed successfully.
 The ceremony is performed implicitly by docker-compose startup:
-  - bootstrap-ceremony.conf has required-signatures=2, ceremony-master-mode=true
-  - Validators have genesis-validator-mode=true
+  - Bootstrap passes --ceremony-master-mode and --required-signatures=2 via CLI
+  - Validators pass --genesis-validator via CLI
   - The shard fixture waits for all nodes to reach Running state
 
 This test verifies the ceremony results post-startup rather than
@@ -42,8 +42,8 @@ def test_successful_genesis_ceremony(
     """Verify genesis ceremony completed successfully across all nodes.
 
     The shard fixture guarantees all 5 nodes reached Running state, which
-    requires the ceremony protocol to complete (required-signatures=2 in
-    bootstrap-ceremony.conf). This test validates the resulting state:
+    requires the ceremony protocol to complete (--required-signatures=2
+    via CLI). This test validates the resulting state:
 
     1. All containers are running
     2. All nodes have at least 1 block (the genesis block)

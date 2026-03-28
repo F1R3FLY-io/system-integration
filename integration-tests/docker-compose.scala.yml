@@ -23,9 +23,6 @@ x-rnode: &default-rnode
   environment:
     - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
     - OPENAI_SCALA_CLIENT_API_KEY=${OPENAI_SCALA_CLIENT_API_KEY:-}
-    # 5 JVM containers share the host; cap each at 18% RAM (90%/5) to avoid
-    # memory pressure on 7 GB CI runners.  On larger machines this is harmless.
-    - _JAVA_OPTIONS=-XX:MaxRAMPercentage=18.0 -XX:MaxDirectMemorySize=128M
 
 services:
   # =================================================================
@@ -40,7 +37,11 @@ services:
       - --host=${BOOTSTRAP_HOST:-rnode.bootstrap}
       - --bootstrap=rnode://${BOOTSTRAP_NODE_ID:-1e780e5dfbe0a3d9470a2b414f502d59402e09c2}@${BOOTSTRAP_HOST:-rnode.bootstrap}?protocol=40400&discovery=40404
       - --allow-private-addresses
-      - --validator-private-key=${BOOTSTRAP_PRIVATE_KEY:-aea5f89c15f880f1aaeb6e8f0f24acef4a5c00b55b7cebea3baee6f2cf56f42d}
+      - --validator-private-key=${BOOTSTRAP_PRIVATE_KEY:-5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657}
+      - --required-signatures
+      - "2"
+      - --ceremony-master-mode
+      - --heartbeat-disabled
     ports:
       - "40400:40400"
       - "40401:40401"
@@ -50,7 +51,7 @@ services:
       - "40405:40405"
     volumes:
       - boot-data:/var/lib/rnode
-      - ./conf/bootstrap-ceremony.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default.conf:/var/lib/rnode/rnode.conf
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
@@ -89,7 +90,7 @@ services:
       - "40415:40405"
     volumes:
       - validator1-data:/var/lib/rnode
-      - ./conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default.conf:/var/lib/rnode/rnode.conf
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
@@ -128,7 +129,7 @@ services:
       - "40425:40405"
     volumes:
       - validator2-data:/var/lib/rnode
-      - ./conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default.conf:/var/lib/rnode/rnode.conf
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
@@ -167,7 +168,7 @@ services:
       - "40435:40405"
     volumes:
       - validator3-data:/var/lib/rnode
-      - ./conf/shared-rnode.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default.conf:/var/lib/rnode/rnode.conf
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
@@ -195,6 +196,7 @@ services:
       - --bootstrap=rnode://${BOOTSTRAP_NODE_ID:-1e780e5dfbe0a3d9470a2b414f502d59402e09c2}@${BOOTSTRAP_HOST:-rnode.bootstrap}?protocol=40400&discovery=40404
       - --no-upnp
       - --allow-private-addresses
+      - --heartbeat-disabled
     ports:
       - "40450:40400"
       - "40451:40401"
@@ -204,7 +206,7 @@ services:
       - "40455:40405"
     volumes:
       - readonly-data:/var/lib/rnode
-      - ./conf/observer.conf:/var/lib/rnode/rnode.conf
+      - ../conf/default.conf:/var/lib/rnode/rnode.conf
       - ./conf/logback.xml:/var/lib/rnode/logback.xml
       - ./genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ./genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt

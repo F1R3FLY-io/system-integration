@@ -19,6 +19,7 @@ from .utils import (
     clone_services,
     create_services_config_example,
     get_docker_compose_command,
+    run_native_service,
     sync_service_branch,
     validate_environment,
 )
@@ -169,7 +170,8 @@ def up(
 ):
     """Start services (detached by default).
 
-    Each service name maps to a compose file in compose/<service>.yml.
+    Each service name maps to a compose file in compose/<service>.yml,
+    or to a native run_command (for services like f1r3drive that run locally).
     When no services are specified, starts all services in startup_order from services.yml.
 
     Examples:
@@ -177,13 +179,44 @@ def up(
         poetry run shardctl up f1r3node           # Scala shard (default)
         poetry run shardctl up f1r3node-rust      # Rust shard
         poetry run shardctl up f1r3node-standalone # Scala standalone
+        poetry run shardctl up f1r3drive          # F1r3Drive (native, foreground)
         poetry run shardctl up embers             # Embers API + frontend
         poetry run shardctl up f1r3node embers    # Multiple services
     """
+    config = Config()
+
+    # Check if any requested service is a native (non-Docker) service
+    if services:
+        native_services = []
+        compose_services = []
+
+        for svc in services:
+            native_config = config.get_native_run_config(svc)
+            if native_config:
+                native_services.append((svc, native_config))
+            else:
+                compose_services.append(svc)
+
+        # Run native services (foreground, one at a time)
+        if native_services:
+            for svc_name, run_config in native_services:
+                console.print(f"[bold blue]Starting {svc_name} (native, foreground)...[/bold blue]")
+                console.print("[dim]Press Ctrl-C to stop[/dim]\n")
+                run_native_service(svc_name, config.root_dir, run_config)
+
+            # If there were also compose services, warn the user
+            if compose_services:
+                console.print(
+                    f"\n[yellow]Note: Compose services ({', '.join(compose_services)}) "
+                    "were not started because native services run in foreground.[/yellow]\n"
+                    f"[dim]Start them separately: sc up {' '.join(compose_services)}[/dim]"
+                )
+            return
+
+    # Standard Docker Compose flow
     if not validate_environment():
         raise typer.Exit(1)
 
-    config = Config()
     manager = get_manager(profile)
 
     compose_files = _resolve_compose_files(config, services)
@@ -225,10 +258,50 @@ def down(
         poetry run shardctl down f1r3node     # Stop scala shard
         poetry run shardctl down embers       # Stop embers
     """
+    config = Config()
+
+    # Check for native services first
+    if services:
+        native_found = []
+        compose_services = []
+        for svc in services:
+            if config.get_native_run_config(svc):
+                native_found.append(svc)
+            else:
+                compose_services.append(svc)
+
+        if native_found:
+            import subprocess
+
+            for svc in native_found:
+                if svc == "f1r3drive":
+                    console.print(f"[yellow]Attempting to stop native service: {svc}[/yellow]")
+                    try:
+                        # Find and kill the f1r3drive java process
+                        subprocess.run(
+                            ["pkill", "-f", "f1r3drive-app.jar"],
+                            check=True,
+                            stderr=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                        )
+                        console.print(f"[green]✓[/green] Successfully sent kill signal to {svc}")
+                    except subprocess.CalledProcessError:
+                        console.print(f"[dim]No running {svc} process found.[/dim]")
+                else:
+                    console.print(
+                        f"[yellow]{svc} is a native service (runs in foreground). "
+                        "Stop it with Ctrl-C in its terminal.[/yellow]"
+                    )
+
+            if not compose_services:
+                return
+
+            # Continue with remaining compose services
+            services = compose_services
+
     if not validate_environment():
         raise typer.Exit(1)
 
-    config = Config()
     manager = get_manager(profile)
 
     compose_files = _resolve_compose_files(config, services)
