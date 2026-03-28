@@ -14,7 +14,9 @@ This is a microservices integration repository for the F1R3FLY blockchain ecosys
 │   └── rust-client/            # Rust CLI client
 ├── .github/workflows/          # CI (GitHub Actions)
 ├── hooks/                      # Git hooks (pre-commit, pre-push)
-├── scripts/                    # Setup scripts (setup-hooks.sh)
+├── scripts/                    # Benchmark and setup scripts
+│   ├── benchmark.sh            # Shard benchmark orchestrator
+│   └── setup-hooks.sh          # Git hooks installer
 ├── shardctl/                   # CLI tool package
 ├── compose/                    # Docker Compose files (one per service)
 │   ├── f1r3node.yml            # Scala shard (default)
@@ -22,6 +24,7 @@ This is a microservices integration repository for the F1R3FLY blockchain ecosys
 │   ├── embers.yml              # Embers API + frontend
 │   ├── f1r3sky.yml             # F1R3Sky AT Protocol services
 │   └── monitoring.yml          # Prometheus + Grafana
+├── justfile                    # just command runner recipes
 ├── services.yml                # Service repository URLs and branches
 ├── .env.embers                 # Embers configuration
 └── README.md                   # Full documentation
@@ -34,6 +37,7 @@ This is a microservices integration repository for the F1R3FLY blockchain ecosys
 - **Services are git-ignored**: Each service repository (f1r3node, embers, f1r3sky-backend, etc.) is cloned into `services/` and completely ignored by the parent system-integration repository
 - **Independent development**: Work in each service directory normally with full git functionality - changes are isolated to each service repo
 - **Docker Compose orchestration**: Each service has its own compose file in `compose/` directory
+- **`just` command runner**: Recommended interface for all operations (`just up`, `just benchmark`, `just teardown`, etc.)
 - **shardctl CLI**: Python CLI tool (installed via Poetry) that wraps docker-compose operations and service management
 
 ## Getting Started
@@ -52,23 +56,21 @@ This is a microservices integration repository for the F1R3FLY blockchain ecosys
 # Install shardctl
 poetry install
 
-# Clone all service repositories with correct branches
-poetry run shardctl clone
+# Using just (recommended command runner)
+just up                    # Start Rust shard (boot + 3 validators + observer)
+just wait                  # Wait for nodes to reach Running state
+just status                # Show container status
+just down                  # Stop shard
+just benchmark             # Run full shard benchmark with all services
+just teardown              # Tear down all services, print report
 
-# Start Rust shard (recommended — Scala is deprecated)
+# Using shardctl (alternative)
 poetry run shardctl up f1r3node-rust
-
-# Start Rust standalone (single node, fastest for dev)
 poetry run shardctl up f1r3node-rust-standalone
-
-# View status
 poetry run shardctl status
-
-# View logs
 poetry run shardctl logs --follow
-
-# Stop services
 poetry run shardctl down
+poetry run shardctl clone
 ```
 
 ## Git Hooks

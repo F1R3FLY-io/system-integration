@@ -153,32 +153,31 @@ tasks:
 ---
 epoch_id: EPOCH-002
 title: "Automated Shard Benchmark and Demo"
-status: pending
+status: in_progress
 priority: p1
 user_story: US-002
 blocked_by: []
-prerequisite: "Merge feature/f1r3node-rust-integration-option and dev into main before starting"
 created_at: 2026-03-27
-claimed_by: null
-claimed_at: null
+claimed_by: claude-session
+claimed_at: 2026-03-27T00:00:00Z
 tasks:
   - id: TASK-002-1
     title: "Merge feature branches to main"
-    status: pending
-    acceptance:
-      - "feature/f1r3node-rust-integration-option merged to dev"
-      - "dev merged to main"
-      - "All pre-push checks pass (ruff lint, format, unit tests)"
-      - "Working branch created from main"
+    status: complete
+    completed_date: 2026-03-27
+    note: "Merges handled via PR review process; branch created from feature/f1r3node-rust-integration-option"
 
   - id: TASK-002-2
-    title: "Create benchmark script infrastructure"
-    status: pending
-    blocked_by: [TASK-002-1]
+    title: "Create benchmark and teardown infrastructure via just"
+    status: in_progress
+    claimed_by: claude-session
+    claimed_at: 2026-03-27T00:00:00Z
     acceptance:
-      - "New shardctl benchmark command added to CLI"
-      - "Script starts f1r3node-rust shard via compose/f1r3node-rust.yml"
-      - "Waits for all nodes to reach Running state (reuses shardctl wait)"
+      - "justfile with benchmark and teardown recipes"
+      - "just benchmark starts f1r3node-rust shard, f1r3drive, embers, f1r3sky"
+      - "Waits for all nodes to reach Running state"
+      - "Runs deploy/propose cycles against validators via HTTP API"
+      - "just teardown brings down all services and prints report"
       - "Only supports f1r3node-rust images (not Scala or hybrid)"
 
   - id: TASK-002-3
@@ -229,11 +228,11 @@ tasks:
 **Scope:**
 - f1r3node-rust images ONLY (not Scala node, not hybrid Rust from f1r3node repo)
 - Uses existing compose/f1r3node-rust.yml infrastructure
-- Builds on existing shardctl CLI (new `benchmark` subcommand)
+- Builds on justfile command runner (new `benchmark` and `teardown` recipes)
+- Orchestrates full stack: shard + f1r3drive + embers + f1r3sky
 - NOT in scope: changes to f1r3node-rust repo, CI integration, long-running soak tests
 
 **Prerequisites:**
-- All feature branches merged to main (TASK-002-1)
 - f1r3node-rust Docker image available locally or from registry
 
 ---

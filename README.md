@@ -17,7 +17,22 @@ For service-specific build tools (Rust, Node.js, SBT), see [docs/prerequisites.m
 
 ## Quick Start
 
-### 1. Start a Shard
+### Using `just` (Recommended)
+
+[`just`](https://github.com/casey/just) is the recommended command runner. Install it with `brew install just`, `cargo install just`, or see [just installation](https://github.com/casey/just#installation).
+
+```bash
+just up              # Start Rust multi-node shard (bootstrap + 3 validators + observer)
+just wait            # Wait for all nodes to reach Running state (~2-3 min)
+just status          # Show container status
+just logs            # Follow logs
+just down            # Stop shard
+just reset           # Stop and wipe data volumes
+```
+
+Run `just` with no arguments to see all available commands.
+
+### Using `shardctl`
 
 ```bash
 poetry run shardctl up f1r3node-rust
@@ -29,28 +44,65 @@ poetry run shardctl up f1r3node
 
 Genesis takes ~2-3 minutes. `shardctl wait` blocks until all nodes report Running.
 
-### 2. Verify
+### Verify
 
 ```bash
-poetry run shardctl status
+just status
+# or: poetry run shardctl status
 ```
 
 Once all nodes show Running, the HTTP API is available on each node's port 40403 (bootstrap), 40413 (validator1), etc. See [COMPOSE_STRUCTURE.md](COMPOSE_STRUCTURE.md) for the full port map.
 
-### 3. Stop
+### Stop
 
 ```bash
+just down                            # Stop containers
+just reset                           # Stop and wipe data volumes
+# or:
 poetry run shardctl down             # Stop containers
 poetry run shardctl reset -y         # Stop and wipe data volumes
 ```
 
-> **No Poetry?** Shards can be run directly with Docker Compose:
+> **No Poetry or just?** Shards can be run directly with Docker Compose:
 > ```bash
 > docker compose --env-file .env.node -f compose/f1r3node-rust.yml up -d
 > docker compose --env-file .env.node -f compose/f1r3node-rust.yml logs -f | grep "Making a transition to Running state"
 > docker compose --env-file .env.node -f compose/f1r3node-rust.yml down           # stop
 > docker compose --env-file .env.node -f compose/f1r3node-rust.yml down -v        # stop and wipe data
 > ```
+
+## Benchmark and Demo
+
+Run an automated benchmark that exercises the full consensus path across the shard with all supporting services:
+
+```bash
+just benchmark              # 10 rounds, 300s startup timeout
+just benchmark 20           # 20 rounds
+just benchmark 20 600       # 20 rounds, 600s timeout
+```
+
+The benchmark:
+1. Starts the f1r3node-rust shard (genesis ceremony with bootstrap + 3 validators + observer)
+2. Waits for all nodes to reach Running state
+3. Starts supporting services (monitoring, embers, f1r3sky)
+4. Runs deploy/propose cycles round-robin across validators via HTTP API
+5. Collects per-round timing metrics (deploy, propose, finalize)
+6. Generates a summary report with aggregate stats (min/max/avg/p95, throughput, pass/fail)
+
+To tear down services and view the report separately:
+
+```bash
+just teardown               # Stop all services, print report
+```
+
+Use `--keep` to leave services running after the benchmark completes:
+
+```bash
+./scripts/benchmark.sh --keep       # Benchmark without teardown
+just teardown                       # Tear down later
+```
+
+Ctrl-C during a benchmark triggers graceful teardown and prints a partial report.
 
 ## Node Topologies
 
@@ -64,7 +116,28 @@ poetry run shardctl reset -y         # Stop and wipe data volumes
 
 See [COMPOSE_STRUCTURE.md](COMPOSE_STRUCTURE.md) for details on each compose file.
 
-All commands require `poetry run` prefix unless you activate the shell with `poetry shell`.
+All `shardctl` commands require `poetry run` prefix unless you activate the shell with `poetry shell`.
+
+### `just` Commands
+
+| Command | Description |
+|---------|-------------|
+| `just up` | Start Rust shard (boot + 3 validators + observer) |
+| `just down` | Stop Rust shard |
+| `just reset` | Stop and wipe data volumes |
+| `just status` | Show container status |
+| `just logs` | Follow shard logs |
+| `just wait` | Wait for nodes to reach Running state |
+| `just up-standalone` | Start Rust standalone (single node) |
+| `just up-monitoring` | Start Prometheus + Grafana |
+| `just up-embers` | Start Embers API + frontend |
+| `just up-f1r3sky` | Start F1R3Sky AT Protocol stack |
+| `just benchmark` | Run full shard benchmark (default: 10 rounds) |
+| `just teardown` | Tear down all services, print report |
+| `just down-all` | Stop all containers across all compose files |
+| `just reset-all` | Stop all and remove all data volumes |
+| `just ps` | Show all running F1R3FLY containers |
+| `just clone` | Clone all service repositories |
 
 ### Native Services
 
@@ -282,11 +355,15 @@ For all troubleshooting topics, see [docs/troubleshooting.md](docs/troubleshooti
 ├── certs/                          # TLS certificates for nodes
 ├── genesis/                        # Genesis wallets and bonds
 ├── monitoring/                     # Prometheus + Grafana config
+├── scripts/                        # Benchmark and setup scripts
+│   ├── benchmark.sh                # Shard benchmark orchestrator
+│   └── setup-hooks.sh              # Git hooks installer
 ├── shardctl/                       # CLI tool package
 ├── .github/workflows/              # CI smoke test pipeline
 ├── integration-tests/              # Integration test suite
 ├── services/                       # Service repositories (git-ignored)
 ├── docs/                           # Prerequisites, troubleshooting, development guide
+├── justfile                        # just command runner recipes
 ├── .env.node                       # Node environment variables
 ├── services.yml                    # Service repository URLs and branches
 └── pyproject.toml                  # Python package config
