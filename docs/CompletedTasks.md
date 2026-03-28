@@ -38,43 +38,59 @@ See [Task Tracking Standard]([RELATIVE_PATH]/top-level-gitlab-profile/docs/commo
 
 ---
 
-### EPOCH-XXX: [PROJECT_SPECIFIC: Epoch Title]
+### EPOCH-002: Automated Shard Benchmark and Demo
 
 ```yaml
 ---
-epoch_id: EPOCH-XXX
-title: "[PROJECT_SPECIFIC: Epoch Title]"
+epoch_id: EPOCH-002
+title: "Automated Shard Benchmark and Demo"
 status: complete
 priority: p1
-user_story: US-XXX
-completed_at: [DATE]
-completed_by: [SESSION_ID or contributor]
-mr_pr: "[PROJECT_SPECIFIC: MR/PR link if applicable]"
+user_story: US-002
+completed_at: 2026-03-27
+completed_by: claude-session
 tasks:
-  - id: TASK-XXX-1
-    title: "[PROJECT_SPECIFIC: Task 1 title]"
+  - id: TASK-002-1
+    title: "Merge feature branches to main"
     status: complete
-    completed_at: [DATE]
+    completed_date: 2026-03-27
+    note: "Merges handled via PR review process"
 
-  - id: TASK-XXX-2
-    title: "[PROJECT_SPECIFIC: Task 2 title]"
+  - id: TASK-002-2
+    title: "Create benchmark and teardown infrastructure via just"
     status: complete
-    completed_at: [DATE]
+    completed_date: 2026-03-27
+
+  - id: TASK-002-3
+    title: "Implement deploy/propose cycle runner"
+    status: complete
+    completed_date: 2026-03-27
+
+  - id: TASK-002-4
+    title: "Collect consensus and finalization metrics"
+    status: complete
+    completed_date: 2026-03-27
+
+  - id: TASK-002-5
+    title: "Generate benchmark summary report"
+    status: complete
+    completed_date: 2026-03-27
+
+  - id: TASK-002-6
+    title: "Add cleanup and error handling"
+    status: complete
+    completed_date: 2026-03-27
 ---
 ```
 
-**Summary:** [PROJECT_SPECIFIC: Brief summary of what was accomplished]
+**Summary:** Added `just` command runner with full shard benchmark orchestration. `just benchmark` starts the f1r3node-rust shard (genesis ceremony with 3 validators), supporting services (monitoring, embers, f1r3sky), runs deploy/propose cycles round-robin across validators, collects timing/consensus metrics, and generates a formatted summary report. `just teardown` brings everything down cleanly.
 
 **Key Changes:**
-- [PROJECT_SPECIFIC: Change 1]
-- [PROJECT_SPECIFIC: Change 2]
-
-**Lessons Learned:**
-- [PROJECT_SPECIFIC: What went well or what to do differently]
+- `justfile` with 26 recipes for shard lifecycle, services, benchmark, and teardown
+- `scripts/benchmark.sh` — 5-phase orchestrator (start shard, wait, start services, benchmark rounds, report)
+- README.md and CLAUDE.md updated with `just` commands and benchmark documentation
 
 ---
-
-<!-- Add more completed epochs following the same format -->
 
 ---
 
