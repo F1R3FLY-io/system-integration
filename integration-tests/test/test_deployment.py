@@ -71,9 +71,9 @@ def test_deploy_with_not_enough_phlo(
         except F1r3flyClientException:
             time.sleep(3)
 
-    assert block_hash is not None, (
-        f"Deploy {deploy_id[:24]} should have been included in a block within {find_timeout}s"
-    )
+    assert (
+        block_hash is not None
+    ), f"Deploy {deploy_id[:24]} should have been included in a block within {find_timeout}s"
 
     # Fetch full block to inspect the deploy's errored status.
     # find_deploy guarantees our deploy is in this block; match by term.
@@ -84,9 +84,9 @@ def test_deploy_with_not_enough_phlo(
             errored_deploy = deploy
             break
 
-    assert errored_deploy is not None, (
-        f"Should find deploy with term '@1!(1)' in block {block_hash[:16]}"
-    )
-    assert errored_deploy.errored, (
-        f"Deploy with phlo_limit=10 should be errored, got errored={errored_deploy.errored}"
-    )
+    assert (
+        errored_deploy is not None
+    ), f"Should find deploy with term '@1!(1)' in block {block_hash[:16]}"
+    assert (
+        errored_deploy.errored
+    ), f"Deploy with phlo_limit=10 should be errored, got errored={errored_deploy.errored}"

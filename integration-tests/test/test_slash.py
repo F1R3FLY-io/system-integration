@@ -592,9 +592,9 @@ def test_node_working_right_after_slashing(
         bonds_validators = {b.validator: b.stake for b in block_info.blockInfo.bonds}
         assert bonds_validators[BONDED_VALIDATOR_KEY_1.get_public_key().to_hex()] == 0
         slash_block = client.block_request(block_info.blockInfo.blockHash, validator2)
-        assert is_exist_slash_deploy(slash_block), (
-            "systemDeploy does not contain slash system deploy"
-        )
+        assert is_exist_slash_deploy(
+            slash_block
+        ), "systemDeploy does not contain slash system deploy"
 
         # this new block should not contain slash deploy
         validator2.deploy(contract, BONDED_VALIDATOR_KEY_2)
