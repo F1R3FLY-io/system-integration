@@ -1,20 +1,17 @@
 """
-Replay Determinism and Network Resilience Integration Tests
+Replay Determinism and Network Resilience Tests
 
-Tests that verify:
-1. Cross-validator replay determinism (no ReplayCostMismatch from duplicate
-   channel sends in bridge.rho — RSpace remove_datum OOB bug)
-2. Network does not permanently stall after a rejected block
-3. Network recovers from temporary validator pause (DAG tip divergence)
-4. Network recovers from a slow/phlo-exhausting deploy
+Verifies that the shard handles replay correctness and recovers from
+validator disagreement and temporary desynchronization:
 
-Tests 1-2 currently FAIL due to the remove_datum bug in
-rspace++/src/rspace/hot_store.rs:378.
-
-Tests 3-4 currently FAIL due to the DAG tip divergence recovery gap
-(f1r3node#437, f1r3node#224).
-
-See docs/TODO.md for full analysis of each bug.
+1. Cross-validator replay determinism — deploying a contract with duplicate
+   channel sends (bridge.rho) produces identical costs on all validators.
+2. Shard recovery after block rejection — LFB continues advancing even when
+   a deploy triggers a validation divergence.
+3. Shard recovery from validator pause — pausing a container causes DAG tip
+   divergence; the network must converge after unpause.
+4. Shard recovery from slow deploy — a phlo-exhausting loop blocks one
+   validator long enough for others to diverge; the network must recover.
 """
 
 import logging
@@ -45,7 +42,7 @@ def _load_bridge_contract() -> str:
         return f.read()
 
 
-# Patterns that indicate replay divergence
+# Patterns that indicate replay divergence between validators.
 REPLAY_ERROR_PATTERNS = [
     (re.compile(r"ReplayCostMismatch"), "ReplayCostMismatch"),
     (re.compile(r"Index out of bounds when removing datum"), "remove_datum OOB"),
@@ -53,10 +50,9 @@ REPLAY_ERROR_PATTERNS = [
     (re.compile(r"NeglectedInvalidBlock"), "NeglectedInvalidBlock"),
 ]
 
-# Contract that exhausts phlo by looping. From f1r3node#224.
-# With phlo_limit=500M and loop!(1000000000), this will run until phlo is
-# exhausted. During execution, the proposing validator is busy and other
-# validators create independent blocks via heartbeat, causing DAG divergence.
+# Phlo-exhausting loop contract. Runs until phlo runs out, blocking the
+# proposing validator long enough for other validators to create independent
+# blocks via heartbeat, causing DAG tip divergence.
 SLOW_LOOP_CONTRACT = """
 new stdout(`rho:io:stdout`) in {
   new loop in {
@@ -136,8 +132,7 @@ def _assert_lfb_advances(node: Node, target_block: int, timeout: float):
 
 
 # ---------------------------------------------------------------------------
-# Tests 1-2: RSpace replay determinism (bridge.rho duplicate sends)
-# Bug: rspace++/src/rspace/hot_store.rs:378 (remove_datum OOB)
+# Test 1: Replay determinism with duplicate channel sends
 # ---------------------------------------------------------------------------
 
 def test_duplicate_sends_accepted_by_all_validators(
@@ -149,13 +144,14 @@ def test_duplicate_sends_accepted_by_all_validators(
     bootstrap_node: Node,
     readonly_node: Node,
 ) -> None:
-    """Deploy bridge.rho (has duplicate channel sends) and verify all validators
-    accept the block without ReplayCostMismatch.
+    """Deploy bridge.rho and verify all validators replay the block
+    with identical costs.
 
-    bridge.rho sends requiredSigsCh!(2) twice and oracleCountCh!(3) twice.
-    The block creator and replayers must handle remove_datum identically.
-
-    EXPECTED: Fails today due to remove_datum OOB bug (hot_store.rs:378).
+    bridge.rho has duplicate channel sends (requiredSigsCh!(2) twice,
+    oracleCountCh!(3) twice). This exercises:
+    - remove_datum with out-of-bounds indices (hot_store.rs)
+    - COMM matching for join consumes with duplicate produces
+    - Evaluation order consistency between block creator and replayers
     """
     assert_containers_running(docker_client, ALL_CONTAINERS)
 
@@ -187,18 +183,19 @@ def test_duplicate_sends_accepted_by_all_validators(
     )
 
 
+# ---------------------------------------------------------------------------
+# Test 2: Shard recovery after block rejection
+# ---------------------------------------------------------------------------
+
 def test_network_continues_after_duplicate_sends_deploy(
     docker_client: DockerClient,
     testing_context: TestingContext,
     validator1_node: Node,
 ) -> None:
-    """Deploy bridge.rho and verify the network does not stall.
+    """Deploy bridge.rho and verify the shard does not stall.
 
-    When validators reject a block (ReplayCostMismatch), they stop proposing
-    and the network permanently halts. This asserts LFB advances at least 3
-    blocks after the deploy.
-
-    EXPECTED: Fails today — rejected blocks cause permanent network stall.
+    Even if a block is rejected by replaying validators, the network must
+    continue finalizing. LFB must advance at least 3 blocks past the deploy.
     """
     assert_containers_running(docker_client, ALL_CONTAINERS)
 
@@ -230,8 +227,7 @@ def test_network_continues_after_duplicate_sends_deploy(
 
 
 # ---------------------------------------------------------------------------
-# Tests 3-4: Network resilience / DAG tip divergence recovery
-# Bugs: f1r3node#437 (DAG divergence), f1r3node#224 (slow deploy stall)
+# Test 3: Shard recovery from validator pause (DAG tip divergence)
 # ---------------------------------------------------------------------------
 
 def test_network_recovers_from_validator_pause(
@@ -243,12 +239,8 @@ def test_network_recovers_from_validator_pause(
     the network converges and LFB advances.
 
     While validator1 is paused, other validators create blocks via heartbeat.
-    When validator1 resumes, its tip diverges from the other validators.
-    The network must converge: validators should propose blocks that justify
-    all known tips, and LFB should advance.
-
-    Related: f1r3node#437 (lists "Docker container pause/unpause" as trigger)
-    EXPECTED: Fails today — network permanently stalls after divergence.
+    After unpause, the validators exchange tips and must propose multi-parent
+    convergence blocks to merge the diverged forks.
     """
     assert_containers_running(docker_client, ALL_CONTAINERS)
 
@@ -256,7 +248,6 @@ def test_network_recovers_from_validator_pause(
     baseline = baseline_lfb.blockInfo.blockNumber
     logging.info("Baseline LFB: block #%d", baseline)
 
-    # Pause validator1 — other validators continue heartbeating
     container = docker_client.containers.get("rnode.validator1")
     logging.info("Pausing validator1 for 15s to force DAG divergence...")
     container.pause()
@@ -264,31 +255,27 @@ def test_network_recovers_from_validator_pause(
     container.unpause()
     logging.info("Validator1 unpaused. Waiting for network convergence...")
 
-    # After unpause, the network should converge and LFB should advance.
-    # We expect at least 3 blocks beyond baseline within 120s.
     advance_timeout = int(120 * testing_context.timeout_scale)
     _assert_lfb_advances(
         validator1_node, baseline + 3, advance_timeout,
     )
 
 
+# ---------------------------------------------------------------------------
+# Test 4: Shard recovery from slow deploy (DAG tip divergence)
+# ---------------------------------------------------------------------------
+
 def test_network_recovers_from_slow_deploy(
     docker_client: DockerClient,
     testing_context: TestingContext,
     validator1_node: Node,
 ) -> None:
-    """Deploy a phlo-exhausting loop contract and verify the network does
-    not permanently stall.
+    """Deploy a phlo-exhausting loop and verify the shard recovers.
 
-    The loop!(1000000000) contract runs until phlo is exhausted. During
-    execution, the proposing validator is busy and other validators create
-    independent blocks via heartbeat, causing DAG tip divergence. After the
-    deploy completes (errored due to phlo exhaustion), the network must
-    recover and LFB must continue advancing.
-
-    Related: f1r3node#224 (exceeding phlo_limit deploy stalls shard)
-    Related: f1r3node#437 (DAG tip divergence from long-running deploy)
-    EXPECTED: Fails today — network stalls after validator desynchronization.
+    The loop contract blocks the proposing validator for ~100s while phlo
+    is exhausted. Other validators create independent blocks via heartbeat,
+    causing DAG tip divergence. After the deploy completes (errored), the
+    network must converge and LFB must advance.
     """
     assert_containers_running(docker_client, ALL_CONTAINERS)
 
@@ -304,16 +291,13 @@ def test_network_recovers_from_slow_deploy(
     )
     logging.info("Deployed loop contract, deploy_id=%s", deploy_id[:24])
 
-    # Wait for the loop deploy to be included in a block.
-    # The loop runs until phlo is exhausted. 1M phlo exhausts in ~10-30s,
-    # long enough for other validators to diverge via heartbeat but short enough
-    # to complete within the test timeout.
+    # 20M phlo with loop!(100000) takes ~100s to exhaust, long enough for
+    # other validators to diverge via heartbeat.
     find_timeout = int(180 * testing_context.timeout_scale)
     _, deploy_block = _wait_for_deploy_in_block(
         validator1_node, deploy_id, find_timeout,
     )
 
-    # After the deploy is included (errored or not), LFB should advance.
     # Lower target than test 2: the phlo-exhausting deploy blocks V1 for ~100s,
     # leaving less time for convergence within the timeout window.
     advance_timeout = int(120 * testing_context.timeout_scale)
