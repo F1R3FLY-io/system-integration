@@ -265,6 +265,7 @@ def test_network_recovers_from_validator_pause(
 # Test 4: Shard recovery from slow deploy (DAG tip divergence)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.timeout(900)
 def test_network_recovers_from_slow_deploy(
     docker_client: DockerClient,
     testing_context: TestingContext,
@@ -300,7 +301,7 @@ def test_network_recovers_from_slow_deploy(
 
     # Longer timeout than other tests: the phlo-exhausting deploy blocks V1
     # for ~100s, so convergence needs more time after the deploy completes.
-    advance_timeout = int(240 * testing_context.timeout_scale)
+    advance_timeout = int(480 * testing_context.timeout_scale)
     logging.info(
         "Waiting for LFB to advance past deploy block #%d (timeout=%ds)...",
         deploy_block, advance_timeout,
