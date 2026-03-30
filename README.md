@@ -192,9 +192,12 @@ shardctl compose ARGS...          Run custom docker-compose command
 
 ```
 shardctl test [SUITE]             Run integration tests
+  --image, -i TEXT                Custom Docker image
   --rust / --scala                Node image to test against
-  --skip-setup                    Use already-running shard
+  --skip-setup                    No start, no teardown (assume shard running)
+  --keep-running                  Start shard, skip teardown (for debugging)
   --verbose, -v                   Verbose pytest output
+  Image priority: F1R3FLY_RUST_IMAGE/F1R3FLY_SCALA_IMAGE env > --image > --rust/--scala > default
 shardctl test-report              Show test results from last run
   --failures                      Show failed tests only
 shardctl test-reset               Clean up test containers and volumes
@@ -204,7 +207,7 @@ shardctl test-reset               Clean up test containers and volumes
 
 ### Node Config Files
 
-Rust and Scala nodes share 2 config files in `conf/`. Per-role behavior is controlled entirely via CLI flags in compose commands.
+Rust and Scala nodes share 2 config files in `conf/`. Per-role behavior is controlled entirely via CLI flags in compose commands. See [Consensus Configuration Guide](docs/consensus-configuration.md) for detailed semantics of `fault-tolerance-threshold`, `synchrony-constraint-threshold`, and their effect on finalization.
 
 | Config File | Used By | Purpose |
 |-------------|---------|---------|

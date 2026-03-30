@@ -654,6 +654,12 @@ def pytest_runtest_teardown(item, nextitem) -> None:
     if item.nodeid != _last_shard_test_nodeid:
         return
 
+    skip_setup = item.config.getoption("--skip-setup")
+    keep_running = item.config.getoption("--keep-running")
+    if skip_setup or keep_running:
+        logging.info("Last shard test completed -- shard left running (--skip-setup or --keep-running).")
+        return
+
     logging.info("Last shard test completed -- tearing down shard environment.")
     _compose_down()
     _shard_started = False
@@ -673,7 +679,9 @@ def pytest_addoption(parser: Parser) -> None:
     parser.addoption("--timeout-scale", type=float, action="store", default=1.0,
                      help="multiplier for hardcoded polling timeouts (e.g. 3.0 for CI)")
     parser.addoption("--skip-setup", action="store_true", default=False,
-                     help="skip shard setup (assume already running)")
+                     help="skip shard setup and teardown (assume already running)")
+    parser.addoption("--keep-running", action="store_true", default=False,
+                     help="start shard normally but skip teardown (leave running for debugging)")
 
 
 def pytest_terminal_summary(terminalreporter: TerminalReporter) -> None:
@@ -760,6 +768,8 @@ def shard(request, command_line_options: CommandLineOptions,
     Use --skip-setup to skip compose up/down (when shard is already running).
     """
     skip_setup = request.config.getoption("--skip-setup")
+    keep_running = request.config.getoption("--keep-running")
+    skip_teardown = skip_setup or keep_running
     timeout = command_line_options.node_startup_timeout
 
     if not skip_setup:
@@ -785,15 +795,11 @@ def shard(request, command_line_options: CommandLineOptions,
         yield
 
     finally:
-        # Always tear down when not skipping setup, even if the shard never
-        # reached Running state. Previously, _compose_down was only called
-        # when _shard_started was True, which meant partially started shards
-        # (e.g. _compose_up succeeded but _wait_for_running_state timed out)
-        # were never cleaned up, leaving containers running and consuming
-        # resources for all subsequent tests.
-        if not skip_setup:
+        if not skip_teardown:
             _compose_down()
             _shard_started = False
+        elif keep_running:
+            logging.info("--keep-running: shard left running for debugging.")
 
 
 def _make_node(docker_client: DockerClient, container_name: str,
