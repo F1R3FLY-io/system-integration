@@ -298,13 +298,13 @@ def test_network_recovers_from_slow_deploy(
         validator1_node, deploy_id, find_timeout,
     )
 
-    # Lower target than test 2: the phlo-exhausting deploy blocks V1 for ~100s,
-    # leaving less time for convergence within the timeout window.
-    advance_timeout = int(120 * testing_context.timeout_scale)
+    # Longer timeout than other tests: the phlo-exhausting deploy blocks V1
+    # for ~100s, so convergence needs more time after the deploy completes.
+    advance_timeout = int(240 * testing_context.timeout_scale)
     logging.info(
         "Waiting for LFB to advance past deploy block #%d (timeout=%ds)...",
         deploy_block, advance_timeout,
     )
     _assert_lfb_advances(
-        validator1_node, deploy_block + 2, advance_timeout,
+        validator1_node, deploy_block + 3, advance_timeout,
     )
