@@ -14,7 +14,7 @@ Bond configuration:
 
 With FTT=0.5, a block needs FT > 0.5 to finalize. This is achievable when
 the majority stake (V1=60 alone is 63.2%, exceeding 50%) builds on a block.
-Finalization should occur faster than with equal weights and FTT=0.99.
+Finalization should occur faster than with equal weights and FTT=0.1.
 """
 
 import logging

@@ -1011,6 +1011,11 @@ def test_cmd(
         "--skip-setup",
         help="Skip shard bring-up/teardown (assume shard is already running)"
     ),
+    keep_running: bool = typer.Option(
+        False,
+        "--keep-running",
+        help="Start shard normally but leave it running after tests (for debugging)"
+    ),
     extra_args: Optional[List[str]] = typer.Option(
         None,
         "--pytest-args",
@@ -1023,7 +1028,11 @@ def test_cmd(
     Tests bring up a fresh shard using the same configuration as the dev
     setup (conf, genesis, certs), run the test suite, then tear down.
 
-    Use --skip-setup to run tests against an already-running shard.
+    Use --skip-setup to run tests against an already-running shard (no start, no teardown).
+    Use --keep-running to start shard normally but leave it running after tests (for debugging).
+
+    Image priority: env var > --image flag > --rust/--scala flag > hardcoded default.
+    Set F1R3FLY_RUST_IMAGE or F1R3FLY_SCALA_IMAGE to override without flags.
 
     Examples:
         poetry run shardctl test                         # Run all tests (Scala image)
@@ -1032,7 +1041,9 @@ def test_cmd(
         poetry run shardctl test --rust                   # Run against Rust image
         poetry run shardctl test test_web_api --verbose   # Verbose output
         poetry run shardctl test --skip-setup             # Test against running shard
+        poetry run shardctl test --keep-running           # Leave shard up after tests
         poetry run shardctl test --image myimage:latest   # Custom image
+        F1R3FLY_RUST_IMAGE=mynode:dev shardctl test --rust  # Env var override
     """
     config = Config()
     tests_dir = config.root_dir / "integration-tests"
@@ -1042,13 +1053,23 @@ def test_cmd(
         console.print(f"[dim]Expected: {tests_dir}[/dim]")
         raise typer.Exit(1)
 
-    # Determine the Docker image to use
-    if image:
+    # Determine the Docker image to use.
+    # Priority: env var > --image flag > --rust/--scala flag > hardcoded default.
+    env_rust = os.environ.get("F1R3FLY_RUST_IMAGE")
+    env_scala = os.environ.get("F1R3FLY_SCALA_IMAGE")
+
+    if rust and env_rust:
+        docker_image = env_rust
+    elif not rust and env_scala:
+        docker_image = env_scala
+    elif image:
         docker_image = image
     elif rust:
         docker_image = "f1r3flyindustries/f1r3fly-rust-node:latest"
     else:
         docker_image = "f1r3flyindustries/f1r3fly-scala-node:latest"
+
+    is_rust = "rust" in docker_image.lower()
 
     console.print(f"[bold blue]Running integration tests[/bold blue]")
     console.print(f"  Image: [cyan]{docker_image}[/cyan]")
@@ -1058,9 +1079,16 @@ def test_cmd(
         console.print(f"  Mode:  [yellow]skip-setup (using running shard)[/yellow]")
     console.print()
 
-    # Build pytest command
+    # Build pytest command.
+    # Set DEFAULT_IMAGE for conftest.py (compose file selection, custom shard).
+    # Set F1R3FLY_RUST_IMAGE or F1R3FLY_SCALA_IMAGE so the static compose
+    # files pick up the image via ${VAR:-default} substitution.
     env = os.environ.copy()
     env["DEFAULT_IMAGE"] = docker_image
+    if is_rust:
+        env["F1R3FLY_RUST_IMAGE"] = docker_image
+    else:
+        env["F1R3FLY_SCALA_IMAGE"] = docker_image
 
     pytest_args = ["-v", "--tb=short", "--log-cli-level=WARNING"]
     if verbose:
@@ -1071,6 +1099,9 @@ def test_cmd(
 
     if skip_setup:
         pytest_args.append("--skip-setup")
+
+    if keep_running:
+        pytest_args.append("--keep-running")
 
     if extra_args:
         pytest_args.extend(extra_args)
@@ -1132,7 +1163,7 @@ def test_reset_cmd():
             cmd = get_docker_compose_command()  # Dynamic version detection
             cmd.extend([
                 "--project-name", project_name,
-                "--env-file", str(tests_dir / ".env.node"),
+                "--env-file", str(config.root_dir / ".env.node"),
                 "-f", str(compose_path),
                 "down", "--volumes", "--remove-orphans",
             ])

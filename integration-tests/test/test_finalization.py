@@ -5,7 +5,7 @@ Tests that verify block finalization advances correctly in a multi-validator
 shard with heartbeat-driven block creation.
 
 Uses the session-scoped shard fixture (boot + 3 validators + readonly)
-with fault-tolerance-threshold = 0.99 and equal bond weights (1000 each).
+with fault-tolerance-threshold = 0.1 and equal bond weights (1000 each).
 With 3 validators at equal weight, a block's fault tolerance reaches 1.0
 when all validators have built on it, exceeding the 0.99 threshold. This
 should happen within a few heartbeat rounds (~15-30s).
@@ -42,7 +42,7 @@ def test_finalizes_block(
 ) -> None:
     """Verify that finalization advances within 60 seconds.
 
-    With 3 equal-weight validators (1000 bond each) and FTT=0.99, a block
+    With 3 equal-weight validators (1000 bond each) and FTT=0.1, a block
     is finalized when all 3 validators have built upon it, giving it
     FT = (3000/3000) * 2 - 1 = 1.0 > 0.99.
 
