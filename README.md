@@ -207,12 +207,12 @@ shardctl test-reset               Clean up test containers and volumes
 
 ### Node Config Files
 
-Rust and Scala nodes share 2 config files in `conf/`. Per-role behavior is controlled entirely via CLI flags in compose commands. See [Consensus Configuration Guide](docs/consensus-configuration.md) for detailed semantics of `fault-tolerance-threshold`, `synchrony-constraint-threshold`, and their effect on finalization.
+Rust and Scala nodes share 2 config files in `conf/`. These are minimal overrides — they contain only settings that differ from the node's built-in defaults. Per-role behavior is controlled entirely via CLI flags in compose commands. See [Consensus Configuration Guide](docs/consensus-configuration.md) for detailed semantics of `fault-tolerance-threshold`, `synchrony-constraint-threshold`, and their effect on finalization.
 
 | Config File | Used By | Purpose |
 |-------------|---------|---------|
-| `default.conf` | All shard roles (both Rust and Scala) | Shared defaults, GC enabled |
-| `standalone-dev.conf` | All standalone nodes (both Rust and Scala) | Standalone mode |
+| `default.conf` | All shard roles (both Rust and Scala) | Minimal overrides on top of node defaults, GC enabled |
+| `standalone-dev.conf` | All standalone nodes (both Rust and Scala) | Minimal overrides for standalone mode |
 
 Per-role CLI flags used in compose files:
 
@@ -225,7 +225,7 @@ Per-role CLI flags used in compose files:
 
 | File | Used by |
 |------|---------|
-| `.env.node` | All node compose files (credentials, keys, F1R3_* tuning) |
+| `.env.node` | All node compose files (credentials, keys) |
 | `.env.embers` | Embers API compose |
 | `.env.f1r3sky` | F1R3Sky compose |
 

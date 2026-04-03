@@ -146,6 +146,7 @@ custom shard tests begin.
 | `test_asymmetric_bonds` | custom | Consensus with non-equal validator stakes |
 | `test_bonding_validators` | custom | Dynamic validator bonding at epoch boundaries |
 | `test_trim_state` | custom | LFS (Last Finalized State) joiner synchronization |
+| `test_shard_degradation` | shard | Production readiness under sustained deploy load |
 
 ## Parallel Execution
 
