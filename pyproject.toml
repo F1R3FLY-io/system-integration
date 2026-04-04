@@ -74,6 +74,7 @@ python_files = [
 	"test_asymmetric_bonds.py",
 	"test_bonding_validators.py",
 	"test_trim_state.py",
+	"test_bridge_admin.py",
 	"test_shard_degradation.py",
 ]
 markers = [

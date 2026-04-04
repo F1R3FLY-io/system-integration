@@ -398,6 +398,29 @@ class Node:
                 raise e
         raise RuntimeError("propose: exhausted retries")
 
+    def get_deploy_data(self, deploy_id: str, block_hash: str = ""):
+        """Get data sent to the deployId channel for a given deploy.
+
+        Args:
+            block_hash: If provided, uses the block-specific getDataAtName
+                gRPC method. Required for reliable results.
+
+        Returns the payload or None if no data.
+        """
+        self.check_alive()
+        with F1r3flyClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
+            return client.get_data_at_deploy_id(deploy_id, block_hash=block_hash)
+
+    def exploratory_deploy(self, rholang_code: str, block_hash: str = ""):
+        """Run an exploratory deploy (read-only) against a block's post-state.
+
+        If block_hash is empty, uses the latest block.
+        Returns a list of Par results.
+        """
+        self.check_alive()
+        with F1r3flyClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
+            return client.exploratory_deploy(rholang_code, block_hash)
+
     def last_finalized_block(self) -> BlockInfo:
         self.check_alive()
         with F1r3flyClient('localhost', self.get_external_grpc_port(), grpc_options=_GRPC_OPTIONS) as client:
