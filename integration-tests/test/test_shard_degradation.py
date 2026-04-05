@@ -59,6 +59,8 @@ FINALIZER_TIMEOUT_PATTERN = re.compile(
 
 TOTAL_DEPLOYS = 150
 BATCH_SIZE = 10
+DEPLOY_PAUSE_SECS = 1          # 1s between deploys
+BATCH_PROPAGATION_SECS = 30    # allow blocks to propagate and finalize
 PHLO_LIMIT = 500_000
 PHLO_PRICE = 1
 
@@ -187,6 +189,8 @@ CONTRACT_FACTORIES = [
     _set_operations_contract,
 ]
 
+BRIDGE_PHLO = 500_000_000
+
 
 def _load_bridge_contract() -> str:
     integration_tests_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -264,7 +268,7 @@ def _check_deploy_lifecycle(
 # Test
 # ---------------------------------------------------------------------------
 
-@pytest.mark.timeout(3600)
+@pytest.mark.timeout(1800)
 def test_shard_degradation(
     docker_client: DockerClient,
     testing_context: TestingContext,
@@ -323,10 +327,11 @@ def test_shard_degradation(
             validator = validators[deploy_index % 3]
             key = keys[deploy_index % 3]
 
-            if deploy_index % 10 == 9:
+            if deploy_index % 3 == 0:
+                # Every 3rd: bridge.rho (complex contract with duplicate channel sends)
                 contract = bridge_contract
                 contract_type = "bridge"
-                phlo = 500_000_000
+                phlo = BRIDGE_PHLO
             else:
                 factory = CONTRACT_FACTORIES[deploy_index % len(CONTRACT_FACTORIES)]
                 contract = factory(deploy_index)
@@ -350,10 +355,10 @@ def test_shard_degradation(
                     deploy_index + 1, TOTAL_DEPLOYS, validator.name, e,
                 )
 
-            time.sleep(1)
+            time.sleep(DEPLOY_PAUSE_SECS)
 
-        logging.info("  Waiting 30s for batch propagation...")
-        time.sleep(30)
+        logging.info("  Waiting %ds for batch propagation...", BATCH_PROPAGATION_SECS)
+        time.sleep(BATCH_PROPAGATION_SECS)
 
         current_lfbs = _get_lfb_numbers(all_nodes)
         current_timeouts = _count_finalizer_timeouts(all_nodes)
@@ -514,17 +519,18 @@ def test_shard_degradation(
 
     not_included = [r for r in lifecycle_results if r[4] is None]
     if not_included:
+        details = [f"#{r[0]+1} ({r[2]})" for r in not_included]
         failures.append(
             f"Deploy inclusion: {len(not_included)}/{len(lifecycle_results)} sampled deploys "
-            f"not included in a block within {MAX_DEPLOY_INCLUSION_SECS}s"
+            f"not included within their timeout: {', '.join(details)}"
         )
 
     included_but_not_finalized = [r for r in lifecycle_results if r[4] is not None and r[5] is None]
     if included_but_not_finalized:
-        blocks = [f"#{r[3]}" for r in included_but_not_finalized]
+        details = [f"#{r[0]+1} ({r[2]}, block #{r[3]})" for r in included_but_not_finalized]
         failures.append(
             f"Deploy finalization: {len(included_but_not_finalized)}/{len(lifecycle_results)} sampled deploys "
-            f"included but blocks {', '.join(blocks)} not finalized within {MAX_DEPLOY_FINALIZATION_SECS}s"
+            f"included but not finalized within their timeout: {', '.join(details)}"
         )
 
     if max_api_latency > MAX_API_LATENCY_SECS:

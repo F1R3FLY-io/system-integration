@@ -89,6 +89,7 @@ def test_synchrony_constraint(
         bonds=bonds,
         ftt=-1,
         heartbeat=False,
+        port_base=40500,
         global_cli_options={
             "--synchrony-constraint-threshold": "0",
         },
