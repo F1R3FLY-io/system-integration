@@ -146,6 +146,7 @@ custom shard tests begin.
 | `test_asymmetric_bonds` | custom | Consensus with non-equal validator stakes |
 | `test_bonding_validators` | custom | Dynamic validator bonding at epoch boundaries |
 | `test_trim_state` | custom | LFS (Last Finalized State) joiner synchronization |
+| `test_shard_degradation` | shard | Production readiness under sustained deploy load |
 
 ## Parallel Execution
 
@@ -286,6 +287,7 @@ Key settings:
 - `testpaths` -- Points to `integration-tests/test`.
 - `timeout` -- Default per-test timeout (300s locally, CI overrides to 600s). Override with `@pytest.mark.timeout(N)`.
 - `markers` -- Registers the `xdist_group` marker for parallel execution.
+- `RUST_LOG` -- Can be passed to containers for debug log filtering (e.g. `RUST_LOG="info,f1r3fly.compute_parents_post_state.timing=debug"`). Set this env var before running `shardctl test` or export it so Docker Compose forwards it to node containers.
 
 The `integration-tests/` directory contains its own `genesis/` and `certs/`
 for test isolation. Node config files (`default.conf`, `standalone-dev.conf`)

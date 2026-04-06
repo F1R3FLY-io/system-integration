@@ -16,7 +16,6 @@ validator disagreement and temporary desynchronization:
 
 import logging
 import os
-import re
 import time
 from typing import List
 
@@ -42,14 +41,6 @@ def _load_bridge_contract() -> str:
         return f.read()
 
 
-# Patterns that indicate replay divergence between validators.
-REPLAY_ERROR_PATTERNS = [
-    (re.compile(r"ReplayCostMismatch"), "ReplayCostMismatch"),
-    (re.compile(r"Index out of bounds when removing datum"), "remove_datum OOB"),
-    (re.compile(r"InvalidBlock"), "InvalidBlock"),
-    (re.compile(r"NeglectedInvalidBlock"), "NeglectedInvalidBlock"),
-]
-
 # Phlo-exhausting loop contract. Runs until phlo runs out, blocking the
 # proposing validator long enough for other validators to create independent
 # blocks via heartbeat, causing DAG tip divergence.
@@ -67,23 +58,6 @@ new stdout(`rho:io:stdout`) in {
   }
 }
 """
-
-
-def _scan_logs_for_replay_errors(nodes: List[Node]) -> List[str]:
-    """Scan all node logs for replay/consensus error patterns.
-
-    Returns a list of error descriptions found. Empty list means no errors.
-    """
-    errors = []
-    for node in nodes:
-        node_logs = node.logs()
-        for pattern, description in REPLAY_ERROR_PATTERNS:
-            matches = pattern.findall(node_logs)
-            if matches:
-                errors.append(
-                    f"[{node.name}] {description}: {len(matches)} occurrence(s)"
-                )
-    return errors
 
 
 def _wait_for_deploy_in_block(node: Node, deploy_id: str, timeout: float):
@@ -107,27 +81,39 @@ def _wait_for_deploy_in_block(node: Node, deploy_id: str, timeout: float):
     )
 
 
-def _assert_lfb_advances(node: Node, target_block: int, timeout: float):
-    """Assert that LFB advances to at least target_block within timeout.
+def _assert_lfb_advances(nodes: List[Node], target_block: int, timeout: float):
+    """Assert that LFB advances to at least target_block on every node.
 
-    Polls last_finalized_block every 5s. Raises AssertionError if LFB
-    doesn't reach the target.
+    Polls last_finalized_block on each node every 5s. Returns once all
+    nodes have reached the target. Raises AssertionError on timeout,
+    reporting which nodes stalled and at what block.
     """
     deadline = time.time() + timeout
-    current = 0
+    reached = {node.name: 0 for node in nodes}
     while time.time() < deadline:
-        try:
-            lfb = node.last_finalized_block()
-            current = lfb.blockInfo.blockNumber
-            if current >= target_block:
-                logging.info("LFB advanced to #%d", current)
-                return
-        except Exception:
-            pass
+        all_done = True
+        for node in nodes:
+            if reached[node.name] >= target_block:
+                continue
+            try:
+                lfb = node.last_finalized_block()
+                current = lfb.blockInfo.blockNumber
+                reached[node.name] = current
+                if current >= target_block:
+                    logging.info("%s LFB reached #%d", node.name, current)
+                else:
+                    all_done = False
+            except Exception:
+                all_done = False
+        if all_done:
+            return
         time.sleep(5)
+    stalled = [
+        f"{name} at #{blk}" for name, blk in reached.items() if blk < target_block
+    ]
     raise AssertionError(
-        f"Network stalled: LFB stuck at #{current}, expected at least #{target_block} "
-        f"within {timeout}s"
+        f"Network stalled: {', '.join(stalled)}; "
+        f"expected at least #{target_block} within {timeout}s"
     )
 
 
@@ -139,26 +125,20 @@ def test_duplicate_sends_accepted_by_all_validators(
     docker_client: DockerClient,
     testing_context: TestingContext,
     validator1_node: Node,
-    validator2_node: Node,
-    validator3_node: Node,
-    bootstrap_node: Node,
-    readonly_node: Node,
+    all_nodes: List[Node],
 ) -> None:
-    """Deploy bridge.rho and verify all validators replay the block
-    with identical costs.
+    """Deploy bridge.rho and verify the block is accepted and finalized.
 
     bridge.rho has duplicate channel sends (requiredSigsCh!(2) twice,
     oracleCountCh!(3) twice). This exercises:
-    - remove_datum with out-of-bounds indices (hot_store.rs)
-    - COMM matching for join consumes with duplicate produces
-    - Evaluation order consistency between block creator and replayers
+    - Replay determinism for duplicate channel sends
+    - Observer block processing and reporting replay
+    - Cross-validator consensus on complex contracts
+
+    Comprehensive error scanning (panics, BugFoundError, ERROR-level logs)
+    is handled by the autouse fixture in conftest.py after this test completes.
     """
     assert_containers_running(docker_client, ALL_CONTAINERS)
-
-    all_nodes = [
-        bootstrap_node, validator1_node, validator2_node,
-        validator3_node, readonly_node,
-    ]
 
     deploy_id = validator1_node.deploy_string(
         _load_bridge_contract(),
@@ -169,18 +149,12 @@ def test_duplicate_sends_accepted_by_all_validators(
     logging.info("Deployed bridge.rho, deploy_id=%s", deploy_id[:24])
 
     find_timeout = int(60 * testing_context.timeout_scale)
-    _wait_for_deploy_in_block(validator1_node, deploy_id, find_timeout)
-
-    # Wait for cross-validator replay (~30s for block propagation + validation)
-    logging.info("Waiting 30s for cross-validator replay...")
-    time.sleep(30)
-
-    errors = _scan_logs_for_replay_errors(all_nodes)
-
-    assert len(errors) == 0, (
-        "Replay errors detected after deploying bridge.rho:\n"
-        + "\n".join(f"  - {e}" for e in errors)
+    _, deploy_block = _wait_for_deploy_in_block(
+        validator1_node, deploy_id, find_timeout,
     )
+
+    advance_timeout = int(120 * testing_context.timeout_scale)
+    _assert_lfb_advances(all_nodes, deploy_block + 3, advance_timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -191,11 +165,13 @@ def test_network_continues_after_duplicate_sends_deploy(
     docker_client: DockerClient,
     testing_context: TestingContext,
     validator1_node: Node,
+    all_nodes: List[Node],
 ) -> None:
     """Deploy bridge.rho and verify the shard does not stall.
 
     Even if a block is rejected by replaying validators, the network must
-    continue finalizing. LFB must advance at least 3 blocks past the deploy.
+    continue finalizing. LFB must advance at least 3 blocks past the deploy
+    on every node in the shard.
     """
     assert_containers_running(docker_client, ALL_CONTAINERS)
 
@@ -222,7 +198,7 @@ def test_network_continues_after_duplicate_sends_deploy(
         deploy_block, advance_timeout,
     )
     _assert_lfb_advances(
-        validator1_node, deploy_block + 3, advance_timeout,
+        all_nodes, deploy_block + 3, advance_timeout,
     )
 
 
@@ -234,9 +210,10 @@ def test_network_recovers_from_validator_pause(
     docker_client: DockerClient,
     testing_context: TestingContext,
     validator1_node: Node,
+    all_nodes: List[Node],
 ) -> None:
     """Pause validator1 for 15s to force DAG tip divergence, then verify
-    the network converges and LFB advances.
+    the network converges and LFB advances on all nodes.
 
     While validator1 is paused, other validators create blocks via heartbeat.
     After unpause, the validators exchange tips and must propose multi-parent
@@ -257,7 +234,7 @@ def test_network_recovers_from_validator_pause(
 
     advance_timeout = int(120 * testing_context.timeout_scale)
     _assert_lfb_advances(
-        validator1_node, baseline + 3, advance_timeout,
+        all_nodes, baseline + 3, advance_timeout,
     )
 
 
@@ -270,13 +247,14 @@ def test_network_recovers_from_slow_deploy(
     docker_client: DockerClient,
     testing_context: TestingContext,
     validator1_node: Node,
+    all_nodes: List[Node],
 ) -> None:
     """Deploy a phlo-exhausting loop and verify the shard recovers.
 
     The loop contract blocks the proposing validator for ~100s while phlo
     is exhausted. Other validators create independent blocks via heartbeat,
     causing DAG tip divergence. After the deploy completes (errored), the
-    network must converge and LFB must advance.
+    network must converge and LFB must advance on all nodes.
     """
     assert_containers_running(docker_client, ALL_CONTAINERS)
 
@@ -307,5 +285,5 @@ def test_network_recovers_from_slow_deploy(
         deploy_block, advance_timeout,
     )
     _assert_lfb_advances(
-        validator1_node, deploy_block + 3, advance_timeout,
+        all_nodes, deploy_block + 3, advance_timeout,
     )

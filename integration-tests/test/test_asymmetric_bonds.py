@@ -66,6 +66,7 @@ def test_fault_tolerance_asymmetric_bonds(
         docker_client, command_line_options,
         bonds=_ASYMMETRIC_BONDS,
         ftt=0.5,
+        port_base=40600,
     ) as shard:
         v1 = shard.nodes["validator1"]
         v2 = shard.nodes["validator2"]
@@ -140,6 +141,7 @@ def test_finalization_asymmetric_bonds(
         docker_client, command_line_options,
         bonds=_ASYMMETRIC_BONDS,
         ftt=0.5,
+        port_base=40650,
     ) as shard:
         v1 = shard.nodes["validator1"]
         v2 = shard.nodes["validator2"]
@@ -204,6 +206,7 @@ def test_cross_validator_state_agreement_asymmetric(
         docker_client, command_line_options,
         bonds=_ASYMMETRIC_BONDS,
         ftt=0.5,
+        port_base=40660,
     ) as shard:
         v1 = shard.nodes["validator1"]
         v2 = shard.nodes["validator2"]

@@ -85,6 +85,7 @@ def test_bonding_validators(
         bonds=bonds,
         ftt=-1,
         heartbeat=False,
+        port_base=40700,
         extra_wallets=[(joiner_vault_address, joiner_genesis_balance)],
         global_cli_options={
             "--epoch-length": "4",

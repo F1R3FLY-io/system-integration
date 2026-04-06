@@ -95,6 +95,7 @@ def test_trim_state(
         bonds=bonds,
         ftt=-1,
         heartbeat=False,
+        port_base=40800,
         global_cli_options={
             "--synchrony-constraint-threshold": "0",
         },
