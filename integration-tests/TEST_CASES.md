@@ -1,6 +1,6 @@
 # All Integration Test Cases
 
-## test_web_api.py (shard, 7 tests)
+## test_web_api.py (shard, 12 tests)
 
 | Test | What it does |
 |------|-------------|
@@ -11,6 +11,10 @@
 | `test_get_block` | Calls `/api/block/<hash>` with the genesis hash, verifies block info |
 | `test_get_blocks` | Calls `/api/blocks/<depth>`, verifies at least 4 blocks returned |
 | `test_get_deploy` | Deploys a contract, calls `/api/deploy/<id>`, verifies deploy info returned |
+| `test_get_data_at_name_empty_payload` | Queries `getDataAtName` for a deploy that didn't write to `deployId`. Verifies empty data returned (not error). Requires f1r3node PR #472 |
+| `test_propose_no_new_deploys` | Calls `propose` with no pending deploys. Verifies `NoNewDeploys` error contains informative message. Requires f1r3node PR #472 |
+| `test_get_deploy_detail` | Calls `/api/deploy/<id>?view=detail`, verifies response includes `cost`, `errored`, `blockNumber`, `deployer`. Requires f1r3node PR #472 |
+| `test_explore_deploy_returns_cost` | Calls `/api/explore-deploy` on readonly node, verifies response includes `cost > 0` (phlogiston estimation). Requires f1r3node PR #472 |
 | `test_deploy_via_http` | Submits a deploy via HTTP POST to `/api/deploy`, verifies accepted |
 
 ## test_wallets.py (shard, 4 tests)
