@@ -22,12 +22,14 @@ all deploys finalized within timeout, no node crashes.
 import dataclasses
 import logging
 import math
+import re
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple
 
 import pytest
+import requests
 from docker.client import DockerClient
 
 from .conftest import (
@@ -102,6 +104,32 @@ class PhaseReport:
     lfb_end: int
     lfb_rate_per_min: float
     phase_duration: float
+    node_metrics: Optional[Dict[str, float]] = None
+
+
+# Prometheus metrics to scrape — these are histogram _sum/_count pairs.
+# The node uses dots in metric names; Prometheus converts to underscores.
+METRICS_TO_SCRAPE = [
+    "block_validation_step_checkpoint_time",
+    "block_validation_step_bonds_cache_time",
+    "block_validation_step_block_summary_time",
+    "block_processing_stage_parents_post_state_time",
+    "block_processing_stage_replay_time",
+    "dag_merge_total_time",
+    "dag_merge_index_time",
+    "dag_merge_conflict_time",
+    "dag_merge_branches_time",
+    "dag_merge_conflicts_map_time",
+    "dag_merge_rejection_options_time",
+    "dag_merge_channel_reads_time",
+    "dag_merge_combine_changes_time",
+    "dag_merge_compute_trie_actions_time",
+    "dag_merge_apply_trie_actions_time",
+    "block_replay_phase_reset_time",
+    "block_replay_phase_user_deploys_time",
+    "block_replay_phase_system_deploys_time",
+    "block_replay_phase_create_checkpoint_time",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +150,119 @@ def _percentiles(values: List[float], pcts: List[float]) -> List[float]:
         frac = idx - lo
         result.append(sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac)
     return result
+
+
+def _scrape_metrics(node: Node) -> Dict[str, float]:
+    """Scrape Prometheus metrics from the node's /metrics endpoint.
+
+    Returns a dict of metric_name -> value for histogram _sum and _count lines.
+    """
+    result = {}
+    try:
+        resp = requests.get(
+            f"http://localhost:{node.ports.http}/metrics", timeout=10,
+        )
+        for line in resp.text.splitlines():
+            if line.startswith("#"):
+                continue
+            for metric in METRICS_TO_SCRAPE:
+                for suffix in ("_sum", "_count"):
+                    key = metric + suffix
+                    if line.startswith(key + "{") or line.startswith(key + " "):
+                        match = re.search(r'\s+([\d.eE+-]+)$', line)
+                        if match:
+                            result[key] = float(match.group(1))
+    except Exception:
+        pass
+    return result
+
+
+def _compute_metric_deltas(
+    before: Dict[str, float], after: Dict[str, float],
+) -> Dict[str, float]:
+    """Compute per-block average times from histogram deltas.
+
+    For each metric, computes: (after_sum - before_sum) / (after_count - before_count)
+    Returns dict of metric_name -> avg_seconds.
+    """
+    result = {}
+    for metric in METRICS_TO_SCRAPE:
+        sum_key = metric + "_sum"
+        count_key = metric + "_count"
+        if sum_key in after and count_key in after:
+            delta_sum = after.get(sum_key, 0) - before.get(sum_key, 0)
+            delta_count = after.get(count_key, 0) - before.get(count_key, 0)
+            if delta_count > 0:
+                result[metric] = delta_sum / delta_count
+            result[metric + ".count"] = delta_count
+    return result
+
+
+def _format_node_metrics(metrics: Dict[str, float]) -> str:
+    """Format node metrics as a readable block."""
+    if not metrics:
+        return "  (no node metrics available)"
+    lines = []
+    # Validation steps
+    val_steps = [
+        ("checkpoint", "block_validation_step_checkpoint_time"),
+        ("bonds_cache", "block_validation_step_bonds_cache_time"),
+        ("block_summary", "block_validation_step_block_summary_time"),
+    ]
+    lines.append("  Validation steps (avg per block):")
+    for label, key in val_steps:
+        avg = metrics.get(key, 0)
+        count = metrics.get(key + ".count", 0)
+        if count > 0:
+            lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} blocks)")
+    # Checkpoint breakdown (merge vs replay)
+    merge_key = "block_processing_stage_parents_post_state_time"
+    replay_key = "block_processing_stage_replay_time"
+    merge_avg = metrics.get(merge_key, 0)
+    merge_count = metrics.get(merge_key + ".count", 0)
+    replay_avg = metrics.get(replay_key, 0)
+    replay_count = metrics.get(replay_key + ".count", 0)
+    if merge_count > 0 or replay_count > 0:
+        lines.append("  Checkpoint breakdown (avg per block):")
+        if merge_count > 0:
+            lines.append(f"    parents_post_state (merge): {merge_avg*1000:.0f}ms ({int(merge_count)} blocks)")
+        if replay_count > 0:
+            lines.append(f"    replay_block (execution): {replay_avg*1000:.0f}ms ({int(replay_count)} blocks)")
+    # DAG merge breakdown
+    dag_metrics = [
+        ("dag_merge_total", "dag_merge_total_time"),
+        ("dag_merge_index (LMDB)", "dag_merge_index_time"),
+        ("dag_merge_conflict", "dag_merge_conflict_time"),
+        ("  branches (depends O(D²))", "dag_merge_branches_time"),
+        ("  conflicts_map (O(B²))", "dag_merge_conflicts_map_time"),
+        ("  rejection_options", "dag_merge_rejection_options_time"),
+        ("  channel_reads (storage)", "dag_merge_channel_reads_time"),
+        ("  combine_changes", "dag_merge_combine_changes_time"),
+        ("  compute_trie_actions", "dag_merge_compute_trie_actions_time"),
+        ("  apply_trie_actions", "dag_merge_apply_trie_actions_time"),
+    ]
+    dag_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in dag_metrics)
+    if dag_has_data:
+        lines.append("  DAG merge breakdown (avg per merge):")
+        for label, key in dag_metrics:
+            avg = metrics.get(key, 0)
+            count = metrics.get(key + ".count", 0)
+            if count > 0:
+                lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} merges)")
+    # Replay phases
+    replay_phases = [
+        ("reset", "block_replay_phase_reset_time"),
+        ("user_deploys", "block_replay_phase_user_deploys_time"),
+        ("system_deploys", "block_replay_phase_system_deploys_time"),
+        ("checkpoint", "block_replay_phase_create_checkpoint_time"),
+    ]
+    lines.append("  Replay phases (avg per block):")
+    for label, key in replay_phases:
+        avg = metrics.get(key, 0)
+        count = metrics.get(key + ".count", 0)
+        if count > 0:
+            lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} blocks)")
+    return "\n".join(lines)
 
 
 def _get_lfb_number(node: Node) -> int:
@@ -398,6 +539,7 @@ def test_deploy_throughput_and_finalization(
 
             tracker.clear()
             lfb_start = _get_lfb_number(validator1_node)
+            metrics_before = _scrape_metrics(validator1_node)
             phase_time_start = time.time()
 
             deploy_count, errors, submission_duration = _run_phase(
@@ -421,6 +563,8 @@ def test_deploy_throughput_and_finalization(
             tracker.wait_for_finalization(timeout=FINALIZATION_TIMEOUT)
 
             lfb_end = _get_lfb_number(validator1_node)
+            metrics_after = _scrape_metrics(validator1_node)
+            node_metrics = _compute_metric_deltas(metrics_before, metrics_after)
             phase_time_end = time.time()
             phase_total = phase_time_end - phase_time_start
 
@@ -454,6 +598,7 @@ def test_deploy_throughput_and_finalization(
                 lfb_end=lfb_end,
                 lfb_rate_per_min=lfb_rate,
                 phase_duration=phase_total,
+                node_metrics=node_metrics,
             )
             all_reports.append(report)
 
@@ -463,11 +608,19 @@ def test_deploy_throughput_and_finalization(
                 phase_name, inc_p50, inc_p95, fin_p50, fin_p95,
                 lfb_start, lfb_end, lfb_rate, unfinalized,
             )
+            if node_metrics:
+                logging.info("  Node internals (V1):\n%s", _format_node_metrics(node_metrics))
 
     finally:
         tracker.shutdown()
 
     logging.info(_format_report(all_reports))
+
+    # Log node internal metrics for each phase
+    for report in all_reports:
+        if report.node_metrics:
+            logging.info("Node metrics for phase '%s':\n%s",
+                         report.name, _format_node_metrics(report.node_metrics))
 
     assert total_failures == 0, f"{total_failures} deploy(s) failed to submit"
     assert total_unfinalized == 0, (

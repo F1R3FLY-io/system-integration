@@ -93,7 +93,7 @@
 
 | Test | What it does |
 |------|-------------|
-| `test_deploy_throughput_and_finalization` | Submits deploys at increasing rates (1/sec, 5/sec, 10/sec, burst of 32) across 3 validators. Measures per-deploy inclusion and finalization latency (p50/p95/p99), effective throughput, and LFB advancement rate per phase. Reports a summary table. Hard assertions: zero deploy failures, all deploys finalized within 90s, no node crashes |
+| `test_deploy_throughput_and_finalization` | Submits deploys at increasing rates (1/sec, 5/sec, 10/sec, burst of 32) across 3 validators. Measures per-deploy inclusion and finalization latency (p50/p95/p99), effective throughput, and LFB advancement rate per phase. Scrapes Prometheus `/metrics` at phase boundaries to report node-internal timing: validation steps, checkpoint breakdown (merge vs replay), DAG merge pipeline (branches, conflicts_map, rejection, trie actions), and replay phases. Hard assertions: zero deploy failures, all deploys finalized within timeout, no node crashes |
 
 ## test_consensus_health.py (shard, 1 test -- runs last)
 
