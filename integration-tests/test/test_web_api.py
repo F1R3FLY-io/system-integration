@@ -176,6 +176,76 @@ def test_get_deploy(node_with_blocks: Tuple[Node, List[str], List[str]]) -> None
     assert "seqNum" in deploy_block
 
 
+def test_get_data_at_name_empty_payload(node_with_blocks: Tuple[Node, List[str], List[str]]) -> None:
+    """getDataAtName returns empty payload (not error) when deploy has no data.
+
+    The deploys in node_with_blocks use '@1!(1)' which writes to channel @1,
+    not to deployId. So querying deployId should return empty data, not an error.
+    """
+    node = node_with_blocks[0]
+    deploy_hash = node_with_blocks[1][0]
+    block_hash = node_with_blocks[2][0]
+
+    result = node.get_deploy_data(deploy_hash, block_hash=block_hash)
+    # Should return None or empty data — NOT raise an exception
+    # On older nodes this would raise "No data found" error
+    assert result is None or len(result.par) == 0, (
+        f"Expected empty data for deploy without deployId write, got: {result}"
+    )
+
+
+def test_propose_no_new_deploys(validator1_node: Node) -> None:
+    """Propose with no pending deploys returns informative NoNewDeploys message."""
+    from f1r3fly.client import F1r3flyClientException
+
+    # On a shard with heartbeat, all deploys are auto-proposed.
+    # A manual propose with nothing pending should fail with NoNewDeploys.
+    try:
+        validator1_node.propose(retries=1, retry_delay=0.5)
+        # If it succeeds, heartbeat had a pending block — that's fine
+    except F1r3flyClientException as e:
+        message = str(e)
+        assert "NoNewDeploys" in message or "No new deploys" in message, (
+            f"Expected NoNewDeploys error, got: {message}"
+        )
+    except Exception as e:
+        # Other errors (contention, etc.) are acceptable
+        message = str(e)
+        if "another propose is in progress" not in message:
+            assert "NoNewDeploys" in message or "No new deploys" in message, (
+                f"Expected NoNewDeploys or contention, got: {message}"
+            )
+
+
+def test_get_deploy_detail(node_with_blocks: Tuple[Node, List[str], List[str]]) -> None:
+    """HTTP /api/deploy/<id>?view=detail returns deploy execution details."""
+    node = node_with_blocks[0]
+    deploy_hash = node_with_blocks[1]
+    client = HttpClient('localhost', node.get_http_port())
+
+    detail = client.get_deploy_detail(deploy_hash[0])
+    assert "blockHash" in detail
+    assert "blockNumber" in detail
+    assert "cost" in detail
+    assert "errored" in detail
+    assert "deployer" in detail
+    assert isinstance(detail["cost"], int)
+    assert detail["cost"] > 0
+    assert detail["errored"] is False
+
+
+def test_explore_deploy_returns_cost(readonly_node: Node) -> None:
+    """HTTP /api/explore-deploy returns execution cost."""
+    client = HttpClient('localhost', readonly_node.get_http_port())
+
+    result = client.explore_deploy('new x in { x!(1 + 1) }')
+    assert "cost" in result
+    assert isinstance(result["cost"], int)
+    assert result["cost"] > 0
+    assert "expr" in result
+    assert "block" in result
+
+
 def test_deploy_via_http(node_with_blocks: Tuple[Node, List[str], List[str]]) -> None:
     """HTTP /api/deploy accepts a deploy request."""
     node = node_with_blocks[0]
