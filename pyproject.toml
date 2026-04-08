@@ -70,6 +70,7 @@ python_files = [
 	"test_propose.py",
 	"test_replay_correctness.py",
 	"test_convergence.py",
+	"test_load.py",
 	"test_consensus_health.py",
 	"test_synchrony_constraint.py",
 	"test_asymmetric_bonds.py",

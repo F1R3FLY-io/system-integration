@@ -89,6 +89,12 @@
 |------|-------------|
 | `test_network_converges_after_slow_deploy` | Deploys a phlo-exhausting loop (`loop!(100000)` with 20M phlo). The loop blocks V1 for ~200s while V2+V3 produce heartbeat blocks. After the deploy finishes (errored -- phlo exhausted), verifies: (1) the deploy is included in a block, (2) LFB advances 3+ blocks past that block, (3) all 3 validators converge to the same LFB within 2 blocks |
 
+## test_load.py (shard, 1 test)
+
+| Test | What it does |
+|------|-------------|
+| `test_deploy_throughput_and_finalization` | Submits deploys at increasing rates (1/sec, 5/sec, 10/sec, burst of 32) across 3 validators. Measures per-deploy inclusion and finalization latency (p50/p95/p99), effective throughput, and LFB advancement rate per phase. Reports a summary table. Hard assertions: zero deploy failures, all deploys finalized within 90s, no node crashes |
+
 ## test_consensus_health.py (shard, 1 test -- runs last)
 
 | Test | What it does |
