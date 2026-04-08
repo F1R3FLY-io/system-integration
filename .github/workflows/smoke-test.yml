@@ -11,6 +11,7 @@ env:
   PYTEST_TIMEOUT_ARGS: >-
     --pytest-args "--timeout=600"
   FINALIZED_BLOCK_TARGET: 10
+  F1R3FLY_RUST_IMAGE: f1r3flyindustries/f1r3fly-rust-node:dev
 
 jobs:
   validate:
@@ -69,7 +70,7 @@ jobs:
       - run: |
           pip install poetry
           poetry install
-      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:dev
       - name: Start shard and wait for Running
         run: |
           poetry run shardctl up f1r3node-rust
@@ -190,7 +191,7 @@ jobs:
       - run: |
           pip install poetry
           poetry install
-      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:dev
       - name: Start standalone and wait for Running
         run: |
           poetry run shardctl up f1r3node-rust-standalone
@@ -674,7 +675,7 @@ jobs:
       - run: |
           pip install poetry
           poetry install --with integration
-      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:dev
       - name: Run test
         run: poetry run shardctl test --rust test_web_api ${{ env.PYTEST_TIMEOUT_ARGS }}
       - name: Test report
@@ -717,7 +718,7 @@ jobs:
       - run: |
           pip install poetry
           poetry install --with integration
-      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:dev
       - name: Run test
         run: poetry run shardctl test --rust "test_heartbeat_creates_blocks_when_idle and not shard" ${{ env.PYTEST_TIMEOUT_ARGS }}
       - name: Test report
@@ -760,7 +761,7 @@ jobs:
       - run: |
           pip install poetry
           poetry install --with integration
-      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:latest
+      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:dev
       - name: Run test
         run: poetry run shardctl test --rust test_synchrony_constraint ${{ env.PYTEST_TIMEOUT_ARGS }}
       - name: Test report
