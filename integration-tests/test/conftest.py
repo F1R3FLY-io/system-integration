@@ -1315,6 +1315,38 @@ def _describe_port_owner(port: int) -> str:
     return "\n\n".join(outputs).strip()
 
 
+def _kill_process_on_port(port: int) -> bool:
+    """Kill any process (e.g. lingering docker-proxy) listening on a port.
+
+    Returns True if a process was found and killed.
+    """
+    # Try fuser first (most direct), then lsof as fallback
+    for cmd in [
+        ["fuser", "-k", f"{port}/tcp"],
+        ["lsof", "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
+    ]:
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, check=False,
+            )
+            if cmd[0] == "lsof" and result.stdout.strip():
+                for pid in result.stdout.strip().split('\n'):
+                    pid = pid.strip()
+                    if pid.isdigit():
+                        subprocess.run(
+                            ["kill", "-9", pid],
+                            capture_output=True, check=False,
+                        )
+                        logging.info("Killed PID %s holding port %d", pid, port)
+                return True
+            elif cmd[0] == "fuser" and result.returncode == 0:
+                logging.info("fuser killed process on port %d", port)
+                return True
+        except FileNotFoundError:
+            continue
+    return False
+
+
 def _wait_for_port_free(port: int, timeout: float = 15.0,
                         force_cleanup: bool = True) -> None:
     """Wait until a TCP port is available for binding.
@@ -1323,16 +1355,21 @@ def _wait_for_port_free(port: int, timeout: float = 15.0,
     state for a few seconds.  This function polls until the port is free
     or raises RuntimeError after the timeout.
 
+    If a port is stuck (e.g. lingering docker-proxy from a cancelled CI
+    run), attempts to kill the owning process directly.
+
     Args:
         port: TCP port number to check.
         timeout: Maximum seconds to wait.
         force_cleanup: If True, call _force_cleanup_custom_containers()
-            as a last resort when ports are stuck.  Set to False when
-            called from within a running custom shard (e.g. add_peer_to_shard)
-            to avoid destroying the active shard and its network.
+            and _kill_process_on_port() as last resorts when ports are
+            stuck.  Set to False when called from within a running custom
+            shard (e.g. add_peer_to_shard) to avoid destroying the active
+            shard and its network.
     """
     deadline = time.time() + timeout
-    retry_cleanup_done = False
+    cleanup_attempted = False
+    kill_attempted = False
     while time.time() < deadline:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1340,12 +1377,17 @@ def _wait_for_port_free(port: int, timeout: float = 15.0,
                 s.bind(("0.0.0.0", port))
                 return
             except OSError:
-                # One extra cleanup pass can clear lingering docker-proxy
-                # listeners from aborted/overlapping custom shard teardowns.
-                if (force_cleanup and not retry_cleanup_done
-                        and time.time() >= (deadline - timeout / 2)):
+                elapsed = time.time() - (deadline - timeout)
+                # At 1/3 timeout: try removing containers by name
+                if (force_cleanup and not cleanup_attempted
+                        and elapsed >= timeout / 3):
                     _force_cleanup_custom_containers()
-                    retry_cleanup_done = True
+                    cleanup_attempted = True
+                # At 2/3 timeout: kill whatever process holds the port
+                if (force_cleanup and not kill_attempted
+                        and elapsed >= 2 * timeout / 3):
+                    _kill_process_on_port(port)
+                    kill_attempted = True
                 time.sleep(1)
     owner = _describe_port_owner(port)
     details = f"\nPort owner diagnostics:\n{owner}" if owner else ""
