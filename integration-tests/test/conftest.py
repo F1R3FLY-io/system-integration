@@ -1095,35 +1095,9 @@ def _generate_custom_compose(
             total_containers, max_ram_pct,
         )
 
-    # F1R3_* runtime tuning for Rust nodes (must match compose/f1r3node-rust.yml).
-    # These env vars are read via OnceLock on first use; Scala ignores them.
-    rust_env = [
-        # NOTE: All F1R3_SYNCHRONY_* vars intentionally omitted here.
-        # They override per-validator CLI settings at runtime via OnceLock, breaking
-        # test_synchrony_constraint which sets different thresholds per node.
-        # In particular, F1R3_SYNCHRONY_FINALIZED_BASELINE_ENABLED=1 enables a
-        # permissive check that bypasses the threshold the test expects to trigger.
-        # The static compose (docker-compose.rust.yml) sets these via x-rnode anchor.
-        'F1R3_HEARTBEAT_FRONTIER_CHASE_MAX_LAG=0',
-        'F1R3_HEARTBEAT_SELF_PROPOSE_COOLDOWN_MS=15000',
-        'F1R3_FINALIZER_WORK_BUDGET_MS=8000',
-        'F1R3_FINALIZER_CATCHUP_WORK_BUDGET_MS=8000',
-        'F1R3_FINALIZER_STEP_TIMEOUT_MS=1000',
-        'F1R3_FINALIZER_CATCHUP_STEP_TIMEOUT_MS=1000',
-        'F1R3_FINALIZER_MAX_CLIQUE_CANDIDATES=128',
-        'F1R3_FINALIZER_CANDIDATE_RANKING=recency_stake',
-        'F1R3_BLOCK_RETRIEVER_PEER_REQUERY_COOLDOWN_MS=500',
-        'F1R3_BLOCK_RETRIEVER_BROADCAST_ONLY_COOLDOWN_MS=500',
-        'F1R3_BLOCK_RETRIEVER_DEPENDENCY_RECOVERY_COOLDOWN_MS=500',
-        'F1R3_BLOCK_RETRIEVER_STALE_REQUEST_LIFETIME_MULTIPLIER=6',
-        'F1R3_BLOCK_RETRIEVER_MAX_RETRIES_PER_HASH=32',
-        'F1R3_BLOCK_RETRIEVER_KNOWN_PEER_REQUERY_SOFT_LIMIT=8',
-        'F1R3_BLOCK_RETRIEVER_MIN_REREQUEST_INTERVAL_MS=500',
-        'F1R3_BLOCK_RETRIEVER_RETRY_BUDGET_QUARANTINE_MS=10000',
-        'F1R3_BLOCK_RETRIEVER_DEDUP_QUERIED_PEERS=0',
-        'F1R3_MAX_BLOCKS_IN_PROCESSING=2048',
-        'F1R3_MAX_USER_DEPLOYS_PER_BLOCK=32',
-    ] if rust else []
+    # Rust nodes use HOCON config (defaults.conf + override file) for all
+    # runtime tuning. No F1R3_* env vars needed — they were removed in v0.4.10.
+    rust_env = ['RUST_LOG=info'] if rust else []
 
     services: Dict = {}
 
@@ -1341,6 +1315,38 @@ def _describe_port_owner(port: int) -> str:
     return "\n\n".join(outputs).strip()
 
 
+def _kill_process_on_port(port: int) -> bool:
+    """Kill any process (e.g. lingering docker-proxy) listening on a port.
+
+    Returns True if a process was found and killed.
+    """
+    # Try fuser first (most direct), then lsof as fallback
+    for cmd in [
+        ["fuser", "-k", f"{port}/tcp"],
+        ["lsof", "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
+    ]:
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, check=False,
+            )
+            if cmd[0] == "lsof" and result.stdout.strip():
+                for pid in result.stdout.strip().split('\n'):
+                    pid = pid.strip()
+                    if pid.isdigit():
+                        subprocess.run(
+                            ["kill", "-9", pid],
+                            capture_output=True, check=False,
+                        )
+                        logging.info("Killed PID %s holding port %d", pid, port)
+                return True
+            elif cmd[0] == "fuser" and result.returncode == 0:
+                logging.info("fuser killed process on port %d", port)
+                return True
+        except FileNotFoundError:
+            continue
+    return False
+
+
 def _wait_for_port_free(port: int, timeout: float = 15.0,
                         force_cleanup: bool = True) -> None:
     """Wait until a TCP port is available for binding.
@@ -1349,16 +1355,21 @@ def _wait_for_port_free(port: int, timeout: float = 15.0,
     state for a few seconds.  This function polls until the port is free
     or raises RuntimeError after the timeout.
 
+    If a port is stuck (e.g. lingering docker-proxy from a cancelled CI
+    run), attempts to kill the owning process directly.
+
     Args:
         port: TCP port number to check.
         timeout: Maximum seconds to wait.
         force_cleanup: If True, call _force_cleanup_custom_containers()
-            as a last resort when ports are stuck.  Set to False when
-            called from within a running custom shard (e.g. add_peer_to_shard)
-            to avoid destroying the active shard and its network.
+            and _kill_process_on_port() as last resorts when ports are
+            stuck.  Set to False when called from within a running custom
+            shard (e.g. add_peer_to_shard) to avoid destroying the active
+            shard and its network.
     """
     deadline = time.time() + timeout
-    retry_cleanup_done = False
+    cleanup_attempted = False
+    kill_attempted = False
     while time.time() < deadline:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1366,12 +1377,17 @@ def _wait_for_port_free(port: int, timeout: float = 15.0,
                 s.bind(("0.0.0.0", port))
                 return
             except OSError:
-                # One extra cleanup pass can clear lingering docker-proxy
-                # listeners from aborted/overlapping custom shard teardowns.
-                if (force_cleanup and not retry_cleanup_done
-                        and time.time() >= (deadline - timeout / 2)):
+                elapsed = time.time() - (deadline - timeout)
+                # At 1/3 timeout: try removing containers by name
+                if (force_cleanup and not cleanup_attempted
+                        and elapsed >= timeout / 3):
                     _force_cleanup_custom_containers()
-                    retry_cleanup_done = True
+                    cleanup_attempted = True
+                # At 2/3 timeout: kill whatever process holds the port
+                if (force_cleanup and not kill_attempted
+                        and elapsed >= 2 * timeout / 3):
+                    _kill_process_on_port(port)
+                    kill_attempted = True
                 time.sleep(1)
     owner = _describe_port_owner(port)
     details = f"\nPort owner diagnostics:\n{owner}" if owner else ""

@@ -6,8 +6,9 @@ the Last Finalized State (LFS / "trimmed state") rather than replaying
 the entire chain from genesis.
 
 Uses a custom shard with:
-- 1 genesis validator (V1) -- single validator so every block is immediately
-  finalized (no need to coordinate with other validators)
+- 2 genesis validators (V1=10M, V2=1) -- V2 has minimal stake so V1 controls
+  finalization. Two validators are needed for the genesis ceremony to complete
+  (required_signatures defaults to len(bonds)-1 = 1).
 - FTT = -1 (all blocks with FT > -1 are finalized, i.e. immediate finalization)
 - heartbeat disabled (manual block orchestration for deterministic chain)
 - synchrony-constraint-threshold = 0 (no constraint on single validator)
@@ -158,15 +159,10 @@ def test_trim_state(
                 logging.info("Post-join block %d: %s", i + 1, block_hash[:16])
                 _poll_block_visible(joiner, block_hash, scale=scale)
 
-            # ── Phase 4: Joiner proposes blocks ──
-            # The joiner is not bonded (not in genesis bonds.txt), so it
-            # cannot propose. Instead, verify that it has fully synced by
-            # confirming it sees all blocks and has consistent state.
-            #
-            # Note: Unlike the legacy test where the bootstrap was bonded
-            # and the trim node was also bonded, here V2 is NOT bonded.
-            # Bonded joiner proposing is tested in test_bonding_validators.
-            # For trim state, the important property is successful LFS sync.
+            # ── Phase 4: Verify joiner has fully synced ──
+            # V2 is a genesis-bonded validator (stake=1) joining mid-chain.
+            # Rather than testing proposing (covered by test_bonding_validators),
+            # verify successful LFS sync by checking block count and post-state.
             joiner_blocks = joiner.get_blocks(50)
             v1_blocks = v1.get_blocks(50)
 

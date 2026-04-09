@@ -4,6 +4,8 @@ Integration tests verify F1R3FLY node behavior through gRPC and HTTP APIs agains
 Docker-managed node clusters. Tests cover consensus, wallets, deploys, finalization,
 heartbeat, state trimming, bonding, slashing, and more.
 
+For a detailed description of every test case, see [TEST_CASES.md](TEST_CASES.md).
+
 ## Prerequisites
 
 - **Docker & Docker Compose** -- containers are managed automatically by the test fixtures

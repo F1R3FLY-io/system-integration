@@ -153,3 +153,15 @@ class HttpClient():
         rep = requests.get(deploy_url, timeout=60)
         _check_reponse(rep)
         return rep.json()
+
+    def get_deploy_detail(self, deploy_id: str) -> Dict:
+        deploy_url = f"{self.url}/deploy/{deploy_id}?view=detail"
+        rep = requests.get(deploy_url, timeout=60)
+        _check_reponse(rep)
+        return rep.json()
+
+    def explore_deploy(self, term: str) -> Dict:
+        explore_url = self.url + '/explore-deploy'
+        rep = requests.post(explore_url, json={"term": term}, timeout=60)
+        _check_reponse(rep)
+        return rep.json()
