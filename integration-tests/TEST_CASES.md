@@ -87,11 +87,12 @@
 |------|-------------|
 | `test_duplicate_sends_accepted_by_all_validators` | Deploys `bridge.rho` (which has duplicate channel sends: `requiredSigsCh!(2)` twice, `oracleCountCh!(3)` twice). Verifies the block is accepted by all validators and LFB advances 3+ blocks past the deploy on all 5 nodes |
 
-## test_convergence.py (shard, 1 test)
+## test_convergence.py (shard, 2 tests)
 
 | Test | What it does |
 |------|-------------|
-| `test_network_converges_after_slow_deploy` | Deploys a phlo-exhausting loop (`loop!(100000)` with 20M phlo). The loop blocks V1 for ~200s while V2+V3 produce heartbeat blocks. After the deploy finishes (errored -- phlo exhausted), verifies: (1) the deploy is included in a block, (2) LFB advances 3+ blocks past that block, (3) all 3 validators converge to the same LFB within 2 blocks |
+| `test_network_recovers_from_validator_pause` | Pauses validator1 container for 15s to force DAG tip divergence while V2+V3 produce heartbeat blocks. After unpause, verifies LFB advances 3+ blocks on all nodes (multi-parent convergence blocks merge the diverged forks) |
+| `test_network_converges_after_slow_deploy` | Deploys a phlo-exhausting loop (`loop!(100000)` with 20M phlo). The loop blocks V1 for ~200s while V2+V3 produce heartbeat blocks. After the deploy finishes (errored -- phlo exhausted), verifies: (1) the deploy is included in a block, (2) LFB advances 3+ blocks past that block, (3) all 3 validators converge to the same LFB within 2 blocks. **Not in CI** — stalls the shard for subsequent tests |
 
 ## test_load.py (shard, 1 test)
 

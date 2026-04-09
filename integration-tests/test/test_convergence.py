@@ -1,28 +1,26 @@
 """
-Network Convergence After DAG Fork Divergence (#437, #224)
+Network Convergence Tests
 
-Tests that the network recovers after a phlo-exhausting deploy (#224)
-blocks one validator while others produce heartbeat blocks, causing
-DAG tip divergence (#437).
+Tests that the network recovers after DAG tip divergence caused by:
+1. Validator pause — pausing a container forces other validators to
+   produce independent blocks, creating DAG forks that must be merged
+   after unpause.
+2. Slow deploy — a phlo-exhausting deploy (#224) blocks one validator
+   while others produce heartbeat blocks, causing divergence (#437).
 
 With synchrony-constraint-threshold=0 (recommended for multi-parent DAG),
-the synchrony constraint does not block proposals. The validator blocked
-by the slow deploy (~200s) eventually finishes, proposes the errored
-block, and the network converges normally. The test verifies this
-end-to-end recovery.
-
-With synchrony-constraint-threshold=0.67 (requires 7+ validators),
-the synchrony constraint actively blocks convergence — see the stashed
-fixes on f1r3node-rust branch fix/convergence-after-divergence and
-docs/TODO.md Level 2 notes.
+the synchrony constraint does not block proposals. The affected validator
+eventually recovers, proposes, and the network converges normally.
 """
 
 import logging
 import time
+from typing import List
 
 import pytest
 from docker.client import DockerClient
 
+from .common import TestingContext
 from .conftest import (
     assert_containers_running,
     VALIDATOR1_KEY,
@@ -92,6 +90,70 @@ def _wait_for_lfb(node: Node, target: int, timeout: float) -> int:
         time.sleep(5)
     raise AssertionError(
         f"{node.name}: LFB stuck at #{current}, expected >= #{target} within {timeout}s"
+    )
+
+
+def _assert_lfb_advances_all_nodes(
+    nodes: List[Node], target: int, timeout: float,
+) -> None:
+    """Assert LFB reaches target on all nodes within timeout."""
+    deadline = time.time() + timeout
+    remaining = set(node.name for node in nodes)
+    while time.time() < deadline and remaining:
+        for node in nodes:
+            if node.name not in remaining:
+                continue
+            try:
+                lfb = _get_lfb_number(node)
+                if lfb >= target:
+                    logging.info("%s: LFB reached #%d", node.name, lfb)
+                    remaining.discard(node.name)
+            except Exception:
+                pass
+        if remaining:
+            time.sleep(5)
+    if remaining:
+        stalled = []
+        for node in nodes:
+            if node.name in remaining:
+                try:
+                    lfb = _get_lfb_number(node)
+                except Exception:
+                    lfb = -1
+                stalled.append(f"{node.name} at #{lfb}")
+        raise AssertionError(
+            f"LFB did not reach #{target} on: {', '.join(stalled)} within {timeout}s"
+        )
+
+
+def test_network_recovers_from_validator_pause(
+    docker_client: DockerClient,
+    testing_context: TestingContext,
+    validator1_node: Node,
+    all_nodes: List[Node],
+) -> None:
+    """Pause validator1 for 15s to force DAG tip divergence, then verify
+    the network converges and LFB advances on all nodes.
+
+    While validator1 is paused, other validators create blocks via heartbeat.
+    After unpause, the validators exchange tips and must propose multi-parent
+    convergence blocks to merge the diverged forks.
+    """
+    assert_containers_running(docker_client, ALL_CONTAINERS)
+
+    baseline_lfb = _get_lfb_number(validator1_node)
+    logging.info("Baseline LFB: block #%d", baseline_lfb)
+
+    container = docker_client.containers.get("rnode.validator1")
+    logging.info("Pausing validator1 for 15s to force DAG divergence...")
+    container.pause()
+    time.sleep(15)
+    container.unpause()
+    logging.info("Validator1 unpaused. Waiting for network convergence...")
+
+    advance_timeout = int(120 * testing_context.timeout_scale)
+    _assert_lfb_advances_all_nodes(
+        all_nodes, baseline_lfb + 3, advance_timeout,
     )
 
 
