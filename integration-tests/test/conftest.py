@@ -169,6 +169,13 @@ def _is_rust_node() -> bool:
     return "rust" in image.lower()
 
 
+def _get_conf_file() -> str:
+    """Determine which HOCON config file to use based on DEFAULT_IMAGE."""
+    if _is_rust_node():
+        return "rust.conf"
+    return "scala.conf"
+
+
 def _get_compose_file() -> str:
     """Determine which compose file to use based on DEFAULT_IMAGE env var."""
     if _is_rust_node():
@@ -1131,7 +1138,7 @@ def _generate_custom_compose(
         'ports': [f"{boot_base + p}:4040{p}" for p in range(6)],
         'volumes': [
             'boot-data:/var/lib/rnode',
-            f"{abs_conf}/default.conf:/var/lib/rnode/rnode.conf",
+            f"{abs_conf}/{_get_conf_file()}:/var/lib/rnode/rnode.conf",
             f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
             f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
         ] + ([] if rust else [
@@ -1181,7 +1188,7 @@ def _generate_custom_compose(
             'ports': [f"{base_port + p}:4040{p}" for p in range(6)],
             'volumes': [
                 f'{node_key}-data:/var/lib/rnode',
-                f"{abs_conf}/default.conf:/var/lib/rnode/rnode.conf",
+                f"{abs_conf}/{_get_conf_file()}:/var/lib/rnode/rnode.conf",
                 f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
                 f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
             ] + ([] if rust else [
@@ -1780,7 +1787,7 @@ def add_peer_to_shard(
         joiner_volume: {
             'bind': '/var/lib/rnode/', 'mode': 'rw',
         },
-        os.path.join(abs_conf, 'default.conf'): {
+        os.path.join(abs_conf, _get_conf_file()): {
             'bind': '/var/lib/rnode/rnode.conf', 'mode': 'ro',
         },
         os.path.join(shard.genesis_dir, 'bonds.txt'): {

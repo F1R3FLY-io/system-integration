@@ -35,7 +35,7 @@ services:
       - "40455:40405"
     volumes:
       - observer-data:/var/lib/rnode
-      - ../conf/default.conf:/var/lib/rnode/rnode.conf
+      - ../conf/rust.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
     environment:

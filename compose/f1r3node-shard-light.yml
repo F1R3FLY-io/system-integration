@@ -56,7 +56,7 @@ services:
       - "40405:40405"
     volumes:
       - boot-data:/var/lib/rnode
-      - ../conf/default.conf:/var/lib/rnode/rnode.conf
+      - ../conf/scala.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/shard-light-bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
@@ -97,7 +97,7 @@ services:
       - "40415:40405"
     volumes:
       - validator1-data:/var/lib/rnode
-      - ../conf/default.conf:/var/lib/rnode/rnode.conf
+      - ../conf/scala.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/shard-light-bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
@@ -138,7 +138,7 @@ services:
       - "40425:40405"
     volumes:
       - validator2-data:/var/lib/rnode
-      - ../conf/default.conf:/var/lib/rnode/rnode.conf
+      - ../conf/scala.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/shard-light-bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
