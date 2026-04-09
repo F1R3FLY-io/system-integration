@@ -99,6 +99,18 @@
 |------|-------------|
 | `test_deploy_throughput_and_finalization` | Submits deploys at increasing rates (1/sec, 5/sec, 10/sec, burst of 32) across 3 validators. Measures per-deploy inclusion and finalization latency (p50/p95/p99), effective throughput, and LFB advancement rate per phase. Scrapes Prometheus `/metrics` at phase boundaries to report node-internal timing: validation steps, checkpoint breakdown (merge vs replay), DAG merge pipeline (branches, conflicts_map, rejection, trie actions), and replay phases. Hard assertions: zero deploy failures, all deploys finalized within timeout, no node crashes |
 
+## test_bridge_admin.py (shard, 1 test)
+
+| Test | What it does |
+|------|-------------|
+| `test_bridge_admin_api` | Deploys the bridge.rho contract (multi-sig bridge with oracles, vault integration, lock/unlock operations). Verifies deploy succeeds, block is finalized, and the BlockReportAPI returns correct deploy info including cost, errored status, and deployer. Tests the full lifecycle of a complex production contract |
+
+## test_shard_degradation.py (shard, 1 test)
+
+| Test | What it does |
+|------|-------------|
+| `test_shard_degradation` | Production-readiness gate: deploys 150 non-trivial Rholang contracts (6 types including bridge.rho) across 3 validators in batches of 10. Monitors all 5 nodes for: LFB advancement rate, validator desync (<5 blocks), finalizer timeouts (zero), deploy inclusion (<15s), deploy finalization (<30s), API latency (<2s), LFB stalls (max 1 batch). Fails if any threshold is violated |
+
 ## test_consensus_health.py (shard, 1 test -- runs last)
 
 | Test | What it does |
