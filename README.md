@@ -207,11 +207,12 @@ shardctl test-reset               Clean up test containers and volumes
 
 ### Node Config Files
 
-Rust and Scala nodes share 2 config files in `conf/`. These are minimal overrides — they contain only settings that differ from the node's built-in defaults. Per-role behavior is controlled entirely via CLI flags in compose commands. See [Consensus Configuration Guide](docs/consensus-configuration.md) for detailed semantics of `fault-tolerance-threshold`, `synchrony-constraint-threshold`, and their effect on finalization.
+Rust and Scala nodes each have their own config file in `conf/`. These are minimal overrides — they contain only settings that differ from the node's built-in defaults. Per-role behavior is controlled entirely via CLI flags in compose commands. See [Consensus Configuration Guide](docs/consensus-configuration.md) for detailed semantics of `fault-tolerance-threshold`, `synchrony-constraint-threshold`, and their effect on finalization.
 
 | Config File | Used By | Purpose |
 |-------------|---------|---------|
-| `default.conf` | All shard roles (both Rust and Scala) | Minimal overrides on top of node defaults, GC enabled |
+| `rust.conf` | Rust shard roles | Minimal overrides on top of Rust node defaults |
+| `scala.conf` | Scala shard roles | Minimal overrides on top of Scala node defaults |
 | `standalone-dev.conf` | All standalone nodes (both Rust and Scala) | Minimal overrides for standalone mode |
 
 Per-role CLI flags used in compose files:

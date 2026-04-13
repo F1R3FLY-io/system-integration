@@ -292,7 +292,7 @@ Key settings:
 - `RUST_LOG` -- Can be passed to containers for debug log filtering (e.g. `RUST_LOG="info,f1r3fly.compute_parents_post_state.timing=debug"`). Set this env var before running `shardctl test` or export it so Docker Compose forwards it to node containers.
 
 The `integration-tests/` directory contains its own `genesis/` and `certs/`
-for test isolation. Node config files (`default.conf`, `standalone-dev.conf`)
+for test isolation. Node config files (`rust.conf`, `scala.conf`, `standalone-dev.conf`)
 and `.env.node` are shared from the top-level `conf/` and root directories —
 role-specific behavior is controlled via CLI flags in compose commands and
 conftest.py. Only `logback.xml` remains in `integration-tests/conf/`.
