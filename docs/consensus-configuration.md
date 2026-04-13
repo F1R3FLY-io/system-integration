@@ -160,7 +160,7 @@ Same as dev — tests need 2/3 finalization to verify shard recovery from valida
 
 ## Related
 
-- `conf/default.conf` — where these values are set for docker shard
+- `conf/rust.conf` / `conf/scala.conf` — where these values are set for docker shard
 - `node/src/main/resources/defaults.conf` — hardcoded defaults (FTT=0.67 for both Scala and Rust)
 - `casper/src/rust/finality/finalizer.rs` — finalization algorithm and FT formula
 - `casper/src/rust/safety/clique_oracle.rs` — weight map calculation

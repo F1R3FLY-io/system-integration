@@ -30,6 +30,7 @@ pycryptodome = "*"
 pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git" }
 requests = "*"
 pytest-timeout = "^2.4.0"
+websocket-client = "^1.9.0"
 
 [tool.poetry.scripts]
 shardctl = "shardctl.cli:app"
@@ -72,6 +73,7 @@ python_files = [
 	"test_convergence.py",
 	"test_load.py",
 	"test_consensus_health.py",
+	"test_websocket.py",
 	"test_synchrony_constraint.py",
 	"test_asymmetric_bonds.py",
 	"test_bonding_validators.py",
