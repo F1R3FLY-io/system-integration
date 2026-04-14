@@ -44,7 +44,6 @@ from .conftest import (
     VALIDATOR1_ID,
     VALIDATOR2_ID,
     _custom_port_bases,
-    _force_cleanup_custom_containers,
     _custom_compose_down,
     _custom_compose_up,
     _generate_custom_compose,
@@ -273,7 +272,6 @@ def ws_shard(
             port_bases=port_bases,
         )
 
-        _force_cleanup_custom_containers()
         _custom_compose_down(compose_file, project_name=project_name)
         _wait_for_custom_ports_free(len(bonds), port_bases=port_bases)
         _wait_for_port_range_free(port_bases['joiner'])
