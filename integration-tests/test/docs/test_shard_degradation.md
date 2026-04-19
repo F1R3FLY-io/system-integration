@@ -6,7 +6,7 @@ Production-readiness gate: deploys 150 non-trivial Rholang contracts across 3 va
 
 ## How it works
 
-150 contracts are deployed in batches of 10. Every 3rd deploy is `bridge.rho` (complex persistent contract with registry operations); the rest cycle through 6 contract types: registry insert/lookup, map operations, channel joins, nested pattern matching, recursive loops, and set operations.
+150 contracts are deployed in batches of 10. Every 3rd deploy is `bridge-v2.rho` (complex persistent contract with registry operations); the rest cycle through 6 contract types: registry insert/lookup, map operations, channel joins, nested pattern matching, recursive loops, and set operations.
 
 After each batch, the test pauses 30 seconds for propagation and measures:
 - **LFB numbers** on all 5 nodes (boot, 3 validators, readonly)
@@ -26,8 +26,8 @@ After all 150 deploys, 10 sampled deploys are checked for inclusion and finaliza
 | 3 | LFB rate degradation | Must stay above 50% of initial rate |
 | 4 | Validator desync | Max 5 blocks |
 | 5 | LFB stalls | Max 1 consecutive batch |
-| 6 | Deploy inclusion | All sampled deploys included within 15s |
-| 7 | Deploy finalization | All included deploys finalized within 30s |
+| 6 | Deploy inclusion | All sampled deploys included within `timeouts.deploy_inclusion` |
+| 7 | Deploy finalization | All included deploys finalized within `timeouts.finalization` |
 | 8 | API latency | Under 2s |
 
 ## Setup
@@ -42,7 +42,7 @@ After all 150 deploys, 10 sampled deploys are checked for inclusion and finaliza
 
 | Type | Description | Phlo |
 |------|-------------|------|
-| bridge | Full bridge.rho with registry, vault, admin API | 500M |
+| bridge | Full bridge-v2.rho with registry, vault, admin API | 500M |
 | registry | insertArbitrary + lookup | 500K |
 | map | create, set, delete | 500K |
 | channel_join | 3-way channel join + computation | 500K |
@@ -57,13 +57,16 @@ After all 150 deploys, 10 sampled deploys are checked for inclusion and finaliza
 - Validators stay in sync (no permanent fork divergence)
 - No finalizer timeouts (the most common degradation symptom)
 - API remains responsive under load
-- Deploy pipeline handles bridge.rho (the heaviest real-world contract) repeatedly
+- Deploy pipeline handles bridge-v2.rho (the heaviest real-world contract) repeatedly
 
 ## Infrastructure used
 
 - `ShardConfig` with `include_readonly=True`
 - `Shard.create()` / `shard.destroy()` lifecycle
-- `Node.deploy_string()`, `Node.find_deploy()`, `Node.last_finalized_block()`, `Node.logs()`
+- `Node.deploy_string()`, `Node.deploy_rho_file()`, `Node.find_deploy()`, `Node.last_finalized_block()`, `Node.logs()`, `Node.is_running()`
+- `scrape_metrics()`, `compute_metric_deltas()`, `format_node_metrics()` from `infra/metrics.py` for Prometheus metrics (scraped before/after full test)
+- Framework timeouts (`timeouts.deploy_inclusion`, `timeouts.finalization`) instead of hardcoded `MAX_DEPLOY_INCLUSION_SECS`/`MAX_DEPLOY_FINALIZATION_SECS`
+- Node alive check via `is_running()` on all nodes (including readonly) after test
 - Manual `time.sleep()` for deploy pacing and batch propagation (intentional, not polling)
 
 ## Related

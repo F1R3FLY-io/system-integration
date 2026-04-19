@@ -27,7 +27,7 @@ This concurrent polling measures actual latency, not serialized submission + pol
 
 ### Prometheus metrics
 
-Between phases, the test scrapes the node's `/metrics` endpoint for histogram data (validation step times, DAG merge times, replay phase times). Delta computation gives per-block averages for each phase, identifying which internal stages are bottlenecks under load.
+Between phases, the test scrapes the node's `/metrics` endpoint via `scrape_metrics()` from `infra/metrics.py`. Delta computation via `compute_metric_deltas()` gives per-block averages for each phase, identifying which internal stages are bottlenecks under load. The extended metrics list includes per-deploy replay breakdown, runtime spawn, and RSpace operations. Results are formatted via `format_node_metrics()`.
 
 ### Report format
 
@@ -45,17 +45,19 @@ low      |      30 |    1.0 |   3.2   5.1   6.0     |   8.4  12.3  14.1     |   
 
 ### test_deploy_throughput_and_finalization
 
-Runs all 4 phases sequentially on a fresh 3-validator shard. After all phases:
+Runs all 4 phases sequentially on a fresh 3-validator shard with readonly observer. After all phases:
 - Asserts zero deploy submission failures
 - Asserts all deploys were finalized within the timeout
-- Asserts all nodes are still running (no crashes)
+- Asserts readonly LFB is within 5 blocks of V1 LFB (readonly gap check)
+- Asserts all nodes (including readonly) are still running via `is_running()` (no crashes)
 - Logs the full results table and per-phase node metrics
 
 ## Setup
 
-- **Topology**: Custom 3-validator shard (100/100/100 bonds)
+- **Topology**: Custom 3-validator shard (100/100/100 bonds) + readonly observer
 - **FTT**: From `conf/rust.conf`
 - **Heartbeat**: Enabled (for automatic block inclusion)
+- **include_readonly**: True
 
 ## What it proves
 
@@ -68,15 +70,17 @@ Runs all 4 phases sequentially on a fresh 3-validator shard. After all phases:
 
 - `total_failures == 0` -- all deploys submitted successfully
 - `total_unfinalized == 0` -- all deploys finalized within timeout
-- `node.is_running()` for all nodes -- no crashes
+- Readonly LFB gap <= 5 blocks behind V1
+- `node.is_running()` for all nodes (including readonly) -- no crashes
 
 ## Infrastructure used
 
 - `Shard.create()` / `shard.destroy()` lifecycle
-- `Node.deploy_string()`, `Node.find_deploy()`, `Node.last_finalized_block()`, `Node.get_current_block_number()`
-- `Node.http_url` for Prometheus metrics scraping
+- `Node.deploy_string()`, `Node.find_deploy()`, `Node.last_finalized_block()`, `Node.get_current_block_number()`, `Node.is_running()`
+- `LifecycleTracker`, `DeployRecord`, `PhaseReport` from `infra/metrics.py` for background inclusion/finalization monitoring
+- `scrape_metrics()`, `compute_metric_deltas()`, `format_node_metrics()`, `percentiles()` from `infra/metrics.py`
 - `ThreadPoolExecutor` for concurrent deploy submission
-- `LifecycleTracker` for background inclusion/finalization monitoring
+- Framework timeouts (`timeouts.deploy_inclusion`, `timeouts.finalization`) instead of hardcoded values
 
 ## Related
 

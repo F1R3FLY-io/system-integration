@@ -23,6 +23,19 @@ This matches the client-reported issue where rust-client shows FT=1.0 for all va
 
 **Fix locations:** Likely in the clique oracle FT scoring path — FT should be recomputed and consistent after finalization across all node roles (validator, boot, readonly).
 
+### Synchrony constraint test failures
+
+Two issues with `test_synchrony_constraint`:
+
+**1. First-proposal exemption not working reliably:** V3's first propose (seqNum 3) fails with "Must wait for more blocks from other validators" even though first proposals should be exempt. The exempt check in `synchrony_constraint_checker.rs` checks `last_proposed_block_meta.block_number == 0`, but the timing between block visibility and DAG processing may cause the check to evaluate against a non-genesis state.
+
+**2. `synchrony-finalized-baseline-enabled` not exposed as CLI flag:** This config key exists in HOCON (`casper_conf.rs`) but is not a clap CLI argument. Cannot disable the finalized baseline fallback via `--synchrony-finalized-baseline-enabled=false`. This prevents testing the pure synchrony constraint rejection case — with FTT=-1, the finalized baseline always rescues the proposer, making rejection untestable.
+
+**Fix needed:**
+- Expose `synchrony-finalized-baseline-enabled` as a CLI flag, or
+- Support per-test custom HOCON config file generation in the test framework
+- Investigate why first-proposal exemption fails at seqNum 3
+
 ### Contract query deploy returns empty deployId after finalization (intermittent)
 
 A query deploy against a finalized bridge contract occasionally returns empty data from the `deployId` channel. The deploy is included in a block and not errored, but the contract's response chain (`lookup → queryCh → ret!(v) → deployId!(result)`) doesn't complete within the block's execution.
@@ -49,12 +62,12 @@ When validators temporarily desynchronize (any cause), they create independent b
 - Any cause of temporary validator desynchronization
 
 **Integration tests written (reproduce the bug):**
-File: `integration-tests/test/test_replay_determinism.py`
+File: `integration-tests/test/tests/shared/test_convergence.py`
 
-| Test                                         | Trigger                                                             | What it asserts                              | Result (3 runs)                                             |
-| -------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------- |
-| `test_network_recovers_from_validator_pause` | Pause validator1 container for 15s, then unpause                    | LFB advances 3+ blocks after unpause         | FAILED 2/3 — non-deterministic, depends on divergence depth |
-| `test_network_recovers_from_slow_deploy`     | Deploy `loop!(1000000000)` (phlo-exhausting loop from f1r3node#224) | LFB advances 3+ blocks after deploy included | FAILED 3/3 — reliable reproduction                          |
+| Test                                         | Trigger                                                             | What it asserts                              | Result                                             |
+| -------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------- | -------------------------------------------------- |
+| `test_network_recovers_from_validator_pause` | Pause validator1 container for 30s, then unpause                    | LFB advances 3+ blocks on all nodes after unpause, FT >= FTT | PASSES |
+| `test_network_converges_after_slow_deploy`   | Deploy `loop!(100000)` (phlo-exhausting loop from f1r3node#224)     | LFB advances 3+ blocks, FT >= FTT, spread <= 2 | Deselected — triggers shard stall |
 
 The slow deploy test (`loop!(1000000000)`) is the most reliable trigger — the proposing validator is blocked long enough for other validators to create multiple independent blocks via heartbeat.
 
@@ -171,6 +184,14 @@ But fails for contracts that read from persistent state channels. Tested against
 4. Can exploratory deploy be extended to wait for responses on `new` channels?
 
 **File:** `f1r3node-rust/casper/src/rust/api/block_api.rs:1443-1506` — exploratory deploy execution path
+
+## Test: Validator expulsion with continued finalization
+
+Need to implement `test_validator_expulsion_continued_finalization` — V3 produces invalid state, V1+V2 reject V3's blocks, verify V1+V2 still finalize at FTT=0.1. The challenge is reliably triggering block rejection. Possible approaches: deploy with wrong key, corrupt block data, or use a mechanism that causes V3's blocks to be invalid.
+
+## Optimize test_shard_degradation batch propagation wait
+
+`test_shard_degradation` takes ~11 minutes. The main cost is `BATCH_PROPAGATION_SECS = 30` — a fixed 30-second sleep after each of 15 batches (450s total). This could be replaced with a poll that checks LFB advancement across all nodes, returning early once propagation is confirmed instead of waiting the full 30 seconds.
 
 ## Background Traffic Generator for Integration Tests
 

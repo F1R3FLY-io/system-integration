@@ -53,8 +53,6 @@ PHASES = [
     {"name": "burst",  "rate": 0,  "duration": 0,  "workers": 3, "burst_count": 32},
 ]
 
-FINALIZATION_TIMEOUT = 120
-INCLUSION_TIMEOUT = 90
 VABN_REFRESH_INTERVAL = 30
 
 VALIDATORS_AND_KEYS = [
@@ -196,6 +194,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
             (VALIDATOR3_ID, 100),
         ],
         heartbeat=True,
+        include_readonly=True,
     )
     shard = Shard.create(provider, config, timeouts)
     try:
@@ -218,7 +217,10 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
 
         logging.info("Baseline LFB: #%d", baseline_lfb)
 
-        tracker = LifecycleTracker(nodes, inclusion_timeout=INCLUSION_TIMEOUT)
+        inclusion_timeout = timeouts.deploy_inclusion
+        finalization_timeout = timeouts.finalization
+
+        tracker = LifecycleTracker(nodes, inclusion_timeout=inclusion_timeout)
         tracker.start_lfb_monitor()
 
         all_reports: List[PhaseReport] = []
@@ -253,7 +255,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                     len(errors),
                 )
 
-                tracker.wait_for_finalization(timeout=FINALIZATION_TIMEOUT)
+                tracker.wait_for_finalization(timeout=finalization_timeout)
 
                 lfb_end = _get_lfb_number(v1)
                 metrics_after = scrape_metrics(v1)
@@ -308,12 +310,23 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                 logging.info("Node metrics for phase '%s':\n%s",
                              report.name, format_node_metrics(report.node_metrics))
 
+        # Verify readonly LFB tracked validators
+        ro = shard.readonly
+        if ro:
+            ro_lfb = _get_lfb_number(ro)
+            v1_lfb = _get_lfb_number(v1)
+            lfb_gap = v1_lfb - ro_lfb
+            logging.info("Readonly LFB: #%d (V1: #%d, gap: %d)", ro_lfb, v1_lfb, lfb_gap)
+            assert lfb_gap <= 5, (
+                f"Readonly LFB #{ro_lfb} is {lfb_gap} blocks behind V1 #{v1_lfb} after load test"
+            )
+
         # Hard assertions
         assert total_failures == 0, f"{total_failures} deploy(s) failed to submit"
         assert total_unfinalized == 0, (
-            f"{total_unfinalized} deploy(s) not finalized within {FINALIZATION_TIMEOUT}s"
+            f"{total_unfinalized} deploy(s) not finalized within {finalization_timeout}s"
         )
-        for node in [v1, v2, v3]:
+        for node in shard.all_nodes:
             assert node.is_running(), f"{node.name} is not running after load test"
     finally:
         shard.destroy()

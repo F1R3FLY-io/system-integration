@@ -91,6 +91,10 @@ class Node:
         return f"http://{self.grpc_host}:{self.http_port}"
 
     @property
+    def ws_url(self) -> str:
+        return f"ws://{self.grpc_host}:{self.http_port}/ws/events"
+
+    @property
     def network_name(self) -> str:
         return self._handle.network_name
 

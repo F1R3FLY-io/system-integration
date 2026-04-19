@@ -47,17 +47,17 @@ The normalized FT value for a given agreement ratio:
 
 | Agreeing / Total | FT value | Finalized at FTT=0.0? | FTT=0.1? | FTT=0.33? | FTT=0.67? |
 |-----------------|----------|----------------------|----------|-----------|-----------|
-| 2/3 (67%) | 0.33 | Yes | Yes | No (strict >) | No |
+| 2/3 (67%) | 0.3333... (1/3) | Yes | Yes | Yes (0.333 > 0.33) | No |
 | 3/4 (75%) | 0.50 | Yes | Yes | Yes | No |
-| 5/7 (71%) | 0.43 | Yes | Yes | Yes | No |
-| 5/6 (83%) | 0.67 | Yes | Yes | Yes | No (strict >) |
-| 6/7 (86%) | 0.71 | Yes | Yes | Yes | Yes |
+| 5/7 (71%) | 0.4286... (3/7) | Yes | Yes | Yes | No |
+| 5/6 (83%) | 0.6667... (2/3) | Yes | Yes | Yes | No (0.667 < 0.67) |
+| 6/7 (86%) | 0.7143... (5/7) | Yes | Yes | Yes | Yes |
 | 7/10 (70%) | 0.40 | Yes | Yes | Yes | No |
 | 9/10 (90%) | 0.80 | Yes | Yes | Yes | Yes |
 
 Key observations:
 - **FTT=0.67** (default) with 3 equal-stake validators requires **all 3** to agree for finalization. Losing 1 validator halts finalization.
-- **FTT=0.33** with 3 validators still requires all 3 (FT for 2/3 = 0.33, comparison is strict `>`)
+- **FTT=0.33** with 3 validators allows 2/3 to finalize (FT for 2/3 = 1/3 ≈ 0.3333, which IS > 0.33)
 - **FTT=0.1** with 3 validators allows 2/3 to finalize (FT 0.33 > 0.1)
 - **FTT=0.67** with 7+ validators starts being practical (can lose 1 of 7)
 

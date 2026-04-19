@@ -17,8 +17,9 @@ The test:
 1. Creates multiple finalized blocks on V1 with diverse contract deploys
 2. Adds a joiner node mid-test via shard.add_joiner()
 3. Verifies the joiner sees the latest block (synced from LFS)
-4. Continues creating blocks on V1 and verifies the joiner keeps up
-5. Verifies post-state agreement between V1 and the joiner
+4. Verifies the joiner's LFB matches V1's LFB
+5. Continues creating blocks on V1 and verifies the joiner keeps up
+6. Verifies post-state agreement between V1 and the joiner
 """
 
 import logging
@@ -31,6 +32,13 @@ from ...infra.polling import wait_for_block_visible
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
+
+_SYNC_THRESHOLD = "0"
+_FTT = "-1"
+
+_SHARD_CLI_OPTIONS = {
+    "--synchrony-constraint-threshold": _SYNC_THRESHOLD,
+}
 
 # Diverse Rholang contracts for generating meaningful state
 _CONTRACTS = [
@@ -49,9 +57,6 @@ _CONTRACTS = [
 def test_trim_state(provider, timeouts) -> None:
     """Verify a joiner syncs from trimmed (LFS) state and can then keep up."""
 
-    # Two genesis validators so the genesis ceremony completes correctly
-    # (required_signatures defaults to len(bonds)-1 = 1). V2 has minimal
-    # bond (1) so V1 controls >99.99% of stake and can finalize on its own.
     config = ShardConfig(
         bonds=[
             (VALIDATOR1_ID, 10_000_000),
@@ -59,16 +64,13 @@ def test_trim_state(provider, timeouts) -> None:
         ],
         ftt=-1,
         heartbeat=False,
-        global_cli_options={
-            "--synchrony-constraint-threshold": "0",
-        },
+        global_cli_options=_SHARD_CLI_OPTIONS,
     )
     shard = Shard.create(provider, config, timeouts)
     try:
         v1 = shard.node("validator1")
 
         # ── Phase 1: Create finalized blocks on V1 ──
-        # With FTT=-1, every block is immediately finalized after V1 proposes.
         logging.info("Phase 1: Creating %d finalized blocks on V1", len(_CONTRACTS))
         latest_block_hash = None
         for i, contract in enumerate(_CONTRACTS):
@@ -81,32 +83,37 @@ def test_trim_state(provider, timeouts) -> None:
 
         assert latest_block_hash is not None
 
-        # Verify finalization has advanced (with FTT=-1, LFB should be recent)
-        lfb = v1.last_finalized_block()
-        lfb_number = lfb.blockInfo.blockNumber
-        logging.info("V1 LFB after phase 1: block #%d", lfb_number)
-        assert lfb_number > 0, (
-            f"Expected LFB > 0 with FTT=-1, got #{lfb_number}"
+        v1_lfb = v1.last_finalized_block()
+        v1_lfb_number = v1_lfb.blockInfo.blockNumber
+        logging.info("V1 LFB after phase 1: block #%d", v1_lfb_number)
+        assert v1_lfb_number > 0, (
+            f"Expected LFB > 0 with FTT=-1, got #{v1_lfb_number}"
         )
 
-        # ── Phase 2: Add joiner and verify it syncs ──
-        # Use VALIDATOR2_ID (which IS in genesis bonds) as the joiner identity.
-        # A genesis-bonded validator joining mid-chain from LFS without
-        # replaying from genesis -- tests real-world usage.
+        # ── Phase 2: Add joiner and verify it syncs from LFS ──
         logging.info("Phase 2: Adding joiner (V2) to the shard")
         with shard.add_joiner(
             VALIDATOR2_ID,
             cli_options={
-                "--synchrony-constraint-threshold": "0",
-                "--fault-tolerance-threshold": "-1",
+                "--synchrony-constraint-threshold": _SYNC_THRESHOLD,
+                "--fault-tolerance-threshold": _FTT,
             },
         ) as joiner:
-            # The joiner should sync from LFS and see the latest block
+            # Joiner should sync from LFS and see the latest block
             wait_for_block_visible(
                 joiner, latest_block_hash,
-                timeout=timeouts.custom(240),
+                timeout=timeouts.node_startup * 3,
             )
             logging.info("Joiner sees latest block %s", latest_block_hash[:16])
+
+            # Verify joiner's LFB matches V1's LFB
+            joiner_lfb = joiner.last_finalized_block()
+            joiner_lfb_number = joiner_lfb.blockInfo.blockNumber
+            logging.info("Joiner LFB: block #%d (V1: #%d)", joiner_lfb_number, v1_lfb_number)
+            assert joiner_lfb_number >= v1_lfb_number - 2, (
+                f"Joiner LFB #{joiner_lfb_number} is too far behind "
+                f"V1 LFB #{v1_lfb_number} after LFS sync"
+            )
 
             # ── Phase 3: Continue producing blocks and verify joiner keeps up ──
             logging.info("Phase 3: Producing more blocks, verifying joiner syncs")
@@ -126,12 +133,21 @@ def test_trim_state(provider, timeouts) -> None:
             # ── Phase 4: Verify joiner has fully synced ──
             joiner_blocks = joiner.get_blocks(50)
             v1_blocks = v1.get_blocks(50)
-
-            # Joiner should have approximately the same block count as V1
-            # (may differ by 1-2 due to timing)
             assert len(joiner_blocks) >= len(v1_blocks) - 2, (
                 f"Joiner has {len(joiner_blocks)} blocks, V1 has "
                 f"{len(v1_blocks)} -- joiner may not have fully synced"
+            )
+
+            # Verify LFB agreement after continued operation
+            v1_final_lfb = v1.last_finalized_block().blockInfo.blockNumber
+            joiner_final_lfb = joiner.last_finalized_block().blockInfo.blockNumber
+            logging.info(
+                "Final LFBs: V1=#%d, joiner=#%d",
+                v1_final_lfb, joiner_final_lfb,
+            )
+            assert joiner_final_lfb >= v1_final_lfb - 2, (
+                f"Joiner final LFB #{joiner_final_lfb} too far behind "
+                f"V1 final LFB #{v1_final_lfb}"
             )
 
             # Verify post-state agreement on the most recent block

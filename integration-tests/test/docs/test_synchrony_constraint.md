@@ -68,7 +68,7 @@ V3 has seen both V1 (Phase 7) and V2 (Phase 6) propose since its last block. Tot
 
 - `ShardConfig` with `per_node_cli_options` for per-validator thresholds
 - `Shard.create(provider, config, timeouts)` for custom shard lifecycle
-- `poll_until()` for block visibility polling
+- `wait_for_block_visible()` from `infra/polling.py` for block visibility polling
 - `Node.deploy_string()` + `Node.propose()` via pyf1r3fly
 
 ## Related

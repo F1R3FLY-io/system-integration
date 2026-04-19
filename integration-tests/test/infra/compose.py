@@ -90,6 +90,8 @@ def generate_compose(
     ]
     if config.ftt is not None:
         boot_command.append(f"--fault-tolerance-threshold={config.ftt}")
+    if not config.heartbeat:
+        boot_command.append("--heartbeat-disabled")
     boot_command += _extra_cli("boot")
 
     services["boot"] = {
@@ -144,6 +146,8 @@ def generate_compose(
         ]
         if config.ftt is not None:
             validator_command.append(f"--fault-tolerance-threshold={config.ftt}")
+        if not config.heartbeat:
+            validator_command.append("--heartbeat-disabled")
         validator_command += _extra_cli(node_key)
 
         services[node_key] = {
@@ -191,7 +195,7 @@ def generate_compose(
             f"--bootstrap={bootstrap_url}",
             "--no-upnp",
             "--allow-private-addresses",
-            "--heartbeat-disabled",
+            "--heartbeat-disabled",  # readonly never proposes regardless of shard config
         ] + _extra_cli(ro_key)
 
         services[ro_key] = {

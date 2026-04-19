@@ -8,17 +8,20 @@ Uses a custom shard with:
 - 2 genesis validators (V1, V2) with equal bonds
 - epoch-length = 4 (epoch change at block numbers 4, 8, 12, ...)
 - quarantine-length = 20
-- heartbeat disabled (manual block orchestration)
+- heartbeat disabled (manual block orchestration for deterministic control)
 - FTT = -1 (immediate finalization for deterministic block numbering)
 
 The test:
-1. Confirms the joiner is not initially bonded
-2. Adds the joiner node to the shard network
-3. Verifies the joiner cannot propose before bonding
-4. Bonds the joiner via the PoS contract (deploy on an existing validator)
-5. Verifies the bond is recorded but the joiner is not yet active
-6. Advances the chain to the epoch boundary
-7. Confirms the joiner can now propose blocks
+1. Verifies genesis has exactly 2 bonds and joiner's wallet is seeded
+2. Confirms the joiner is not initially bonded
+3. Adds the joiner node to the shard network
+4. Verifies the joiner cannot propose before bonding
+5. Bonds the joiner via the PoS contract (deploy on an existing validator)
+6. Verifies the bond is recorded and bond count increased from 2 to 3
+7. Verifies joiner still cannot propose before epoch boundary
+8. Advances the chain to the epoch boundary
+9. Confirms the joiner can now propose blocks
+10. Verifies all nodes see the joiner's block
 
 VALIDATOR4_ID is added dynamically via shard.add_joiner() after the shard
 is running.
@@ -59,6 +62,7 @@ def test_bonding_validators(provider, timeouts) -> None:
         ],
         ftt=-1,
         heartbeat=False,
+        include_readonly=True,
         global_cli_options=_EPOCH_CLI_OPTIONS,
         extra_wallets=[(joiner_vault_address, joiner_genesis_balance)],
     )
@@ -66,6 +70,25 @@ def test_bonding_validators(provider, timeouts) -> None:
     try:
         v1 = shard.node("validator1")
         v2 = shard.node("validator2")
+        ro = shard.readonly
+
+        # ── Verify genesis ──
+        blocks = v1.get_blocks(100)
+        genesis = None
+        for b in blocks:
+            if b.blockNumber == 0:
+                genesis = b
+                break
+        assert genesis is not None, "Could not find genesis block"
+        genesis_block = v1.get_block(genesis.blockHash)
+        genesis_bonds = {b.validator: b.stake for b in genesis_block.blockInfo.bonds}
+        assert len(genesis_bonds) == 2, (
+            f"Genesis should have 2 bonds, got {len(genesis_bonds)}"
+        )
+        assert VALIDATOR4_ID.public_hex not in genesis_bonds, (
+            "Joiner should not be in genesis bonds"
+        )
+        logging.info("Genesis verified: 2 bonds, joiner not bonded")
 
         # ── Block 1: Initial deploy by V1 ──
         logging.info("Block 1: Initial deploy by V1")
@@ -78,22 +101,10 @@ def test_bonding_validators(provider, timeouts) -> None:
         b1 = v1.propose()
         logging.info("Block 1: %s", b1[:16])
 
-        # Verify the joiner is not yet bonded
-        block_info = v1.get_block(b1)
-        bonded_validators = {b.validator for b in block_info.blockInfo.bonds}
-        assert VALIDATOR4_ID.public_hex not in bonded_validators, (
-            f"Joiner {VALIDATOR4_ID.public_hex[:16]}... should not be bonded yet"
-        )
-
         # ── Add joiner node to the shard ──
-        joiner_cli = {
-            "--epoch-length": "4",
-            "--quarantine-length": "20",
-            "--synchrony-constraint-threshold": "0",
-        }
         with shard.add_joiner(
             VALIDATOR4_ID,
-            cli_options=joiner_cli,
+            cli_options=_EPOCH_CLI_OPTIONS,
             cli_flags={"--heartbeat-disabled"},
         ) as joiner:
             # Wait for joiner to see the latest block
@@ -108,6 +119,7 @@ def test_bonding_validators(provider, timeouts) -> None:
             )
             with pytest.raises(F1r3flyClientException):
                 joiner.propose()
+            logging.info("Joiner correctly rejected before bonding")
 
             # ── Block 2: Deploy the bond contract ──
             logging.info("Block 2: Bonding deploy (amount=%d)", _BOND_AMOUNT)
@@ -121,16 +133,19 @@ def test_bonding_validators(provider, timeouts) -> None:
             b2 = v1.propose()
             logging.info("Block 2 (bond): %s", b2[:16])
 
-            # Verify the bond is recorded in the bonds map
+            # Verify bond recorded and count increased from 2 to 3
             block_info = v1.get_block(b2)
             bonds_map = {b.validator: b.stake for b in block_info.blockInfo.bonds}
+            assert len(bonds_map) == 3, (
+                f"Expected 3 bonds after bonding, got {len(bonds_map)}"
+            )
             assert bonds_map.get(VALIDATOR4_ID.public_hex) == _BOND_AMOUNT, (
                 f"Expected joiner bond={_BOND_AMOUNT}, got "
                 f"{bonds_map.get(VALIDATOR4_ID.public_hex)}"
             )
             logging.info(
-                "Bond recorded: %s -> %d",
-                VALIDATOR4_ID.public_hex[:16], _BOND_AMOUNT,
+                "Bond recorded: %s -> %d (total bonds: %d)",
+                VALIDATOR4_ID.public_hex[:16], _BOND_AMOUNT, len(bonds_map),
             )
 
             # ── Block 3: Filler deploy ──
@@ -154,6 +169,7 @@ def test_bonding_validators(provider, timeouts) -> None:
             )
             with pytest.raises(F1r3flyClientException):
                 joiner.propose()
+            logging.info("Joiner correctly rejected before epoch boundary")
 
             # ── Block 4: Epoch boundary (block number 4) ──
             logging.info("Block 4: Epoch boundary")
@@ -198,9 +214,11 @@ def test_bonding_validators(provider, timeouts) -> None:
             b6 = joiner.propose()
             logging.info("Block 6 (joiner): %s", b6[:16])
 
-            # Verify the joiner's block is visible on V1
+            # Verify all nodes (including readonly) see the joiner's block
             wait_for_block_visible(v1, b6, timeout=timeouts.deploy_inclusion)
+            wait_for_block_visible(v2, b6, timeout=timeouts.deploy_inclusion)
+            wait_for_block_visible(ro, b6, timeout=timeouts.deploy_inclusion)
 
-            logging.info("Bonding test passed -- joiner activated at epoch boundary")
+            logging.info("Bonding test passed -- joiner activated at epoch boundary, visible on all nodes (including readonly)")
     finally:
         shard.destroy()

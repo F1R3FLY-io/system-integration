@@ -9,7 +9,9 @@ Verifies that a new node joining an existing network correctly syncs from the La
 - **Topology**: Custom 2-validator shard (V1, V2) + V2 re-joins mid-chain as joiner
 - **Heartbeat**: Disabled (manual block orchestration for deterministic chain)
 - **FTT**: -1 (instant finalization -- every block with FT > -1 is finalized)
-- **Synchrony constraint threshold**: 0 (disabled)
+- **Synchrony constraint threshold**: 0 (disabled, via `_SYNC_THRESHOLD` constant)
+
+Sync constraint and FTT values are extracted to module-level constants (`_SYNC_THRESHOLD`, `_FTT`, `_SHARD_CLI_OPTIONS`) so that both the shard config and the joiner's CLI options reference the same values.
 
 ### Bond configuration
 
@@ -30,7 +32,7 @@ The diverse contracts ensure the LFS contains non-trivial state (channel binding
 
 ### Phase 2: Add joiner, verify LFS sync
 
-V2 (already a genesis-bonded validator) joins the shard mid-chain via `shard.add_joiner()`. The joiner uses `--fault-tolerance-threshold=-1` to match the shard's FTT. It syncs from the LFS rather than replaying all 9 blocks from genesis. The test polls until the joiner can see the latest block from phase 1.
+V2 (already a genesis-bonded validator) joins the shard mid-chain via `shard.add_joiner()`. The joiner uses `--fault-tolerance-threshold=-1` and `--synchrony-constraint-threshold=0` (via the same `_SYNC_THRESHOLD` / `_FTT` constants used by the shard) to match the shard's configuration. It syncs from the LFS rather than replaying all 9 blocks from genesis. The timeout is `timeouts.node_startup * 3` (semantically: startup + LFS download + state replay). After the joiner sees the latest block, its LFB is verified to be within 2 of V1's LFB, confirming finalization state transferred correctly.
 
 ### Phase 3: Continuous sync verification (4 blocks)
 
@@ -38,10 +40,11 @@ V1 deploys 4 more contracts and proposes. After each block, the test verifies th
 
 ### Phase 4: Full sync verification
 
-Two checks confirm complete synchronization:
+Three checks confirm complete synchronization:
 
 1. **Block count**: The joiner's block count is within 2 of V1's (timing tolerance).
-2. **Post-state agreement**: V1 and the joiner must report identical `postStateHash` for the most recent block. This proves the joiner computed the correct state from the LFS snapshot, not just received block headers.
+2. **LFB agreement**: After continued operation, V1 and the joiner's last finalized block numbers must be within 2 of each other, confirming finalization is progressing on the joiner.
+3. **Post-state agreement**: V1 and the joiner must report identical `postStateHash` for the most recent block. This proves the joiner computed the correct state from the LFS snapshot, not just received block headers.
 
 ## What it proves
 
@@ -54,9 +57,11 @@ Two checks confirm complete synchronization:
 ## Key assertions
 
 - Phase 1: `lfb_number > 0` (finalization working with FTT=-1)
-- Phase 2: joiner sees `latest_block_hash` within timeout
+- Phase 2: joiner sees `latest_block_hash` within `node_startup * 3` timeout
+- Phase 2: `joiner_lfb_number >= v1_lfb_number - 2` (LFB agreement after initial sync)
 - Phase 3: joiner sees each post-join block within `deploy_inclusion` timeout
 - Phase 4: `len(joiner_blocks) >= len(v1_blocks) - 2`
+- Phase 4: `joiner_final_lfb >= v1_final_lfb - 2` (LFB agreement after continued operation)
 - Phase 4: `v1_state == joiner_state` (post-state hash agreement)
 
 ## Infrastructure used
@@ -65,7 +70,7 @@ Two checks confirm complete synchronization:
 - `Shard.create()` / `shard.destroy()` lifecycle
 - `shard.add_joiner()` context manager for mid-test joiner attachment
 - `Node.deploy_string()`, `Node.propose()`, `Node.get_block()`, `Node.get_blocks()`, `Node.last_finalized_block()`
-- `poll_until()` for block visibility polling
+- `wait_for_block_visible()` from `infra/polling.py` for block visibility polling
 
 ## Related
 
