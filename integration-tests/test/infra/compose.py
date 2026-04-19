@@ -83,9 +83,6 @@ def generate_compose(
         "--allow-private-addresses",
         f"--validator-private-key={_BOOTSTRAP_PRIVATE_KEY_HEX}",
         f"--required-signatures={config.effective_required_signatures}",
-        # Node default is 5min (defaults.conf), docker conf is 1min.
-        # 10s is enough for tests since all validators start simultaneously.
-        "--approve-duration=10seconds",
         "--ceremony-master-mode",
     ]
     if config.ftt is not None:
