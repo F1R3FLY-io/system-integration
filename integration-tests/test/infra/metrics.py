@@ -1,0 +1,410 @@
+"""Performance metrics and deploy lifecycle tracking.
+
+Provides Prometheus metrics scraping, percentile calculations, and
+background deploy inclusion/finalization tracking for load and
+degradation tests.
+"""
+from __future__ import annotations
+
+import dataclasses
+import logging
+import math
+import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics
+# ---------------------------------------------------------------------------
+
+# Histogram _sum/_count pairs to scrape from /metrics.
+# Labeled metrics (e.g. different phase values) are summed together.
+METRICS_TO_SCRAPE = [
+    "block_validation_step_checkpoint_time",
+    "block_validation_step_bonds_cache_time",
+    "block_validation_step_block_summary_time",
+    "block_processing_stage_parents_post_state_time",
+    "block_processing_stage_replay_time",
+    "dag_merge_total_time",
+    "dag_merge_index_time",
+    "dag_merge_conflict_time",
+    "dag_merge_branches_time",
+    "dag_merge_conflicts_map_time",
+    "dag_merge_rejection_options_time",
+    "dag_merge_channel_reads_time",
+    "dag_merge_combine_changes_time",
+    "dag_merge_compute_trie_actions_time",
+    "dag_merge_apply_trie_actions_time",
+    "block_replay_phase_reset_time",
+    "block_replay_phase_user_deploys_time",
+    "block_replay_phase_system_deploys_time",
+    "block_replay_phase_create_checkpoint_time",
+    # Per-deploy replay breakdown
+    "block_replay_deploy_rig_time",
+    "block_replay_deploy_precharge_time",
+    "block_replay_deploy_evaluate_time",
+    "block_replay_deploy_refund_time",
+    "block_replay_deploy_discard_event_log_time",
+    "block_replay_deploy_check_replay_data_time",
+    # Runtime spawn timing
+    "runtime_spawn_time",
+    "runtime_spawn_replay_time",
+    # RSpace operation timing
+    "comm_consume_time_seconds",
+    "comm_produce_time_seconds",
+    "install_time_seconds",
+    "replay_consume_time_seconds",
+    "replay_produce_time_seconds",
+]
+
+
+def percentiles(values: List[float], pcts: List[float]) -> List[float]:
+    """Compute percentiles from a list of values.
+
+    Args:
+        values: Raw measurements.
+        pcts: Percentile levels (e.g. [50, 95, 99]).
+
+    Returns:
+        List of percentile values, same length as pcts.
+    """
+    if not values:
+        return [0.0] * len(pcts)
+    sorted_vals = sorted(values)
+    n = len(sorted_vals)
+    result = []
+    for p in pcts:
+        idx = (p / 100.0) * (n - 1)
+        lo = int(math.floor(idx))
+        hi = min(lo + 1, n - 1)
+        frac = idx - lo
+        result.append(sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac)
+    return result
+
+
+def scrape_metrics(node) -> Dict[str, float]:
+    """Scrape Prometheus metrics from a node's /metrics endpoint.
+
+    Returns a dict of metric_name -> value for histogram _sum and _count
+    lines. Labeled metrics are summed together.
+    """
+    result: Dict[str, float] = {}
+    try:
+        resp = node.http_get("/metrics", timeout=10)
+        for line in resp.text.splitlines():
+            if line.startswith("#"):
+                continue
+            for metric in METRICS_TO_SCRAPE:
+                for suffix in ("_sum", "_count"):
+                    key = metric + suffix
+                    if line.startswith(key + "{") or line.startswith(key + " "):
+                        match = re.search(r'\s+([\d.eE+-]+)$', line)
+                        if match:
+                            val = float(match.group(1))
+                            result[key] = result.get(key, 0) + val
+    except Exception:
+        pass
+    return result
+
+
+def compute_metric_deltas(
+    before: Dict[str, float], after: Dict[str, float],
+) -> Dict[str, float]:
+    """Compute per-block average times from histogram deltas.
+
+    For each metric: (after_sum - before_sum) / (after_count - before_count).
+    Returns dict of metric_name -> avg_seconds, plus metric_name.count -> delta_count.
+    """
+    result = {}
+    for metric in METRICS_TO_SCRAPE:
+        sum_key = metric + "_sum"
+        count_key = metric + "_count"
+        if sum_key in after and count_key in after:
+            delta_sum = after.get(sum_key, 0) - before.get(sum_key, 0)
+            delta_count = after.get(count_key, 0) - before.get(count_key, 0)
+            if delta_count > 0:
+                result[metric] = delta_sum / delta_count
+            result[metric + ".count"] = delta_count
+    return result
+
+
+def format_node_metrics(metrics: Dict[str, float]) -> str:
+    """Format node metrics as a readable block for logging."""
+    if not metrics:
+        return "  (no node metrics available)"
+    lines = []
+    # Validation steps
+    val_steps = [
+        ("checkpoint", "block_validation_step_checkpoint_time"),
+        ("bonds_cache", "block_validation_step_bonds_cache_time"),
+        ("block_summary", "block_validation_step_block_summary_time"),
+    ]
+    lines.append("  Validation steps (avg per block):")
+    for label, key in val_steps:
+        avg = metrics.get(key, 0)
+        count = metrics.get(key + ".count", 0)
+        if count > 0:
+            lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} blocks)")
+    # Checkpoint breakdown (merge vs replay)
+    merge_key = "block_processing_stage_parents_post_state_time"
+    replay_key = "block_processing_stage_replay_time"
+    merge_avg = metrics.get(merge_key, 0)
+    merge_count = metrics.get(merge_key + ".count", 0)
+    replay_avg = metrics.get(replay_key, 0)
+    replay_count = metrics.get(replay_key + ".count", 0)
+    if merge_count > 0 or replay_count > 0:
+        lines.append("  Checkpoint breakdown (avg per block):")
+        if merge_count > 0:
+            lines.append(f"    parents_post_state (merge): {merge_avg*1000:.0f}ms ({int(merge_count)} blocks)")
+        if replay_count > 0:
+            lines.append(f"    replay_block (execution): {replay_avg*1000:.0f}ms ({int(replay_count)} blocks)")
+    # DAG merge breakdown
+    dag_metrics = [
+        ("dag_merge_total", "dag_merge_total_time"),
+        ("dag_merge_index (LMDB)", "dag_merge_index_time"),
+        ("dag_merge_conflict", "dag_merge_conflict_time"),
+        ("  branches (depends O(D\u00b2))", "dag_merge_branches_time"),
+        ("  conflicts_map (O(B\u00b2))", "dag_merge_conflicts_map_time"),
+        ("  rejection_options", "dag_merge_rejection_options_time"),
+        ("  channel_reads (storage)", "dag_merge_channel_reads_time"),
+        ("  combine_changes", "dag_merge_combine_changes_time"),
+        ("  compute_trie_actions", "dag_merge_compute_trie_actions_time"),
+        ("  apply_trie_actions", "dag_merge_apply_trie_actions_time"),
+    ]
+    dag_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in dag_metrics)
+    if dag_has_data:
+        lines.append("  DAG merge breakdown (avg per merge):")
+        for label, key in dag_metrics:
+            avg = metrics.get(key, 0)
+            count = metrics.get(key + ".count", 0)
+            if count > 0:
+                lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} merges)")
+    # Replay phases
+    replay_phases = [
+        ("reset", "block_replay_phase_reset_time"),
+        ("user_deploys", "block_replay_phase_user_deploys_time"),
+        ("system_deploys", "block_replay_phase_system_deploys_time"),
+        ("checkpoint", "block_replay_phase_create_checkpoint_time"),
+    ]
+    lines.append("  Replay phases (avg per block):")
+    for label, key in replay_phases:
+        avg = metrics.get(key, 0)
+        count = metrics.get(key + ".count", 0)
+        if count > 0:
+            lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} blocks)")
+    # Per-deploy replay breakdown
+    deploy_breakdown = [
+        ("rig", "block_replay_deploy_rig_time"),
+        ("precharge", "block_replay_deploy_precharge_time"),
+        ("evaluate (Rholang)", "block_replay_deploy_evaluate_time"),
+        ("refund", "block_replay_deploy_refund_time"),
+        ("discard_event_log", "block_replay_deploy_discard_event_log_time"),
+        ("check_replay_data", "block_replay_deploy_check_replay_data_time"),
+    ]
+    deploy_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in deploy_breakdown)
+    if deploy_has_data:
+        lines.append("  Per-deploy replay breakdown (avg per deploy):")
+        for label, key in deploy_breakdown:
+            avg = metrics.get(key, 0)
+            count = metrics.get(key + ".count", 0)
+            if count > 0:
+                lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} deploys)")
+    # Runtime spawn timing
+    spawn_metrics = [
+        ("spawn_runtime", "runtime_spawn_time"),
+        ("spawn_replay_runtime", "runtime_spawn_replay_time"),
+    ]
+    spawn_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in spawn_metrics)
+    if spawn_has_data:
+        lines.append("  Runtime spawn timing (avg per call):")
+        for label, key in spawn_metrics:
+            avg = metrics.get(key, 0)
+            count = metrics.get(key + ".count", 0)
+            if count > 0:
+                lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} calls)")
+    # RSpace operation timing
+    rspace_metrics = [
+        ("consume (create)", "comm_consume_time_seconds"),
+        ("produce (create)", "comm_produce_time_seconds"),
+        ("install", "install_time_seconds"),
+        ("consume (replay)", "replay_consume_time_seconds"),
+        ("produce (replay)", "replay_produce_time_seconds"),
+    ]
+    rspace_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in rspace_metrics)
+    if rspace_has_data:
+        lines.append("  RSpace operations (avg per call):")
+        for label, key in rspace_metrics:
+            avg = metrics.get(key, 0)
+            count = metrics.get(key + ".count", 0)
+            if count > 0:
+                lines.append(f"    {label}: {avg*1000:.1f}ms ({int(count)} calls)")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Deploy lifecycle tracking
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class PhaseReport:
+    """Summary report for a single load test phase."""
+    name: str
+    deploys_submitted: int
+    deploy_failures: int
+    effective_rate: float
+    inclusion_p50: float
+    inclusion_p95: float
+    inclusion_p99: float
+    finalization_p50: float
+    finalization_p95: float
+    finalization_p99: float
+    unfinalized: int
+    lfb_start: int
+    lfb_end: int
+    lfb_rate_per_min: float
+    phase_duration: float
+    node_metrics: Optional[Dict[str, float]] = None
+
+
+@dataclasses.dataclass
+class DeployRecord:
+    """A single deploy submission record."""
+    deploy_id: str
+    submit_time: float
+    validator_name: str
+    phase: str
+    index: int
+
+
+@dataclasses.dataclass
+class DeployResult:
+    """A deploy with its measured inclusion and finalization times."""
+    record: DeployRecord
+    inclusion_time: Optional[float] = None
+    block_number: Optional[int] = None
+    finalization_time: Optional[float] = None
+
+
+class LifecycleTracker:
+    """Tracks deploy inclusion and finalization in background threads.
+
+    For each deploy, a background thread polls find_deploy until the deploy
+    appears in a block. A separate background thread polls last_finalized_block
+    continuously and marks deploys as finalized when LFB passes their block.
+
+    Usage::
+
+        tracker = LifecycleTracker({"v1": node1, "v2": node2})
+        tracker.start_lfb_monitor()
+        tracker.track_deploy(record)
+        tracker.wait_for_finalization(timeout=120)
+        results = tracker.get_results()
+        tracker.shutdown()
+    """
+
+    def __init__(self, nodes: dict, inclusion_timeout: int = 90):
+        self._nodes = nodes
+        self._node_list = list(nodes.values())
+        self._inclusion_timeout = inclusion_timeout
+        self._lock = threading.Lock()
+        self._records: Dict[str, DeployRecord] = {}
+        self._inclusion: Dict[str, Tuple[int, float]] = {}
+        self._finalization: Dict[str, float] = {}
+        self._max_block = 0
+        self._executor = ThreadPoolExecutor(max_workers=6)
+        self._lfb_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+
+    def start_lfb_monitor(self):
+        """Start background LFB polling thread."""
+        self._stop_event.clear()
+        self._lfb_thread = threading.Thread(target=self._lfb_poll_loop, daemon=True)
+        self._lfb_thread.start()
+
+    def stop_lfb_monitor(self):
+        """Stop background LFB polling thread."""
+        self._stop_event.set()
+        if self._lfb_thread:
+            self._lfb_thread.join(timeout=10)
+
+    def _lfb_poll_loop(self):
+        node = self._node_list[0]
+        while not self._stop_event.is_set():
+            try:
+                lfb = node.last_finalized_block().blockInfo.blockNumber
+                now = time.time()
+                with self._lock:
+                    for deploy_id, (bn, _) in self._inclusion.items():
+                        if bn > 0 and bn <= lfb and deploy_id not in self._finalization:
+                            self._finalization[deploy_id] = now
+            except Exception:
+                pass
+            self._stop_event.wait(timeout=1)
+
+    def track_deploy(self, record: DeployRecord):
+        """Submit a deploy record for background inclusion tracking."""
+        with self._lock:
+            self._records[record.deploy_id] = record
+        self._executor.submit(self._poll_inclusion, record)
+
+    def _poll_inclusion(self, record: DeployRecord):
+        node = self._node_list[0]
+        deadline = time.time() + self._inclusion_timeout
+        while time.time() < deadline:
+            try:
+                light_block = node.find_deploy(record.deploy_id)
+                find_time = time.time()
+                with self._lock:
+                    self._inclusion[record.deploy_id] = (light_block.blockNumber, find_time)
+                    self._max_block = max(self._max_block, light_block.blockNumber)
+                return
+            except Exception:
+                time.sleep(1)
+
+    def wait_for_finalization(self, timeout: float):
+        """Block until all tracked deploys are finalized or timeout."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self._lock:
+                all_included = all(did in self._inclusion for did in self._records)
+                if all_included:
+                    all_finalized = all(did in self._finalization for did in self._records)
+                    if all_finalized:
+                        return
+            time.sleep(1)
+
+    def get_results(self) -> List[DeployResult]:
+        """Return all tracked deploys with their measured times."""
+        results = []
+        with self._lock:
+            for deploy_id, record in self._records.items():
+                inc = self._inclusion.get(deploy_id)
+                inclusion_time = (inc[1] - record.submit_time) if inc else None
+                block_number = inc[0] if inc else None
+                fin_time = self._finalization.get(deploy_id)
+                finalization_time = (fin_time - record.submit_time) if fin_time else None
+                results.append(DeployResult(
+                    record=record,
+                    inclusion_time=inclusion_time,
+                    block_number=block_number,
+                    finalization_time=finalization_time,
+                ))
+        return results
+
+    def clear(self):
+        """Clear all tracked records for a new phase."""
+        with self._lock:
+            self._records.clear()
+            self._inclusion.clear()
+            self._finalization.clear()
+            self._max_block = 0
+
+    def shutdown(self):
+        """Stop all background threads and executor."""
+        self.stop_lfb_monitor()
+        self._executor.shutdown(wait=False)

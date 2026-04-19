@@ -1,6 +1,6 @@
-new ri(`rho:registry:insertArbitrary`), storeAck, stdout(`rho:io:stdout`) in {
+new ri(`rho:registry:insertArbitrary`), deployId(`rho:system:deployId`), storeAck in {
     ri!("@store_data@", *storeAck) |
     for(@uri <- storeAck) {
-        stdout!("Store data ${store_data} in ${id_address}" %% {"store_data":"@store_data@","id_address":uri})
+        deployId!(uri)
     }
 }

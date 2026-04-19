@@ -4,6 +4,40 @@
 
 
 
+### Fault tolerance inconsistency across nodes for finalized blocks
+
+Nodes disagree on `faultTolerance` values for the same finalized block. Confirmed in integration tests: boot node reports FT=0.0 for a finalized block at height #50 (the LFB itself), while validator1 reports FT=-1.0 (the "not yet computed" sentinel) for the same block via `get_block()`.
+
+This matches the client-reported issue where rust-client shows FT=1.0 for all validators at a given block, but the HTTP API reports FT=0.0.
+
+**Reproduction:**
+- 3-validator shard (100/100/100 bonds), heartbeat enabled
+- Deploy on all validators, wait for 10+ blocks
+- Query `last_finalized_block()` on V1 to get LFB number
+- Query `get_block(hash)` for blocks at or below LFB on all nodes
+- Compare FT values — they disagree
+
+**Integration test:** `test_dag_correctness` phase 4 (cross-node FT agreement on finalized blocks) — currently deselected.
+
+**Impact:** Clients cannot trust FT values from the API. A finalized block may appear unfinalized (FT=-1) or weakly finalized (FT=0.0) depending on which node is queried.
+
+**Fix locations:** Likely in the clique oracle FT scoring path — FT should be recomputed and consistent after finalization across all node roles (validator, boot, readonly).
+
+### Contract query deploy returns empty deployId after finalization (intermittent)
+
+A query deploy against a finalized bridge contract occasionally returns empty data from the `deployId` channel. The deploy is included in a block and not errored, but the contract's response chain (`lookup → queryCh → ret!(v) → deployId!(result)`) doesn't complete within the block's execution.
+
+**Reproduction (intermittent):**
+- Deploy bridge-v2.rho on V1, wait for finalization on all nodes
+- Deploy getNonce query on V1 (or any validator)
+- Query deploy included in block, not errored, but `get_data_at_deploy_id` returns empty par list
+
+**Observed:** Passes in some runs, fails in others. When it passes, the bridge is typically in block #2+ and queries start at block #5+. When it fails, the bridge is in block #1 and queries start at block #4.
+
+**Root cause hypothesis:** The multi-parent DAG merge may not include the bridge block's post-state in the query block's execution context, even though the bridge block is finalized. This is related to the `validAfterBlockNumber` semantics issue — VABN is a minimum, not a state inclusion guarantee.
+
+**Workaround:** Retry. The test is correct — if finalization guarantees state inclusion, the query should always succeed.
+
 ### Network cannot self-recover from DAG tip divergence (f1r3node#437, f1r3node#224)
 
 When validators temporarily desynchronize (any cause), they create independent blocks and diverge into separate DAG tips. The network has no convergence mechanism and permanently stalls.
@@ -17,10 +51,10 @@ When validators temporarily desynchronize (any cause), they create independent b
 **Integration tests written (reproduce the bug):**
 File: `integration-tests/test/test_replay_determinism.py`
 
-| Test | Trigger | What it asserts | Result (3 runs) |
-|------|---------|----------------|-----------------|
-| `test_network_recovers_from_validator_pause` | Pause validator1 container for 15s, then unpause | LFB advances 3+ blocks after unpause | FAILED 2/3 — non-deterministic, depends on divergence depth |
-| `test_network_recovers_from_slow_deploy` | Deploy `loop!(1000000000)` (phlo-exhausting loop from f1r3node#224) | LFB advances 3+ blocks after deploy included | FAILED 3/3 — reliable reproduction |
+| Test                                         | Trigger                                                             | What it asserts                              | Result (3 runs)                                             |
+| -------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------- |
+| `test_network_recovers_from_validator_pause` | Pause validator1 container for 15s, then unpause                    | LFB advances 3+ blocks after unpause         | FAILED 2/3 — non-deterministic, depends on divergence depth |
+| `test_network_recovers_from_slow_deploy`     | Deploy `loop!(1000000000)` (phlo-exhausting loop from f1r3node#224) | LFB advances 3+ blocks after deploy included | FAILED 3/3 — reliable reproduction                          |
 
 The slow deploy test (`loop!(1000000000)`) is the most reliable trigger — the proposing validator is blocked long enough for other validators to create multiple independent blocks via heartbeat.
 
@@ -36,6 +70,19 @@ The slow deploy test (`loop!(1000000000)`) is the most reliable trigger — the 
 1. Post-tips-exchange convergence proposal: after receiving diverged tips, propose a block justifying all known latest messages
 2. Single-leader recovery: deterministic leader selection to prevent N competing recovery blocks
 3. Synchrony constraint should account for received-but-not-yet-justified blocks
+
+### `/api/block/{hash}` returns empty transfers on validator nodes without indication
+
+On validator nodes, `/api/block/{hash}` returns deploys with an empty `transfers` array even when the block contains transfers. This is because the transfer extraction requires the Block Report API which replays block execution — an expensive operation restricted to readonly nodes.
+
+The problem: clients receiving `"transfers": []` on a validator cannot distinguish "no transfers in this block" from "transfers exist but aren't available on this node type." This leads to silent data loss — a client querying a validator thinks there were no transfers.
+
+**Fix options:**
+1. Return `null` (or omit the field) for `transfers` on validators instead of `[]`, so clients can distinguish "not available" from "empty"
+2. Add a `transfersAvailable: bool` field to the response
+3. Return an error or warning header when transfer data is unavailable
+
+**File:** `node/src/rust/web/shared_handlers.rs` (`get_block_handler`) and `node/src/rust/api/web_api.rs`
 
 ### `shardctl down` and `test-reset` don't remove volumes from `shardctl up` compose project
 
@@ -78,15 +125,79 @@ This forces clients to distinguish "no data exists" from "something went wrong" 
 
 **Impact:** Client libraries (pyf1r3fly) must special-case "No data found" errors to avoid treating valid empty results as failures.
 
-### f1r3node: WebSocket event stream spams ERROR on client disconnect
+### f1r3node-rust: `OPENAI_API_KEY` not passed to containers via `shard.yml`
 
-**File:** `node/src/rust/web/events_info.rs`, lines 38-42
+`docker/shard.yml` declares `OPENAI_ENABLED=${OPENAI_ENABLED:-false}` in the `environment:` section but does NOT declare `OPENAI_API_KEY`. When `OPENAI_ENABLED=true` is set in `docker/.env`, the node starts with OpenAI enabled but no API key — causing a panic at `openai_service.rs:92`.
 
-When a WebSocket client disconnects from `/ws/events`, `handle_websocket` logs `ERROR` on every subsequent send attempt (`Broken pipe (os error 32)`) but keeps looping — spamming the log with identical errors until the event stream ends.
+The `.env` file has the key, but Docker Compose only passes env vars from `--env-file` that are also declared in the compose `environment:` section (or used in `${VAR}` substitutions). Since `OPENAI_API_KEY` isn't declared in `shard.yml`, it never reaches the container.
 
-**Fix:**
-1. `break` out of the loop when `send_event_to_websocket` returns a connection error (broken pipe, connection reset). The client is gone.
-2. Downgrade from `error!` to `debug!` or `warn!` — a client disconnecting is normal operation, not an error.
+**Fix:** Add `OPENAI_API_KEY=${OPENAI_API_KEY:-}` to the `x-rnode` anchor's `environment:` in `shard.yml` (and `standalone.yml`). Or make the node gracefully handle missing API key when enabled (warn and disable instead of panic).
+
+## Structured gRPC Error Codes
+
+Tests and client applications currently match gRPC error messages with ad-hoc string patterns (e.g. `(?i)pars` for parse errors, `"NoNewDeploys"` for propose contention). These strings are undocumented, unstable across versions, and fragile.
+
+The node should return structured error codes so clients can match on codes instead of parsing error text.
+
+### Scope
+1. Define `ErrorCode` enum in protobuf (`DeployServiceV1.proto`) — e.g. `PARSE_ERROR`, `INSUFFICIENT_PHLO`, `NO_NEW_DEPLOYS`, `PROPOSE_CONTENTION`, `INVALID_PHLO_PRICE`, etc.
+2. Update ~17 gRPC error handlers in f1r3node-rust (`deploy_grpc_service_v1.rs`, `block_api.rs`) to include the error code alongside the message
+3. Update `F1r3flyClientException` in pyf1r3fly to expose the error code
+4. Update integration tests to match on codes instead of strings
+
+### Context
+PR #472 improved error logging (actual messages in all 17 handlers) but did not add structured codes. Docs updated in `docs/node/README.md` and `docs/rnode-api/index.md` — method listings only, no error catalog.
+
+## Exploratory Deploy Cannot Query Contracts with Persistent State Channels
+
+Exploratory deploy (read-only, no block created) works for:
+- Direct registry lookups (`registry_lookup`) — returns stored values
+- System contracts like `TokenMetadata` — respond synchronously
+
+But fails for contracts that read from persistent state channels. Tested against bridge-v2.rho:
+- `getNonce` reads from `nonceCh` via `for (@v <- nonceCh) { nonceCh!(v) | ret!(v) }`
+- All four Rholang patterns tested return 0 pars on the readonly node
+- Direct `lookup!` (pattern 3) returns 1 par — the registry lookup itself works
+- The contract method call doesn't complete within exploratory deploy's execution window
+
+**Root cause hypothesis:** Exploratory deploy creates an isolated execution environment. When the contract tries `for (@v <- nonceCh)`, that channel exists in the persistent tuplespace from the original deploy, but exploratory deploy may not have access to it — or the async response via `*ret` isn't captured before the exploratory deploy returns.
+
+**Impact:** Read-only queries against stateful contracts (bridge, DEX, governance) must use real deploys with `deployId` channel, which creates a block and consumes phlo. This makes client-side reads expensive.
+
+**Investigation needed:**
+1. Does the Rust node's exploratory deploy execute against the full tuplespace state? Or just a snapshot?
+2. Is there a timing/capture issue where the contract responds after the exploratory deploy has already returned?
+3. Can the contract be restructured to respond synchronously (inline the state read)?
+4. Can exploratory deploy be extended to wait for responses on `new` channels?
+
+**File:** `f1r3node-rust/casper/src/rust/api/block_api.rs:1443-1506` — exploratory deploy execution path
+
+## Background Traffic Generator for Integration Tests
+
+Integration tests currently run against a mostly idle shard — deploys only happen when a specific test sends them. Real networks have continuous activity. A background traffic generator would:
+
+1. Run as an opt-in conftest fixture (`active_traffic`)
+2. Send deploys to all validators on a loop (unique channels per session to avoid test conflicts)
+3. Create realistic network conditions: DAG growth, propose contention, state accumulation
+4. Tests that need realistic conditions opt in via fixture dependency
+
+This would make convergence, heartbeat, and degradation tests more meaningful — they'd exercise the node under conditions closer to production.
+
+### Design considerations
+- Must not interfere with test assertions (unique deploy channels)
+- Must be stoppable (fixture teardown)
+- Deploy rate should be configurable
+- Should distribute across validators (round-robin or random)
+
+## Log Scanner Whitelist
+
+The log scanning infrastructure exists (`infra/log_events.py`: `scan_for_errors`, `ACCEPTABLE_PATTERNS`) but is disabled because the whitelist is empty. To enable it:
+
+1. Run all tests with scanning enabled (collect all WARN/ERROR/PANIC messages)
+2. Triage each message: expected during normal operation → add to `ACCEPTABLE_PATTERNS` with comment
+3. Enable as autouse fixture in conftest.py — any unexpected log error fails the test
+
+This catches problems that don't crash the node but indicate issues (e.g. repeated gRPC errors, state corruption warnings, resource exhaustion).
 
 ## Testing Roadmap
 
@@ -150,7 +261,6 @@ Tracked during E2E demo stabilization (2026-03-26). These affect embers and scop
 - Works correctly on Rust shard (with observer on separate node)
 - Intermittently hangs on Rust standalone — deploys execute correctly (stdout confirms) but `is_finalized` check never returns true
 - Does NOT affect embers (which uses its own HTTP polling finalization)
-
 ### `rho:deploy:data` format
 - Scala `dev` node: `for(@timestamp, @deployerId, @deployId <- deployDataCh)` pattern may not match — stdout from deploy-data inspection test didn't fire (no error either)
 - Needs further investigation
@@ -213,20 +323,20 @@ The following shardctl commands are not exercised in CI. Commands marked interac
 
 ### Could be tested
 
-| Command | Reason not tested yet |
-|---------|----------------------|
-| `restart` | Needs a running shard + verify it comes back healthy |
-| `pull` | CI uses `docker pull` directly; could switch to `shardctl pull` |
-| `compose` | Generic passthrough; hard to assert on |
+| Command   | Reason not tested yet                                           |
+| --------- | --------------------------------------------------------------- |
+| `restart` | Needs a running shard + verify it comes back healthy            |
+| `pull`    | CI uses `docker pull` directly; could switch to `shardctl pull` |
+| `compose` | Generic passthrough; hard to assert on                          |
 
 ### Impractical to test in CI
 
-| Command | Reason |
-|---------|--------|
-| `clone` / `setup` | Requires SSH keys for private repos |
-| `build` / `build-service` | Source builds take 30+ minutes |
-| `exec` / `shell` | Interactive (requires TTY) |
-| `clean` | Destructive; nothing to clean in CI |
+| Command                   | Reason                              |
+| ------------------------- | ----------------------------------- |
+| `clone` / `setup`         | Requires SSH keys for private repos |
+| `build` / `build-service` | Source builds take 30+ minutes      |
+| `exec` / `shell`          | Interactive (requires TTY)          |
+| `clean`                   | Destructive; nothing to clean in CI |
 
 ### Tested in CI
 
@@ -234,15 +344,40 @@ The following shardctl commands are not exercised in CI. Commands marked interac
 
 ---
 
-## Image Selection Cleanup
+## shardctl needs updating for new test framework
 
-Running integration tests against a local Rust build requires setting TWO env vars:
-- `DEFAULT_IMAGE` — used by conftest.py to select Rust vs Scala compose file
-- `F1R3FLY_RUST_IMAGE` — used by the compose file's `${F1R3FLY_RUST_IMAGE:-...}` substitution
+The integration test framework was rewritten. `shardctl` still references the old v1 infrastructure in several places:
 
-`shardctl test --rust --image mynode:tag` handles both, but running `pytest` directly requires both to be set manually. The `DEFAULT_IMAGE` definition in `rnode.py:49` defaults to Scala. Consider:
-1. Unifying into a single env var
-2. Or making conftest detect the image from the compose file instead of needing `DEFAULT_IMAGE`
+### Remove static compose files from integration-tests/
+
+The following files are v1 artifacts no longer used by any test code:
+- `integration-tests/docker-compose.rust.yml`
+- `integration-tests/docker-compose.scala.yml`
+- `integration-tests/docker-compose.standalone-rust.yml`
+- `integration-tests/docker-compose.standalone-scala.yml`
+
+The new framework generates compose YAML dynamically via `test/infra/compose.py`.
+
+### Update `test-reset` command
+
+`shardctl test-reset` (`shardctl/cli.py` ~line 1151) references the old compose files and project names (`f1r3fly-shard`, `f1r3fly-standalone`). It needs to clean up the new naming:
+- Containers: `rnode.test.*`
+- Networks: `f1r3fly-test-*`
+- Volumes: `test-*`
+
+The `CleanupRegistry.cleanup_stale_sessions()` in the test framework already handles this at session start, but `shardctl test-reset` should be a manual equivalent.
+
+### Update `test` command
+
+`shardctl test` sets `DEFAULT_IMAGE` and `F1R3FLY_RUST_IMAGE` env vars. The new framework uses only `F1R3FLY_NODE_IMAGE`. Update `shardctl test` to set `F1R3FLY_NODE_IMAGE` instead.
+
+### Update `test-report` command
+
+Verify `shardctl test-report` still finds `integration-tests/report.json` — the path is configured in `pyproject.toml` and should be unchanged.
+
+### Remove `--rust` / `--scala` flags
+
+The framework is Rust-only. The `--rust` and `--scala` flags on `shardctl test` are no longer meaningful. Remove them and simplify to `shardctl test` (default) with optional `--image` override.
 
 ## `--skip-setup` incompatible with `--keep-running` across `shardctl test` invocations
 

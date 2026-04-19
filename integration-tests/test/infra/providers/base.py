@@ -1,0 +1,189 @@
+"""Provider and NodeHandle protocols.
+
+These define the contract between the test framework (Node, Shard) and
+the infrastructure layer (Docker, Kubernetes). Tests interact with
+Node and Shard objects; providers create the underlying resources.
+
+Using ``typing_extensions.Protocol`` for structural subtyping — provider
+implementations don't need to inherit from these classes, just match
+the method signatures.
+"""
+from __future__ import annotations
+
+from typing import List, Optional, Sequence
+
+import typing_extensions
+
+from ..config import NodeConfig, ShardConfig
+from ..types import PortMapping
+
+
+class NodeHandle(typing_extensions.Protocol):
+    """Provider-specific handle to a running node.
+
+    Tests never interact with NodeHandle directly — they use the
+    ``Node`` wrapper which provides pyf1r3fly-based blockchain
+    operations on top of the handle's connectivity info.
+    """
+
+    @property
+    def name(self) -> str:
+        """Container/pod name (e.g., 'rnode.test.a3f7b2c1.validator1')."""
+        ...
+
+    @property
+    def ports(self) -> PortMapping:
+        """Host-accessible port mapping for this node."""
+        ...
+
+    @property
+    def grpc_host(self) -> str:
+        """Hostname for gRPC connections (e.g., 'localhost' for Docker,
+        service FQDN for K8s)."""
+        ...
+
+    @property
+    def network_name(self) -> str:
+        """Docker network or K8s namespace this node belongs to."""
+        ...
+
+    def logs(self, tail: Optional[int] = None) -> str:
+        """Fetch the node's stdout/stderr logs."""
+        ...
+
+    def is_running(self) -> bool:
+        """Check if the node's process is still alive."""
+        ...
+
+    def restart(self) -> None:
+        """Restart the node (Docker restart / K8s pod delete)."""
+        ...
+
+    def pause(self) -> None:
+        """Pause the node to simulate network partition.
+
+        Docker: ``docker pause``. K8s: network policy or pod eviction.
+        Local: ``kill -STOP``.
+        """
+        ...
+
+    def unpause(self) -> None:
+        """Resume a paused node.
+
+        Docker: ``docker unpause``. K8s: remove network policy.
+        Local: ``kill -CONT``.
+        """
+        ...
+
+    def exit_code(self) -> Optional[int]:
+        """Return the node's exit code, or None if still running.
+
+        Docker: ``docker inspect`` exit code. K8s: pod termination status.
+        Local: ``waitpid`` with ``WNOHANG``.
+        """
+        ...
+
+    def wait_for_exit(self, timeout: int = 180) -> Optional[int]:
+        """Wait for the node to exit. Returns exit code or None on timeout."""
+        ...
+
+    def resource_usage(self) -> dict:
+        """Return current resource usage for this node.
+
+        Returns a dict with keys: ``memory_mb``, ``cpu_percent``,
+        ``memory_limit_mb``.
+
+        Docker: ``docker stats --no-stream``.
+        K8s: ``kubectl top pod``.
+        Local: ``/proc/{pid}/status``.
+        """
+        ...
+
+    def stop(self) -> None:
+        """Stop the node without removing resources."""
+        ...
+
+    def remove(self) -> None:
+        """Force-remove the node and its resources."""
+        ...
+
+
+class Provider(typing_extensions.Protocol):
+    """Infrastructure provider: creates and destroys nodes.
+
+    Implementations:
+      - ``DockerProvider``: uses ``docker run`` / ``docker compose``
+      - ``K8sProvider``: uses ``helm install`` / ``kubectl`` (future)
+
+    The provider manages the complete lifecycle: network creation,
+    volume provisioning, container/pod startup, health checking,
+    and teardown. The test framework's ``Shard`` class calls these
+    methods but doesn't know which provider it's using.
+    """
+
+    @property
+    def keep_running(self) -> bool:
+        """If True, skip resource destruction on teardown.
+
+        Set via ``--keep-running`` CLI flag. Allows post-failure
+        inspection of containers, logs, and state.
+        """
+        ...
+
+    def create_shard(self, config: ShardConfig) -> List[NodeHandle]:
+        """Create all nodes for a shard.
+
+        Returns handles in order: [bootstrap, validator1, ..., readonly].
+        Blocks until all nodes reach Running state (provider checks
+        logs for the Running marker).
+        """
+        ...
+
+    def add_node(
+        self,
+        shard_network: str,
+        node_config: NodeConfig,
+        bootstrap_handle: NodeHandle,
+    ) -> NodeHandle:
+        """Add a joiner/observer node to an existing shard network.
+
+        The joiner bootstraps from ``bootstrap_handle``'s address.
+        """
+        ...
+
+    def remove_node(self, handle: NodeHandle) -> None:
+        """Remove a single node and its volume. Used for joiner teardown."""
+        ...
+
+    def destroy_shard(self, handles: Sequence[NodeHandle]) -> None:
+        """Destroy all shard nodes and associated resources
+        (network, volumes, temp files)."""
+        ...
+
+    def create_standalone(self, config: NodeConfig) -> NodeHandle:
+        """Create a standalone (single-node) shard for isolated tests.
+
+        Uses standalone-dev.conf (instant finalization, no peers).
+        """
+        ...
+
+    def destroy_standalone(self, handle: NodeHandle) -> None:
+        """Destroy a standalone node and its resources."""
+        ...
+
+    @property
+    def active_handles(self) -> List[NodeHandle]:
+        """All currently active node handles (shard, standalone, joiner).
+
+        Used by the log scanning fixture to inspect all node logs
+        after each test, regardless of how the nodes were created.
+        """
+        ...
+
+    def cleanup_all(self) -> None:
+        """Force-cleanup ALL test resources.
+
+        Called at session start (stale cleanup), session end, and
+        atexit. Must be idempotent and crash-safe.
+        """
+        ...
