@@ -64,18 +64,6 @@ The slow deploy test (`loop!(1000000000)`) is the most reliable trigger — the 
 2. Single-leader recovery: deterministic leader selection to prevent N competing recovery blocks
 3. Synchrony constraint should account for received-but-not-yet-justified blocks
 
-### `/api/block/{hash}` returns empty transfers on validator nodes without indication
-
-On validator nodes, `/api/block/{hash}` returns deploys with an empty `transfers` array even when the block contains transfers. This is because the transfer extraction requires the Block Report API which replays block execution — an expensive operation restricted to readonly nodes.
-
-The problem: clients receiving `"transfers": []` on a validator cannot distinguish "no transfers in this block" from "transfers exist but aren't available on this node type." This leads to silent data loss — a client querying a validator thinks there were no transfers.
-
-**Fix options:**
-1. Return `null` (or omit the field) for `transfers` on validators instead of `[]`, so clients can distinguish "not available" from "empty"
-2. Add a `transfersAvailable: bool` field to the response
-3. Return an error or warning header when transfer data is unavailable
-
-**File:** `node/src/rust/web/shared_handlers.rs` (`get_block_handler`) and `node/src/rust/api/web_api.rs`
 
 ### `shardctl down` and `test-reset` don't remove volumes from `shardctl up` compose project
 
@@ -108,15 +96,6 @@ Command '['docker', 'compose', '--env-file', '.env.node', '-f', 'compose/f1r3nod
 
 **Expected:** Each compose file should be queried independently, or combined correctly with a single `--env-file` and multiple `-f` flags before the `ps` subcommand.
 
-### f1r3node: `getDataAtName` returns error instead of empty payload when no data found
-
-**File:** `node/src/rust/api/deploy_grpc_service_v1.rs`
-
-When `getDataAtName(DataAtNameByBlockQuery)` finds no data on the queried channel for the specified block, it returns an error response (`RhoDataResponse { error: "No data found" }`) instead of a success response with an empty payload (`RhoDataResponse { payload: RhoDataPayload { par: [] } }`).
-
-This forces clients to distinguish "no data exists" from "something went wrong" by parsing error message strings. The correct behavior is to return a success with empty data — "no data" is a valid query result, not an error.
-
-**Impact:** Client libraries (pyf1r3fly) must special-case "No data found" errors to avoid treating valid empty results as failures.
 
 ### f1r3node-rust: `OPENAI_API_KEY` not passed to containers via `shard.yml`
 
@@ -252,21 +231,7 @@ Tracked during E2E demo stabilization (2026-03-26). These affect embers and scop
 
 These are improvements to the f1r3node Rust node HTTP API that would make client applications (like embers) more robust. Currently clients need workarounds for missing or incomplete information.
 
-### 1. `/api/deploy/{id}` should return deploy execution details
-
-**Current:** Returns the block header (BlockInfo) containing the deploy — no deploy-specific fields like `errored`, `cost`, or `systemDeployError`.
-
-**Needed:** Return the deploy's execution info including `errored: bool`, `cost: u64`, `systemDeployError: string`. Currently the only way to get this is a two-step lookup: find the block via `/api/deploy/{id}`, then fetch the block via `/api/block/{hash}`, then match the deploy by signature in the `deploys[]` array.
-
-**Impact:** Without this, clients can't detect whether a deploy's Rholang execution errored. A deploy that aborts (e.g., `abort!("in saveAiAgentsTeam")`) appears as successfully finalized.
-
-### 2. `/api/deploy/{id}` should include block number
-
-**Current:** Returns `blockHash` but not `blockNumber`.
-
-**Needed:** Include `blockNumber: u64` in the response. Clients need the block number to verify observer sync state and set `valid_after_block_number` for dependent deploys.
-
-### 3. `valid_after_block_number` semantics documentation
+### 1. `valid_after_block_number` semantics documentation
 
 **Current:** The `valid_after_block_number` field in `DeployDataProto` means "don't include this deploy before block N". But it does NOT guarantee the deploy executes against block N's post-state, because multi-parent blocks may not include block N in their parent lineage.
 
@@ -276,25 +241,14 @@ These are improvements to the f1r3node Rust node HTTP API that would make client
 
 **Impact:** This is the root cause of flaky sequential deploys (create → save → deploy). The save deploy can execute against state that doesn't include the create's changes, even when `valid_after_block_number` is set to the create's block number.
 
-### 4. explore-deploy should accept a block hash parameter
+### 2. explore-deploy should accept a block hash parameter
 
 **Current:** `explore-deploy` always evaluates against the latest tip. The `/api/explore-deploy-by-block-hash` endpoint exists but its availability and behavior on the observer need verification.
 
 **Needed:** Clients should be able to target a specific finalized block's state for reads, ensuring consistency between writes and subsequent reads.
 
-### 5. `/api/deploy/{id}?view=minimal` should include cost
 
-**Current:** The `view=minimal` response (`DeployLookupResponse`) returns only block-level metadata (`blockHash`, `blockNumber`, `timestamp`, `sender`, `seqNum`, `sig`, `sigAlgorithm`, `shardId`, `version`). It excludes `cost`, `transfers`, and all deploy execution details.
-
-**Needed:** Add `cost: u64` to the minimal view. Cost is a key field for clients — it tells them how much phlogiston a deploy consumed. The default/detail view already has it, but clients using `view=minimal` for lightweight polling have no way to get cost without a second request.
-
-**Client request:** "Could you also add cost to the deploy view=minimal response? I think this is quite an important field." Also requested: add `transfers` to deploy responses where missing (transfers are available in `BlockInfo.deploys[].transfers` but only on readonly nodes — validator nodes return empty `transfers` arrays because transfer extraction requires block replay).
-
-**Implementation:** In `shared_handlers.rs`, the minimal view handler builds `DeployLookupResponse` from the containing block's `LightBlockInfo`. To add `cost`, it needs to look up the deploy in the block's `deploys[]` array by signature and extract `cost` from the matching `DeployInfo`. The struct `DeployLookupResponse` needs a `cost: u64` field.
-
-**File:** `node/src/rust/web/shared_handlers.rs` (deploy lookup handler), `node/src/rust/api/web_api.rs` (`DeployLookupResponse` struct)
-
-### 6. Observer `explore-deploy` state consistency
+### 3. Observer `explore-deploy` state consistency
 
 **Current:** The observer's `explore-deploy` can return stale state even when `last-finalized-block` reports a newer block number. This creates a window where reads don't see recent writes.
 

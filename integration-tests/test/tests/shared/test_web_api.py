@@ -13,6 +13,7 @@ HTTP endpoints tested:
   /api/blocks/<depth>
   /api/deploy/<id>
   /api/deploy/<id>?view=detail
+  /api/deploy/<id>?view=minimal
   /api/data-at-name
   /api/explore-deploy
   /api/deploy (POST)
@@ -436,9 +437,20 @@ def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
         assert detail["sigAlgorithm"] == expect["sig_algorithm"], (
             f"{node.name}: sigAlgorithm mismatch"
         )
-        assert isinstance(detail["transfers"], list), (
-            f"{node.name}: transfers should be a list"
-        )
+
+        # Transfers: omitted on validators (block replay unavailable),
+        # present as list on readonly
+        if node == shared_shard.readonly:
+            assert "transfers" in detail, (
+                f"{node.name} (readonly): transfers field should be present"
+            )
+            assert isinstance(detail["transfers"], list), (
+                f"{node.name} (readonly): transfers should be a list"
+            )
+        else:
+            assert "transfers" not in detail, (
+                f"{node.name} (validator): transfers field should be omitted"
+            )
 
         details[node.name] = detail
 
@@ -453,6 +465,72 @@ def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
     )
 
     logging.info("Deploy detail verified on %d nodes, cost=%d", len(shared_shard.all_nodes), list(costs.values())[0])
+
+
+def test_deploy_minimal_view(shared_shard, node_conf, timeouts) -> None:
+    """HTTP /api/deploy/<id>?view=minimal returns block metadata + cost on all nodes."""
+    expect = _shard_expectations(shared_shard, node_conf)
+    v1 = shared_shard.node("validator1")
+    deploy_ids, _ = _deploy_and_wait(v1, timeouts)
+    deploy_id = deploy_ids[0]
+
+    minimal_responses = {}
+    for node in shared_shard.all_nodes:
+        minimal = node.api_get(f"/deploy/{deploy_id}?view=minimal")
+
+        # Fields that SHOULD be present
+        _assert_valid_block_hash(minimal["blockHash"], f"{node.name} minimal view")
+        assert isinstance(minimal["blockNumber"], int) and minimal["blockNumber"] > 0, (
+            f"{node.name}: blockNumber should be > 0"
+        )
+        assert isinstance(minimal["timestamp"], int) and minimal["timestamp"] > 0, (
+            f"{node.name}: timestamp should be > 0"
+        )
+        assert isinstance(minimal["sender"], str) and len(minimal["sender"]) > 0, (
+            f"{node.name}: sender should be non-empty"
+        )
+        assert isinstance(minimal["seqNum"], int), (
+            f"{node.name}: seqNum should be int"
+        )
+        assert isinstance(minimal["sig"], str) and len(minimal["sig"]) > 0, (
+            f"{node.name}: sig should be non-empty string (block creator's signature)"
+        )
+        assert minimal["sigAlgorithm"] == expect["sig_algorithm"], (
+            f"{node.name}: sigAlgorithm mismatch"
+        )
+        assert minimal["shardId"] == expect["shard_id"], (
+            f"{node.name}: shardId mismatch"
+        )
+        assert isinstance(minimal["version"], int), (
+            f"{node.name}: version should be int"
+        )
+        assert isinstance(minimal["cost"], int) and minimal["cost"] > 0, (
+            f"{node.name}: cost should be > 0, got {minimal.get('cost')}"
+        )
+
+        # Fields that should NOT be in minimal view
+        for excluded in ["deployer", "term", "errored", "phloPrice", "phloLimit",
+                         "systemDeployError", "validAfterBlockNumber", "transfers"]:
+            assert excluded not in minimal, (
+                f"{node.name}: minimal view should not include '{excluded}'"
+            )
+
+        minimal_responses[node.name] = minimal
+
+    # Cross-node consistency
+    block_hashes = {n: m["blockHash"] for n, m in minimal_responses.items()}
+    assert len(set(block_hashes.values())) == 1, (
+        f"Nodes disagree on deploy block: {block_hashes}"
+    )
+    costs = {n: m["cost"] for n, m in minimal_responses.items()}
+    assert len(set(costs.values())) == 1, (
+        f"Nodes disagree on deploy cost: {costs}"
+    )
+
+    logging.info(
+        "Deploy minimal view verified on %d nodes, cost=%d",
+        len(shared_shard.all_nodes), list(costs.values())[0],
+    )
 
 
 def test_data_at_name(shared_shard, timeouts) -> None:

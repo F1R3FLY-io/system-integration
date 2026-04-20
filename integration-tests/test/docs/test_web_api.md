@@ -19,7 +19,7 @@ The helper `_shard_expectations(shard, node_conf)` derives expected values from 
 
 All block info assertions use `_assert_light_block_info()` which validates every field of `LightBlockInfoSerde` against these expectations: block hash format, sender pubkey format, shardId, sigAlgorithm, version, bonds count and stakes, timestamp, and justification structure.
 
-## Tests (10)
+## Tests (11)
 
 ### test_status
 `GET /api/status` on **all nodes**. Asserts:
@@ -61,7 +61,14 @@ All block info assertions use `_assert_light_block_info()` which validates every
 - `cost` > 0 (int), `errored` == false, `systemDeployError` == ""
 - `phloPrice` == 1, `phloLimit` == 100000
 - `sig` matches deploy ID, `sigAlgorithm` == "secp256k1"
-- `transfers` is a list (empty for non-transfer deploys)
+- **Transfers**: omitted on validators (block replay unavailable), present as list on readonly
+- Cross-node: all agree on `blockHash` and `cost`
+
+### test_deploy_minimal_view
+`GET /api/deploy/{id}?view=minimal` on **all nodes**. Asserts:
+- All expected fields present: `blockHash`, `blockNumber`, `timestamp`, `sender`, `seqNum`, `sig`, `sigAlgorithm`, `shardId`, `version`, `cost`
+- `cost` > 0 (phlogiston consumed)
+- Heavy fields excluded: `deployer`, `term`, `errored`, `phloPrice`, `phloLimit`, `systemDeployError`, `validAfterBlockNumber`, `transfers`
 - Cross-node: all agree on `blockHash` and `cost`
 
 ### test_data_at_name
