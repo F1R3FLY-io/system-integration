@@ -221,6 +221,40 @@ def wait_for_block_visible(node, block_hash: str, timeout: int):
     )
 
 
+def wait_for_block_justified(node, validator_pubkey: str, block_hash: str, timeout: int):
+    """Poll until a validator's block appears in the node's justifications.
+
+    Stronger than ``wait_for_block_visible`` — checks that the block has
+    been processed into the DAG and appears in the latest block's
+    justification set. Required for tests that depend on synchrony
+    constraint satisfaction, where mere storage visibility is insufficient.
+
+    Args:
+        node: Node to check.
+        validator_pubkey: Public key hex of the validator whose block we expect.
+        block_hash: Block hash to look for in justifications.
+        timeout: Maximum seconds to wait.
+    """
+    def _check():
+        try:
+            blocks = node.get_blocks(1)
+            if not blocks:
+                return None
+            for j in blocks[0].justifications:
+                if j.validator == validator_pubkey and j.latestBlockHash == block_hash:
+                    return True
+            return None
+        except Exception:
+            return None
+
+    poll_until(
+        predicate=_check,
+        timeout=timeout,
+        interval=2.0,
+        description=f"block {block_hash[:16]}... justified by {validator_pubkey[:16]}... on {node.name}",
+    )
+
+
 # ── Polling predicates ─────────────────────────────────────────────
 
 

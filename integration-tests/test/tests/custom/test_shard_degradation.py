@@ -11,6 +11,7 @@ Monitors all 5 nodes (bootstrap, 3 validators, readonly) for:
 - Deploy-to-block inclusion latency
 - Deploy finalization latency
 - API responsiveness
+- Node internal metrics (Prometheus)
 
 Strict assertions (all must pass):
 1. Zero deploy send failures
@@ -18,8 +19,8 @@ Strict assertions (all must pass):
 3. LFB rate must not drop below 50% of initial rate
 4. Validator desync must stay under 5 blocks
 5. Zero LFB stalls (2+ consecutive batches with no advancement)
-6. Sampled deploys included in blocks within 15s
-7. Sampled deploy blocks finalized within 30s
+6. Sampled deploys included in blocks within inclusion timeout
+7. Sampled deploy blocks finalized within finalization timeout
 8. API latency under 2s
 """
 
@@ -32,6 +33,11 @@ import pytest
 
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.metrics import (
+    compute_metric_deltas,
+    format_node_metrics,
+    scrape_metrics,
+)
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
@@ -54,8 +60,6 @@ PHLO_PRICE = 1
 MIN_RATE_RATIO = 0.50
 MAX_DESYNC_BLOCKS = 5
 MAX_STALL_BATCHES = 1
-MAX_DEPLOY_INCLUSION_SECS = 15
-MAX_DEPLOY_FINALIZATION_SECS = 30
 MAX_API_LATENCY_SECS = 2
 INCLUSION_CHECK_COUNT = 10
 
@@ -68,7 +72,7 @@ VALIDATORS_AND_KEYS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Rholang contracts
+# Rholang contracts (non-trivial, exercises different Rholang features)
 # ---------------------------------------------------------------------------
 
 def _registry_contract(i):
@@ -183,8 +187,7 @@ CONTRACT_FACTORIES = [
     _set_operations_contract,
 ]
 
-
-BRIDGE_CONTRACT = "resources/bridge.rho"
+BRIDGE_CONTRACT = "resources/bridge-v2.rho"
 
 
 # ---------------------------------------------------------------------------
@@ -274,8 +277,13 @@ def test_shard_degradation(provider, timeouts) -> None:
             for identity, v_name in VALIDATORS_AND_KEYS
         ]
 
+        # Derive timeouts from framework config
+        deploy_inclusion_timeout = timeouts.deploy_inclusion
+        deploy_finalization_timeout = timeouts.finalization
+
         baseline_lfbs = _get_lfb_numbers(all_nodes)
-        baseline_timeouts = _count_finalizer_timeouts(all_nodes)
+        baseline_timeouts_count = _count_finalizer_timeouts(all_nodes)
+        metrics_before = scrape_metrics(v1)
         test_start = time.time()
 
         logging.info("=" * 70)
@@ -283,6 +291,8 @@ def test_shard_degradation(provider, timeouts) -> None:
         logging.info("=" * 70)
         logging.info("Deploying %d contracts in batches of %d", TOTAL_DEPLOYS, BATCH_SIZE)
         logging.info("Baseline LFBs: %s", baseline_lfbs)
+        logging.info("Inclusion timeout: %ds, Finalization timeout: %ds",
+                     deploy_inclusion_timeout, deploy_finalization_timeout)
         logging.info("-" * 70)
 
         deploy_records: List[Tuple[str, float, str, str]] = []
@@ -341,7 +351,7 @@ def test_shard_degradation(provider, timeouts) -> None:
             time.sleep(BATCH_PROPAGATION_SECS)
 
             current_lfbs = _get_lfb_numbers(all_nodes)
-            current_timeouts = _count_finalizer_timeouts(all_nodes)
+            current_timeouts_count = _count_finalizer_timeouts(all_nodes)
             api_latency = _measure_api_latency(v1)
             max_api_latency = max(max_api_latency, api_latency)
 
@@ -361,8 +371,8 @@ def test_shard_degradation(provider, timeouts) -> None:
             max_desync_seen = max(max_desync_seen, desync)
 
             new_timeouts = {
-                name: current_timeouts[name] - baseline_timeouts.get(name, 0)
-                for name in current_timeouts
+                name: current_timeouts_count[name] - baseline_timeouts_count.get(name, 0)
+                for name in current_timeouts_count
             }
             total_new_timeouts = sum(new_timeouts.values())
 
@@ -396,7 +406,7 @@ def test_shard_degradation(provider, timeouts) -> None:
                 batch_report["api_latency_ms"], batch_report["consecutive_stalls"],
             )
 
-        # Deploy lifecycle checks
+        # Deploy lifecycle checks (sampled)
         lifecycle_results = []
         for idx, (deploy_id, deploy_time, contract_type, validator_name) in enumerate(deploy_records):
             if idx not in inclusion_indices:
@@ -405,24 +415,28 @@ def test_shard_degradation(provider, timeouts) -> None:
                          idx + 1, contract_type, validator_name)
             inclusion_time, block_number, finalization_time = _check_deploy_lifecycle(
                 v1, deploy_id,
-                MAX_DEPLOY_INCLUSION_SECS, MAX_DEPLOY_FINALIZATION_SECS,
+                deploy_inclusion_timeout, deploy_finalization_timeout,
             )
             if inclusion_time is not None and finalization_time is not None:
                 logging.info("  Included in %.1fs (block #%d), finalized in %.1fs",
                              inclusion_time, block_number, finalization_time)
             elif inclusion_time is not None:
                 logging.warning("  Included in %.1fs (block #%d), NOT finalized within %ds",
-                                inclusion_time, block_number, MAX_DEPLOY_FINALIZATION_SECS)
+                                inclusion_time, block_number, deploy_finalization_timeout)
             else:
-                logging.warning("  NOT included within %ds", MAX_DEPLOY_INCLUSION_SECS)
+                logging.warning("  NOT included within %ds", deploy_inclusion_timeout)
             lifecycle_results.append((idx, deploy_id[:16], contract_type, block_number,
                                       inclusion_time, finalization_time))
 
+        # Prometheus metrics delta
+        metrics_after = scrape_metrics(v1)
+        node_metrics = compute_metric_deltas(metrics_before, metrics_after)
+
         # Report
         final_lfbs = _get_lfb_numbers(all_nodes)
-        final_timeouts = _count_finalizer_timeouts(all_nodes)
+        final_timeouts_count = _count_finalizer_timeouts(all_nodes)
         total_final_timeouts = sum(
-            final_timeouts[n] - baseline_timeouts.get(n, 0) for n in final_timeouts
+            final_timeouts_count[n] - baseline_timeouts_count.get(n, 0) for n in final_timeouts_count
         )
         final_rate = batch_reports[-1]["lfb_rate_per_min"] if batch_reports else 0
 
@@ -461,6 +475,11 @@ def test_shard_degradation(provider, timeouts) -> None:
         logging.info("Max validator desync: %d blocks", max_desync_seen)
         logging.info("Initial LFB rate: %.1f blk/min", initial_lfb_rate or 0)
         logging.info("Final LFB rate: %.1f blk/min", final_rate)
+
+        if node_metrics:
+            logging.info("")
+            logging.info("Node internals (V1, full test):\n%s", format_node_metrics(node_metrics))
+
         logging.info("=" * 70)
 
         # Assertions
@@ -494,7 +513,7 @@ def test_shard_degradation(provider, timeouts) -> None:
             details = [f"#{r[0]+1} ({r[2]})" for r in not_included]
             failures.append(
                 f"Deploy inclusion: {len(not_included)}/{len(lifecycle_results)} sampled deploys "
-                f"not included within timeout: {', '.join(details)}"
+                f"not included within {deploy_inclusion_timeout}s: {', '.join(details)}"
             )
 
         included_but_not_finalized = [r for r in lifecycle_results if r[4] is not None and r[5] is None]
@@ -502,13 +521,16 @@ def test_shard_degradation(provider, timeouts) -> None:
             details = [f"#{r[0]+1} ({r[2]}, block #{r[3]})" for r in included_but_not_finalized]
             failures.append(
                 f"Deploy finalization: {len(included_but_not_finalized)}/{len(lifecycle_results)} sampled deploys "
-                f"included but not finalized: {', '.join(details)}"
+                f"included but not finalized within {deploy_finalization_timeout}s: {', '.join(details)}"
             )
 
         if max_api_latency > MAX_API_LATENCY_SECS:
             failures.append(
                 f"API latency: {max_api_latency*1000:.0f}ms exceeds {MAX_API_LATENCY_SECS*1000}ms threshold"
             )
+
+        for node in all_nodes:
+            assert node.is_running(), f"{node.name} is not running after degradation test"
 
         if failures:
             failure_msg = "Production readiness FAILED:\n" + "\n".join(f"  - {f}" for f in failures)

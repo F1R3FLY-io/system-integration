@@ -6,9 +6,10 @@ Verifies that a new validator can dynamically bond to a running network via the 
 
 ## Setup
 
-- **Topology**: Custom 2-validator shard (V1, V2) + 1 dynamically added joiner (V4)
+- **Topology**: Custom 2-validator shard (V1, V2) + readonly observer + 1 dynamically added joiner (V4)
 - **Heartbeat**: Disabled (manual block orchestration for deterministic block numbering)
 - **FTT**: -1 (instant finalization)
+- **include_readonly**: True
 - **Epoch length**: 4 blocks (epoch changes at blocks 4, 8, 12, ...)
 - **Quarantine length**: 20
 - **Synchrony constraint threshold**: 0 (disabled)
@@ -27,9 +28,13 @@ V4's vault is seeded at genesis with 50,000,000,000,000,000 tokens (same as othe
 
 ## Phases
 
-### Phase 1: Block 1 — Initial deploy, verify joiner not bonded
+### Phase 1: Genesis verification
 
-V1 deploys and proposes. The bonds map in block 1 is checked to confirm V4's public key is not present. This establishes the baseline: the joiner has not bonded yet.
+The genesis block (block #0) is fetched and verified to have exactly 2 bonds. V4's public key is confirmed absent from genesis bonds, establishing the baseline that the joiner has not bonded yet.
+
+### Phase 1b: Block 1 — Initial deploy
+
+V1 deploys and proposes block 1.
 
 ### Phase 2: Add joiner to network
 
@@ -41,7 +46,7 @@ V4 deploys code and attempts to propose. This fails with `F1r3flyClientException
 
 ### Phase 4: Block 2 — Bond transaction
 
-V1 deploys the `bond.rho` contract with V4's private key and the bond amount (10,000,000). The contract invokes `PoS.bond()` which records V4's stake in the bonds map. After V1 proposes, the bonds map is verified to contain V4 with the correct stake.
+V1 deploys the `bond.rho` contract with V4's private key and the bond amount (10,000,000). The contract invokes `PoS.bond()` which records V4's stake in the bonds map. After V1 proposes, the bonds map is verified to contain V4 with the correct stake, and the total bond count is asserted to have increased from 2 to 3.
 
 ### Phase 5: Block 3 — Filler deploy, verify joiner still inactive
 
@@ -57,34 +62,38 @@ V2 deploys and proposes block 5. This is necessary because V4's earlier rejected
 
 ### Phase 8: Block 6 — Joiner proposes
 
-V4 deploys and proposes successfully. The block is verified visible on V1, confirming the joiner is now an active participant in consensus.
+V4 deploys and proposes successfully. The block is verified visible on V1, V2, and the readonly observer, confirming the joiner is now an active participant in consensus and its blocks propagate to all nodes.
 
 ## What it proves
 
+- Genesis block has exactly the expected bonds (2) and joiner is absent
 - The PoS bond contract correctly records a new validator's stake in the bonds map
+- Bond count increases from 2 to 3 after bonding
 - Bonded validators are not immediately active — they must wait for the epoch boundary
 - The epoch-length parameter controls when bonded validators become active
 - A joiner node can sync with the network, bond, and become a proposer
 - The DAG parent validation works correctly across the bonding/activation transition
+- Joiner's block is visible on all nodes including readonly
 - `shard.add_joiner()` correctly manages joiner node lifecycle (start, sync, cleanup)
 
 ## Key assertions
 
+- Genesis: exactly 2 bonds, V4 not present
 - Block 1: V4's public key not in bonds map
 - Pre-bond propose: `pytest.raises(F1r3flyClientException)`
-- Block 2: `bonds_map[V4.public_hex] == 10,000,000`
+- Block 2: `bonds_map[V4.public_hex] == 10,000,000`, `len(bonds_map) == 3`
 - Pre-epoch propose: `pytest.raises(F1r3flyClientException)`
 - Block 6: `joiner.propose()` succeeds (returns block hash)
-- Block 6 visible on V1: `wait_for_block_visible(v1, b6)` succeeds
+- Block 6 visible on V1, V2, and readonly: `wait_for_block_visible()` succeeds on all
 
 ## Infrastructure used
 
-- `ShardConfig` with `global_cli_options`, `extra_wallets`
+- `ShardConfig` with `global_cli_options`, `extra_wallets`, `include_readonly=True`
 - `Shard.create()` / `shard.destroy()` lifecycle
 - `shard.add_joiner()` context manager for mid-test joiner attachment
 - `Node.deploy_rho_file()` for deploying bond.rho with substitutions
-- `Node.deploy_string()`, `Node.propose()`, `Node.get_block()`
-- `poll_until()` for block visibility polling
+- `Node.deploy_string()`, `Node.propose()`, `Node.get_block()`, `Node.get_blocks()`
+- `wait_for_block_visible()` from `infra/polling.py` for block visibility polling
 
 ## Related
 

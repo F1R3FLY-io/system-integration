@@ -50,7 +50,7 @@ test/
 | Directory | Tests | Description | Shard lifecycle |
 |-----------|-------|-------------|-----------------|
 | `tests/shared/` | 32 | Standard shard tests (10 files) | One shard per session, shared across all tests |
-| `tests/custom/` | 11 | Custom configuration tests | Each test creates/destroys its own shard |
+| `tests/custom/` | 19 | Custom configuration tests (8 files) | Each test creates/destroys its own shard |
 | `tests/standalone/` | 16 | Standalone node tests | Each test creates/destroys standalone nodes |
 
 ## Running Tests
@@ -454,19 +454,20 @@ One shard startup per session. Tests run sequentially against the same shard.
 | test_convergence | [docs](test/docs/test_convergence.md) |
 | test_token_metadata | [docs](test/docs/test_token_metadata.md) |
 
-### `tests/custom/` — Custom shard (11 tests)
+### `tests/custom/` — Custom shard (19 tests, 8 files)
 
 Each test creates its own shard with specific configuration.
 
 | Test | Docs | Config |
 |------|------|--------|
+| test_consensus_safety | [docs](test/docs/test_consensus_safety.md) | Validator failure, FTT boundaries, epoch transition, merge determinism |
+| test_asymmetric_bonds | [docs](test/docs/test_asymmetric_bonds.md) | Bonds 60/20/15, FTT=0.33, readonly |
+| test_bonding_validators | [docs](test/docs/test_bonding_validators.md) | 2 validators, epoch-length=4, dynamic joiner, readonly |
 | test_synchrony_constraint | [docs](test/docs/test_synchrony_constraint.md) | Bonds 100/102/98, per-node thresholds, FTT=-1 |
-| test_asymmetric_bonds | [docs](test/docs/test_asymmetric_bonds.md) | Bonds 60/20/15, FTT=0.5 |
-| test_bonding_validators | [docs](test/docs/test_bonding_validators.md) | 2 validators, epoch-length=4, dynamic joiner |
 | test_trim_state | [docs](test/docs/test_trim_state.md) | 2 validators (10M/1), FTT=-1, dynamic joiner |
-| test_load | [docs](test/docs/test_load.md) | Isolated for benchmarking |
-| test_shard_degradation | [docs](test/docs/test_shard_degradation.md) | Isolated for production readiness gate |
-| test_websocket | [docs](test/docs/test_websocket.md) | 2-validator shard + WS connections |
+| test_load | [docs](test/docs/test_load.md) | Throughput benchmark, Prometheus metrics |
+| test_shard_degradation | [docs](test/docs/test_shard_degradation.md) | 150 deploys, production readiness gate |
+| test_websocket | [docs](test/docs/test_websocket.md) | 2-validator shard + readonly, WS event streaming |
 
 ### `tests/standalone/` — Standalone nodes (16 tests)
 

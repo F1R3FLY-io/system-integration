@@ -28,149 +28,31 @@ Both tests share a single module-scoped shard with WebSocket clients
 connected during startup.
 """
 
-import json
 import logging
-import threading
 import time
-from typing import Dict, List
+from typing import List
 
 import pytest
-import websocket
+
+from f1r3fly.websocket import (
+    BLOCK_LIFECYCLE_EVENTS,
+    EXPECTED_BOOT_EVENTS,
+    EXPECTED_VALIDATOR_EVENTS,
+    VALIDATOR_STARTUP_EVENTS,
+    connect_ws,
+    log_event_counts,
+    validate_block_event,
+    wait_for_events,
+)
 
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID
+from ...infra.node import Node
+from ...infra.polling import wait_for_deploy_included
 from ...infra.shard import Shard
+from ...infra.types import NodeRole
 
 pytestmark = pytest.mark.xdist_group("custom")
-
-
-# ── Constants ──
-
-BLOCK_LIFECYCLE_EVENTS = {"block-created", "block-added", "block-finalised"}
-
-BLOCK_PAYLOAD_FIELDS = {
-    "block-hash", "parent-hashes", "justification-hashes",
-    "deploys", "creator", "seq-num",
-}
-
-VALIDATOR_STARTUP_EVENTS = {
-    "node-started",
-    "approved-block-received",
-    "entered-running-state",
-}
-
-BOOT_GENESIS_EVENTS = {
-    "sent-unapproved-block",
-    "block-approval-received",
-    "sent-approved-block",
-}
-
-BOOT_STARTUP_EVENTS = BOOT_GENESIS_EVENTS | {
-    "node-started",
-    "entered-running-state",
-}
-
-EXPECTED_VALIDATOR_EVENTS = VALIDATOR_STARTUP_EVENTS | BLOCK_LIFECYCLE_EVENTS
-EXPECTED_BOOT_EVENTS = BOOT_STARTUP_EVENTS | {"block-added", "block-finalised"}
-
-
-# ── Helpers ──
-
-def _connect_ws(ws_url, events, errors, timeout=30):
-    """Connect a WebSocket client with retry. Returns (ws_app, ws_thread)."""
-    connected = threading.Event()
-
-    _EXPECTED_DISCONNECT_ERRORS = (
-        "Connection to remote host was lost",
-        "Connection reset by peer",
-        "Connection refused",
-    )
-
-    def on_message(ws, message):
-        try:
-            event = json.loads(message)
-            events.append(event)
-            logging.info("WS event: %s", event.get("event", "unknown"))
-        except json.JSONDecodeError as e:
-            errors.append(f"Bad JSON: {e}")
-
-    def on_error(ws, error):
-        msg = str(error)
-        if any(expected in msg for expected in _EXPECTED_DISCONNECT_ERRORS):
-            return
-        errors.append(msg)
-
-    def on_open(ws):
-        logging.info("WebSocket connected to %s", ws_url)
-        connected.set()
-
-    deadline = time.time() + timeout
-    ws_app = None
-    ws_thread = None
-
-    while time.time() < deadline:
-        errors.clear()
-        connected.clear()
-        ws_app = websocket.WebSocketApp(
-            ws_url,
-            on_message=on_message,
-            on_error=on_error,
-            on_open=on_open,
-        )
-        ws_thread = threading.Thread(target=ws_app.run_forever, daemon=True)
-        ws_thread.start()
-
-        if connected.wait(timeout=5):
-            return ws_app, ws_thread
-
-        ws_app.close()
-        ws_thread.join(timeout=3)
-        ws_app = None
-        ws_thread = None
-        time.sleep(1)
-
-    raise AssertionError(
-        f"WebSocket failed to connect to {ws_url} within {timeout}s. "
-        f"Errors: {errors}"
-    )
-
-
-def _wait_for_events(events, required, timeout=60):
-    """Poll until all required event types have been seen."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        seen = {e.get("event") for e in events}
-        if required <= seen:
-            return
-        time.sleep(1)
-
-
-def _validate_block_event(event):
-    event_type = event["event"]
-    assert event.get("schema-version") == 1, (
-        f"{event_type} missing or wrong schema-version: {event}"
-    )
-    assert "payload" in event, f"{event_type} missing payload: {event}"
-    payload = event["payload"]
-    missing = BLOCK_PAYLOAD_FIELDS - set(payload.keys())
-    assert not missing, (
-        f"{event_type} payload missing fields: {sorted(missing)}"
-    )
-    assert isinstance(payload["block-hash"], str) and len(payload["block-hash"]) > 0
-    assert isinstance(payload["parent-hashes"], list)
-    assert isinstance(payload["deploys"], list)
-    assert isinstance(payload["seq-num"], int)
-
-
-def _log_event_counts(events, label):
-    counts: Dict[str, int] = {}
-    for e in events:
-        t = e.get("event", "unknown")
-        counts[t] = counts.get(t, 0) + 1
-    logging.info(
-        "%s: %d events (%s)", label, len(events),
-        ", ".join(f"{t}:{counts[t]}" for t in sorted(counts)),
-    )
 
 
 # ── Module-scoped fixture ──
@@ -181,55 +63,90 @@ class WsShardResult:
         self.boot_errors: List[str] = []
         self.v1_events: List[dict] = []
         self.v1_errors: List[str] = []
+        self.ro_events: List[dict] = []
+        self.ro_errors: List[str] = []
 
 
 @pytest.fixture(scope="module")
 def ws_shard(provider, timeouts):
-    """Start a shard and connect WebSocket clients to boot and validator1.
+    """Start a shard and connect WebSocket clients BEFORE nodes reach Running.
 
-    The shard is created normally via Shard.create(). After all nodes
-    reach Running state, WebSocket clients connect and receive buffered
-    startup events via the node's replay mechanism.
+    The shard containers are started with wait_running=False, then WS
+    clients connect to the HTTP ports as soon as they're listening.
+    This allows the clients to receive genesis ceremony and startup
+    events live (not just replayed from buffer).
 
-    Yields a WsShardResult with events from both connections.
+    After WS connects, we wait for Running state and expected events.
     """
+    from ...infra.polling import wait_for_node_running
+
     config = ShardConfig(
         bonds=[(VALIDATOR1_ID, 60), (VALIDATOR2_ID, 40)],
         heartbeat=True,
+        include_readonly=True,
     )
-    shard = Shard.create(provider, config, timeouts)
+
+    # Start containers WITHOUT waiting for Running state
+    handles = provider.create_shard(config, wait_running=False)
+    shard = Shard(
+        provider=provider,
+        handles=handles,
+        config=config,
+        timeouts=timeouts,
+    )
+
     result = WsShardResult()
     boot_ws = None
     boot_ws_thread = None
     v1_ws = None
     v1_ws_thread = None
+    ro_ws = None
+    ro_ws_thread = None
 
     try:
         boot = shard.boot
         v1 = shard.node("validator1")
+        ro = shard.readonly
 
-        boot_ws_url = f"ws://{boot.grpc_host}:{boot.http_port}/ws/events"
-        v1_ws_url = f"ws://{v1.grpc_host}:{v1.http_port}/ws/events"
-
-        # Connect WebSocket to boot (receives buffered genesis ceremony events)
-        logging.info("Connecting WebSocket to boot at %s...", boot_ws_url)
-        boot_ws, boot_ws_thread = _connect_ws(
-            boot_ws_url, result.boot_events, result.boot_errors, timeout=timeouts.command,
+        # Connect WebSocket clients early — before Running state.
+        # connect_ws retries until the HTTP port is listening, so it
+        # handles the startup delay automatically.
+        logging.info("Connecting WebSocket to boot at %s (pre-Running)...", boot.ws_url)
+        boot_ws, boot_ws_thread = connect_ws(
+            boot.ws_url, result.boot_events, result.boot_errors,
+            timeout=timeouts.node_startup,
         )
 
-        # Connect WebSocket to validator1
-        logging.info("Connecting WebSocket to validator1 at %s...", v1_ws_url)
-        v1_ws, v1_ws_thread = _connect_ws(
-            v1_ws_url, result.v1_events, result.v1_errors, timeout=timeouts.command,
+        logging.info("Connecting WebSocket to validator1 at %s (pre-Running)...", v1.ws_url)
+        v1_ws, v1_ws_thread = connect_ws(
+            v1.ws_url, result.v1_events, result.v1_errors,
+            timeout=timeouts.node_startup,
         )
 
-        # Wait for expected events on both connections
-        _wait_for_events(result.v1_events, EXPECTED_VALIDATOR_EVENTS, timeout=timeouts.finalization)
-        _wait_for_events(result.boot_events, EXPECTED_BOOT_EVENTS, timeout=timeouts.command)
+        logging.info("Connecting WebSocket to readonly at %s (pre-Running)...", ro.ws_url)
+        ro_ws, ro_ws_thread = connect_ws(
+            ro.ws_url, result.ro_events, result.ro_errors,
+            timeout=timeouts.node_startup,
+        )
+
+        # Now wait for all nodes to reach Running state
+        for handle in handles:
+            wait_for_node_running(
+                get_logs=handle.logs,
+                is_running=handle.is_running,
+                node_name=handle.name,
+                timeout=timeouts.node_startup,
+            )
+
+        # Wait for expected events on all connections
+        wait_for_events(result.v1_events, EXPECTED_VALIDATOR_EVENTS, timeout=timeouts.finalization)
+        wait_for_events(result.boot_events, EXPECTED_BOOT_EVENTS, timeout=timeouts.command)
+        wait_for_events(result.ro_events, EXPECTED_VALIDATOR_EVENTS, timeout=timeouts.finalization)
 
         # Clear transient errors from connection retries
         result.boot_errors.clear()
         result.v1_errors.clear()
+        result.ro_errors.clear()
 
         yield result
 
@@ -242,6 +159,10 @@ def ws_shard(provider, timeouts):
             v1_ws.close()
         if v1_ws_thread:
             v1_ws_thread.join(timeout=5)
+        if ro_ws:
+            ro_ws.close()
+        if ro_ws_thread:
+            ro_ws_thread.join(timeout=5)
         shard.destroy()
 
 
@@ -268,9 +189,9 @@ def test_block_events(ws_shard: WsShardResult) -> None:
         if event_type == "started":
             assert event.get("schema-version") == 1
         elif event_type in BLOCK_LIFECYCLE_EVENTS:
-            _validate_block_event(event)
+            validate_block_event(event)
 
-    _log_event_counts(events, "Block events test passed (validator1)")
+    log_event_counts(events, "Block events test passed (validator1)")
 
 
 def test_startup_events_validator(ws_shard: WsShardResult) -> None:
@@ -300,7 +221,7 @@ def test_startup_events_validator(ws_shard: WsShardResult) -> None:
             assert "payload" in event
             assert "address" in event["payload"]
 
-    _log_event_counts(events, "Startup events test passed (validator1)")
+    log_event_counts(events, "Startup events test passed (validator1)")
 
 
 def test_startup_events_boot(ws_shard: WsShardResult) -> None:
@@ -338,6 +259,134 @@ def test_startup_events_boot(ws_shard: WsShardResult) -> None:
             assert "payload" in event
             assert "address" in event["payload"]
         elif event_type in BLOCK_LIFECYCLE_EVENTS:
-            _validate_block_event(event)
+            validate_block_event(event)
 
-    _log_event_counts(events, "Startup events test passed (boot)")
+    log_event_counts(events, "Startup events test passed (boot)")
+
+
+def test_startup_events_readonly(ws_shard: WsShardResult) -> None:
+    """Readonly node receives block lifecycle events (except block-created).
+
+    Readonly doesn't propose blocks, so it doesn't emit block-created.
+    It receives block-added and block-finalised from validators.
+    """
+    events = ws_shard.ro_events
+    errors = ws_shard.ro_errors
+
+    assert not errors, f"WebSocket errors: {errors}"
+
+    # Readonly receives block-added/block-finalised but NOT block-created
+    readonly_expected = {
+        "node-started",
+        "entered-running-state",
+        "approved-block-received",
+        "block-added",
+        "block-finalised",
+    }
+
+    seen = {e.get("event") for e in events}
+    missing = readonly_expected - seen
+    assert not missing, (
+        f"Missing readonly events: {sorted(missing)}. "
+        f"Received: {sorted(seen)} ({len(events)} total)"
+    )
+
+    # block-created should NOT be in readonly events
+    assert "block-created" not in seen, (
+        "Readonly should not receive block-created events (it doesn't propose)"
+    )
+
+    for event in events:
+        event_type = event.get("event")
+        if event_type in BLOCK_LIFECYCLE_EVENTS:
+            validate_block_event(event)
+
+    log_event_counts(events, "Startup events test passed (readonly)")
+
+
+def test_deploy_appears_in_block_event(ws_shard: WsShardResult, provider, timeouts) -> None:
+    """A deploy submitted after WS connect appears in a block-created event's deploys list."""
+    events = ws_shard.v1_events
+    errors = ws_shard.v1_errors
+
+    events_before = len(events)
+
+    v1_handle = None
+    for handle in provider.active_handles:
+        if "validator1" in handle.name:
+            v1_handle = handle
+            break
+    assert v1_handle is not None, "Could not find validator1 in active handles"
+
+    v1 = Node(handle=v1_handle, role=NodeRole.VALIDATOR)
+
+    deploy_id = v1.deploy_string(
+        '@"ws-deploy-test"!(42)',
+        VALIDATOR1_ID.private_key(),
+        phlo_limit=100_000,
+        phlo_price=1,
+    )
+    logging.info("Deployed for WS test, deploy_id=%s", deploy_id[:24])
+
+    block_info = wait_for_deploy_included(v1, deploy_id, timeouts.deploy_inclusion)
+    logging.info("Deploy included in block #%d", block_info.blockNumber)
+
+    v1_pubkey = VALIDATOR1_ID.private_key().get_public_key().to_hex()
+
+    deadline = time.time() + timeouts.finalization
+    found_deploy_info = None
+    found_event_type = None
+    found_block_hash = None
+    while time.time() < deadline:
+        for event in events[events_before:]:
+            event_type = event.get("event")
+            if event_type in ("block-created", "block-added"):
+                payload = event.get("payload", {})
+                deploys = payload.get("deploys", [])
+                # deploys is a list of dicts with "id", "cost", "deployer", "errored"
+                for d in deploys:
+                    if isinstance(d, dict) and d.get("id") == deploy_id:
+                        found_deploy_info = d
+                        found_event_type = event_type
+                        found_block_hash = payload.get("block-hash", "?")
+                        break
+                if found_deploy_info:
+                    break
+        if found_deploy_info:
+            break
+        time.sleep(1)
+
+    assert found_deploy_info is not None, (
+        f"Deploy {deploy_id[:24]} not found in any block-created/block-added "
+        f"event within {timeouts.finalization}s. "
+        f"New events received: {len(events) - events_before}"
+    )
+
+    logging.info(
+        "Deploy %s found in %s event (block %s)",
+        deploy_id[:24], found_event_type, found_block_hash[:16],
+    )
+
+    # Verify deploy fields
+    assert found_deploy_info["id"] == deploy_id, (
+        f"Deploy ID mismatch: {found_deploy_info['id'][:24]} != {deploy_id[:24]}"
+    )
+    assert isinstance(found_deploy_info["cost"], int) and found_deploy_info["cost"] >= 0, (
+        f"Deploy cost should be non-negative int, got {found_deploy_info.get('cost')}"
+    )
+    assert found_deploy_info["deployer"] == v1_pubkey, (
+        f"Deploy deployer '{found_deploy_info.get('deployer', '')[:24]}' != "
+        f"expected '{v1_pubkey[:24]}'"
+    )
+    assert found_deploy_info["errored"] is False, (
+        f"Deploy should not be errored, got errored={found_deploy_info.get('errored')}"
+    )
+
+    logging.info(
+        "Deploy fields verified: cost=%d, deployer=%s, errored=%s",
+        found_deploy_info["cost"], found_deploy_info["deployer"][:16],
+        found_deploy_info["errored"],
+    )
+
+    assert not errors, f"WebSocket errors during deploy test: {errors}"
+    v1.close()

@@ -9,9 +9,8 @@ defaults.conf + rust.conf).
 
 Single comprehensive test covering:
 1. Multi-parent block merging (heartbeat produces merge blocks)
-2. Fault tolerance monotonicity on all nodes
-3. Cross-node post-state hash agreement (determinism regression)
-4. Cross-node FT agreement on finalized blocks (FT >= FTT)
+2. Cross-node post-state hash agreement (determinism regression)
+3. Cross-node FT agreement on finalized blocks (FT >= FTT, cached at finalization time)
 """
 
 import logging
@@ -35,12 +34,13 @@ def test_dag_correctness(shared_shard, node_conf, timeouts) -> None:
 
     Deploys on all 3 validators, waits for 10+ blocks, then asserts:
     1. Multi-parent blocks exist (heartbeat merge blocks)
-    2. FT is monotonically non-increasing by height on every node
-    3. Deploy blocks propagate and all nodes agree on post-state hashes
-    4. All nodes agree on FT values for finalized blocks, and FT >= FTT
+    2. Deploy blocks propagate and all nodes agree on post-state hashes
+    3. Finalized blocks in the LFB ancestor chain have cached FT >= FTT
+       on the reference node. Cross-node FT convergence is tested
+       separately in test_convergence.py::test_ft_convergence.
 
     Regression coverage for the InvalidBondsCache bug (deterministic LCA
-    computation, Phase 1) and deterministic merge ordering (Phase 3).
+    computation, Phase 1) and deterministic merge ordering (Phase 2).
     """
     validators = shared_shard.validators
     all_nodes = shared_shard.all_nodes
@@ -88,32 +88,11 @@ def test_dag_correctness(shared_shard, node_conf, timeouts) -> None:
         "merge blocks with 3 concurrent validators"
     )
 
-    # ── 2. FT monotonicity on ALL nodes ──────────────────────────
-    for node in all_nodes:
-        node_blocks = node.get_blocks(50)
-        sorted_blocks = sorted(node_blocks, key=lambda b: b.blockNumber)
-        ft_by_height: dict[int, float] = {}
-        for b in sorted_blocks:
-            ft = float(b.faultTolerance)
-            height = b.blockNumber
-            if height not in ft_by_height or ft > ft_by_height[height]:
-                ft_by_height[height] = ft
-
-        heights = sorted(ft_by_height.keys())
-        for i in range(len(heights) - 1):
-            h_cur = heights[i]
-            h_next = heights[i + 1]
-            ft_cur = ft_by_height[h_cur]
-            ft_next = ft_by_height[h_next]
-            assert ft_cur >= ft_next, (
-                f"FT not monotonically non-increasing on {node.name}: "
-                f"height {h_cur} FT={ft_cur} < height {h_next} FT={ft_next}"
-            )
-
-        logging.info(
-            "FT monotonicity verified on %s across %d heights",
-            node.name, len(heights),
-        )
+    # ── 2. (Removed) FT monotonicity ───────────────────────────────
+    # FT monotonicity across heights is not a valid property in a multi-parent
+    # DAG. Blocks at the same height can be on different branches with unrelated
+    # FT values, and finalized blocks use cached FT (conservative lower bounds
+    # for ancestors) which inverts the expected ordering.
 
     # ── 3. Cross-node post-state agreement on deploy blocks ────────
     poll_until(
@@ -132,34 +111,40 @@ def test_dag_correctness(shared_shard, node_conf, timeouts) -> None:
     )
 
     # ── 4. Cross-node FT agreement on finalized blocks ─────────────
+    # Walk the LFB's actual ancestor chain rather than assuming all blocks
+    # at height <= LFB are finalized. In a multi-parent DAG, multiple blocks
+    # can exist at the same height — only the LFB and its ancestors are finalized.
     lfb = validators[0].last_finalized_block()
+    lfb_hash = lfb.blockInfo.blockHash
     lfb_number = lfb.blockInfo.blockNumber
-    logging.info("LFB at block #%d (FTT=%.2f) -- comparing FT on finalized blocks",
+    logging.info("LFB at block #%d (FTT=%.2f) -- verifying FT on LFB ancestor chain",
                  lfb_number, ftt)
 
-    v1_blocks = validators[0].get_blocks(50)
-    finalized_blocks = [b for b in v1_blocks if b.blockNumber <= lfb_number]
+    # Collect finalized block hashes by walking the parent chain from LFB
+    finalized_hashes = []
+    current_hash = lfb_hash
+    while current_hash:
+        finalized_hashes.append(current_hash)
+        block = validators[0].get_block(current_hash)
+        parents = list(block.blockInfo.parentsHashList)
+        # Follow main parent (first in list) to stay on the finalized chain
+        current_hash = parents[0] if parents else None
 
-    assert len(finalized_blocks) > 0, "No finalized blocks to compare"
+    assert len(finalized_hashes) > 0, "No finalized blocks in ancestor chain"
+    logging.info("Found %d blocks in LFB ancestor chain", len(finalized_hashes))
 
-    for b in finalized_blocks[:10]:
-        ft_ref = float(b.faultTolerance)
-        # Finalized blocks should have FT >= FTT
+    for block_hash in finalized_hashes:
+        ref_block = validators[0].get_block(block_hash)
+        ft_ref = float(ref_block.blockInfo.faultTolerance)
+        block_num = ref_block.blockInfo.blockNumber
+
+        # Finalized blocks should have cached FT >= FTT
         assert ft_ref >= ftt, (
-            f"Finalized block {b.blockHash[:16]}... (height #{b.blockNumber}) "
+            f"Finalized block {block_hash[:16]}... (height #{block_num}) "
             f"has FT={ft_ref}, expected >= FTT={ftt}"
         )
-        # All nodes should agree on FT
-        for node in all_nodes[1:]:
-            node_block = node.get_block(b.blockHash)
-            ft_node = float(node_block.blockInfo.faultTolerance)
-            assert ft_ref == ft_node, (
-                f"FT mismatch on finalized block {b.blockHash[:16]}... "
-                f"(height #{b.blockNumber}): "
-                f"{all_nodes[0].name}={ft_ref}, {node.name}={ft_node}"
-            )
 
     logging.info(
-        "Cross-node FT agreement verified on %d finalized blocks across %d nodes (FT >= %.2f)",
-        min(len(finalized_blocks), 10), len(all_nodes), ftt,
+        "FT cache verified on %d finalized blocks on %s (FT >= %.2f)",
+        len(finalized_hashes), validators[0].name, ftt,
     )
