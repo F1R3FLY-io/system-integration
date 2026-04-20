@@ -4,39 +4,32 @@
 
 
 
-### Fault tolerance inconsistency across nodes for finalized blocks
+### Finalized blocks on orphaned DAG branches may not converge to FT=1.0
 
-Nodes disagree on `faultTolerance` values for the same finalized block. Confirmed in integration tests: boot node reports FT=0.0 for a finalized block at height #50 (the LFB itself), while validator1 reports FT=-1.0 (the "not yet computed" sentinel) for the same block via `get_block()`.
+In a multi-parent DAG, a finalized block can become unreachable from future LFBs if no later merge block includes its branch as a parent. The `propagate_ft_to_finalized_blocks` pass (added as part of the FT caching fix) updates all blocks in the `finalized_block_set`, but blocks that were finalized as ancestors of an early LFB and then never referenced by later chains don't get their FT updated because later LFBs go through different branches.
 
-This matches the client-reported issue where rust-client shows FT=1.0 for all validators at a given block, but the HTTP API reports FT=0.0.
+**Observed:** `test_ft_convergence` intermittently fails — a height-1 block that was a parent of the initial LFB stays at FT=0.3333 on all nodes. The block IS finalized on the node that originally finalized it, but later LFBs on that node go through different height-1 blocks.
 
-**Reproduction:**
-- 3-validator shard (100/100/100 bonds), heartbeat enabled
-- Deploy on all validators, wait for 10+ blocks
-- Query `last_finalized_block()` on V1 to get LFB number
-- Query `get_block(hash)` for blocks at or below LFB on all nodes
-- Compare FT values — they disagree
+**Root cause:** The block is finalized (in the `finalized_block_set` on the originating node), and `propagate_ft_to_finalized_blocks` does update it. But if the block was only finalized on ONE node and not yet on others (different nodes finalize different LFB chains), the other nodes' `finalized_block_set` doesn't contain it, so propagation on those nodes skips it.
 
-**Integration test:** `test_dag_correctness` phase 4 (cross-node FT agreement on finalized blocks) — currently deselected.
+**Impact:** FT convergence to 1.0 is not guaranteed for all finalized blocks within any fixed timeout. The safety guarantee (FT >= FTT) holds — the block IS finalized with FT > FTT. But exact convergence to 1.0 across all nodes depends on all nodes eventually finalizing the block through their own LFB chains.
 
-**Impact:** Clients cannot trust FT values from the API. A finalized block may appear unfinalized (FT=-1) or weakly finalized (FT=0.0) depending on which node is queried.
+**Integration test:** `test_ft_convergence` in `test_convergence.py` — polls for 270s. Passes when the shard has enough depth, intermittently fails on short-lived shards.
 
-**Fix locations:** Likely in the clique oracle FT scoring path — FT should be recomputed and consistent after finalization across all node roles (validator, boot, readonly).
+**References:** f1r3node#462, FT caching fix
 
-### Contract query deploy returns empty deployId after finalization (intermittent)
+### Synchrony constraint test failures
 
-A query deploy against a finalized bridge contract occasionally returns empty data from the `deployId` channel. The deploy is included in a block and not errored, but the contract's response chain (`lookup → queryCh → ret!(v) → deployId!(result)`) doesn't complete within the block's execution.
+Two issues with `test_synchrony_constraint`:
 
-**Reproduction (intermittent):**
-- Deploy bridge-v2.rho on V1, wait for finalization on all nodes
-- Deploy getNonce query on V1 (or any validator)
-- Query deploy included in block, not errored, but `get_data_at_deploy_id` returns empty par list
+**1. First-proposal exemption not working reliably:** V3's first propose (seqNum 3) fails with "Must wait for more blocks from other validators" even though first proposals should be exempt. The exempt check in `synchrony_constraint_checker.rs` checks `last_proposed_block_meta.block_number == 0`, but the timing between block visibility and DAG processing may cause the check to evaluate against a non-genesis state.
 
-**Observed:** Passes in some runs, fails in others. When it passes, the bridge is typically in block #2+ and queries start at block #5+. When it fails, the bridge is in block #1 and queries start at block #4.
+**2. `synchrony-finalized-baseline-enabled` not exposed as CLI flag:** This config key exists in HOCON (`casper_conf.rs`) but is not a clap CLI argument. Cannot disable the finalized baseline fallback via `--synchrony-finalized-baseline-enabled=false`. This prevents testing the pure synchrony constraint rejection case — with FTT=-1, the finalized baseline always rescues the proposer, making rejection untestable.
 
-**Root cause hypothesis:** The multi-parent DAG merge may not include the bridge block's post-state in the query block's execution context, even though the bridge block is finalized. This is related to the `validAfterBlockNumber` semantics issue — VABN is a minimum, not a state inclusion guarantee.
-
-**Workaround:** Retry. The test is correct — if finalization guarantees state inclusion, the query should always succeed.
+**Fix needed:**
+- Expose `synchrony-finalized-baseline-enabled` as a CLI flag, or
+- Support per-test custom HOCON config file generation in the test framework
+- Investigate why first-proposal exemption fails at seqNum 3
 
 ### Network cannot self-recover from DAG tip divergence (f1r3node#437, f1r3node#224)
 
@@ -49,12 +42,12 @@ When validators temporarily desynchronize (any cause), they create independent b
 - Any cause of temporary validator desynchronization
 
 **Integration tests written (reproduce the bug):**
-File: `integration-tests/test/test_replay_determinism.py`
+File: `integration-tests/test/tests/shared/test_convergence.py`
 
-| Test                                         | Trigger                                                             | What it asserts                              | Result (3 runs)                                             |
-| -------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------- |
-| `test_network_recovers_from_validator_pause` | Pause validator1 container for 15s, then unpause                    | LFB advances 3+ blocks after unpause         | FAILED 2/3 — non-deterministic, depends on divergence depth |
-| `test_network_recovers_from_slow_deploy`     | Deploy `loop!(1000000000)` (phlo-exhausting loop from f1r3node#224) | LFB advances 3+ blocks after deploy included | FAILED 3/3 — reliable reproduction                          |
+| Test                                         | Trigger                                                             | What it asserts                              | Result                                             |
+| -------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------- | -------------------------------------------------- |
+| `test_network_recovers_from_validator_pause` | Pause validator1 container for 30s, then unpause                    | LFB advances 3+ blocks on all nodes after unpause, FT >= FTT | PASSES |
+| `test_network_converges_after_slow_deploy`   | Deploy `loop!(100000)` (phlo-exhausting loop from f1r3node#224)     | LFB advances 3+ blocks, FT >= FTT, spread <= 2 | Deselected — triggers shard stall |
 
 The slow deploy test (`loop!(1000000000)`) is the most reliable trigger — the proposing validator is blocked long enough for other validators to create multiple independent blocks via heartbeat.
 
@@ -171,6 +164,14 @@ But fails for contracts that read from persistent state channels. Tested against
 4. Can exploratory deploy be extended to wait for responses on `new` channels?
 
 **File:** `f1r3node-rust/casper/src/rust/api/block_api.rs:1443-1506` — exploratory deploy execution path
+
+## Test: Validator expulsion with continued finalization
+
+Need to implement `test_validator_expulsion_continued_finalization` — V3 produces invalid state, V1+V2 reject V3's blocks, verify V1+V2 still finalize at FTT=0.1. The challenge is reliably triggering block rejection. Possible approaches: deploy with wrong key, corrupt block data, or use a mechanism that causes V3's blocks to be invalid.
+
+## Optimize test_shard_degradation batch propagation wait
+
+`test_shard_degradation` takes ~11 minutes. The main cost is `BATCH_PROPAGATION_SECS = 30` — a fixed 30-second sleep after each of 15 batches (450s total). This could be replaced with a poll that checks LFB advancement across all nodes, returning early once propagation is confirmed instead of waiting the full 30 seconds.
 
 ## Background Traffic Generator for Integration Tests
 
@@ -305,7 +306,19 @@ These are improvements to the f1r3node Rust node HTTP API that would make client
 
 **Needed:** Clients should be able to target a specific finalized block's state for reads, ensuring consistency between writes and subsequent reads.
 
-### 5. Observer `explore-deploy` state consistency
+### 5. `/api/deploy/{id}?view=minimal` should include cost
+
+**Current:** The `view=minimal` response (`DeployLookupResponse`) returns only block-level metadata (`blockHash`, `blockNumber`, `timestamp`, `sender`, `seqNum`, `sig`, `sigAlgorithm`, `shardId`, `version`). It excludes `cost`, `transfers`, and all deploy execution details.
+
+**Needed:** Add `cost: u64` to the minimal view. Cost is a key field for clients — it tells them how much phlogiston a deploy consumed. The default/detail view already has it, but clients using `view=minimal` for lightweight polling have no way to get cost without a second request.
+
+**Client request:** "Could you also add cost to the deploy view=minimal response? I think this is quite an important field." Also requested: add `transfers` to deploy responses where missing (transfers are available in `BlockInfo.deploys[].transfers` but only on readonly nodes — validator nodes return empty `transfers` arrays because transfer extraction requires block replay).
+
+**Implementation:** In `shared_handlers.rs`, the minimal view handler builds `DeployLookupResponse` from the containing block's `LightBlockInfo`. To add `cost`, it needs to look up the deploy in the block's `deploys[]` array by signature and extract `cost` from the matching `DeployInfo`. The struct `DeployLookupResponse` needs a `cost: u64` field.
+
+**File:** `node/src/rust/web/shared_handlers.rs` (deploy lookup handler), `node/src/rust/api/web_api.rs` (`DeployLookupResponse` struct)
+
+### 6. Observer `explore-deploy` state consistency
 
 **Current:** The observer's `explore-deploy` can return stale state even when `last-finalized-block` reports a newer block number. This creates a window where reads don't see recent writes.
 

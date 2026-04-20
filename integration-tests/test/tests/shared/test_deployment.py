@@ -5,6 +5,7 @@ Tests for the full deploy lifecycle on a shared shard:
 1. Invalid syntax — rejected at API level, pipeline not poisoned
 2. Insufficient phlo — included in block but marked as errored
 3. Cross-validator deploy lookup — same deploy resolves to same block
+4. Exploratory deploy error handling — invalid Rholang returns error, not empty
 
 Previously, deploying with insufficient phlo triggered NeglectedInvalidBlock
 crashes. This was resolved by fixing non-deterministic merge ordering in
@@ -137,3 +138,40 @@ def test_deploy_lookup_consistent_across_validators(shared_shard, timeouts) -> N
     )
 
     logging.info("Deploy lookup consistent across %d nodes", len(all_nodes))
+
+
+def test_exploratory_deploy_invalid_syntax_returns_error(shared_shard) -> None:
+    """Exploratory deploy with invalid Rholang returns an error response.
+
+    Previously, play_exploratory_deploy silently swallowed parse errors
+    and returned empty results. After the fix (PR #484), errors are
+    propagated to the client as ExploratoryDeployResponse.Error.
+
+    Also verifies that using Rholang reserved keywords (e.g. ``contract``)
+    as variable names is correctly rejected.
+    """
+    ro = shared_shard.readonly
+
+    # Completely invalid syntax
+    with pytest.raises(F1r3flyClientException, match="(?i)pars|syntax|error"):
+        ro.exploratory_deploy("this is not valid rholang {{{", "")
+
+    logging.info("Invalid syntax correctly rejected by exploratory deploy")
+
+    # Reserved keyword 'contract' used as variable name
+    with pytest.raises(F1r3flyClientException, match="(?i)pars|syntax|error"):
+        ro.exploratory_deploy(
+            'new ret, lookup(`rho:registry:lookup`), ch in {'
+            '  lookup!(`rho:system:pos`, *ch) |'
+            '  for (contract <- ch) { contract!("all", *ret) }'
+            '}',
+            "",
+        )
+
+    logging.info("Reserved keyword 'contract' as variable correctly rejected")
+
+    # Valid exploratory deploy still works after errors
+    result = ro.exploratory_deploy('new ret in { ret!(42) }', "")
+    assert len(result) == 1, f"Valid exploratory deploy should return 1 par, got {len(result)}"
+
+    logging.info("Valid exploratory deploy succeeds after error rejections")

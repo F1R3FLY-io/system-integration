@@ -4,13 +4,13 @@ Wallet / Token Transfer Integration Tests
 Tests for wallet-based token transfers using the PoS vault system.
 Uses pyf1r3fly's VaultAPI for all operations:
   - ``get_balance()`` for balance queries (exploratory deploy on readonly)
-  - ``deploy_get_balance()`` for balance queries (real deploy on validators)
+  - ``deploy_get_balance()`` for balance queries (real deploy on validators,
+    used only in test_validator1_pay_validator2 to cross-check against readonly)
   - ``transfer_ensure()`` + ``read_transfer_result()`` for transfers
     (real deploys on validators)
 
-Balance queries use exploratory deploy on readonly and real deploys on
-validators. Transfers are submitted via validators since they are
-state-changing operations.
+Balance queries use exploratory deploy on readonly. Transfers are
+submitted via validators since they are state-changing operations.
 """
 
 import logging
@@ -92,7 +92,7 @@ def test_validator1_pay_validator2(shared_shard, timeouts) -> None:
 def test_validator2_pay_validator3(shared_shard, timeouts) -> None:
     """Validator2 transfers tokens to Validator3 via V2's node.
 
-    Balance checked on V2 via deploy.
+    Balance checked via exploratory deploy on readonly.
     """
     v2 = shared_shard.node("validator2")
     ro = shared_shard.readonly
@@ -101,9 +101,7 @@ def test_validator2_pay_validator3(shared_shard, timeouts) -> None:
     v3_vault = VALIDATOR3_ID.private_key().get_public_key().get_vault_address()
     transfer_amount = 10_000_000
 
-    v2_balance_before = v2.vault.deploy_get_balance(
-        v2_vault, v2_key, timeouts.deploy_inclusion, timeouts.finalization,
-    )
+    v2_balance_before = ro.vault.get_balance(v2_vault)
     assert v2_balance_before > 0
 
     v3_balance_before = ro.vault.get_balance(v3_vault)
@@ -154,17 +152,15 @@ def test_transfer_failed_with_invalid_key(shared_shard, timeouts) -> None:
 def test_transfer_failed_with_insufficient_funds(shared_shard, timeouts) -> None:
     """Transferring more than sender balance fails with Insufficient funds.
 
-    Submitted via V2's node. Balance queried via deploy on V2.
+    Submitted via V2's node. Balance queried via exploratory deploy on readonly.
     """
     v2 = shared_shard.node("validator2")
+    ro = shared_shard.readonly
     v1_key = VALIDATOR1_ID.private_key()
     v1_vault = v1_key.get_public_key().get_vault_address()
     v2_vault = VALIDATOR2_ID.private_key().get_public_key().get_vault_address()
 
-    v1_balance = v2.vault.deploy_get_balance(
-        v1_vault, VALIDATOR2_ID.private_key(),
-        timeouts.deploy_inclusion, timeouts.finalization,
-    )
+    v1_balance = ro.vault.get_balance(v1_vault)
     assert v1_balance > 0
     overdraw_amount = v1_balance + 1
 

@@ -32,7 +32,7 @@ Happy-path transfer submitted via V1:
 ### test_validator2_pay_validator3
 
 Happy-path transfer submitted via V2 (exercises a different validator's deploy pipeline):
-1. Check V2 balance > 0, record V3 balance
+1. Check V2 balance > 0 via exploratory deploy on readonly, record V3 balance
 2. Transfer 10,000,000 tokens from V2 to V3 via V2's node
 3. Read transfer result and assert success
 4. Poll until V3 balance increased by exactly the transfer amount
@@ -43,7 +43,7 @@ Authorization failure submitted via V3: attempts to transfer from V3's vault usi
 
 ### test_transfer_failed_with_insufficient_funds
 
-Overdraw failure submitted via V2: queries V1's balance via V2's node, then attempts to transfer `balance + 1` tokens. Reads the transfer result and asserts `result.reason == "Insufficient funds"`.
+Overdraw failure submitted via V2: queries V1's balance via exploratory deploy on readonly, then attempts to transfer `balance + 1` tokens. Reads the transfer result and asserts `result.reason == "Insufficient funds"`.
 
 ### test_block_api_returns_transfer_info
 
@@ -81,8 +81,8 @@ Verifies that the HTTP Block API exposes transfer details in `DeployInfo`.
 
 - Session-scoped `shared_shard` fixture (3 validators + readonly)
 - `Node.vault` (pyf1r3fly VaultAPI) for transfer and result reading
-- `ro.vault.get_balance()` for exploratory balance queries (readonly node only)
-- `node.vault.deploy_get_balance()` for real-deploy balance queries (validators)
+- `ro.vault.get_balance()` for exploratory balance queries (readonly node)
+- `node.vault.deploy_get_balance()` for real-deploy balance queries (used in test_validator1_pay_validator2 to cross-check against readonly)
 - `Node.api_get()` for HTTP Block API queries on multiple nodes
 - `wait_for_deploy_included()` from `infra/polling.py` (delegates to `f1r3fly.polling`)
 - `wait_for_finalized()` from `infra/polling.py` (delegates to `f1r3fly.polling`)

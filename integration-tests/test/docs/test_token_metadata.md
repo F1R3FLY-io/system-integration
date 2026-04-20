@@ -16,15 +16,16 @@ Group A (happy path) uses the session-scoped `shared_shard` fixture, asserting a
 
 ## Tests (17)
 
-### Group A -- Happy path (4 tests, shared shard)
+### Group A -- Happy path (5 tests, shared shard)
 
-Uses the session-scoped `shared_shard` with token metadata from the `node_conf` fixture. All tests check **every node** in the shard (validators + readonly) unless noted.
+Uses the session-scoped `shared_shard` with token metadata from the `node_conf` fixture.
 
 | Test | What it verifies |
 |------|-----------------|
 | `test_api_status_returns_configured_token` | `/api/status` reports default name/symbol/decimals on all nodes |
-| `test_on_chain_all_method_matches_config` | `TokenMetadata!("all", ret)` tuple matches defaults on all nodes (gRPC) |
-| `test_on_chain_individual_methods_match_all` | `name`/`symbol`/`decimals` methods individually match `all` tuple on all nodes |
+| `test_on_chain_all_exploratory` | `TokenMetadata!("all", ret)` via exploratory deploy on readonly matches config |
+| `test_on_chain_all_real_deploy` | `TokenMetadata!("all", ret)` via real deploy on V1 matches config |
+| `test_on_chain_individual_methods_match_all` | `name`/`symbol`/`decimals` methods individually match `all` tuple (exploratory on readonly) |
 | `test_startup_log_announces_token_metadata` | Boot + all validators log `native_token_metadata_startup` event with default values (boot as `ceremony_master`, validators as `genesis_validator`; readonly excluded — it doesn't emit this event) |
 
 ### Group B -- Joiner mismatch (5 tests, standalone baseline + joiners)
@@ -65,7 +66,7 @@ Uses a module-scoped baseline standalone. Joiners with mismatched configs must e
 
 - Token metadata is correctly threaded from CLI -> config -> genesis -> on-chain contract -> API
 - All four contract methods (name, symbol, decimals, all) are consistent
-- Every node (validators + readonly) reports identical metadata via both HTTP API and on-chain gRPC
+- All nodes report identical metadata via HTTP API; on-chain queries verified via exploratory (readonly) and real deploy (V1)
 - Mismatched joiners are detected and logged with specific field names
 - CLI validation catches invalid inputs (range, empty, whitespace)
 - Special characters survive the full round-trip without corruption

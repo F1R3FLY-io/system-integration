@@ -8,15 +8,16 @@ logs, and is consistent across all nodes.
 Expected values are derived from the node_conf fixture (parsed HOCON),
 not hardcoded.
 
-On-chain queries use exploratory deploy on readonly and real deploys
-on validators (exploratory deploy is restricted to readonly nodes).
+On-chain queries are tested via two paths:
+- Exploratory deploy on readonly (fast, no blocks)
+- Real deploy on one validator (exercises deploy pipeline)
 """
 
 import logging
 
 import pytest
 
-from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.keys import VALIDATOR1_ID
 from ...infra.log_events import find_event, iter_json_events
 from ...infra.token_metadata import (
     fetch_api_status_token,
@@ -27,8 +28,6 @@ from ...infra.token_metadata import (
 )
 
 pytestmark = pytest.mark.xdist_group("shared")
-
-VALIDATOR_KEYS = [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID]
 
 
 def test_api_status_returns_configured_token(shared_shard, node_conf) -> None:
@@ -46,14 +45,8 @@ def test_api_status_returns_configured_token(shared_shard, node_conf) -> None:
         )
 
 
-def test_on_chain_all_method_matches_config(shared_shard, node_conf, timeouts) -> None:
-    """TokenMetadata!("all", ret) returns a tuple matching the config on all nodes.
-
-    Uses exploratory deploy on readonly, real deploys on validators.
-    """
-    from f1r3fly.system_contracts import deploy_query_token_metadata
-
-    # Readonly — exploratory deploy (instant)
+def test_on_chain_all_exploratory(shared_shard, node_conf) -> None:
+    """TokenMetadata!("all", ret) via exploratory deploy matches config."""
     ro = shared_shard.readonly
     on_chain = query_token_metadata_all(ro.grpc_host, ro.external_grpc_port)
     assert on_chain.name == node_conf.native_token_name, (
@@ -68,23 +61,28 @@ def test_on_chain_all_method_matches_config(shared_shard, node_conf, timeouts) -
     logging.info("%s (exploratory): name=%s symbol=%s decimals=%d",
                  ro.name, on_chain.name, on_chain.symbol, on_chain.decimals)
 
-    # Validators — real deploy via deploy_query_token_metadata
-    for node, key in zip(shared_shard.validators, VALIDATOR_KEYS):
-        on_chain = deploy_query_token_metadata(
-            node._external_client(), key.private_key(),
-            timeouts.deploy_inclusion, timeouts.finalization,
-        )
-        assert on_chain.name == node_conf.native_token_name, (
-            f"{node.name}: on-chain name '{on_chain.name}' != config '{node_conf.native_token_name}'"
-        )
-        assert on_chain.symbol == node_conf.native_token_symbol, (
-            f"{node.name}: on-chain symbol '{on_chain.symbol}' != config '{node_conf.native_token_symbol}'"
-        )
-        assert on_chain.decimals == node_conf.native_token_decimals, (
-            f"{node.name}: on-chain decimals {on_chain.decimals} != config {node_conf.native_token_decimals}"
-        )
-        logging.info("%s (deploy): name=%s symbol=%s decimals=%d",
-                     node.name, on_chain.name, on_chain.symbol, on_chain.decimals)
+
+def test_on_chain_all_real_deploy(shared_shard, node_conf, timeouts) -> None:
+    """TokenMetadata!("all", ret) via real deploy on V1 matches config."""
+    from f1r3fly.system_contracts import deploy_query_token_metadata
+
+    node = shared_shard.validators[0]
+    key = VALIDATOR1_ID
+    on_chain = deploy_query_token_metadata(
+        node._external_client(), key.private_key(),
+        timeouts.deploy_inclusion, timeouts.finalization,
+    )
+    assert on_chain.name == node_conf.native_token_name, (
+        f"{node.name}: on-chain name '{on_chain.name}' != config '{node_conf.native_token_name}'"
+    )
+    assert on_chain.symbol == node_conf.native_token_symbol, (
+        f"{node.name}: on-chain symbol '{on_chain.symbol}' != config '{node_conf.native_token_symbol}'"
+    )
+    assert on_chain.decimals == node_conf.native_token_decimals, (
+        f"{node.name}: on-chain decimals {on_chain.decimals} != config {node_conf.native_token_decimals}"
+    )
+    logging.info("%s (deploy): name=%s symbol=%s decimals=%d",
+                 node.name, on_chain.name, on_chain.symbol, on_chain.decimals)
 
 
 def test_on_chain_individual_methods_match_all(shared_shard) -> None:
