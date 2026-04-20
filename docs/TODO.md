@@ -141,30 +141,6 @@ The node should return structured error codes so clients can match on codes inst
 ### Context
 PR #472 improved error logging (actual messages in all 17 handlers) but did not add structured codes. Docs updated in `docs/node/README.md` and `docs/rnode-api/index.md` — method listings only, no error catalog.
 
-## Exploratory Deploy Cannot Query Contracts with Persistent State Channels
-
-Exploratory deploy (read-only, no block created) works for:
-- Direct registry lookups (`registry_lookup`) — returns stored values
-- System contracts like `TokenMetadata` — respond synchronously
-
-But fails for contracts that read from persistent state channels. Tested against bridge-v2.rho:
-- `getNonce` reads from `nonceCh` via `for (@v <- nonceCh) { nonceCh!(v) | ret!(v) }`
-- All four Rholang patterns tested return 0 pars on the readonly node
-- Direct `lookup!` (pattern 3) returns 1 par — the registry lookup itself works
-- The contract method call doesn't complete within exploratory deploy's execution window
-
-**Root cause hypothesis:** Exploratory deploy creates an isolated execution environment. When the contract tries `for (@v <- nonceCh)`, that channel exists in the persistent tuplespace from the original deploy, but exploratory deploy may not have access to it — or the async response via `*ret` isn't captured before the exploratory deploy returns.
-
-**Impact:** Read-only queries against stateful contracts (bridge, DEX, governance) must use real deploys with `deployId` channel, which creates a block and consumes phlo. This makes client-side reads expensive.
-
-**Investigation needed:**
-1. Does the Rust node's exploratory deploy execute against the full tuplespace state? Or just a snapshot?
-2. Is there a timing/capture issue where the contract responds after the exploratory deploy has already returned?
-3. Can the contract be restructured to respond synchronously (inline the state read)?
-4. Can exploratory deploy be extended to wait for responses on `new` channels?
-
-**File:** `f1r3node-rust/casper/src/rust/api/block_api.rs:1443-1506` — exploratory deploy execution path
-
 ## Test: Validator expulsion with continued finalization
 
 Need to implement `test_validator_expulsion_continued_finalization` — V3 produces invalid state, V1+V2 reject V3's blocks, verify V1+V2 still finalize at FTT=0.1. The challenge is reliably triggering block rejection. Possible approaches: deploy with wrong key, corrupt block data, or use a mechanism that causes V3's blocks to be invalid.
