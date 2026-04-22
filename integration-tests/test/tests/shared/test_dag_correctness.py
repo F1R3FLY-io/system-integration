@@ -144,6 +144,12 @@ def test_dag_correctness(shared_shard, node_conf, timeouts) -> None:
             f"has FT={ft_ref}, expected >= FTT={ftt}"
         )
 
+        # isFinalized field should be True for all blocks in the ancestor chain
+        assert ref_block.blockInfo.isFinalized is True, (
+            f"Finalized block {block_hash[:16]}... (height #{block_num}) "
+            f"should have isFinalized=True"
+        )
+
     logging.info(
         "FT cache verified on %d finalized blocks on %s (FT >= %.2f)",
         len(finalized_hashes), validators[0].name, ftt,

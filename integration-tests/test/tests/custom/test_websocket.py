@@ -382,6 +382,13 @@ def test_deploy_appears_in_block_event(ws_shard: WsShardResult, provider, timeou
         f"Deploy should not be errored, got errored={found_deploy_info.get('errored')}"
     )
 
+    # Transfers should be omitted on block-created/block-added events
+    # (transfer extraction hasn't happened yet)
+    if found_event_type in ("block-created", "block-added"):
+        assert "transfers" not in found_deploy_info, (
+            f"Deploy in {found_event_type} should not have transfers field"
+        )
+
     logging.info(
         "Deploy fields verified: cost=%d, deployer=%s, errored=%s",
         found_deploy_info["cost"], found_deploy_info["deployer"][:16],

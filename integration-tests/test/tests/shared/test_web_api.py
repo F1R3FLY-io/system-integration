@@ -9,12 +9,11 @@ HTTP endpoints tested:
   /api/status
   /api/prepare-deploy
   /api/last-finalized-block
+  /api/last-finalized-block?view=summary
   /api/block/<hash>
   /api/blocks/<depth>
-  /api/deploy/<id>
-  /api/deploy/<id>?view=detail
-  /api/deploy/<id>?view=minimal
-  /api/data-at-name
+  /api/deploy/<id>              (full view, default)
+  /api/deploy/<id>?view=summary
   /api/explore-deploy
   /api/deploy (POST)
 """
@@ -203,6 +202,36 @@ def test_status(shared_shard, node_conf) -> None:
             f"{node.name}: nativeTokenDecimals {status['nativeTokenDecimals']} != {expect['native_token_decimals']}"
         )
 
+        # Operational state (Phase 4b)
+        assert isinstance(status["lastFinalizedBlockNumber"], int) and status["lastFinalizedBlockNumber"] >= 0, (
+            f"{node.name}: lastFinalizedBlockNumber should be >= 0, got {status.get('lastFinalizedBlockNumber')}"
+        )
+        assert isinstance(status["isReady"], bool) and status["isReady"] is True, (
+            f"{node.name}: isReady should be True (shard is running)"
+        )
+        assert isinstance(status["isValidator"], bool), (
+            f"{node.name}: isValidator should be bool"
+        )
+        assert isinstance(status["isReadOnly"], bool), (
+            f"{node.name}: isReadOnly should be bool"
+        )
+        assert isinstance(status["currentEpoch"], int) and status["currentEpoch"] >= 0, (
+            f"{node.name}: currentEpoch should be >= 0"
+        )
+        assert isinstance(status["epochLength"], int) and status["epochLength"] > 0, (
+            f"{node.name}: epochLength should be > 0"
+        )
+
+        # Node role consistency
+        if node == shared_shard.readonly:
+            assert status["isReadOnly"] is True, (
+                f"{node.name}: readonly node should have isReadOnly=True"
+            )
+        else:
+            assert status["isReadOnly"] is False, (
+                f"{node.name}: non-readonly node should have isReadOnly=False"
+            )
+
     # Cross-node consistency
     versions = {n: s["version"]["node"] for n, s in statuses.items()}
     assert len(set(versions.values())) == 1, f"Nodes disagree on version: {versions}"
@@ -215,6 +244,9 @@ def test_status(shared_shard, node_conf) -> None:
 
     phlo_prices = {n: s["minPhloPrice"] for n, s in statuses.items()}
     assert len(set(phlo_prices.values())) == 1, f"Nodes disagree on minPhloPrice: {phlo_prices}"
+
+    epoch_lengths = {n: s["epochLength"] for n, s in statuses.items()}
+    assert len(set(epoch_lengths.values())) == 1, f"Nodes disagree on epochLength: {epoch_lengths}"
 
     # Addresses should be unique per node
     addresses = {n: s["address"] for n, s in statuses.items()}
@@ -284,6 +316,11 @@ def test_last_finalized_block(shared_shard, node_conf, timeouts) -> None:
             f"{node.name}: LFB blockNumber should be > 0, got {info['blockNumber']}"
         )
 
+        # isFinalized should be True for LFB
+        assert info.get("isFinalized") is True, (
+            f"{node.name}: LFB should have isFinalized=True"
+        )
+
         # Finalized blocks should have FT >= FTT (finalization threshold)
         assert info["faultTolerance"] >= expect["ftt"], (
             f"{node.name}: finalized block #{info['blockNumber']} has FT={info['faultTolerance']}, "
@@ -339,6 +376,11 @@ def test_get_block(shared_shard, node_conf, timeouts) -> None:
             f"{node.name}: returned blockHash doesn't match queried hash"
         )
 
+        # Block should be finalized (we waited for finalization)
+        assert info.get("isFinalized") is True, (
+            f"{node.name}: queried block should be finalized"
+        )
+
         # Find our deploy in the block
         our_deploy = None
         for d in block["deploys"]:
@@ -370,7 +412,10 @@ def test_get_block(shared_shard, node_conf, timeouts) -> None:
 
 
 def test_get_blocks(shared_shard, node_conf, timeouts) -> None:
-    """HTTP /api/blocks/<depth> returns valid blocks on all nodes."""
+    """HTTP /api/blocks/<depth> returns valid blocks on all nodes.
+    Default view is summary (deploys omitted). Response is BlockInfoSerde
+    with blockInfo wrapper.
+    """
     expect = _shard_expectations(shared_shard, node_conf)
     v1 = shared_shard.node("validator1")
     _deploy_and_wait(v1, timeouts, count=3)
@@ -382,20 +427,29 @@ def test_get_blocks(shared_shard, node_conf, timeouts) -> None:
         )
 
         for b in blocks:
-            _assert_valid_block_hash(b["blockHash"], f"{node.name} blocks list")
-            assert isinstance(b["blockNumber"], int) and b["blockNumber"] >= 0, (
-                f"{node.name}: invalid blockNumber {b.get('blockNumber')}"
+            # Response is BlockInfoSerde: {blockInfo: {...}, deploys?: [...]}
+            assert "blockInfo" in b, (
+                f"{node.name}: block missing blockInfo wrapper"
             )
-            assert len(b["bonds"]) == expect["bond_count"], (
-                f"{node.name}: block #{b['blockNumber']} has {len(b['bonds'])} bonds, "
+            info = b["blockInfo"]
+            _assert_valid_block_hash(info["blockHash"], f"{node.name} blocks list")
+            assert isinstance(info["blockNumber"], int) and info["blockNumber"] >= 0, (
+                f"{node.name}: invalid blockNumber {info.get('blockNumber')}"
+            )
+            assert len(info["bonds"]) == expect["bond_count"], (
+                f"{node.name}: block #{info['blockNumber']} has {len(info['bonds'])} bonds, "
                 f"expected {expect['bond_count']}"
+            )
+            # Summary view: deploys should be omitted
+            assert "deploys" not in b, (
+                f"{node.name}: block #{info['blockNumber']} should not have deploys in summary view"
             )
 
     logging.info("Blocks list verified on %d nodes", len(shared_shard.all_nodes))
 
 
 def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
-    """HTTP /api/deploy/<id>?view=detail returns full execution details on all nodes."""
+    """HTTP /api/deploy/<id> returns full DeployResponse on all nodes (default=full view)."""
     expect = _shard_expectations(shared_shard, node_conf)
     v1 = shared_shard.node("validator1")
     v1_pubkey = VALIDATOR1_ID.private_key().get_public_key().to_hex()
@@ -404,8 +458,12 @@ def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
 
     details = {}
     for node in shared_shard.all_nodes:
-        detail = node.api_get(f"/deploy/{deploy_id}?view=detail")
+        detail = node.api_get(f"/deploy/{deploy_id}")
 
+        # Core fields (always present)
+        assert detail["deployId"] == deploy_id, (
+            f"{node.name}: deployId should match queried id"
+        )
         _assert_valid_block_hash(detail["blockHash"], f"{node.name} deploy detail")
         assert isinstance(detail["blockNumber"], int) and detail["blockNumber"] > 0, (
             f"{node.name}: blockNumber should be > 0"
@@ -413,14 +471,19 @@ def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
         assert isinstance(detail["timestamp"], int) and detail["timestamp"] > 0, (
             f"{node.name}: timestamp should be > 0"
         )
-        assert detail["deployer"] == v1_pubkey, (
-            f"{node.name}: deployer mismatch"
-        )
         assert isinstance(detail["cost"], int) and detail["cost"] > 0, (
             f"{node.name}: cost should be > 0, got {detail['cost']}"
         )
         assert detail["errored"] is False, (
             f"{node.name}: deploy should not be errored"
+        )
+        assert detail["isFinalized"] is True, (
+            f"{node.name}: deploy should be finalized"
+        )
+
+        # Full view fields
+        assert detail["deployer"] == v1_pubkey, (
+            f"{node.name}: deployer mismatch"
         )
         assert detail["systemDeployError"] == "", (
             f"{node.name}: systemDeployError should be empty"
@@ -430,9 +493,6 @@ def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
         )
         assert detail["phloLimit"] == 100_000, (
             f"{node.name}: phloLimit should be 100000, got {detail['phloLimit']}"
-        )
-        assert detail["sig"] == deploy_id, (
-            f"{node.name}: sig should match deploy_id"
         )
         assert detail["sigAlgorithm"] == expect["sig_algorithm"], (
             f"{node.name}: sigAlgorithm mismatch"
@@ -467,84 +527,61 @@ def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
     logging.info("Deploy detail verified on %d nodes, cost=%d", len(shared_shard.all_nodes), list(costs.values())[0])
 
 
-def test_deploy_minimal_view(shared_shard, node_conf, timeouts) -> None:
-    """HTTP /api/deploy/<id>?view=minimal returns block metadata + cost on all nodes."""
-    expect = _shard_expectations(shared_shard, node_conf)
+def test_deploy_summary_view(shared_shard, node_conf, timeouts) -> None:
+    """HTTP /api/deploy/<id>?view=summary returns core fields only on all nodes."""
     v1 = shared_shard.node("validator1")
     deploy_ids, _ = _deploy_and_wait(v1, timeouts)
     deploy_id = deploy_ids[0]
 
-    minimal_responses = {}
+    summary_responses = {}
     for node in shared_shard.all_nodes:
-        minimal = node.api_get(f"/deploy/{deploy_id}?view=minimal")
+        summary = node.api_get(f"/deploy/{deploy_id}?view=summary")
 
-        # Fields that SHOULD be present
-        _assert_valid_block_hash(minimal["blockHash"], f"{node.name} minimal view")
-        assert isinstance(minimal["blockNumber"], int) and minimal["blockNumber"] > 0, (
+        # Core fields that MUST be present
+        assert summary["deployId"] == deploy_id, (
+            f"{node.name}: deployId should match queried id"
+        )
+        _assert_valid_block_hash(summary["blockHash"], f"{node.name} summary view")
+        assert isinstance(summary["blockNumber"], int) and summary["blockNumber"] > 0, (
             f"{node.name}: blockNumber should be > 0"
         )
-        assert isinstance(minimal["timestamp"], int) and minimal["timestamp"] > 0, (
+        assert isinstance(summary["timestamp"], int) and summary["timestamp"] > 0, (
             f"{node.name}: timestamp should be > 0"
         )
-        assert isinstance(minimal["sender"], str) and len(minimal["sender"]) > 0, (
-            f"{node.name}: sender should be non-empty"
+        assert isinstance(summary["cost"], int) and summary["cost"] > 0, (
+            f"{node.name}: cost should be > 0, got {summary.get('cost')}"
         )
-        assert isinstance(minimal["seqNum"], int), (
-            f"{node.name}: seqNum should be int"
+        assert isinstance(summary["errored"], bool), (
+            f"{node.name}: errored should be bool"
         )
-        assert isinstance(minimal["sig"], str) and len(minimal["sig"]) > 0, (
-            f"{node.name}: sig should be non-empty string (block creator's signature)"
-        )
-        assert minimal["sigAlgorithm"] == expect["sig_algorithm"], (
-            f"{node.name}: sigAlgorithm mismatch"
-        )
-        assert minimal["shardId"] == expect["shard_id"], (
-            f"{node.name}: shardId mismatch"
-        )
-        assert isinstance(minimal["version"], int), (
-            f"{node.name}: version should be int"
-        )
-        assert isinstance(minimal["cost"], int) and minimal["cost"] > 0, (
-            f"{node.name}: cost should be > 0, got {minimal.get('cost')}"
+        assert isinstance(summary["isFinalized"], bool), (
+            f"{node.name}: isFinalized should be bool"
         )
 
-        # Fields that should NOT be in minimal view
-        for excluded in ["deployer", "term", "errored", "phloPrice", "phloLimit",
-                         "systemDeployError", "validAfterBlockNumber", "transfers"]:
-            assert excluded not in minimal, (
-                f"{node.name}: minimal view should not include '{excluded}'"
+        # Full-view fields that should NOT be in summary
+        for excluded in ["deployer", "term", "phloPrice", "phloLimit",
+                         "sigAlgorithm", "systemDeployError",
+                         "validAfterBlockNumber", "transfers"]:
+            assert excluded not in summary, (
+                f"{node.name}: summary view should not include '{excluded}'"
             )
 
-        minimal_responses[node.name] = minimal
+        summary_responses[node.name] = summary
 
     # Cross-node consistency
-    block_hashes = {n: m["blockHash"] for n, m in minimal_responses.items()}
+    block_hashes = {n: m["blockHash"] for n, m in summary_responses.items()}
     assert len(set(block_hashes.values())) == 1, (
         f"Nodes disagree on deploy block: {block_hashes}"
     )
-    costs = {n: m["cost"] for n, m in minimal_responses.items()}
+    costs = {n: m["cost"] for n, m in summary_responses.items()}
     assert len(set(costs.values())) == 1, (
         f"Nodes disagree on deploy cost: {costs}"
     )
 
     logging.info(
-        "Deploy minimal view verified on %d nodes, cost=%d",
+        "Deploy summary view verified on %d nodes, cost=%d",
         len(shared_shard.all_nodes), list(costs.values())[0],
     )
-
-
-def test_data_at_name(shared_shard, timeouts) -> None:
-    """HTTP /api/data-at-name returns empty data for deploy without deployId write."""
-    v1 = shared_shard.node("validator1")
-    deploy_ids, _ = _deploy_and_wait(v1, timeouts)
-
-    resp = v1.api_post("/data-at-name", {
-        "name": {"UnforgDeploy": {"data": deploy_ids[0]}},
-        "depth": 1,
-    })
-    data = resp.json()
-    assert data["length"] == 0
-    assert data["exprs"] == []
 
 
 def test_get_data_at_name_empty_payload(shared_shard, timeouts) -> None:

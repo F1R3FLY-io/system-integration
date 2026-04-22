@@ -19,17 +19,23 @@ The helper `_shard_expectations(shard, node_conf)` derives expected values from 
 
 All block info assertions use `_assert_light_block_info()` which validates every field of `LightBlockInfoSerde` against these expectations: block hash format, sender pubkey format, shardId, sigAlgorithm, version, bonds count and stakes, timestamp, and justification structure.
 
-## Tests (11)
+## Tests (10)
 
 ### test_status
 `GET /api/status` on **all nodes**. Asserts:
 - `version.api` and `version.node` non-empty
 - `shardId` == "root", `networkId` non-empty
 - `peers` >= 1, `nodes` >= validator count
-- `minPhloPrice` matches `node_conf.min_phlo_price` (parsed from config)
-- `nativeTokenName`, `nativeTokenSymbol`, `nativeTokenDecimals` match `node_conf` values
-- Cross-node: all agree on version, networkId, shardId, minPhloPrice
-- All addresses are unique
+- `minPhloPrice` matches `node_conf.min_phlo_price`
+- `nativeTokenName`, `nativeTokenSymbol`, `nativeTokenDecimals` match `node_conf`
+- `lastFinalizedBlockNumber` >= 0 (int)
+- `isReady` == True (shard is running)
+- `isValidator` is bool (per node role)
+- `isReadOnly` is bool (True on readonly, False on others)
+- `currentEpoch` >= 0 (int)
+- `epochLength` > 0 (int)
+- Cross-node: all agree on version, networkId, shardId, minPhloPrice, epochLength
+- All addresses unique
 
 ### test_prepare_deploy
 `GET /api/prepare-deploy` on **V1 and V2**. Deploys 3 contracts, polls until `seqNumber >= 3` on both nodes. Also tests `POST` with deployer params: verifies `nameQty=2` returns exactly 2 names.
@@ -37,78 +43,61 @@ All block info assertions use `_assert_light_block_info()` which validates every
 ### test_last_finalized_block
 `GET /api/last-finalized-block` on **all nodes**. Asserts:
 - Full `LightBlockInfoSerde` validation on each node
-- `blockNumber` > 0, `faultTolerance` > 0 (finalized blocks must have positive FT)
+- `blockNumber` > 0, `faultTolerance` >= FTT
+- `isFinalized` == True
 - `parentsHashList` non-empty (not genesis)
 - All nodes agree on LFB hash
-- **HTTP vs gRPC FT cross-check**: for the same block, compares `faultTolerance` from `/api/last-finalized-block` with `faultTolerance` from gRPC `show_block()` on every node
+- **HTTP vs gRPC FT cross-check**: compares FT from HTTP and gRPC on every node
 
 ### test_get_block
-`GET /api/block/{hash}` on **all nodes**. Deploys 1 contract, queries the containing block on every node. Asserts:
+`GET /api/block/{hash}` on **all nodes**. Asserts:
 - Full `LightBlockInfoSerde` validation
-- Returned `blockHash` matches queried hash
-- Our deploy found in block with `errored == false`, `cost > 0`, empty `systemDeployError`
+- `blockHash` matches queried hash
+- `isFinalized` == True (we waited for finalization)
+- Deploy found with `errored == false`, `cost > 0`, empty `systemDeployError`
 - All nodes agree on `postStateHash`
 
 ### test_get_blocks
-`GET /api/blocks/10` on **all nodes**. Asserts:
+`GET /api/blocks/10` on **all nodes**. Response is `BlockInfoSerde` with `blockInfo` wrapper. Asserts:
 - >= 4 blocks on every node
-- Every block has valid hash, non-negative blockNumber, correct bond count
+- Each block has `blockInfo` wrapper with valid hash, non-negative blockNumber, correct bond count
+- `deploys` field omitted (summary view default)
 
 ### test_get_deploy_detail
-`GET /api/deploy/{id}?view=detail` on **all nodes**. Asserts:
+`GET /api/deploy/{id}` on **all nodes** (full view, default). Returns unified `DeployResponse`. Asserts:
+- `deployId` matches queried ID
 - Valid `blockHash`, `blockNumber` > 0, `timestamp` > 0
-- `deployer` matches V1's public key hex
-- `cost` > 0 (int), `errored` == false, `systemDeployError` == ""
-- `phloPrice` == 1, `phloLimit` == 100000
-- `sig` matches deploy ID, `sigAlgorithm` == "secp256k1"
-- **Transfers**: omitted on validators (block replay unavailable), present as list on readonly
+- `cost` > 0, `errored` == false, `isFinalized` == true
+- `deployer` matches V1's public key
+- `systemDeployError` == "", `phloPrice` == 1, `phloLimit` == 100000
+- `sigAlgorithm` == "secp256k1"
+- **Transfers**: omitted on validators, present as list on readonly
 - Cross-node: all agree on `blockHash` and `cost`
 
-### test_deploy_minimal_view
-`GET /api/deploy/{id}?view=minimal` on **all nodes**. Asserts:
-- All expected fields present: `blockHash`, `blockNumber`, `timestamp`, `sender`, `seqNum`, `sig`, `sigAlgorithm`, `shardId`, `version`, `cost`
-- `cost` > 0 (phlogiston consumed)
-- Heavy fields excluded: `deployer`, `term`, `errored`, `phloPrice`, `phloLimit`, `systemDeployError`, `validAfterBlockNumber`, `transfers`
+### test_deploy_summary_view
+`GET /api/deploy/{id}?view=summary` on **all nodes**. Asserts:
+- Core fields present: `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`
+- Full-view fields excluded: `deployer`, `term`, `phloPrice`, `phloLimit`, `sigAlgorithm`, `systemDeployError`, `validAfterBlockNumber`, `transfers`
 - Cross-node: all agree on `blockHash` and `cost`
-
-### test_data_at_name
-`POST /api/data-at-name` on V1. Asserts `length == 0`, `exprs == []` for a deploy that writes to `@N` not `deployId`. (Deprecated endpoint — minimal coverage.)
 
 ### test_get_data_at_name_empty_payload
 gRPC `get_deploy_data()` on **V1 and V2**. Asserts result is not None and `par` is empty. Verifies PR #472 fix (empty payload instead of error).
 
 ### test_explore_deploy_returns_cost
-`POST /api/explore-deploy` on **all nodes**. Asserts:
-- `cost` is positive int, `expr` and `block` present
-- **Deterministic execution**: all nodes compute the same cost
+`POST /api/explore-deploy` on **readonly**. Asserts `cost` is positive int, `expr` and `block` present.
 
 ### test_deploy_via_http
-`POST /api/deploy` on V1. Builds a signed deploy proto, submits via HTTP JSON, asserts 200 response. Single-node is sufficient (write operation).
+`POST /api/deploy` on V1. Builds a signed deploy proto, submits via HTTP JSON, asserts 200 response.
 
 ## What it proves
 
-- All HTTP API endpoints return correct, fully-validated response structures
-- Every field in `LightBlockInfoSerde` is correct for the shard configuration
-- Deploy sequencing (`seqNumber`) reflects finalized state across nodes
-- Finalized blocks have positive fault tolerance (catches FT=0.0 bug)
-- HTTP and gRPC report identical fault tolerance for the same block (catches API inconsistency)
-- Exploratory deploy cost is deterministic across all nodes
-- Deploy execution details (cost, errored, deployer) are consistent across nodes
-- Block content (postStateHash) is identical across all nodes
-- HTTP deploy submission with signatures is accepted
-- Token metadata is correctly reported in /api/status
-
-## Infrastructure used
-
-- Session-scoped `shared_shard` fixture with `shard.config` for setup-aware expectations
-- `_assert_light_block_info()` — shared validator for all block info fields
-- `Node.api_get()`, `Node.api_post()` for HTTP API calls
-- `Node.get_block()` (gRPC) for HTTP vs gRPC FT cross-check
-- `wait_for_deploy_included()`, `wait_for_finalized()` from `infra/polling.py`
-- `sign_deploy_data()` from pyf1r3fly for HTTP deploy signing
-
-## Related
-
-- [test_deployment](test_deployment.md) -- deploy lifecycle tests (error handling, cross-validator lookup)
-- [test_wallets](test_wallets.md) -- Block API transfer extraction via HTTP
-- [test_token_metadata](test_token_metadata.md) -- deeper token metadata testing (on-chain, startup logs)
+- All HTTP API endpoints return correct, validated response structures
+- Unified `DeployResponse` with full/summary views works correctly
+- `isFinalized` field present and correct on block and deploy responses
+- Status includes operational state (isReady, isValidator, isReadOnly, epoch info)
+- Block list endpoint returns `BlockInfoSerde` with summary default (deploys omitted)
+- Finalized blocks have positive fault tolerance
+- HTTP and gRPC report identical fault tolerance
+- Deploy execution details consistent across nodes
+- Block content (postStateHash) identical across all nodes
+- Transfer availability differs correctly between readonly and validator nodes

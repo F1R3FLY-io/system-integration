@@ -263,12 +263,15 @@ def test_ft_convergence(shared_shard, node_conf, timeouts) -> None:
     logging.info("Tracking FT convergence for block #%d (%s...)",
                  target_number, target_hash[:16])
 
-    # Verify FT >= FTT on reference node
+    # Verify FT >= FTT and isFinalized on reference node
     ref_block = shared_shard.validators[0].get_block(target_hash)
     ft_ref = float(ref_block.blockInfo.faultTolerance)
     assert ft_ref >= ftt, (
         f"Block #{target_number} has FT={ft_ref} on reference node, "
         f"expected >= FTT={ftt}"
+    )
+    assert ref_block.blockInfo.isFinalized is True, (
+        f"Block #{target_number} should have isFinalized=True on reference node"
     )
     logging.info("Reference node FT=%.4f (>= FTT=%.2f)", ft_ref, ftt)
 
