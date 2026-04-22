@@ -42,16 +42,20 @@ def wait_for_node_running(
     node_name: str,
     timeout: int,
     interval: float = 2.0,
+    status_url: str = "",
 ) -> None:
-    """Wait for a node to emit the Running state marker in its logs.
+    """Wait for a node to reach Running state.
+
+    Primary method: polls ``/api/status`` for ``isReady == true``.
+    Fallback: if ``status_url`` is not provided, parses logs for the
+    Running state marker (legacy behavior).
 
     Also checks if the container/pod has exited — if so, raises
     immediately with the last log lines instead of waiting the full
     timeout.
-
-    ``get_logs`` and ``is_running`` are callables so this function
-    doesn't depend on any specific Node/Handle type.
     """
+    import requests
+
     deadline = time.time() + timeout
 
     while time.time() < deadline:
@@ -62,10 +66,25 @@ def wait_for_node_running(
                 f"Node {node_name} exited before reaching Running state. "
                 f"Last logs:\n{tail}"
             )
-        logs = get_logs()
-        if _RUNNING_MARKER in logs:
-            logger.info("Node %s reached Running state", node_name)
-            return
+
+        # Primary: poll /api/status for isReady
+        if status_url:
+            try:
+                resp = requests.get(status_url, timeout=3)
+                if resp.status_code == 200:
+                    status = resp.json()
+                    if status.get("isReady") is True:
+                        logger.info("Node %s is ready (isReady=true)", node_name)
+                        return
+            except (requests.ConnectionError, requests.Timeout, Exception):
+                pass  # HTTP not up yet, keep waiting
+        else:
+            # Fallback: log parsing
+            logs = get_logs()
+            if _RUNNING_MARKER in logs:
+                logger.info("Node %s reached Running state (log marker)", node_name)
+                return
+
         time.sleep(interval)
 
     logs = get_logs()

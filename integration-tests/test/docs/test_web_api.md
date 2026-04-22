@@ -89,15 +89,61 @@ gRPC `get_deploy_data()` on **V1 and V2**. Asserts result is not None and `par` 
 ### test_deploy_via_http
 `POST /api/deploy` on V1. Builds a signed deploy proto, submits via HTTP JSON, asserts 200 response.
 
-## What it proves
+### test_block_summary_view
+`GET /api/block/{hash}?view=summary` on **all nodes**. Asserts deploys omitted, blockInfo present.
+
+### test_block_list_full_view
+`GET /api/blocks/5?view=full` on V1. Asserts deploys included on at least one block.
+
+### test_lfb_summary_view
+`GET /api/last-finalized-block?view=summary` on V1. Asserts deploys omitted.
+
+### test_deploy_unknown_view_defaults_full
+`GET /api/deploy/{id}?view=bogus` on V1. Asserts falls back to full view (deployer field present).
+
+### test_blocks_by_height_range
+`GET /api/blocks/{start}/{end}` on V1. Asserts blocks in requested range, summary default.
+
+### test_is_finalized_http
+`GET /api/is-finalized/{hash}` on V1. Asserts true. Cross-checks with gRPC.
+
+### test_grpc_status_matches_http
+gRPC `status()` vs HTTP `/api/status` on **all nodes**. Asserts shardId, networkId, minPhloPrice, lastFinalizedBlockNumber, isValidator, isReadOnly, isReady, epochLength match.
+
+### test_transfers_null_on_validator_http
+`GET /api/block/{hash}` on **validator vs readonly**. Validator: transfers null. Readonly: transfers populated as list.
+
+### test_removed_endpoints_404
+POST `/api/data-at-name` and GET `/api/transactions/{hash}` both return 404.
+
+### test_show_main_chain
+gRPC `showMainChain` on V1. Asserts >= 2 blocks, descending block numbers, valid hashes.
+
+### test_preview_private_names
+gRPC `previewPrivateNames` on V1. Asserts 3 unique names generated, deterministic across calls.
+
+### test_get_event_data
+gRPC `getEventByHash` on **readonly**. Asserts block execution trace returned with deploys and events for a finalized block.
+
+### test_get_continuation
+gRPC `listenForContinuationAtName` on V1. Asserts query completes without error.
+
+## What it proves (23 tests)
 
 - All HTTP API endpoints return correct, validated response structures
 - Unified `DeployResponse` with full/summary views works correctly
 - `isFinalized` field present and correct on block and deploy responses
 - Status includes operational state (isReady, isValidator, isReadOnly, epoch info)
+- View params work on all block endpoints (full/summary, correct defaults)
 - Block list endpoint returns `BlockInfoSerde` with summary default (deploys omitted)
+- Blocks by height range returns correct range with summary default
 - Finalized blocks have positive fault tolerance
-- HTTP and gRPC report identical fault tolerance
+- HTTP and gRPC report identical status and FT values
 - Deploy execution details consistent across nodes
 - Block content (postStateHash) identical across all nodes
 - Transfer availability differs correctly between readonly and validator nodes
+- Removed endpoints return 404
+- Unknown view param falls back to full
+- gRPC-only methods (showMainChain, previewPrivateNames, getEventByHash, listenForContinuationAtName) return correct data
+- Removed endpoints return 404
+- Unknown view param falls back to full

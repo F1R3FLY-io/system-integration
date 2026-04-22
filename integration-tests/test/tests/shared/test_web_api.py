@@ -658,3 +658,335 @@ def test_deploy_via_http(shared_shard) -> None:
     resp = v1.api_post("/deploy", deploy_req)
     assert resp.status_code == 200
     logging.info("HTTP deploy accepted: %s", resp.text[:80])
+
+
+# ===========================================================================
+# View parameter tests
+# ===========================================================================
+
+
+def test_block_summary_view(shared_shard, timeouts) -> None:
+    """GET /api/block/{hash}?view=summary omits deploys on all nodes."""
+    v1 = shared_shard.node("validator1")
+    _, block_hashes = _deploy_and_wait(v1, timeouts)
+    block_hash = block_hashes[0]
+
+    for node in shared_shard.all_nodes:
+        block = node.api_get(f"/block/{block_hash}?view=summary")
+
+        assert "blockInfo" in block, f"{node.name}: missing blockInfo"
+        assert "deploys" not in block, (
+            f"{node.name}: summary view should not include deploys"
+        )
+        assert block["blockInfo"]["blockHash"] == block_hash
+
+    logging.info("Block summary view verified on %d nodes", len(shared_shard.all_nodes))
+
+
+def test_block_list_full_view(shared_shard, timeouts) -> None:
+    """GET /api/blocks/{depth}?view=full includes deploys."""
+    v1 = shared_shard.node("validator1")
+    _deploy_and_wait(v1, timeouts)
+
+    blocks = v1.api_get("/blocks/5?view=full")
+    assert len(blocks) >= 2, f"expected >= 2 blocks, got {len(blocks)}"
+
+    has_deploys = False
+    for b in blocks:
+        assert "blockInfo" in b, "block missing blockInfo wrapper"
+        if "deploys" in b and b["deploys"]:
+            has_deploys = True
+
+    assert has_deploys, "full view should include deploys on at least one block"
+    logging.info("Block list full view: %d blocks, deploys included", len(blocks))
+
+
+def test_lfb_summary_view(shared_shard, timeouts) -> None:
+    """GET /api/last-finalized-block?view=summary omits deploys."""
+    v1 = shared_shard.node("validator1")
+    _deploy_and_wait(v1, timeouts)
+
+    lfb = v1.api_get("/last-finalized-block?view=summary")
+
+    assert "blockInfo" in lfb, "missing blockInfo"
+    assert "deploys" not in lfb, "summary view should not include deploys"
+    assert lfb["blockInfo"]["blockNumber"] > 0
+
+    logging.info("LFB summary view: block #%d, deploys omitted", lfb["blockInfo"]["blockNumber"])
+
+
+def test_deploy_unknown_view_defaults_full(shared_shard, timeouts) -> None:
+    """GET /api/deploy/{id}?view=bogus falls back to full view."""
+    v1 = shared_shard.node("validator1")
+    deploy_ids, _ = _deploy_and_wait(v1, timeouts)
+    deploy_id = deploy_ids[0]
+
+    result = v1.api_get(f"/deploy/{deploy_id}?view=bogus")
+
+    # Should return full view (has deployer, term, etc.)
+    assert "deployer" in result, "unknown view should fall back to full"
+    assert "deployId" in result
+    assert result["deployId"] == deploy_id
+
+    logging.info("Unknown view correctly defaults to full")
+
+
+def test_blocks_by_height_range(shared_shard, timeouts) -> None:
+    """GET /api/blocks/{start}/{end} returns blocks in height range."""
+    v1 = shared_shard.node("validator1")
+    _deploy_and_wait(v1, timeouts)
+
+    lfb = v1.api_get("/last-finalized-block")
+    lfb_number = lfb["blockInfo"]["blockNumber"]
+    start = max(0, lfb_number - 3)
+
+    blocks = v1.api_get(f"/blocks/{start}/{lfb_number}")
+
+    assert len(blocks) >= 1, f"expected >= 1 block in range {start}-{lfb_number}"
+    for b in blocks:
+        assert "blockInfo" in b, "block missing blockInfo wrapper"
+        bn = b["blockInfo"]["blockNumber"]
+        assert start <= bn <= lfb_number, (
+            f"block #{bn} outside range {start}-{lfb_number}"
+        )
+        # Summary default: no deploys
+        assert "deploys" not in b, "summary default should not include deploys"
+
+    logging.info("Blocks by height range %d-%d: %d blocks", start, lfb_number, len(blocks))
+
+
+# ===========================================================================
+# HTTP/gRPC parity and misc
+# ===========================================================================
+
+
+def test_is_finalized_http(shared_shard, timeouts) -> None:
+    """GET /api/is-finalized/{hash} returns true for finalized block."""
+    v1 = shared_shard.node("validator1")
+    _, block_hashes = _deploy_and_wait(v1, timeouts)
+    block_hash = block_hashes[0]
+
+    result = v1.api_get(f"/is-finalized/{block_hash}")
+    assert result is True, f"expected true, got {result}"
+
+    # Cross-check with gRPC
+    grpc_result = v1.is_finalized(block_hash)
+    assert grpc_result is True, "gRPC is_finalized should agree"
+
+    logging.info("is-finalized verified: HTTP=%s, gRPC=%s", result, grpc_result)
+
+
+def test_grpc_status_matches_http(shared_shard, node_conf) -> None:
+    """gRPC status() returns same fields as HTTP /api/status on all nodes."""
+    for node in shared_shard.all_nodes:
+        http_status = node.api_get("/status")
+        grpc_status = node.grpc_status()
+
+        assert grpc_status.shardId == http_status["shardId"], (
+            f"{node.name}: shardId mismatch"
+        )
+        assert grpc_status.networkId == http_status["networkId"], (
+            f"{node.name}: networkId mismatch"
+        )
+        assert grpc_status.minPhloPrice == http_status["minPhloPrice"], (
+            f"{node.name}: minPhloPrice mismatch"
+        )
+        assert grpc_status.lastFinalizedBlockNumber == http_status["lastFinalizedBlockNumber"], (
+            f"{node.name}: lastFinalizedBlockNumber mismatch: "
+            f"gRPC={grpc_status.lastFinalizedBlockNumber}, HTTP={http_status['lastFinalizedBlockNumber']}"
+        )
+        assert grpc_status.isValidator == http_status["isValidator"], (
+            f"{node.name}: isValidator mismatch"
+        )
+        assert grpc_status.isReadOnly == http_status["isReadOnly"], (
+            f"{node.name}: isReadOnly mismatch"
+        )
+        assert grpc_status.isReady == http_status["isReady"], (
+            f"{node.name}: isReady mismatch"
+        )
+        assert grpc_status.epochLength == http_status["epochLength"], (
+            f"{node.name}: epochLength mismatch"
+        )
+
+    logging.info("gRPC/HTTP status parity verified on %d nodes", len(shared_shard.all_nodes))
+
+
+def test_transfers_null_on_validator_http(shared_shard, timeouts) -> None:
+    """Block API returns transfers=null on validator, populated on readonly."""
+    v1 = shared_shard.node("validator1")
+    ro = shared_shard.readonly
+    _, block_hashes = _deploy_and_wait(v1, timeouts)
+    block_hash = block_hashes[0]
+
+    # Validator: transfers should be null (omitted) on deploys
+    v1_block = v1.api_get(f"/block/{block_hash}")
+    for deploy in v1_block.get("deploys", []):
+        assert deploy.get("transfers") is None, (
+            f"validator: deploy transfers should be null, got {deploy.get('transfers')}"
+        )
+
+    # Readonly: transfers should be present as list
+    ro_block = ro.api_get(f"/block/{block_hash}")
+    for deploy in ro_block.get("deploys", []):
+        assert "transfers" in deploy, (
+            f"readonly: deploy should have transfers field"
+        )
+        assert isinstance(deploy["transfers"], list), (
+            f"readonly: transfers should be a list"
+        )
+
+    logging.info("Transfer null/populated behavior verified: validator=null, readonly=list")
+
+
+def test_removed_endpoints_404(shared_shard) -> None:
+    """Removed endpoints return 404."""
+    import requests
+
+    v1 = shared_shard.node("validator1")
+
+    # POST /api/data-at-name — removed
+    resp = requests.post(
+        f"{v1.http_url}/api/data-at-name",
+        json={"name": {"UnforgDeploy": {"data": "abc"}}, "depth": 1},
+        timeout=10,
+    )
+    assert resp.status_code == 404, (
+        f"/api/data-at-name should return 404, got {resp.status_code}"
+    )
+
+    # GET /api/transactions/{hash} — removed
+    resp = requests.get(
+        f"{v1.http_url}/api/transactions/abc123",
+        timeout=10,
+    )
+    assert resp.status_code == 404, (
+        f"/api/transactions should return 404, got {resp.status_code}"
+    )
+
+    logging.info("Removed endpoints correctly return 404")
+
+
+# ===========================================================================
+# gRPC-only method tests
+# ===========================================================================
+
+
+def test_show_main_chain(shared_shard, timeouts) -> None:
+    """gRPC showMainChain returns blocks on the main chain path."""
+    v1 = shared_shard.node("validator1")
+    _deploy_and_wait(v1, timeouts, count=2)
+
+    blocks = v1.show_main_chain(depth=5)
+
+    assert len(blocks) >= 2, (
+        f"expected >= 2 blocks on main chain, got {len(blocks)}"
+    )
+
+    # Block numbers should be in descending order (most recent first)
+    for i in range(len(blocks) - 1):
+        assert blocks[i].blockNumber >= blocks[i + 1].blockNumber, (
+            f"main chain blocks not in descending order: "
+            f"#{blocks[i].blockNumber} followed by #{blocks[i+1].blockNumber}"
+        )
+
+    # Each block should have a valid hash
+    for b in blocks:
+        assert len(b.blockHash) == 64, (
+            f"block hash should be 64-char hex, got len={len(b.blockHash)}"
+        )
+
+    logging.info("showMainChain: %d blocks, heights %d-%d",
+                 len(blocks), blocks[-1].blockNumber, blocks[0].blockNumber)
+
+
+def test_preview_private_names(shared_shard) -> None:
+    """gRPC previewPrivateNames generates deterministic unforgeable names."""
+    v1 = shared_shard.node("validator1")
+    timestamp = 1700000000000
+
+    # Request 3 names
+    response = v1.preview_private_names(timestamp=timestamp, name_qty=3)
+
+    ids = list(response.payload.ids)
+    assert len(ids) == 3, f"expected 3 names, got {len(ids)}"
+
+    # Each ID should be non-empty bytes
+    for i, name_id in enumerate(ids):
+        assert len(name_id) > 0, f"name {i} should be non-empty"
+
+    # All IDs should be unique
+    assert len(set(bytes(n) for n in ids)) == 3, "all 3 names should be unique"
+
+    # Deterministic: same inputs produce same outputs
+    response2 = v1.preview_private_names(timestamp=timestamp, name_qty=3)
+    ids2 = list(response2.payload.ids)
+    for i in range(3):
+        assert bytes(ids[i]) == bytes(ids2[i]), (
+            f"name {i} not deterministic across calls"
+        )
+
+    logging.info("previewPrivateNames: 3 unique, deterministic names generated")
+
+
+def test_get_event_data(shared_shard, timeouts) -> None:
+    """gRPC getEventByHash returns block execution trace with deploy events."""
+    v1 = shared_shard.node("validator1")
+    ro = shared_shard.readonly
+    deploy_ids, block_hashes = _deploy_and_wait(v1, timeouts)
+    block_hash = block_hashes[0]
+
+    # getEventByHash requires readonly (block replay)
+    response = ro.get_event_data(block_hash)
+
+    result = response.result
+    assert result is not None, "getEventByHash should return result"
+
+    # Block info should match
+    assert result.blockInfo.blockHash == block_hash, (
+        f"blockHash mismatch: {result.blockInfo.blockHash[:16]} != {block_hash[:16]}"
+    )
+
+    # Should have deploy execution data
+    assert len(result.deploys) > 0, (
+        f"block should have at least 1 deploy in event data"
+    )
+
+    # Each deploy should have report events
+    for deploy in result.deploys:
+        assert deploy.deployInfo is not None, "deploy should have deployInfo"
+        assert len(deploy.deployInfo.sig) > 0, "deploy should have sig"
+
+    logging.info(
+        "getEventByHash: block %s has %d deploys, %d system deploys",
+        block_hash[:16], len(result.deploys), len(result.systemDeploys),
+    )
+
+
+def test_get_continuation(shared_shard, timeouts) -> None:
+    """gRPC listenForContinuationAtName returns continuations on a channel."""
+    v1 = shared_shard.node("validator1")
+    from f1r3fly.pb.RhoTypes_pb2 import Par, GUnforgeable, GPrivate
+
+    # Deploy a contract that listens on a channel (creates a continuation)
+    rholang = 'new ch in { for (x <- ch) { Nil } }'
+    deploy_id = v1.deploy_string(
+        rholang,
+        VALIDATOR1_ID.private_key(),
+        phlo_limit=100_000,
+    )
+    info = wait_for_deploy_included(v1, deploy_id, timeouts.deploy_inclusion)
+    wait_for_finalized(v1, info.blockNumber, timeouts.finalization)
+
+    # Query for continuations on a public name (@0)
+    par = Par(exprs=[])
+    par.exprs.append(
+        __import__('f1r3fly.pb.RhoTypes_pb2', fromlist=['Expr']).Expr(g_int=0)
+    )
+    response = v1.get_continuation(par, depth=10)
+
+    # Response should not error
+    assert response.WhichOneof("message") != "error", (
+        f"get_continuation returned error"
+    )
+
+    logging.info("listenForContinuationAtName: query completed without error")

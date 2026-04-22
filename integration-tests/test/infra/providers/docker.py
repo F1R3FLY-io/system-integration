@@ -303,6 +303,7 @@ class DockerProvider:
                     is_running=handle.is_running,
                     node_name=handle.name,
                     timeout=self._timeouts.node_startup,
+                    status_url=f"http://{handle.grpc_host}:{handle.ports.http}/api/status",
                 )
 
         # Store compose path for teardown

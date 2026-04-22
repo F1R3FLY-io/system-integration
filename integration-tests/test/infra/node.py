@@ -314,6 +314,32 @@ class Node:
         lfb = self.last_finalized_block()
         return lfb.blockInfo.blockNumber
 
+    def grpc_status(self):
+        """Get node status via gRPC. Returns Status proto object."""
+        return self._external_client().status()
+
+    def grpc_bond_status(self, public_key_hex: str) -> bool:
+        """Check if a public key is bonded via gRPC. Returns bool."""
+        return self._external_client().bond_status(public_key_hex)
+
+    def show_main_chain(self, depth: int = 5):
+        """Get blocks on the main chain. Returns List[LightBlockInfo]."""
+        return self._external_client().show_main_chain(depth)
+
+    def preview_private_names(self, timestamp: int, name_qty: int = 1):
+        """Preview unforgeable names for a deployer key + timestamp."""
+        from f1r3fly.crypto import PublicKey
+        pub_key = PublicKey.from_hex(self._identity.public_hex)
+        return self._external_client().previewPrivateNames(pub_key, timestamp, name_qty)
+
+    def get_event_data(self, block_hash: str, force_replay: bool = False):
+        """Get block execution trace. Returns EventInfoResponse."""
+        return self._external_client().get_event_data(block_hash, force_replay)
+
+    def get_continuation(self, par, depth: int = 1):
+        """Get continuations waiting on a channel. Returns ContinuationAtNameResponse."""
+        return self._external_client().get_continuation(par, depth)
+
     # ── Diagnostics ──
 
     def logs(self, tail: Optional[int] = None) -> str:

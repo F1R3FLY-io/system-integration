@@ -442,7 +442,7 @@ def test_genesis_validator_with_wrong_token_blocks_ceremony(
 ) -> None:
     """Two genesis validators with mismatched tokens refuse to sign,
     stalling the ceremony so no node reaches Running."""
-    from ...infra.polling import _RUNNING_MARKER
+    import requests
 
     config = ShardConfig(
         bonds=[
@@ -464,11 +464,16 @@ def test_genesis_validator_with_wrong_token_blocks_ceremony(
 
         deadline = time.time() + timeouts.node_startup
         boot_handle = handles[0]
+        boot_status_url = f"http://{boot_handle.grpc_host}:{boot_handle.ports.http}/api/status"
         master_running = False
         while time.time() < deadline:
-            if _RUNNING_MARKER in boot_handle.logs():
-                master_running = True
-                break
+            try:
+                resp = requests.get(boot_status_url, timeout=3)
+                if resp.status_code == 200 and resp.json().get("isReady") is True:
+                    master_running = True
+                    break
+            except (requests.ConnectionError, requests.Timeout, Exception):
+                pass
             crashed = [h for h in handles if h.exit_code() is not None]
             if crashed:
                 logging.info("Nodes crashed during ceremony: %s",

@@ -2,7 +2,7 @@
 
 Tests the /ws/events WebSocket endpoint on F1R3FLY nodes.
 
-The F1r3flyEvent enum defines 9 event types:
+The F1r3flyEvent enum defines 10 event types:
 
   Block lifecycle (fired continuously by heartbeat):
     - block-created      proposer built a block (before validation)
@@ -136,6 +136,7 @@ def ws_shard(provider, timeouts):
                 is_running=handle.is_running,
                 node_name=handle.name,
                 timeout=timeouts.node_startup,
+                status_url=f"http://{handle.grpc_host}:{handle.ports.http}/api/status",
             )
 
         # Wait for expected events on all connections
@@ -396,4 +397,71 @@ def test_deploy_appears_in_block_event(ws_shard: WsShardResult, provider, timeou
     )
 
     assert not errors, f"WebSocket errors during deploy test: {errors}"
+    v1.close()
+
+
+def test_transfers_available_event(ws_shard: WsShardResult, provider, timeouts) -> None:
+    """TransfersAvailable event fires on readonly after transfer deploy finalization."""
+    ro_events = ws_shard.ro_events
+    events_before = len(ro_events)
+
+    # Get a validator Node for the transfer
+    v1_handle = None
+    for handle in provider.active_handles:
+        if "validator1" in handle.name:
+            v1_handle = handle
+            break
+    assert v1_handle is not None, "Could not find validator1 in active handles"
+
+    v1 = Node(handle=v1_handle, role=NodeRole.VALIDATOR)
+    v1_key = VALIDATOR1_ID.private_key()
+    v1_vault = v1_key.get_public_key().get_vault_address()
+    v2_vault = VALIDATOR2_ID.private_key().get_public_key().get_vault_address()
+
+    # Submit a transfer deploy
+    deploy_id = v1.vault.transfer_ensure(
+        v1_vault, v2_vault, 1_000_000, v1_key,
+    )
+    logging.info("Transfer deploy submitted: %s", deploy_id[:24])
+
+    block_info = wait_for_deploy_included(v1, deploy_id, timeouts.deploy_inclusion)
+    logging.info("Transfer included in block #%d (%s)", block_info.blockNumber, block_info.blockHash[:16])
+
+    # Wait for transfers-available event on readonly
+    deadline = time.time() + timeouts.finalization * 2
+    found_event = None
+    while time.time() < deadline:
+        for event in ro_events[events_before:]:
+            if event.get("event") == "transfers-available":
+                payload = event.get("payload", {})
+                if payload.get("block-hash") == block_info.blockHash:
+                    found_event = event
+                    break
+        if found_event:
+            break
+        time.sleep(1)
+
+    assert found_event is not None, (
+        f"transfers-available event not received on readonly within "
+        f"{timeouts.finalization * 2}s for block {block_info.blockHash[:16]}. "
+        f"New events: {len(ro_events) - events_before}"
+    )
+
+    payload = found_event["payload"]
+    assert payload["block-hash"] == block_info.blockHash
+    assert isinstance(payload["block-number"], int) and payload["block-number"] >= 0
+    assert isinstance(payload["deploys"], list) and len(payload["deploys"]) > 0, (
+        f"transfers-available should have at least 1 deploy with transfers"
+    )
+
+    # Verify deploy transfer structure
+    for deploy_transfers in payload["deploys"]:
+        assert "deploy-id" in deploy_transfers, "missing deploy-id"
+        assert "transfers" in deploy_transfers, "missing transfers"
+        assert isinstance(deploy_transfers["transfers"], list)
+
+    logging.info(
+        "transfers-available event verified: block %s, %d deploys with transfers",
+        payload["block-hash"][:16], len(payload["deploys"]),
+    )
     v1.close()
