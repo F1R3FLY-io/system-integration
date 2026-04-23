@@ -123,17 +123,6 @@ def test_prepare_deploy(node_with_blocks: Tuple[Node, List[str], List[str]], tes
     assert prepare_rep_2.seq_number >= seq_number
 
 
-def test_data_at_name(node_with_blocks: Tuple[Node, List[str], List[str]]) -> None:
-    """HTTP /api/data-at-name for a deploy hash."""
-    node = node_with_blocks[0]
-    deploy_hash = node_with_blocks[1]
-    client = HttpClient('localhost', node.get_http_port())
-
-    data_at_name = client.data_at_name(deploy_hash[0], 1, "UnforgDeploy")
-    assert data_at_name.length == 0
-    assert not data_at_name.exprs
-
-
 def test_last_finalized_block(node_with_blocks: Tuple[Node, List[str], List[str]]) -> None:
     """HTTP /api/last-finalized-block returns block info."""
     node = node_with_blocks[0]
@@ -173,7 +162,7 @@ def test_get_deploy(node_with_blocks: Tuple[Node, List[str], List[str]]) -> None
 
     deploy_block = client.get_deploy(deploy_hash[0])
     assert "blockHash" in deploy_block
-    assert "seqNum" in deploy_block
+    assert "blockNumber" in deploy_block
 
 
 def test_get_data_at_name_empty_payload(node_with_blocks: Tuple[Node, List[str], List[str]]) -> None:

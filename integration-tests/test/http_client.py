@@ -1,6 +1,6 @@
 import time
 from dataclasses import dataclass
-from typing import Optional, List, Union, Dict
+from typing import Optional, List, Dict
 import requests
 from f1r3fly.crypto import PrivateKey
 from f1r3fly.util import sign_deploy_data
@@ -35,11 +35,6 @@ class PrepareResponse:
     names: List[str]
     seq_number: int
 
-
-@dataclass
-class DataResponse:
-    exprs: List[Union[str, int]]
-    length: int
 
 def _check_reponse(response: requests.Response) -> None:
     if response.status_code != requests.codes.ok:  # pylint: disable=no-member
@@ -119,13 +114,6 @@ class HttpClient():
         rep = requests.post(deploy_url, json=deploy_req, timeout=60)
         _check_reponse(rep)
         return rep.text
-
-    def data_at_name(self, name: str, depth: int, name_type: str) -> DataResponse:
-        data_at_name_url = self.url + '/data-at-name'
-        rep =requests.post(data_at_name_url, json={"name": {name_type: {"data": name}}, "depth": depth}, timeout=60)
-        _check_reponse(rep)
-        message = rep.json()
-        return DataResponse(exprs=message['exprs'], length=message['length'])
 
     def last_finalized_block(self) -> Dict:
         last_finalized_block_url = self.url + '/last-finalized-block'
