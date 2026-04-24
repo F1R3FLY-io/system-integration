@@ -1031,19 +1031,18 @@ def test_cmd(
     Use --skip-setup to run tests against an already-running shard (no start, no teardown).
     Use --keep-running to start shard normally but leave it running after tests (for debugging).
 
-    Image priority: env var > --image flag > --rust/--scala flag > hardcoded default.
-    Set F1R3FLY_RUST_IMAGE or F1R3FLY_SCALA_IMAGE to override without flags.
+    Image priority: F1R3FLY_NODE_IMAGE env > --image flag > --rust/--scala flag > default.
 
     Examples:
-        poetry run shardctl test                         # Run all tests (Scala image)
-        poetry run shardctl test test_wallets             # Run wallet tests only
-        poetry run shardctl test --scala                  # Explicit Scala image
-        poetry run shardctl test --rust                   # Run against Rust image
-        poetry run shardctl test test_web_api --verbose   # Verbose output
-        poetry run shardctl test --skip-setup             # Test against running shard
-        poetry run shardctl test --keep-running           # Leave shard up after tests
-        poetry run shardctl test --image myimage:latest   # Custom image
-        F1R3FLY_RUST_IMAGE=mynode:dev shardctl test --rust  # Env var override
+        poetry run shardctl test                              # Run all tests (Scala default)
+        poetry run shardctl test test_wallets                 # Run wallet tests only
+        poetry run shardctl test --scala                      # Use Scala node image
+        poetry run shardctl test --rust                       # Use Rust node image
+        poetry run shardctl test test_web_api --verbose       # Verbose output
+        poetry run shardctl test --skip-setup                 # Test against running shard
+        poetry run shardctl test --keep-running               # Leave shard up after tests
+        poetry run shardctl test --image myimage:latest       # Custom image
+        F1R3FLY_NODE_IMAGE=mynode:dev poetry run shardctl test  # Env var override
     """
     config = Config()
     tests_dir = config.root_dir / "integration-tests"
@@ -1053,23 +1052,17 @@ def test_cmd(
         console.print(f"[dim]Expected: {tests_dir}[/dim]")
         raise typer.Exit(1)
 
-    # Determine the Docker image to use.
-    # Priority: env var > --image flag > --rust/--scala flag > hardcoded default.
-    env_rust = os.environ.get("F1R3FLY_RUST_IMAGE")
-    env_scala = os.environ.get("F1R3FLY_SCALA_IMAGE")
-
-    if rust and env_rust:
-        docker_image = env_rust
-    elif not rust and env_scala:
-        docker_image = env_scala
+    # Resolve the node image.
+    # Priority: F1R3FLY_NODE_IMAGE env var > --image flag > --rust/--scala flag > Scala default.
+    env_image = os.environ.get("F1R3FLY_NODE_IMAGE")
+    if env_image:
+        docker_image = env_image
     elif image:
         docker_image = image
     elif rust:
         docker_image = "f1r3flyindustries/f1r3fly-rust-node:latest"
     else:
         docker_image = "f1r3flyindustries/f1r3fly-scala-node:latest"
-
-    is_rust = "rust" in docker_image.lower()
 
     console.print(f"[bold blue]Running integration tests[/bold blue]")
     console.print(f"  Image: [cyan]{docker_image}[/cyan]")
@@ -1080,15 +1073,10 @@ def test_cmd(
     console.print()
 
     # Build pytest command.
-    # Set DEFAULT_IMAGE for conftest.py (compose file selection, custom shard).
-    # Set F1R3FLY_RUST_IMAGE or F1R3FLY_SCALA_IMAGE so the static compose
-    # files pick up the image via ${VAR:-default} substitution.
+    # Export the resolved image via F1R3FLY_NODE_IMAGE — the framework's single
+    # source of truth (read by infra/config.py::resolve_node_image).
     env = os.environ.copy()
-    env["DEFAULT_IMAGE"] = docker_image
-    if is_rust:
-        env["F1R3FLY_RUST_IMAGE"] = docker_image
-    else:
-        env["F1R3FLY_SCALA_IMAGE"] = docker_image
+    env["F1R3FLY_NODE_IMAGE"] = docker_image
 
     pytest_args = ["-v", "--tb=short", "--log-cli-level=WARNING"]
     if verbose:
@@ -1126,17 +1114,17 @@ def test_cmd(
 
 @app.command(name="test-reset")
 def test_reset_cmd():
-    """Clean up integration test containers and volumes.
+    """Force-remove all integration test containers, networks, and volumes.
 
-    Stops all containers that may have been started by the integration
-    test fixtures (shard, standalone, and custom shard) and removes
-    Docker named volumes used for blockchain data.
+    Aggressively wipes every Docker resource matching the test-framework
+    prefixes: containers ``rnode.test.*``, networks ``f1r3fly-test-*``,
+    volumes ``test-*``. Running containers are force-stopped. Use this to
+    reset to a clean slate — including when ``--keep-running`` left a shard
+    up. Idempotent.
 
     Examples:
         poetry run shardctl test-reset
     """
-    import docker as docker_py
-
     config = Config()
     tests_dir = config.root_dir / "integration-tests"
 
@@ -1144,93 +1132,28 @@ def test_reset_cmd():
         console.print("[red]Integration tests directory not found[/red]")
         raise typer.Exit(1)
 
-    # ── Compose-managed containers (shard + standalone) ──
-    # Project names must match those used in conftest.py to correctly
-    # identify and stop containers started by the test fixtures.
-    shard_compose_files = [
-        ("docker-compose.scala.yml", "f1r3fly-shard"),
-        ("docker-compose.rust.yml", "f1r3fly-shard"),
-    ]
-    standalone_compose_files = [
-        ("docker-compose.standalone-scala.yml", "f1r3fly-standalone"),
-        ("docker-compose.standalone-rust.yml", "f1r3fly-standalone"),
-    ]
-
-    for compose_file, project_name in shard_compose_files + standalone_compose_files:
-        compose_path = tests_dir / compose_file
-        if compose_path.exists():
-            console.print(f"[dim]Stopping containers from {compose_file} (project: {project_name})...[/dim]")
-            cmd = get_docker_compose_command()  # Dynamic version detection
-            cmd.extend([
-                "--project-name", project_name,
-                "--env-file", str(config.root_dir / ".env.node"),
-                "-f", str(compose_path),
-                "down", "--volumes", "--remove-orphans",
-            ])
-            subprocess.run(
-                cmd,
-                cwd=tests_dir,
-                check=False,
-            )
-
-    # ── Custom shard containers (started via Docker SDK, not compose) ──
-    # These are created by start_custom_shard() and add_peer_to_shard()
-    # in conftest.py. Container names match the constants defined there.
-    custom_containers = [
-        "rnode.custom.boot",
-        "rnode.custom.validator1",
-        "rnode.custom.validator2",
-        "rnode.custom.validator3",
-        "rnode.custom.joiner",
-    ]
-    try:
-        client = docker_py.from_env()
-        for name in custom_containers:
-            try:
-                container = client.containers.get(name)
-                console.print(f"[dim]Stopping custom container {name}...[/dim]")
-                try:
-                    container.stop(timeout=10)
-                except Exception:
-                    pass
-                container.remove(force=True)
-            except docker_py.errors.NotFound:
-                pass
-            except Exception as e:
-                console.print(f"[dim]Warning: could not remove {name}: {e}[/dim]")
-
-        # Remove the custom shard Docker network if it exists
-        try:
-            network = client.networks.get("f1r3fly-test-custom")
-            console.print("[dim]Removing custom shard network f1r3fly-test-custom...[/dim]")
-            network.remove()
-        except docker_py.errors.NotFound:
-            pass
-        except Exception as e:
-            console.print(f"[dim]Warning: could not remove network: {e}[/dim]")
-
-        # Remove custom shard named volumes. The custom compose uses project
-        # name 'f1r3fly-custom', so Docker prefixes volume names accordingly.
-        # The joiner volume is created directly via Docker SDK (no prefix).
-        custom_volume_names = [
-            "f1r3fly-custom_boot-data",
-            "f1r3fly-custom_validator1-data",
-            "f1r3fly-custom_validator2-data",
-            "f1r3fly-custom_validator3-data",
-            "joiner-data",
-        ]
-        for vol_name in custom_volume_names:
-            try:
-                client.volumes.get(vol_name).remove()
-                console.print(f"[dim]Removed volume {vol_name}[/dim]")
-            except docker_py.errors.NotFound:
-                pass
-            except Exception as e:
-                console.print(f"[dim]Warning: could not remove volume {vol_name}: {e}[/dim]")
-
-        client.close()
-    except Exception as e:
-        console.print(f"[dim]Warning: could not connect to Docker for custom cleanup: {e}[/dim]")
+    # Delegate to the framework's own cleanup logic — it knows exactly which
+    # prefixes to scan for. Running this from a subprocess (with PYTHONPATH
+    # pointing at integration-tests/) keeps shardctl free of pytest/test-module
+    # imports.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from test.infra.cleanup import CleanupRegistry; "
+            "CleanupRegistry.force_cleanup_all_test_resources()",
+        ],
+        cwd=config.root_dir,
+        env={**os.environ, "PYTHONPATH": str(config.root_dir / "integration-tests")},
+        capture_output=True,
+        text=True,
+    )
+    if result.stdout:
+        console.print(result.stdout, end="")
+    if result.returncode != 0:
+        console.print(f"[yellow]Cleanup reported errors:[/yellow]\n{result.stderr}")
+        raise typer.Exit(result.returncode)
+    console.print("[green]Test resources cleaned.[/green]")
 
 
 @app.command(name="test-report")

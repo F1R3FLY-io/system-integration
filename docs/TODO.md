@@ -65,24 +65,6 @@ The slow deploy test (`loop!(1000000000)`) is the most reliable trigger — the 
 3. Synchrony constraint should account for received-but-not-yet-justified blocks
 
 
-### `shardctl down` and `test-reset` don't remove volumes from `shardctl up` compose project
-
-When the shard is started via `shardctl up f1r3node-rust`, Docker Compose uses the project name `compose` (derived from the `compose/` directory), creating volumes like `compose_boot-data`, `compose_validator1-data`, etc.
-
-But `test-reset` looks for volumes with the `f1r3fly-shard_` prefix (the integration test compose project name). This means:
-- `shardctl down f1r3node-rust` stops containers but leaves volumes
-- `shardctl test-reset` doesn't find the `compose_*` volumes to remove
-- Starting a new shard reuses stale data
-
-**Workaround:** `docker volume rm compose_boot-data compose_validator1-data compose_validator2-data compose_validator3-data compose_readonly-data`
-
-**Additional issue:** `shardctl down f1r3node-rust` stops containers but does NOT remove volumes. It uses `docker compose down --remove-orphans` which doesn't include `-v`. Volumes persist across restarts, causing stale state.
-
-**Fix needed:**
-1. `shardctl down` should pass `-v` to `docker compose down` to remove volumes
-2. `test-reset` and `down` operate on different compose projects (`f1r3fly-shard` vs `compose`) — they don't clean up after each other
-3. Either use a consistent project name, or have each command check for both project prefixes
-
 ### shardctl status fails when running multiple compose configs
 
 `poetry run shardctl status` builds a broken docker compose command when multiple compose files are involved — it duplicates `--env-file` and `-f` flags into a single command invocation instead of running separate commands per compose file.
@@ -287,43 +269,12 @@ The following shardctl commands are not exercised in CI. Commands marked interac
 
 ---
 
-## shardctl needs updating for new test framework
+## `--skip-setup` not implemented in the new framework
 
-The integration test framework was rewritten. `shardctl` still references the old v1 infrastructure in several places:
+`shardctl test --skip-setup` (and the underlying `pytest --skip-setup`) currently raises `NotImplementedError` at `integration-tests/test/conftest.py:130-131`.
 
-### Remove static compose files from integration-tests/
+The intent is to reuse containers from a previous `--keep-running` run. But each pytest session generates a fresh `session_id`, and resources are named `rnode.test.{session_id}.*` — the next invocation has no way to find the previous session's containers.
 
-The following files are v1 artifacts no longer used by any test code:
-- `integration-tests/docker-compose.rust.yml`
-- `integration-tests/docker-compose.scala.yml`
-- `integration-tests/docker-compose.standalone-rust.yml`
-- `integration-tests/docker-compose.standalone-scala.yml`
+Fix (planned for Phase 3 — Provider extensibility): add `Provider.adopt_session(session_id: str)` to the Provider protocol and pair it with an explicit `--session-id <id>` pytest flag. Docker impl scans containers by name prefix; K8s impl scans namespaces/pods by label. Keeps the seam provider-agnostic while the adoption logic stays provider-specific. See `docs/integration-test-framework-plan.md` Phase 3 for scope.
 
-The new framework generates compose YAML dynamically via `test/infra/compose.py`.
-
-### Update `test-reset` command
-
-`shardctl test-reset` (`shardctl/cli.py` ~line 1151) references the old compose files and project names (`f1r3fly-shard`, `f1r3fly-standalone`). It needs to clean up the new naming:
-- Containers: `rnode.test.*`
-- Networks: `f1r3fly-test-*`
-- Volumes: `test-*`
-
-The `CleanupRegistry.cleanup_stale_sessions()` in the test framework already handles this at session start, but `shardctl test-reset` should be a manual equivalent.
-
-### Update `test` command
-
-`shardctl test` sets `DEFAULT_IMAGE` and `F1R3FLY_RUST_IMAGE` env vars. The new framework uses only `F1R3FLY_NODE_IMAGE`. Update `shardctl test` to set `F1R3FLY_NODE_IMAGE` instead.
-
-### Update `test-report` command
-
-Verify `shardctl test-report` still finds `integration-tests/report.json` — the path is configured in `pyproject.toml` and should be unchanged.
-
-### Remove `--rust` / `--scala` flags
-
-The framework is Rust-only. The `--rust` and `--scala` flags on `shardctl test` are no longer meaningful. Remove them and simplify to `shardctl test` (default) with optional `--image` override.
-
-## `--skip-setup` incompatible with `--keep-running` across `shardctl test` invocations
-
-`shardctl test --keep-running` leaves the shard running after tests. A subsequent `shardctl test --skip-setup` should reuse those containers, but it fails with `No such container: rnode.bootstrap` because `shardctl test` creates a temporary compose project with a unique name each invocation. The `--skip-setup` run looks for containers under the new project name, not the previous one.
-
-Workaround: use `--keep-running` on every run (it detects existing containers and reuses them). Fix: `--skip-setup` should discover containers by name regardless of compose project, or persist the project name between runs.
+No workaround today — each `shardctl test` invocation pays shard bring-up. Use `--keep-running` only when you want to inspect state post-test.

@@ -238,6 +238,42 @@ class CleanupRegistry:
                 _safe(f"rm stale volume {vol}", lambda v=vol: _docker("volume", "rm", "-f", v))
 
     @classmethod
+    def force_cleanup_all_test_resources(cls) -> None:
+        """Force-remove every container/network/volume matching the test prefixes.
+
+        Intended for the user-invoked ``shardctl test-reset`` command. Unlike
+        :meth:`cleanup_stale_sessions`, this does NOT inspect container status —
+        running containers are force-stopped and removed too. Use when you want
+        a clean slate regardless of what is currently up.
+
+        Never called from pytest hooks — automatic cleanup paths must remain
+        conservative to avoid clobbering concurrent test sessions.
+        """
+        # Containers (force-remove also stops running ones)
+        result = _docker(
+            "ps", "-aq", "--filter", f"name={_CONTAINER_PREFIX}",
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for cid in result.stdout.strip().splitlines():
+                _safe(f"rm container {cid}", lambda c=cid: _docker("rm", "-f", c))
+
+        # Networks (now safe — attached containers gone)
+        result = _docker(
+            "network", "ls", "--filter", f"name={_NETWORK_PREFIX}", "--format", "{{.Name}}",
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for net in result.stdout.strip().splitlines():
+                _safe(f"rm network {net}", lambda n=net: _docker("network", "rm", n))
+
+        # Volumes (now safe — using containers gone)
+        result = _docker(
+            "volume", "ls", "--filter", f"name={_VOLUME_PREFIX}", "--format", "{{.Name}}",
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for vol in result.stdout.strip().splitlines():
+                _safe(f"rm volume {vol}", lambda v=vol: _docker("volume", "rm", "-f", v))
+
+    @classmethod
     def _remove_orphaned_test_resources(cls) -> None:
         """Remove any test-prefixed resources not associated with running sessions."""
         # Orphaned volumes
