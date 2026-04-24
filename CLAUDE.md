@@ -95,3 +95,24 @@ Services are defined in `services.yml` with their git URLs and branches:
    - `poetry run shardctl build-service <service> --docker` for Docker image builds
    - `poetry run shardctl build-service --list` to see available services
 6. **Read README.md** for complete documentation and best practices
+
+## Integration Tests
+
+Test framework lives at [integration-tests/](integration-tests/). Canonical invocation is `poetry run pytest`; `shardctl test` is a convenience wrapper that sets `F1R3FLY_NODE_IMAGE` and forwards flags.
+
+- **Run one test:**
+  `poetry run pytest integration-tests/test/tests/shared/test_wallets.py::test_validator1_pay_validator2`
+- **Iterative debug loop** (skip ~60s shard bring-up between runs):
+  ```bash
+  poetry run shardctl test --keep-running <suite>
+  # Note the "Session <id>" line in output
+  poetry run shardctl test --skip-setup --session-id <id> <suite>   # ~2s per iteration
+  poetry run shardctl test-reset                                      # when done
+  ```
+- **Image selection:** `F1R3FLY_NODE_IMAGE` env var (single source of truth). Default `f1r3flyindustries/f1r3fly-rust-node:latest`.
+- **Cleanup:** `shardctl test-reset` force-removes every `rnode.test.*` / `f1r3fly-test-*` / `test-*` resource, running or stopped.
+- **Docs layout:**
+  - [integration-tests/README.md](integration-tests/README.md) — running tests
+  - [integration-tests/test/docs/ARCHITECTURE.md](integration-tests/test/docs/ARCHITECTURE.md) — framework internals (fixtures, Provider protocol, cleanup, ports, timeouts)
+  - [integration-tests/test/docs/WRITING_TESTS.md](integration-tests/test/docs/WRITING_TESTS.md) — recipes for adding a test
+  - [integration-tests/test/docs/INDEX.md](integration-tests/test/docs/INDEX.md) — catalog of all 22 test files

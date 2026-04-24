@@ -193,14 +193,16 @@ shardctl compose ARGS...          Run custom docker-compose command
 ```
 shardctl test [SUITE]             Run integration tests
   --image, -i TEXT                Custom Docker image
-  --rust / --scala                Node image to test against
-  --skip-setup                    No start, no teardown (assume shard running)
+  --rust / --scala                Shortcut: resolve to the default Rust / Scala image
+  --skip-setup                    Adopt an existing shard (requires --session-id)
+  --session-id TEXT               Session ID of an existing shard (from a --keep-running run)
   --keep-running                  Start shard, skip teardown (for debugging)
   --verbose, -v                   Verbose pytest output
-  Image priority: F1R3FLY_RUST_IMAGE/F1R3FLY_SCALA_IMAGE env > --image > --rust/--scala > default
+  Image priority: F1R3FLY_NODE_IMAGE env > --image > --rust/--scala > default
 shardctl test-report              Show test results from last run
   --failures                      Show failed tests only
-shardctl test-reset               Clean up test containers and volumes
+shardctl test-reset               Force-remove all framework test containers, networks,
+                                  and volumes (including running ones)
 ```
 
 ## Configuration
@@ -254,14 +256,31 @@ Config: `monitoring/prometheus.yml`, `monitoring/prometheus-rules.yml`, `monitor
 
 ## Integration Tests
 
-Tests verify node behavior through HTTP and gRPC APIs. Full docs: [integration-tests/README.md](integration-tests/README.md).
+HTTP + gRPC tests run against Docker-managed node clusters. Full docs: [integration-tests/README.md](integration-tests/README.md).
 
 ```bash
 poetry install --with integration
-poetry run shardctl test --rust           # Run all tests against Rust node
-poetry run shardctl test --scala          # Against Scala node
-poetry run shardctl test test_wallets     # Single suite
+
+# Canonical — pytest directly
+poetry run pytest integration-tests/test/tests/shared/
+poetry run pytest integration-tests/test/tests/shared/test_wallets.py -v
+
+# Convenience wrapper — shardctl (sets F1R3FLY_NODE_IMAGE + passes pytest flags)
+poetry run shardctl test --rust                   # All tests against Rust image
+poetry run shardctl test --scala test_wallets     # One suite against Scala image
+F1R3FLY_NODE_IMAGE=mynode:dev poetry run pytest   # Custom image via env var
 ```
+
+**Iterative debug loop** — skip the ~60s shard bring-up between runs:
+
+```bash
+poetry run shardctl test --keep-running test_wallets
+# Output logs: "Session <id> started with --keep-running. To reuse: --skip-setup --session-id <id>"
+poetry run shardctl test --skip-setup --session-id <id> test_wallets   # ~2s per iteration
+poetry run shardctl test-reset                                           # clean up when done
+```
+
+Framework internals, Provider protocol, and adding a test: [integration-tests/test/docs/](integration-tests/test/docs/).
 
 ## Troubleshooting
 
