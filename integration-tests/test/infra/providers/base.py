@@ -187,3 +187,28 @@ class Provider(typing_extensions.Protocol):
         atexit. Must be idempotent and crash-safe.
         """
         ...
+
+    @classmethod
+    def force_cleanup_all_test_resources(cls) -> None:
+        """Aggressively remove every test-framework resource on this backend.
+
+        Used by ``shardctl test-reset`` — user-invoked only, never called
+        from pytest hooks. Unlike :py:meth:`cleanup_all`, this ignores
+        container/pod status: running resources are force-stopped and
+        removed too. Provider-specific discovery (Docker: scan container
+        names; K8s: scan namespaces by label).
+        """
+        ...
+
+    def adopt_session(self, session_id: str) -> List[NodeHandle]:
+        """Adopt nodes from a previously started session.
+
+        Used by ``pytest --skip-setup --session-id <id>`` to reuse a
+        shard left running by a previous ``--keep-running`` invocation.
+        Returns handles in the same role order as :py:meth:`create_shard`
+        (bootstrap, validators..., readonly).
+
+        Raises if no resources match ``session_id`` or the adoption would
+        produce a partial shard.
+        """
+        ...

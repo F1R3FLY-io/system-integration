@@ -1009,7 +1009,12 @@ def test_cmd(
     skip_setup: bool = typer.Option(
         False,
         "--skip-setup",
-        help="Skip shard bring-up/teardown (assume shard is already running)"
+        help="Skip shard bring-up/teardown; adopt the session named by --session-id."
+    ),
+    session_id: Optional[str] = typer.Option(
+        None,
+        "--session-id",
+        help="Session ID of an existing shard to adopt with --skip-setup (printed by --keep-running runs)",
     ),
     keep_running: bool = typer.Option(
         False,
@@ -1088,6 +1093,9 @@ def test_cmd(
     if skip_setup:
         pytest_args.append("--skip-setup")
 
+    if session_id:
+        pytest_args.extend(["--session-id", session_id])
+
     if keep_running:
         pytest_args.append("--keep-running")
 
@@ -1132,16 +1140,17 @@ def test_reset_cmd():
         console.print("[red]Integration tests directory not found[/red]")
         raise typer.Exit(1)
 
-    # Delegate to the framework's own cleanup logic — it knows exactly which
-    # prefixes to scan for. Running this from a subprocess (with PYTHONPATH
-    # pointing at integration-tests/) keeps shardctl free of pytest/test-module
-    # imports.
+    # Dispatch via the active provider's classmethod — keeps the cleanup
+    # contract provider-agnostic at the seam (DockerProvider delegates to
+    # CleanupRegistry today; K8sProvider would scan namespaces). Running
+    # this from a subprocess (with PYTHONPATH pointing at integration-tests/)
+    # keeps shardctl free of pytest/test-module imports.
     result = subprocess.run(
         [
             sys.executable,
             "-c",
-            "from test.infra.cleanup import CleanupRegistry; "
-            "CleanupRegistry.force_cleanup_all_test_resources()",
+            "from test.infra.providers.docker import DockerProvider; "
+            "DockerProvider.force_cleanup_all_test_resources()",
         ],
         cwd=config.root_dir,
         env={**os.environ, "PYTHONPATH": str(config.root_dir / "integration-tests")},

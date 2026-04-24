@@ -179,6 +179,98 @@ class DockerNodeHandle:
     def remove(self) -> None:
         _docker("rm", "-f", self._name)
 
+    @classmethod
+    def from_container(cls, container_name: str) -> "DockerNodeHandle":
+        """Build a handle for an already-running container by inspecting it.
+
+        Used by :py:meth:`DockerProvider.adopt_session` to wrap containers
+        that were created by a previous pytest session (via ``--keep-running``)
+        and are being reused now. Extracts the host port mapping and the
+        attached network from ``docker inspect``.
+
+        Role is derived from the container name suffix:
+        ``rnode.test.{session_id}.{role}`` → role (``boot``/``validator{N}``/``readonly``).
+        """
+        # Verify the container exists
+        check = _docker("inspect", "-f", "{{.State.Status}}", container_name)
+        if check.returncode != 0:
+            raise ValueError(f"container {container_name!r} not found")
+
+        # Role from name suffix
+        parts = container_name.split(".")
+        if len(parts) < 4 or parts[0] != "rnode" or parts[1] != "test":
+            raise ValueError(
+                f"unexpected container name {container_name!r} — "
+                "expected rnode.test.{session}.{role}"
+            )
+        role_suffix = parts[-1]
+        if role_suffix == "boot":
+            role = NodeRole.BOOTSTRAP
+        elif role_suffix == "readonly":
+            role = NodeRole.READONLY
+        elif role_suffix.startswith("validator"):
+            role = NodeRole.VALIDATOR
+        elif role_suffix.startswith("standalone"):
+            role = NodeRole.STANDALONE
+        elif role_suffix.startswith("joiner"):
+            role = NodeRole.JOINER
+        else:
+            raise ValueError(
+                f"unrecognized role suffix {role_suffix!r} in {container_name!r}"
+            )
+
+        # Port mapping: inspect each internal port
+        ports = _inspect_port_mapping(container_name)
+
+        # Network name: first network attached (we expect exactly one)
+        net_result = _docker(
+            "inspect",
+            "-f",
+            "{{range $k, $_ := .NetworkSettings.Networks}}{{$k}} {{end}}",
+            container_name,
+        )
+        networks = (net_result.stdout or "").strip().split()
+        network = networks[0] if networks else ""
+
+        # Volume name follows framework convention (not recoverable from inspect
+        # reliably; best-effort for cleanup hooks that need it).
+        session_id = parts[2]
+        volume_name = f"test-{session_id}-{role_suffix}-data"
+
+        return cls(
+            name=container_name,
+            ports=ports,
+            network=network,
+            role=role,
+            identity=None,
+            volume_name=volume_name,
+        )
+
+
+def _inspect_port_mapping(container_name: str) -> PortMapping:
+    """Read the host ports that map to each internal 40400-40405 port."""
+    internal_ports = (40400, 40401, 40402, 40403, 40404, 40405)
+    host_ports: Dict[int, int] = {}
+    for iport in internal_ports:
+        result = _docker("port", container_name, f"{iport}/tcp")
+        line = (result.stdout or "").strip().splitlines()
+        if not line:
+            raise ValueError(
+                f"container {container_name!r} has no host mapping for "
+                f"internal port {iport} — was it started by this framework?"
+            )
+        # Format: "0.0.0.0:41234"  (may include IPv6 line; take IPv4)
+        ipv4 = next((l for l in line if ":" in l and not l.startswith("[")), line[0])
+        host_ports[iport] = int(ipv4.rsplit(":", 1)[1])
+    return PortMapping(
+        protocol=host_ports[40400],
+        grpc_ext=host_ports[40401],
+        grpc_int=host_ports[40402],
+        http=host_ports[40403],
+        discovery=host_ports[40404],
+        admin=host_ports[40405],
+    )
+
 
 def _parse_mem(s: str) -> float:
     """Parse Docker memory string like '123.4MiB' or '7.748GiB' to MB."""
@@ -659,3 +751,64 @@ class DockerProvider:
 
     def cleanup_all(self) -> None:
         self._registry.cleanup_all()
+
+    @classmethod
+    def force_cleanup_all_test_resources(cls) -> None:
+        """Delegate to the Docker-specific aggressive cleanup helper.
+
+        Keeps the shell-out-to-``docker`` logic in one place
+        (:py:class:`CleanupRegistry`) while exposing a provider-neutral
+        entry point for ``shardctl test-reset``.
+        """
+        CleanupRegistry.force_cleanup_all_test_resources()
+
+    # ── Session adoption (--skip-setup --session-id) ────────────────
+
+    def adopt_session(self, session_id: str) -> List[DockerNodeHandle]:
+        """Find and wrap containers from a previous session.
+
+        Scans ``docker ps -a --filter name=rnode.test.{session_id}.``,
+        builds a ``DockerNodeHandle`` per container, and returns them
+        in canonical role order (bootstrap, validator1..N, readonly).
+        """
+        prefix = f"rnode.test.{session_id}."
+        # Only adopt running containers — stopped ones can't serve requests.
+        result = _docker(
+            "ps", "--filter", f"name={prefix}", "--format", "{{.Names}}"
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"docker ps failed while adopting session {session_id!r}: "
+                f"{result.stderr.strip()}"
+            )
+        names = sorted((result.stdout or "").strip().splitlines())
+        if not names:
+            raise ValueError(
+                f"no running containers found for session_id={session_id!r}. "
+                f"Expected names matching {prefix}* (was the session torn down?)"
+            )
+
+        # Sort so bootstrap comes first, then validators by number, then readonly.
+        def _sort_key(name: str) -> tuple:
+            suffix = name.rsplit(".", 1)[-1]
+            if suffix == "boot":
+                return (0, 0)
+            if suffix.startswith("validator"):
+                try:
+                    return (1, int(suffix[len("validator"):]))
+                except ValueError:
+                    return (1, 0)
+            if suffix == "readonly":
+                return (2, 0)
+            return (3, 0)
+
+        names.sort(key=_sort_key)
+        handles = [DockerNodeHandle.from_container(n) for n in names]
+        self._active_handles.extend(handles)
+        logger.info(
+            "Adopted shard for session %s: %d nodes (%s)",
+            session_id,
+            len(handles),
+            ", ".join(h.name.rsplit(".", 1)[-1] for h in handles),
+        )
+        return handles

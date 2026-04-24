@@ -267,14 +267,3 @@ The following shardctl commands are not exercised in CI. Commands marked interac
 
 `up`, `wait`, `status`, `down`, `reset`, `logs`, `test`, `test-report`, `test-reset`, `ps`, `--help`
 
----
-
-## `--skip-setup` not implemented in the new framework
-
-`shardctl test --skip-setup` (and the underlying `pytest --skip-setup`) currently raises `NotImplementedError` at `integration-tests/test/conftest.py:130-131`.
-
-The intent is to reuse containers from a previous `--keep-running` run. But each pytest session generates a fresh `session_id`, and resources are named `rnode.test.{session_id}.*` — the next invocation has no way to find the previous session's containers.
-
-Fix (planned for Phase 3 — Provider extensibility): add `Provider.adopt_session(session_id: str)` to the Provider protocol and pair it with an explicit `--session-id <id>` pytest flag. Docker impl scans containers by name prefix; K8s impl scans namespaces/pods by label. Keeps the seam provider-agnostic while the adoption logic stays provider-specific. See `docs/integration-test-framework-plan.md` Phase 3 for scope.
-
-No workaround today — each `shardctl test` invocation pays shard bring-up. Use `--keep-running` only when you want to inspect state post-test.

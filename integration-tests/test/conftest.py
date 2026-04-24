@@ -36,7 +36,12 @@ def pytest_addoption(parser):
     )
     group.addoption(
         "--skip-setup", action="store_true", default=False,
-        help="Skip shard creation (assume already running)",
+        help="Skip shard creation (assume already running). Requires --session-id.",
+    )
+    group.addoption(
+        "--session-id", action="store", default=None,
+        help="Session ID of an existing shard to adopt "
+             "(for --skip-setup; printed by --keep-running runs)",
     )
     group.addoption(
         "--keep-running", action="store_true", default=False,
@@ -89,6 +94,14 @@ def port_allocator(request) -> PortAllocator:
 def cleanup_registry(request, session_id) -> CleanupRegistry:
     keep = request.config.getoption("--keep-running")
     registry = CleanupRegistry(session_id, keep_running=keep)
+    if keep:
+        # Make the session_id visible so the user can reuse it on the next
+        # invocation via `--skip-setup --session-id <id>`.
+        logging.warning(
+            "Session %s started with --keep-running. "
+            "To reuse this shard: `pytest --skip-setup --session-id %s`",
+            session_id, session_id,
+        )
     yield registry
     registry.cleanup_all()
 
@@ -126,10 +139,10 @@ def shared_shard(request, provider, timeouts) -> Shard:
     Used by tests that need a pre-running shard. Tests that modify
     the shard (crash nodes, deplete wallets) should create their own
     via ``provider.create_shard()`` instead.
-    """
-    if request.config.getoption("--skip-setup"):
-        raise NotImplementedError("--skip-setup not yet supported")
 
+    With ``--skip-setup --session-id <id>``, adopts an existing shard
+    from a previous ``--keep-running`` run instead of creating a fresh one.
+    """
     config = ShardConfig(
         bonds=[
             (VALIDATOR1_ID, 100),
@@ -139,6 +152,20 @@ def shared_shard(request, provider, timeouts) -> Shard:
         heartbeat=True,
         include_readonly=True,
     )
+
+    if request.config.getoption("--skip-setup"):
+        adopted_id = request.config.getoption("--session-id")
+        if not adopted_id:
+            raise pytest.UsageError(
+                "--skip-setup requires --session-id <id>. "
+                "The session ID is printed by a prior `shardctl test --keep-running` run."
+            )
+        handles = provider.adopt_session(adopted_id)
+        shard = Shard.from_handles(provider, handles, config, timeouts)
+        yield shard
+        shard.destroy()  # no-op for adopted shards
+        return
+
     shard = Shard.create(provider, config, timeouts)
     yield shard
     shard.destroy()  # no-ops if provider.keep_running
