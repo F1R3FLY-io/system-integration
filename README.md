@@ -79,17 +79,18 @@ See [docs/f1r3drive-guide.md](docs/f1r3drive-guide.md) for full setup and usage.
 
 ### Custom Docker Images
 
-Override the default image with env vars:
+Override the default image with the single `F1R3FLY_NODE_IMAGE` env var. Each compose file picks its own per-image-type default when the env var is unset:
 
 ```bash
-F1R3FLY_RUST_IMAGE=f1r3flyindustries/f1r3fly-rust-node:dev poetry run shardctl up f1r3node-rust
-F1R3FLY_SCALA_IMAGE=f1r3flyindustries/f1r3fly-scala-node:v1.2.3 poetry run shardctl up f1r3node
+F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust-node:dev poetry run shardctl up f1r3node-rust
+F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-scala-node:v1.2.3 poetry run shardctl up f1r3node
+
+# No env var → file's own default
+poetry run shardctl up f1r3node-rust   # → f1r3flyindustries/f1r3fly-rust-node:latest
+poetry run shardctl up f1r3node        # → f1r3flyindustries/f1r3fly-scala-node:latest
 ```
 
-| Variable | Default | Used by |
-|---|---|---|
-| `F1R3FLY_RUST_IMAGE` | `f1r3flyindustries/f1r3fly-rust-node:latest` | All Rust node compose files |
-| `F1R3FLY_SCALA_IMAGE` | `f1r3flyindustries/f1r3fly-scala-node:latest` | All Scala node compose files |
+`F1R3FLY_NODE_IMAGE` is the same env var the integration-test framework reads — one variable, one mental model across `shardctl up` and `shardctl test`.
 
 ## Full Setup (All Services)
 

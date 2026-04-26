@@ -951,28 +951,104 @@ def wait_cmd(
     node_module.wait_for_ready(timeout=timeout)
 
 
+_PRODUCTION_CONTAINER_NAMES = (
+    "rnode.bootstrap",
+    "rnode.standalone",
+    "rnode.observer",
+    "rnode.readonly",
+    "rnode.validator1",
+    "rnode.validator2",
+    "rnode.validator3",
+    "rnode.validator4",
+)
+# Production volume + network prefixes — match what the compose files declare
+# via top-level `name: f1r3fly-*`. Disjoint from integration-test prefixes
+# (`rnode.test.*`, `f1r3fly-test-*`, `test-*`) so reset and test-reset never
+# touch each other's resources.
+_PRODUCTION_VOLUME_PREFIX = "f1r3fly-"
+_PRODUCTION_NETWORK = "f1r3fly"
+
+
+def _force_cleanup_production_resources() -> int:
+    """Force-remove every production framework container/network/volume.
+
+    Aggressive — ignores container status, runs irrespective of whether the
+    compose project is detectable. Used as the `reset --force` path and as
+    a belt-and-suspenders fallback after `reset`'s normal compose-down path.
+
+    Returns the count of resources removed (0 if there was nothing to do).
+    """
+    import subprocess
+
+    def _docker(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["docker", *args], capture_output=True, text=True, timeout=60
+        )
+
+    removed = 0
+
+    # Containers — exact name match against the production container set.
+    for name in _PRODUCTION_CONTAINER_NAMES:
+        check = _docker("ps", "-aq", "--filter", f"name=^{name}$")
+        if check.returncode == 0 and check.stdout.strip():
+            for cid in check.stdout.strip().splitlines():
+                rm = _docker("rm", "-f", cid)
+                if rm.returncode == 0:
+                    removed += 1
+
+    # Volumes — prefix scan for f1r3fly-* (set by `name:` in each compose file).
+    vol_ls = _docker("volume", "ls", "--filter", f"name={_PRODUCTION_VOLUME_PREFIX}", "--format", "{{.Name}}")
+    if vol_ls.returncode == 0 and vol_ls.stdout.strip():
+        for vol in vol_ls.stdout.strip().splitlines():
+            # Skip any volume that's actually a test resource (defense in depth).
+            if vol.startswith("f1r3fly-test-"):
+                continue
+            rm = _docker("volume", "rm", "-f", vol)
+            if rm.returncode == 0:
+                removed += 1
+
+    # Network — single shared `f1r3fly` network (declared explicitly in each
+    # compose file). Removed last so attached containers are gone first.
+    net_ls = _docker("network", "ls", "--filter", f"name=^{_PRODUCTION_NETWORK}$", "--format", "{{.Name}}")
+    if net_ls.returncode == 0 and net_ls.stdout.strip():
+        rm = _docker("network", "rm", _PRODUCTION_NETWORK)
+        if rm.returncode == 0:
+            removed += 1
+
+    return removed
+
+
 @app.command(name="reset")
 def reset_cmd(
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip confirmation prompt"
     ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Skip compose-down detection and go straight to prefix scan. "
+             "Use when compose files have moved or detection isn't finding state."
+    ),
 ):
     """Stop F1R3FLY containers and remove blockchain data volumes.
 
-    This command stops all running F1R3FLY containers (including validator4, observer)
-    and removes their Docker data volumes.
+    Default path: detects running shards, runs ``docker compose down --volumes``
+    per compose project, then runs an aggressive prefix-scan cleanup as a
+    fallback to catch orphaned resources (volumes whose containers were removed
+    manually, partial-down state from crashed sessions, etc.).
 
-    Example:
-        poetry run shardctl reset       # Stop and remove data (with confirmation)
-        poetry run shardctl reset -y    # Skip confirmation prompt
+    With ``--force``: skip the detection + compose-down path entirely. Just
+    force-remove every container matching the production names, every volume
+    matching ``f1r3fly-*``, and the ``f1r3fly`` network.
+
+    Both paths leave integration-test resources alone (those use disjoint
+    prefixes ``rnode.test.*`` / ``f1r3fly-test-*`` / ``test-*``; use
+    ``shardctl test-reset`` for those).
+
+    Examples:
+        poetry run shardctl reset           # Detect + compose down + fallback scan
+        poetry run shardctl reset -y        # Same, skip confirmation
+        poetry run shardctl reset --force   # Skip detection, just prefix-scan
     """
-    node_config = node_module.NodeConfig()
-
-    all_configs = node_config.detect_all_running_configs()
-    if not all_configs:
-        console.print("[yellow]No F1R3FLY containers found[/yellow]")
-        return
-
     if not yes:
         console.print()
         console.print(
@@ -982,11 +1058,23 @@ def reset_cmd(
             console.print("[yellow]Cancelled[/yellow]")
             return
 
-    for node_type, topology, compose_file in all_configs:
-        console.print(
-            f"[yellow]Stopping {node_type.value} {topology.value} and removing volumes...[/yellow]"
-        )
-        node_module.run_compose_command(node_config, compose_file, ["down", "--volumes"])
+    if not force:
+        node_config = node_module.NodeConfig()
+        all_configs = node_config.detect_all_running_configs()
+        if all_configs:
+            for node_type, topology, compose_file in all_configs:
+                console.print(
+                    f"[yellow]Stopping {node_type.value} {topology.value} and removing volumes...[/yellow]"
+                )
+                node_module.run_compose_command(node_config, compose_file, ["down", "--volumes"])
+        else:
+            console.print("[dim]No detected compose projects. Falling through to prefix scan.[/dim]")
+
+    # Belt-and-suspenders: aggressive prefix scan catches orphaned resources
+    # the compose-down path missed (or was never going to see).
+    removed = _force_cleanup_production_resources()
+    if removed:
+        console.print(f"[dim]Prefix scan removed {removed} additional resource(s).[/dim]")
 
     console.print("[green]Containers stopped and data volumes removed[/green]")
 

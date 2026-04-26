@@ -65,20 +65,6 @@ The slow deploy test (`loop!(1000000000)`) is the most reliable trigger — the 
 3. Synchrony constraint should account for received-but-not-yet-justified blocks
 
 
-### shardctl status fails when running multiple compose configs
-
-`poetry run shardctl status` builds a broken docker compose command when multiple compose files are involved — it duplicates `--env-file` and `-f` flags into a single command invocation instead of running separate commands per compose file.
-
-**Error:**
-```
-unknown flag: --env-file
-Command '['docker', 'compose', '--env-file', '.env.node', '-f', 'compose/f1r3node.yml', 'ps',
-  '--env-file', '.env.node', '-f', 'compose/monitoring.yml', 'ps']'
-```
-
-**Expected:** Each compose file should be queried independently, or combined correctly with a single `--env-file` and multiple `-f` flags before the `ps` subcommand.
-
-
 ### f1r3node-rust: `OPENAI_API_KEY` not passed to containers via `shard.yml`
 
 `docker/shard.yml` declares `OPENAI_ENABLED=${OPENAI_ENABLED:-false}` in the `environment:` section but does NOT declare `OPENAI_API_KEY`. When `OPENAI_ENABLED=true` is set in `docker/.env`, the node starts with OpenAI enabled but no API key — causing a panic at `openai_service.rs:92`.

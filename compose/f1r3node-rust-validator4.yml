@@ -14,9 +14,11 @@
 #
 # NOTE: For Scala nodes, use f1r3node-validator4.yml instead.
 
+name: f1r3fly-rust-validator4
+
 services:
   validator4:
-    image: ${F1R3FLY_RUST_IMAGE:-f1r3flyindustries/f1r3fly-rust-node:latest}
+    image: ${F1R3FLY_NODE_IMAGE:-f1r3flyindustries/f1r3fly-rust-node:latest}
     user: root
     restart: always
     networks:
