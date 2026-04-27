@@ -53,6 +53,15 @@ def pytest_addoption(parser):
     )
 
 
+def pytest_configure(config):
+    """Validate option combinations before any test runs."""
+    if config.getoption("--skip-setup") and not config.getoption("--session-id"):
+        raise pytest.UsageError(
+            "--skip-setup requires --session-id <id>. "
+            "The session ID is printed by a prior `shardctl test --keep-running` run."
+        )
+
+
 def pytest_sessionstart(session):
     """Clean up stale resources from crashed sessions."""
     CleanupRegistry.cleanup_stale_sessions()
@@ -155,11 +164,6 @@ def shared_shard(request, provider, timeouts) -> Shard:
 
     if request.config.getoption("--skip-setup"):
         adopted_id = request.config.getoption("--session-id")
-        if not adopted_id:
-            raise pytest.UsageError(
-                "--skip-setup requires --session-id <id>. "
-                "The session ID is printed by a prior `shardctl test --keep-running` run."
-            )
         handles = provider.adopt_session(adopted_id)
         shard = Shard.from_handles(provider, handles, config, timeouts)
         yield shard

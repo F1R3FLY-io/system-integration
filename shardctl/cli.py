@@ -1,6 +1,7 @@
 """CLI application for shardctl."""
 
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -1251,7 +1252,10 @@ def test_cmd(
         pytest_args.append("--keep-running")
 
     if extra_args:
-        pytest_args.extend(extra_args)
+        # shlex-split so a single `--pytest-args "--timeout=600 --monitor"`
+        # becomes two argv elements rather than one.
+        for arg in extra_args:
+            pytest_args.extend(shlex.split(arg))
 
     console.print(f"[dim]$ pytest {' '.join(pytest_args)}[/dim]")
     console.print()
