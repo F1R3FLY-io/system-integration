@@ -13,13 +13,15 @@ This is a microservices integration repository for the F1R3FLY blockchain ecosys
 
 ## Getting Started
 
-**IMPORTANT: Read [README.md](./README.md) first** - it contains complete documentation on:
-- Installation and setup
-- How to clone service repositories
-- Using the shardctl CLI tool
-- Docker compose configuration
-- Development workflow
-- Troubleshooting
+**IMPORTANT: Read [README.md](./README.md) first** for prerequisites + Quick Start. Deeper docs live in dedicated files:
+
+- [docs/setup.md](docs/setup.md) — full multi-service setup + per-service build deps
+- [COMPOSE_STRUCTURE.md](COMPOSE_STRUCTURE.md) — topologies, image selection, project naming, network model, port map, monitoring
+- [docs/cli-reference.md](docs/cli-reference.md) — every `shardctl` command + flag
+- [docs/configuration.md](docs/configuration.md) — node configs (`conf/`) + env files
+- [docs/consensus-configuration.md](docs/consensus-configuration.md) — FTT, synchrony, finalization semantics
+- [docs/troubleshooting.md](docs/troubleshooting.md) — common issues
+- [docs/development.md](docs/development.md) — development workflow
 
 ## Quick Reference
 
@@ -60,14 +62,23 @@ poetry run shardctl down
 │   ├── embers.yml              # Embers API + frontend
 │   ├── f1r3sky.yml             # F1R3Sky AT Protocol services
 │   └── monitoring.yml          # Prometheus + Grafana
-├── docs/                       # Additional documentation
-│   ├── prerequisites.md        # Service build dependencies
-│   ├── troubleshooting.md      # Troubleshooting guide
-│   ├── development.md          # Development workflow and advanced usage
-│   └── TODO.md                 # Config notes and known issues
+├── docs/                       # Documentation
+│   ├── setup.md                # Full setup walkthrough + per-service build deps
+│   ├── cli-reference.md        # Every shardctl command + flag
+│   ├── configuration.md        # Node configs + env files
+│   ├── consensus-configuration.md  # FTT / synchrony / finalization semantics
+│   ├── troubleshooting.md      # Common issues
+│   ├── development.md          # Development workflow + advanced usage
+│   ├── slashing-mechanism.md   # Slashing summary
+│   ├── slashing-test-plan.md   # Slashing test rewrite plan
+│   ├── f1r3drive-guide.md      # F1R3Drive FUSE app
+│   └── TODO.md                 # Bugs, roadmap, deferred work
+├── COMPOSE_STRUCTURE.md        # Canonical compose reference
 ├── services.yml                # Service repository URLs and branches
+├── .env.node                   # Node container hostnames + validator keys
 ├── .env.embers                 # Embers configuration
-└── README.md                   # Full documentation
+├── .env.f1r3sky                # F1R3Sky configuration
+└── README.md                   # Welcome + Quick Start + pointers
 ```
 
 ## Service Repositories
@@ -94,7 +105,7 @@ Services are defined in `services.yml` with their git URLs and branches:
    - `poetry run shardctl build-service <service>` for regular builds
    - `poetry run shardctl build-service <service> --docker` for Docker image builds
    - `poetry run shardctl build-service --list` to see available services
-6. **Read README.md** for complete documentation and best practices
+6. **README.md is a thin entry point** — for any specific topic, follow the link from the "Where to go next" table to the dedicated doc
 
 ## Integration Tests
 

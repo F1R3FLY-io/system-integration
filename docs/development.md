@@ -97,6 +97,17 @@ shardctl restart embers-api
 shardctl down
 ```
 
+### Running Integration Tests
+
+The integration test framework lives in [`integration-tests/`](../integration-tests/). Canonical invocation is `poetry run pytest`; `shardctl test` is a convenience wrapper.
+
+```bash
+poetry run pytest integration-tests/test/tests/shared/test_wallets.py -v
+poetry run shardctl test --keep-running test_wallets   # iterative debug loop
+```
+
+Full docs at [../integration-tests/README.md](../integration-tests/README.md). Framework internals at [../integration-tests/test/docs/ARCHITECTURE.md](../integration-tests/test/docs/ARCHITECTURE.md).
+
 ### CI Pipeline
 
 The CI workflow (`.github/workflows/smoke-test.yml`) runs automatically on PRs to `main`. It validates compose files, starts all topologies (checking for 10 finalized blocks), and runs representative integration tests — all in parallel across 12 runners.
@@ -174,15 +185,21 @@ def get_compose_files_for_profile(self, profile: Optional[str] = None) -> List[P
 
 ### Environment Variables
 
-Create `.env` file in repository root:
+The repo ships three dotenv files in the root:
 
-```env
-DATABASE_URL=postgresql://user:pass@postgres:5432/db
-REDIS_URL=redis://redis:6379
-API_KEY=your-api-key
+| File | Loaded by |
+|---|---|
+| `.env.node` | All node compose files (container hostnames, validator keys) |
+| `.env.embers` | `compose/embers.yml` |
+| `.env.f1r3sky` | `compose/f1r3sky.yml` |
+
+Override the node Docker image with `F1R3FLY_NODE_IMAGE` (single env var, applies to both `shardctl up` and `shardctl test`):
+
+```bash
+F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust-node:dev poetry run shardctl up f1r3node-rust
 ```
 
-Docker Compose automatically loads this file.
+See [configuration.md](configuration.md) for the full env var reference and [../COMPOSE_STRUCTURE.md#image-selection](../COMPOSE_STRUCTURE.md#image-selection) for image flow.
 
 ### Custom Scripts
 
@@ -199,11 +216,12 @@ poetry run shardctl logs --follow
 
 ```bash
 poetry install              # Install dependencies
+poetry install --with integration  # Include integration test deps
 poetry add package-name     # Add a new dependency
 poetry add --group dev pkg  # Add a dev dependency
 poetry update               # Update dependencies
 poetry show                 # Show installed packages
-poetry run pytest           # Run tests
+poetry run pytest integration-tests/test/tests/shared/   # Run integration tests
 poetry run black shardctl/  # Format code
 poetry run ruff check shardctl/  # Lint
 poetry shell                # Activate virtual environment
