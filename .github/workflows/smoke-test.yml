@@ -11,7 +11,9 @@ env:
   PYTEST_TIMEOUT_ARGS: >-
     --pytest-args "--timeout=600"
   FINALIZED_BLOCK_TARGET: 10
-  F1R3FLY_RUST_IMAGE: f1r3flyindustries/f1r3fly-rust-node:dev
+  # Per-job `env: F1R3FLY_NODE_IMAGE: ...` selects the image tag for that
+  # job's shardctl invocations (both `shardctl up` via compose substitution
+  # and `shardctl test` via the framework's resolve_node_image).
 
 jobs:
   validate:
@@ -36,9 +38,7 @@ jobs:
             compose/f1r3node.yml compose/f1r3node-standalone.yml \
             compose/f1r3node-observer.yml compose/f1r3node-validator4.yml \
             compose/f1r3node-shard-light.yml compose/embers.yml \
-            compose/f1r3sky.yml compose/monitoring.yml \
-            integration-tests/docker-compose.rust.yml integration-tests/docker-compose.scala.yml \
-            integration-tests/docker-compose.standalone-rust.yml integration-tests/docker-compose.standalone-scala.yml
+            compose/f1r3sky.yml compose/monitoring.yml
           do
             if docker compose --env-file .env.node -f "$cf" config >/dev/null 2>&1; then
               echo "PASS: $cf"
@@ -53,6 +53,73 @@ jobs:
           poetry run shardctl --help
           poetry run shardctl status
           poetry run shardctl ps
+          # Generic compose passthrough — exercises shardctl compose without requiring a running shard
+          poetry run shardctl compose f1r3node-rust config >/dev/null
+      - name: Verify shardctl test image priority
+        run: |
+          # Resolve image without spinning up a shard via --collect-only.
+          # Priority: F1R3FLY_NODE_IMAGE env > --image > --rust/--scala > Scala default.
+          set -e
+          unset F1R3FLY_NODE_IMAGE
+          declare -A expectations=(
+            ["--rust"]="f1r3flyindustries/f1r3fly-rust-node:latest"
+            ["--scala"]="f1r3flyindustries/f1r3fly-scala-node:latest"
+          )
+          for flag in "${!expectations[@]}"; do
+            expected="${expectations[$flag]}"
+            actual=$(poetry run shardctl test "$flag" --pytest-args "--collect-only -q test_does_not_exist" 2>&1 | grep -oE 'Image: \S+' | head -1 | awk '{print $2}')
+            [ "$actual" = "$expected" ] || (echo "FAIL: $flag → expected $expected, got $actual" && exit 1)
+            echo "PASS: $flag → $actual"
+          done
+
+          actual=$(poetry run shardctl test --image custom-marker:test --pytest-args "--collect-only -q test_does_not_exist" 2>&1 | grep -oE 'Image: \S+' | head -1 | awk '{print $2}')
+          [ "$actual" = "custom-marker:test" ] || (echo "FAIL: --image → expected custom-marker:test, got $actual" && exit 1)
+          echo "PASS: --image → $actual"
+
+          actual=$(F1R3FLY_NODE_IMAGE=env-wins:test poetry run shardctl test --rust --pytest-args "--collect-only -q test_does_not_exist" 2>&1 | grep -oE 'Image: \S+' | head -1 | awk '{print $2}')
+          [ "$actual" = "env-wins:test" ] || (echo "FAIL: F1R3FLY_NODE_IMAGE → expected env-wins:test, got $actual" && exit 1)
+          echo "PASS: F1R3FLY_NODE_IMAGE → $actual"
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install dependencies
+        run: |
+          pip install poetry
+          poetry install --with dev
+      - name: Validate pyproject.toml
+        run: poetry check
+      - name: Verify poetry.lock matches pyproject.toml
+        run: poetry check --lock
+      - name: Ruff (lint)
+        run: poetry run ruff check shardctl/
+      - name: Black (format check)
+        run: poetry run black --check shardctl/
+
+  link-check:
+    name: Markdown links
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check markdown links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          # Only top-level + framework docs; skip session notes / plans / service subrepos.
+          args: >-
+            --no-progress
+            --exclude-path 'services/**'
+            --exclude-path 'docs/session-context-*'
+            --exclude-path 'docs/integration-test-framework-plan.md'
+            --exclude '^https?://(localhost|127\.0\.0\.1)'
+            'README.md' 'CLAUDE.md' 'COMPOSE_STRUCTURE.md' 'docs/**/*.md' 'integration-tests/**/*.md'
+          fail: true
 
   # ===========================================================
   # Topology Health Checks (10 finalized blocks each)
@@ -62,6 +129,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 20
+    env:
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust-node:dev
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -70,10 +139,15 @@ jobs:
       - run: |
           pip install poetry
           poetry install
-      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:dev
+      - run: poetry run shardctl pull f1r3node-rust
       - name: Start shard and wait for Running
         run: |
           poetry run shardctl up f1r3node-rust
+          poetry run shardctl wait --timeout 300
+          poetry run shardctl status
+      - name: Verify shardctl restart
+        run: |
+          poetry run shardctl restart f1r3node-rust
           poetry run shardctl wait --timeout 300
           poetry run shardctl status
       - name: Verify shardctl logs
@@ -183,6 +257,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 15
+    env:
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust-node:dev
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -191,7 +267,7 @@ jobs:
       - run: |
           pip install poetry
           poetry install
-      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:dev
+      - run: poetry run shardctl pull f1r3node-rust-standalone
       - name: Start standalone and wait for Running
         run: |
           poetry run shardctl up f1r3node-rust-standalone
@@ -294,9 +370,20 @@ jobs:
             fi
           done
           echo "Monitoring teardown verified"
+      - name: Verify shardctl down --volumes
+        run: |
+          # Exercise the explicit --volumes flag on a real running shard.
+          poetry run shardctl down --volumes f1r3node-rust-standalone
+          REMAIN=$(docker volume ls --filter name=f1r3fly-rust-standalone --format '{{.Name}}' | wc -l | tr -d ' ')
+          [ "$REMAIN" -eq 0 ] || (echo "FAIL: down --volumes left $REMAIN volume(s) for f1r3fly-rust-standalone" && exit 1)
+          REMAIN=$(docker ps -aq --filter "name=rnode.standalone" | wc -l | tr -d ' ')
+          [ "$REMAIN" -eq 0 ] || (echo "FAIL: down --volumes left $REMAIN container(s)" && exit 1)
+          echo "PASS: shardctl down --volumes wiped containers + volumes"
       - name: Cleanup
         if: always()
-        run: poetry run shardctl reset -y
+        # Exercise the aggressive prefix-scan cleanup path (skips compose detection).
+        # No-op here because the previous step already cleaned up — proves --force is idempotent.
+        run: poetry run shardctl reset --force -y
 
   scala-shard:
     # Unstable on 2-core/7GB GitHub runners: 5 Scala JVMs compete for CPU/RAM
@@ -305,6 +392,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 25
+    env:
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-scala-node:latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -313,7 +402,7 @@ jobs:
       - run: |
           pip install poetry
           poetry install
-      - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+      - run: poetry run shardctl pull f1r3node
       - name: Start shard and wait for 10 finalized blocks
         continue-on-error: true
         id: scala_shard
@@ -424,6 +513,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 15
+    env:
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-scala-node:latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -432,7 +523,7 @@ jobs:
       - run: |
           pip install poetry
           poetry install
-      - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+      - run: poetry run shardctl pull f1r3node-standalone
       - name: Start standalone and wait for Running
         run: |
           poetry run shardctl up f1r3node-standalone
@@ -544,6 +635,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 20
+    env:
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-scala-node:latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -552,7 +645,7 @@ jobs:
       - run: |
           pip install poetry
           poetry install
-      - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+      - run: poetry run shardctl pull f1r3node-shard-light
       - name: Start light shard and wait for Running
         run: |
           poetry run shardctl up f1r3node-shard-light
@@ -667,6 +760,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 20
+    env:
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust-node:dev
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -675,14 +770,17 @@ jobs:
       - run: |
           pip install poetry
           poetry install --with integration
-      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:dev
+      - run: poetry run shardctl pull f1r3node-rust
       - name: Run test
-        run: poetry run shardctl test --rust test_web_api ${{ env.PYTEST_TIMEOUT_ARGS }}
+        # --monitor enables Docker resource sampling — embedded in report.json
+        run: poetry run shardctl test --rust test_web_api --pytest-args "--timeout=600 --monitor"
       - name: Test report
         if: always()
         run: |
           [ -f integration-tests/report.json ] || (echo "FAIL: report.json not generated" && exit 1)
           poetry run shardctl test-report
+          # Also exercise the --failures filter (no-op when all green; passes regardless)
+          poetry run shardctl test-report --failures
       - name: Collect logs
         if: always()
         run: |
@@ -710,6 +808,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 20
+    env:
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust-node:dev
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -718,7 +818,7 @@ jobs:
       - run: |
           pip install poetry
           poetry install --with integration
-      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:dev
+      - run: poetry run shardctl pull f1r3node-rust-standalone
       - name: Run test
         run: poetry run shardctl test --rust "test_heartbeat_creates_blocks_when_idle and not shard" ${{ env.PYTEST_TIMEOUT_ARGS }}
       - name: Test report
@@ -753,6 +853,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 20
+    env:
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust-node:dev
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -761,7 +863,7 @@ jobs:
       - run: |
           pip install poetry
           poetry install --with integration
-      - run: docker pull f1r3flyindustries/f1r3fly-rust-node:dev
+      - run: poetry run shardctl pull f1r3node-rust
       - name: Run test
         run: poetry run shardctl test --rust test_synchrony_constraint ${{ env.PYTEST_TIMEOUT_ARGS }}
       - name: Test report
@@ -798,6 +900,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 25
+    env:
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-scala-node:latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -806,7 +910,7 @@ jobs:
       - run: |
           pip install poetry
           poetry install --with integration
-      - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+      - run: poetry run shardctl pull f1r3node
       - name: Run test
         continue-on-error: true
         run: poetry run shardctl test --scala test_web_api ${{ env.PYTEST_TIMEOUT_ARGS }}
@@ -842,6 +946,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 25
+    env:
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-scala-node:latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -850,7 +956,7 @@ jobs:
       - run: |
           pip install poetry
           poetry install --with integration
-      - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+      - run: poetry run shardctl pull f1r3node-standalone
       - name: Run test
         run: poetry run shardctl test --scala "test_heartbeat_creates_blocks_when_idle and not shard" ${{ env.PYTEST_TIMEOUT_ARGS }}
       - name: Test report
@@ -885,6 +991,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     timeout-minutes: 25
+    env:
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-scala-node:latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -893,7 +1001,7 @@ jobs:
       - run: |
           pip install poetry
           poetry install --with integration
-      - run: docker pull f1r3flyindustries/f1r3fly-scala-node:latest
+      - run: poetry run shardctl pull f1r3node
       - name: Run test
         run: poetry run shardctl test --scala test_synchrony_constraint ${{ env.PYTEST_TIMEOUT_ARGS }}
       - name: Test report
@@ -922,6 +1030,99 @@ jobs:
         run: |
           poetry run shardctl reset -y
           poetry run shardctl test-reset
+
+  # ===========================================================
+  # Iterative debug loop: exercises --keep-running + --skip-setup --session-id.
+  # Phase 3 feature. Verifies that re-using an existing test session is
+  # measurably faster than fresh shard bring-up, and that test-reset cleans up.
+  # ===========================================================
+  iterative-loop:
+    name: "Iterative debug loop (--keep-running + --skip-setup)"
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 15
+    env:
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust-node:dev
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: |
+          pip install poetry
+          poetry install --with integration
+      - run: poetry run shardctl pull f1r3node-rust
+      - name: First run — keep-running, capture session_id
+        id: keep_running
+        run: |
+          # Run with --keep-running and tee output so we can grep the session_id.
+          OUTPUT=$(poetry run shardctl test --keep-running --pytest-args "integration-tests/test/tests/standalone/test_heartbeat.py::test_heartbeat_creates_blocks_when_idle" 2>&1 | tee /dev/stderr)
+          # The cleanup_registry fixture logs: "Session <id> started with --keep-running. To reuse this shard: pytest --skip-setup --session-id <id>"
+          SID=$(echo "$OUTPUT" | grep -oE "session-id [a-f0-9]{8}" | head -1 | awk '{print $2}')
+          [ -n "$SID" ] || (echo "FAIL: could not parse session_id from --keep-running output" && exit 1)
+          echo "session_id=$SID" >> $GITHUB_OUTPUT
+          echo "Captured session_id: $SID"
+      - name: Verify session containers still running
+        run: |
+          SID="${{ steps.keep_running.outputs.session_id }}"
+          docker ps --filter "name=rnode.test.${SID}" --format '{{.Names}}'
+          COUNT=$(docker ps --filter "name=rnode.test.${SID}" --format '{{.Names}}' | wc -l | tr -d ' ')
+          [ "$COUNT" -ge 1 ] || (echo "FAIL: expected at least 1 container for session ${SID}, got $COUNT" && exit 1)
+      - name: Second run — skip-setup, adopt session, must be fast
+        run: |
+          SID="${{ steps.keep_running.outputs.session_id }}"
+          START=$(date +%s)
+          poetry run shardctl test --skip-setup --session-id "$SID" --pytest-args "integration-tests/test/tests/standalone/test_heartbeat.py::test_heartbeat_creates_blocks_when_idle"
+          END=$(date +%s)
+          ELAPSED=$((END - START))
+          echo "Adopted-session run took ${ELAPSED}s"
+          # Adopted runs skip ~60s of shard bring-up. Allow generous CI overhead.
+          [ "$ELAPSED" -lt 60 ] || (echo "FAIL: adopted run took ${ELAPSED}s, expected < 60s (no bring-up cost)" && exit 1)
+      - name: Negative case — --skip-setup without --session-id surfaces UsageError
+        run: |
+          if poetry run shardctl test --skip-setup --pytest-args "integration-tests/test/tests/standalone/test_heartbeat.py::test_heartbeat_creates_blocks_when_idle" 2>&1 | grep -q "UsageError.*--session-id"; then
+            echo "PASS: missing --session-id surfaces clear error"
+          else
+            echo "FAIL: expected UsageError mentioning --session-id"
+            exit 1
+          fi
+      - name: Negative case — invalid --session-id surfaces ValueError
+        run: |
+          if poetry run shardctl test --skip-setup --session-id deadbeef --pytest-args "integration-tests/test/tests/standalone/test_heartbeat.py::test_heartbeat_creates_blocks_when_idle" 2>&1 | grep -q "no running containers found.*deadbeef"; then
+            echo "PASS: invalid session_id surfaces clear error"
+          else
+            echo "FAIL: expected ValueError mentioning the bad session_id"
+            exit 1
+          fi
+      - name: test-reset removes the kept-alive shard
+        run: |
+          SID="${{ steps.keep_running.outputs.session_id }}"
+          poetry run shardctl test-reset
+          REMAIN=$(docker ps -a --filter "name=rnode.test.${SID}" --format '{{.Names}}' | wc -l | tr -d ' ')
+          [ "$REMAIN" -eq 0 ] || (echo "FAIL: test-reset left ${REMAIN} container(s) for session ${SID}" && exit 1)
+          echo "PASS: test-reset cleaned up session ${SID}"
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p /tmp/logs
+          docker ps -a > /tmp/logs/containers.txt 2>&1 || true
+          for c in $(docker ps -aq --filter "name=rnode" 2>/dev/null); do
+            name=$(docker inspect --format '{{.Name}}' "$c" | sed 's|^/||')
+            docker logs "$c" > "/tmp/logs/${name}.log" 2>&1 || true
+          done
+          cp integration-tests/report.json /tmp/logs/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-iterative-loop
+          path: /tmp/logs/
+          retention-days: 7
+      - name: Final cleanup
+        if: always()
+        run: |
+          poetry run shardctl reset -y
+          poetry run shardctl test-reset
+
 # =============================================================
 # Not yet covered:
 # - shardctl clone / setup / build-service (requires source builds, ~30min+)
