@@ -1018,9 +1018,7 @@ jobs:
         run: git clone --depth 1 --branch rust/dev https://github.com/F1R3FLY-io/f1r3node.git services/f1r3node-rust
       - run: poetry run shardctl pull f1r3node
       - name: Run test
-        # Scala genesis on 2-core runners observed at ~70-80s; bump v2's 90s
-        # node-startup default for headroom (still fast-fails real hangs).
-        run: poetry run shardctl test --scala test_synchrony_constraint --pytest-args "--timeout=600 --startup-timeout=180"
+        run: poetry run shardctl test --scala test_synchrony_constraint ${{ env.PYTEST_TIMEOUT_ARGS }}
       - name: Test report
         if: always()
         run: |

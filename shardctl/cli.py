@@ -1229,6 +1229,32 @@ def test_cmd(
         console.print("  Mode:  [yellow]skip-setup (using running shard)[/yellow]")
     console.print()
 
+    # When adopting a kept-alive session, verify it actually exists before
+    # spending pytest startup time. Errors here surface a clear message
+    # regardless of which test the user selects (standalone or shared).
+    if skip_setup and session_id:
+        result = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "--filter",
+                f"name=rnode.test.{session_id}",
+                "--format",
+                "{{.Names}}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if not [n for n in result.stdout.strip().splitlines() if n]:
+            console.print(
+                f"[red]ERROR: no running containers found for session-id " f"'{session_id}'[/red]"
+            )
+            console.print(
+                "[dim]Pass a session-id from a prior `shardctl test "
+                "--keep-running` run, or omit --skip-setup to start fresh.[/dim]"
+            )
+            raise typer.Exit(1)
+
     # Build pytest command.
     # Export the resolved image via F1R3FLY_NODE_IMAGE — the framework's single
     # source of truth (read by infra/config.py::resolve_node_image).

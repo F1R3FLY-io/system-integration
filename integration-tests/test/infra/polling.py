@@ -46,9 +46,10 @@ def wait_for_node_running(
 ) -> None:
     """Wait for a node to reach Running state.
 
-    Primary method: polls ``/api/status`` for ``isReady == true``.
-    Fallback: if ``status_url`` is not provided, parses logs for the
-    Running state marker (legacy behavior).
+    Primary signal: ``/api/status`` ``isReady == true`` (Rust nodes).
+    Fallback signal: log marker — used when ``status_url`` is unset OR
+    when the status response is missing ``isReady`` (Scala nodes, whose
+    ``/api/status`` schema predates that field).
 
     Also checks if the container/pod has exited — if so, raises
     immediately with the last log lines instead of waiting the full
@@ -67,23 +68,27 @@ def wait_for_node_running(
                 f"Last logs:\n{tail}"
             )
 
-        # Primary: poll /api/status for isReady
+        use_log_fallback = not status_url
         if status_url:
             try:
                 resp = requests.get(status_url, timeout=3)
                 if resp.status_code == 200:
                     status = resp.json()
-                    if status.get("isReady") is True:
-                        logger.info("Node %s is ready (isReady=true)", node_name)
-                        return
+                    if "isReady" in status:
+                        if status["isReady"] is True:
+                            logger.info("Node %s is ready (isReady=true)", node_name)
+                            return
+                    else:
+                        # Status returned but no isReady field — this node
+                        # doesn't expose the readiness flag (e.g. Scala).
+                        # Use the log marker for the remainder of this poll.
+                        use_log_fallback = True
             except (requests.ConnectionError, requests.Timeout, Exception):
                 pass  # HTTP not up yet, keep waiting
-        else:
-            # Fallback: log parsing
-            logs = get_logs()
-            if _RUNNING_MARKER in logs:
-                logger.info("Node %s reached Running state (log marker)", node_name)
-                return
+
+        if use_log_fallback and _RUNNING_MARKER in get_logs():
+            logger.info("Node %s reached Running state (log marker)", node_name)
+            return
 
         time.sleep(interval)
 
