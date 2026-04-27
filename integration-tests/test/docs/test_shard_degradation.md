@@ -73,4 +73,3 @@ After all 150 deploys, 10 sampled deploys are checked for inclusion and finaliza
 
 - [test_load](test_load.md) -- throughput/latency measurement (complementary)
 - [test_bridge_admin](test_bridge_admin.md) -- sustained bridge admin API calls
-- [Shard Degradation context](../../../docs/shard-degradation-context.md) -- known finalizer timeout issues

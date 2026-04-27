@@ -76,4 +76,3 @@ Three checks confirm complete synchronization:
 
 - [test_bonding_validators](test_bonding_validators.md) -- tests dynamic bonding at epoch boundaries (complementary joiner test)
 - [Consensus Protocol docs](../../../services/f1r3node-rust/docs/casper/CONSENSUS_PROTOCOL.md) -- Finalization (Clique Oracle)
-- [Shard Degradation context](../../../docs/shard-degradation-context.md) -- known finalizer timeout issues under sustained load
