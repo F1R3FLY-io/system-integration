@@ -102,8 +102,9 @@ Services are defined in `services.yml` with their git URLs and branches:
    - `compose/monitoring.yml` - Prometheus + Grafana
 4. **Services communicate via Docker network** - `f1r3fly` network
 5. **Always use shardctl commands** - Don't run builds manually (cargo, sbt, etc.). Use:
-   - `poetry run shardctl build-service <service>` for regular builds
-   - `poetry run shardctl build-service <service> --docker` for Docker image builds
+   - `poetry run shardctl build-service <service>` for full builds (source + Docker)
+   - `poetry run shardctl build-service <service> --docker-only` for Docker image only
+   - `poetry run shardctl build-service <service> --no-docker` for source build only
    - `poetry run shardctl build-service --list` to see available services
 6. **README.md is a thin entry point** — for any specific topic, follow the link from the "Where to go next" table to the dedicated doc
 
