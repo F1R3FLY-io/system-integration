@@ -61,6 +61,14 @@ def pytest_configure(config):
             "The session ID is printed by a prior `shardctl test --keep-running` run."
         )
 
+    config.addinivalue_line(
+        "markers",
+        "allow_forbidden_patterns(*keys): exempt this test from named "
+        "FORBIDDEN_PATTERNS keys (e.g. 'RecordingInvalidBlock'). Use only "
+        "when the test legitimately produces the pattern as part of its "
+        "verification. See infra/log_events.py for the pattern set.",
+    )
+
 
 def pytest_sessionstart(session):
     """Clean up stale resources from crashed sessions."""
@@ -149,9 +157,24 @@ def shared_shard(request, provider, timeouts) -> Shard:
     the shard (crash nodes, deplete wallets) should create their own
     via ``provider.create_shard()`` instead.
 
+    Seeds vaults for VALIDATOR4_ID and VALIDATOR5_ID at genesis. Existing
+    tests do not depend on these wallets being absent; bonding tests
+    (`tests/shared/test_bonding_validators.py`) add the joiners mid-session
+    and the bond deploys are signed by V4 / V5 keys, which require their
+    vaults to exist for phlo + stake.
+
     With ``--skip-setup --session-id <id>``, adopts an existing shard
     from a previous ``--keep-running`` run instead of creating a fresh one.
     """
+    from .infra.keys import VALIDATOR4_ID, VALIDATOR5_ID
+    joiner_balance = 50_000_000_000_000_000
+    extra_wallets = [
+        (
+            ident.private_key().get_public_key().get_vault_address(),
+            joiner_balance,
+        )
+        for ident in (VALIDATOR4_ID, VALIDATOR5_ID)
+    ]
     config = ShardConfig(
         bonds=[
             (VALIDATOR1_ID, 100),
@@ -160,6 +183,7 @@ def shared_shard(request, provider, timeouts) -> Shard:
         ],
         heartbeat=True,
         include_readonly=True,
+        extra_wallets=extra_wallets,
     )
 
     if request.config.getoption("--skip-setup"):
@@ -217,38 +241,50 @@ def all_nodes(shared_shard) -> list:
 
 
 @pytest.fixture(autouse=True)
-def check_node_logs_after_test(provider):
-    """Post-test log scan for panics on all active nodes.
+def check_node_logs_after_test(request, provider):
+    """Post-test log scan for panics AND forbidden patterns on all active
+    nodes.
 
     Runs after every test (shared, custom, standalone). Queries the
-    provider for all active node handles and scans their logs for
-    PANIC entries via the provider-agnostic ``handle.logs()`` method.
+    provider for all active node handles and scans their logs:
+      * PANIC entries — always fail
+      * FORBIDDEN_PATTERNS — fail unless the test opts out via
+        @pytest.mark.allow_forbidden_patterns(<key>, ...). Pattern keys
+        are defined in infra/log_events.py (e.g. "InvalidBondsCache",
+        "RecordingInvalidBlock", "DAGStorageMissingHash").
 
     Per-test (not per-session) so it pinpoints which test caused the
-    panic and fails fast before teardown destroys the evidence.
+    failure and fails fast before teardown destroys the evidence.
 
-    Provider-agnostic: works with Docker, Kubernetes, or any future
-    provider that implements the NodeHandle protocol.
-
-    Currently checks for PANIC only. ERROR/WARN whitelist will be built
-    incrementally by running tests and triaging normal log entries.
+    ERROR/WARN whitelist scanning is still future work — see
+    docs/TODO.md.
     """
     yield
 
-    from .infra.log_events import scan_for_errors, format_errors
+    from .infra.log_events import (
+        scan_for_errors,
+        scan_for_forbidden,
+        format_errors,
+    )
 
-    all_errors = []
+    # Collect opt-out keys from this test's markers.
+    allowed = frozenset()
+    for marker in request.node.iter_markers("allow_forbidden_patterns"):
+        allowed = allowed | frozenset(marker.args)
+
+    fatal: list = []
     for handle in provider.active_handles:
         try:
             logs = handle.logs()
         except Exception:
             continue
-        errors = scan_for_errors(logs, handle.name)
-        critical = [e for e in errors if e.level == "PANIC"]
-        all_errors.extend(critical)
+        fatal.extend(
+            e for e in scan_for_errors(logs, handle.name) if e.level == "PANIC"
+        )
+        fatal.extend(scan_for_forbidden(logs, handle.name, allowed))
 
-    if all_errors:
-        pytest.fail(format_errors(all_errors), pytrace=False)
+    if fatal:
+        pytest.fail(format_errors(fatal), pytrace=False)
 
 
 # ── Resource monitoring ──────────────────────────────────────────────

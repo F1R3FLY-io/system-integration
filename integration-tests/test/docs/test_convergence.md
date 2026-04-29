@@ -14,6 +14,8 @@ The merge happens through multi-parent blocks: a validator that sees tips from m
 
 ### test_network_recovers_from_validator_pause
 
+**Marker:** `@pytest.mark.allow_forbidden_patterns("DAGStorageMissingHash")` — the paused validator's DAG store legitimately reports missing hashes on resume while it backfills from peers.
+
 Simulates a temporary network partition by pausing V1's Docker container for 30 seconds:
 
 1. Deploy on all 3 validators to create active state before pause

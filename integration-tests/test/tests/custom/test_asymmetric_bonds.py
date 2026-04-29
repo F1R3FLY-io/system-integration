@@ -179,21 +179,27 @@ def test_finalization_asymmetric_bonds(asymmetric_shard, timeouts) -> None:
     validators[1].deploy_string("@2002!(2)", VALIDATOR2_ID.private_key())
     validators[2].deploy_string("@2003!(3)", VALIDATOR3_ID.private_key())
 
-    # All nodes (including readonly) must advance LFB
+    # All nodes (including readonly) must advance LFB to target AND have its
+    # FT propagate to >= FTT. In a multi-parent DAG with asymmetric bonds, the
+    # LFB advances ahead of FT — a block can be finalized via V1 alone (FT =
+    # 60/95 = 0.263) before V2's signature lifts the clique to FT = 80/95 =
+    # 0.368. We poll on the combined predicate so the assertion isn't sampled
+    # mid-propagation.
     target = initial_lfb_number + 3
     for node in all_nodes:
         poll_until(
             predicate=lambda n=node: (
-                n.last_finalized_block().blockInfo.blockNumber
+                (n.last_finalized_block().blockInfo.blockNumber, float(n.last_finalized_block().blockInfo.faultTolerance))
                 if n.last_finalized_block().blockInfo.blockNumber >= target
+                and float(n.last_finalized_block().blockInfo.faultTolerance) >= _FTT
                 else None
             ),
-            timeout=timeouts.finalization * 3,
+            timeout=timeouts.finalization * 6,
             interval=5.0,
-            description=f"{node.name} LFB >= #{target}",
+            description=f"{node.name} LFB >= #{target} AND FT >= {_FTT}",
         )
 
-    # Verify FT >= FTT on finalized blocks for all nodes
+    # Final state log (post-poll, both invariants already hold)
     for node in all_nodes:
         lfb = node.last_finalized_block()
         ft = float(lfb.blockInfo.faultTolerance)

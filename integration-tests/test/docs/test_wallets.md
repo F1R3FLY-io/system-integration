@@ -19,6 +19,8 @@ All wallet operations use pyf1r3fly's `VaultAPI`:
 
 The `VaultAPI` constructor takes a `shard_id` parameter (default `'root'`). All deploy methods use `self.shard_id`. Use `node.get_vault(shard_id)` to construct a `VaultAPI` with an explicit shard_id.
 
+The local `_transfer_and_read_result` helper takes an optional `all_nodes` argument; when supplied, it asserts `assert_block_finalized_on_all_nodes` on the transfer block after waiting for finalization on the proposer. All four transfer tests pass `all_nodes=shared_shard.all_nodes` so a peer that rejected the transfer block at validation time fails the test instead of going unnoticed.
+
 ## Tests (5)
 
 ### test_validator1_pay_validator2
@@ -75,6 +77,7 @@ Verifies that the HTTP Block API exposes transfer details in `DeployInfo`.
 - `result.success == True` (happy path, both V1→V2 and V2→V3)
 - `result.reason == "Invalid AuthKey"` (wrong key, via V3)
 - `result.reason == "Insufficient funds"` (overdraw, via V2)
+- Every transfer block (both success and failure cases) is finalized on every node, asserted via `assert_block_finalized_on_all_nodes`
 - Block API: `transfer["fromAddr"]`, `transfer["toAddr"]`, `transfer["amount"]`, `transfer["success"]`, `transfer["failReason"]` verified on both readonly and validator2
 
 ## Infrastructure used
@@ -86,6 +89,7 @@ Verifies that the HTTP Block API exposes transfer details in `DeployInfo`.
 - `Node.api_get()` for HTTP Block API queries on multiple nodes
 - `wait_for_deploy_included()` from `infra/polling.py` (delegates to `f1r3fly.polling`)
 - `wait_for_finalized()` from `infra/polling.py` (delegates to `f1r3fly.polling`)
+- `assert_block_finalized_on_all_nodes()` from `infra/assertions.py` — asserted via `_transfer_and_read_result` helper for every transfer test
 - `poll_until()` for balance polling
 
 ## Related

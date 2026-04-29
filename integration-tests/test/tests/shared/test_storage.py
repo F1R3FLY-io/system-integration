@@ -16,6 +16,7 @@ import string
 import pytest
 from f1r3fly.par import par_as_string, par_as_uri
 
+from ...infra.assertions import assert_block_finalized_on_all_nodes
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import wait_for_deploy_included, wait_for_finalized
 
@@ -34,7 +35,7 @@ def _random_string(length: int = 20) -> str:
 def _store_data(node, key, random_data, timeouts):
     """Deploy store-data.rho (real deploy — creates state).
 
-    Returns the registry URI and block number.
+    Returns the registry URI, block number, and block hash.
     """
     store_deploy_id = node.deploy_rho_file(
         STORE_DATA_CONTRACT,
@@ -54,7 +55,7 @@ def _store_data(node, key, random_data, timeouts):
     assert uri.startswith("rho:id:"), (
         f"Registry URI should start with 'rho:id:', got '{uri}'"
     )
-    return uri, block_info.blockNumber
+    return uri, block_info.blockNumber, block_info.blockHash
 
 
 def _read_data(readonly_node, uri):
@@ -78,11 +79,16 @@ def test_data_is_stored_and_served_by_node(shared_shard, timeouts) -> None:
     ro = shared_shard.readonly
     random_data = _random_string(20)
 
-    uri, store_block_number = _store_data(v1, VALIDATOR1_ID, random_data, timeouts)
+    uri, store_block_number, store_block_hash = _store_data(
+        v1, VALIDATOR1_ID, random_data, timeouts
+    )
     logging.info("Stored '%s' at %s on V1", random_data, uri)
 
-    # Wait for readonly to finalize past the store block
+    # Wait for readonly to finalize past the store block, then assert the
+    # store block is finalized on every node — readonly-only check would
+    # miss a peer that rejected the block at validation time.
     wait_for_finalized(ro, store_block_number, timeouts.finalization)
+    assert_block_finalized_on_all_nodes(shared_shard.all_nodes, store_block_hash)
 
     read_data = _read_data(ro, uri)
 
@@ -111,11 +117,14 @@ def test_data_stored_on_one_validator_readable_on_readonly(shared_shard, timeout
     for node, key in zip(validators, VALIDATOR_KEYS):
         random_data = _random_string(20)
 
-        uri, store_block_number = _store_data(node, key, random_data, timeouts)
+        uri, store_block_number, store_block_hash = _store_data(
+            node, key, random_data, timeouts
+        )
         logging.info("Stored '%s' at %s on %s (block #%d)",
                      random_data, uri, node.name, store_block_number)
 
         wait_for_finalized(ro, store_block_number, timeouts.finalization)
+        assert_block_finalized_on_all_nodes(shared_shard.all_nodes, store_block_hash)
 
         read_data = _read_data(ro, uri)
 

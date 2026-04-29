@@ -141,7 +141,19 @@ CI runners are slower than laptops — `--timeout-scale=1.5` (or `2.0`) bumps ev
 
 `infra/log_events.py` + autouse fixture in `conftest.py` (`check_node_logs_after_test`).
 
-After **every test**, the fixture pulls logs from every active node via `handle.logs()` and runs `scan_for_errors()`. Today it fails the test only on `PANIC`. WARN/ERROR detection is disabled until `ACCEPTABLE_PATTERNS` is populated — building that whitelist is a separate track (see root `docs/TODO.md`).
+After **every test**, the fixture pulls logs from every active node via `handle.logs()` and runs two scans:
+
+1. **`scan_for_errors()`** — fails the test on any `PANIC` line. WARN/ERROR detection is disabled until `ACCEPTABLE_PATTERNS` is populated (whitelist work tracked in root `docs/TODO.md`).
+2. **`scan_for_forbidden()`** — fails the test on any line matching `FORBIDDEN_PATTERNS` (e.g. `InvalidBondsCache`, `BondsCacheMismatch`, `Recording invalid block`, `DAG storage is missing hash`). These are strict invariants; no test should produce them silently.
+
+A test can opt out of one or more forbidden patterns when it legitimately produces them as part of its verification:
+
+```python
+@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
+def test_validator_failure_recovery(...): ...
+```
+
+The marker takes one or more pattern keys from `FORBIDDEN_PATTERNS` (defined in `infra/log_events.py`). Adding a pattern is a hard tightening — run the full suite to confirm no untagged test trips it. Existing opt-outs are listed in the source comment next to each pattern.
 
 Per-test (not per-session) so the failing test name is the one that surfaces, not whatever ran last.
 

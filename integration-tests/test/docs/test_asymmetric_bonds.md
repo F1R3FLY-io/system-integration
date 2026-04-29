@@ -54,11 +54,13 @@ Deploys on all 3 validators, waits for 10+ blocks on all nodes (including readon
 
 ### test_finalization_asymmetric_bonds
 
-Deploys on all 3 validators, then polls until the LFB advances on ALL nodes (including readonly). Verifies:
+Deploys on all 3 validators, then polls each node until **both** invariants hold simultaneously: LFB number reaches the target AND its cached `faultTolerance >= FTT`. Polling on the combined predicate avoids sampling mid-propagation — under asymmetric bonds the LFB number can advance ahead of FT (V1 alone finalizes a block at FT = 60/95 = 0.263 before V2's signature lifts the clique to FT = 80/95 = 0.368).
+
+Verifies:
 
 1. **LFB advances within timeout** — finalization works despite unequal stakes. With heartbeat producing blocks, V1's high weight ensures V1+V2 or V1+V3 agreements happen naturally.
-2. **All nodes agree on finalization** — every node (including readonly) sees finalization advance, confirming consensus isn't split by weight asymmetry.
-3. **FT >= FTT assertion** — finalized blocks on all nodes must have FT >= 0.33.
+2. **All nodes agree on finalization** — every node (including readonly) sees finalization advance with FT >= FTT, confirming consensus isn't split by weight asymmetry.
+3. **FT >= FTT** is asserted as part of the same poll, not in a separate post-poll check.
 
 ### test_cross_validator_state_agreement_asymmetric
 

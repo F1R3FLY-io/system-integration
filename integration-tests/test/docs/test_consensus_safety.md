@@ -11,6 +11,7 @@ Each test creates its own shard with specific FTT and bond configuration.
 ### test_validator_failure_recovery
 
 **Config:** FTT=0.1, bonds 100/100/100, heartbeat, readonly
+**Marker:** `@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")` — paused validator legitimately produces invalid-block log lines on resume.
 
 Kill V3 (pause container), verify V1+V2 continue finalizing. With FTT=0.1, FT for 2/3 = 0.33 > 0.1 — finalization continues. Deploy on V1+V2 during failure, verify LFB advances by 3+ blocks. Verify FT >= 0.1 on finalized blocks. Restart V3, deploy on all 3, verify all nodes (including readonly) converge with LFB spread <= 3.
 
@@ -19,6 +20,7 @@ Kill V3 (pause container), verify V1+V2 continue finalizing. With FTT=0.1, FT fo
 ### test_validator_failure_halts_finalization
 
 **Config:** FTT=0.67, bonds 100/100/100, heartbeat, readonly
+**Marker:** `@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")` — paused validator legitimately produces invalid-block log lines on resume.
 
 Kill V3, verify finalization STOPS. With FTT=0.67, FT for 2/3 = 0.33 which is NOT > 0.67. Observe 30 seconds of LFB stall on V1+V2. Restart V3, verify finalization resumes on all nodes.
 

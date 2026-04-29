@@ -58,6 +58,15 @@ VALIDATOR4_ID = ValidatorIdentity(
     ),
 )
 
+VALIDATOR5_ID = ValidatorIdentity(
+    name="validator5",
+    private_hex="3a04f0c0a1d7d29ba34e8cdc8ac9e7baf8d97d6217566d3f8fbcf2c12be09a8b",
+    public_hex=(
+        "04801118220021f056f4bc46340eebbaf0981ed55de15b02a9da96219d572409"
+        "af1bdc1dfc80c5eb74b36597f7d209997813b15e776859c9750b5a02fb195ead06"
+    ),
+)
+
 # Default genesis balances (from integration-tests/genesis/wallets.txt)
 GENESIS_BALANCES = {
     BOOTSTRAP_ID.name: 50_000_000_000_000_000,
@@ -75,4 +84,7 @@ DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS = [
 
 # All pre-defined identities for iteration
 ALL_VALIDATORS = [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID]
-ALL_IDENTITIES = [BOOTSTRAP_ID, VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID, VALIDATOR4_ID]
+ALL_IDENTITIES = [
+    BOOTSTRAP_ID, VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID,
+    VALIDATOR4_ID, VALIDATOR5_ID,
+]
