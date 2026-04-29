@@ -455,6 +455,7 @@ One shard startup per session. Tests run sequentially against the same shard.
 | test_bridge_admin | [docs](test/docs/test_bridge_admin.md) |
 | test_convergence | [docs](test/docs/test_convergence.md) |
 | test_token_metadata | [docs](test/docs/test_token_metadata.md) |
+| test_contract_lifecycle | [docs](test/docs/test_contract_lifecycle.md) |
 
 ### `tests/custom/` — Custom shard (19 tests, 8 files)
 

@@ -67,3 +67,59 @@ def assert_all_nodes_agree_on_block(nodes, block_hash: str) -> None:
         f"Nodes disagree on post-state for block {block_hash[:16]}. "
         f"States: {post_states}"
     )
+
+
+def assert_all_nodes_agree_on_lfb(nodes) -> str:
+    """Assert all nodes report the same LFB hash. Returns the common hash."""
+    lfb_info = {}
+    for node in nodes:
+        lfb = node.last_finalized_block().blockInfo
+        lfb_info[node.name] = (lfb.blockHash, lfb.blockNumber)
+    hashes = {h for h, _ in lfb_info.values()}
+    assert len(hashes) == 1, (
+        f"Nodes disagree on LFB: {lfb_info}"
+    )
+    return next(iter(hashes))
+
+
+def assert_contracts_consistent_across_nodes(
+    readonly_node,
+    contract_queries,
+    block_hash: str = "",
+) -> dict[str, list]:
+    """Query each contract on readonly via exploratory deploy, return results.
+
+    Args:
+        readonly_node: Node with exploratory deploy support.
+        contract_queries: Iterable of either ``(name, uri, method)`` for
+            3-arg bridge-style contracts or ``(name, uri, method, param)``
+            where ``param`` is a Rholang expression string or ``None``
+            for the 2-arg ``(@method, ret)`` pattern.
+        block_hash: Block hash to query against. Empty for latest.
+
+    Returns:
+        Dict mapping contract name to Par results list.
+
+    Raises:
+        AssertionError: If any query returns no results.
+    """
+    results = {}
+    for entry in contract_queries:
+        if len(entry) == 3:
+            name, uri, method = entry
+            param = "Nil"
+        elif len(entry) == 4:
+            name, uri, method, param = entry
+        else:
+            raise ValueError(
+                f"contract_queries entry must be 3- or 4-tuple, got {entry!r}"
+            )
+        pars = readonly_node.registry_query(
+            uri, method, param=param, block_hash=block_hash
+        )
+        assert pars, (
+            f"Contract {name} query {method} returned no results "
+            f"on {readonly_node.name} at block {block_hash[:16]}"
+        )
+        results[name] = pars
+    return results
