@@ -27,7 +27,7 @@ from f1r3fly.util import sign_deploy_data
 from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto
 
 from ...infra.keys import VALIDATOR1_ID
-from ...infra.polling import poll_until, wait_for_deploy_included, wait_for_finalized
+from ...infra.polling import poll_until, wait_for_deploy_finalized, wait_for_deploy_included, wait_for_finalized
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -974,8 +974,7 @@ def test_get_continuation(shared_shard, timeouts) -> None:
         VALIDATOR1_ID.private_key(),
         phlo_limit=100_000,
     )
-    info = wait_for_deploy_included(v1, deploy_id, timeouts.deploy_inclusion)
-    wait_for_finalized(v1, info.blockNumber, timeouts.finalization)
+    wait_for_deploy_finalized(v1, deploy_id, timeouts.finalization)
 
     # Query for continuations on a public name (@0)
     par = Par(exprs=[])

@@ -28,10 +28,9 @@ Single-validator round-trip on V1:
 ### test_data_stored_on_one_validator_readable_on_all
 
 Cross-node propagation — store on V1, read on every other node:
-1. Store data on V1 (same as above steps 1-4)
-2. Get the block number from `wait_for_deploy_included`
-3. For each other node (V2, V3, readonly):
-   a. Wait for node's LFB to reach the store block number via `wait_for_finalized`
+1. Store data on V1 (same as above steps 1-4) and capture the store deploy id
+2. For each other node (V2, V3, readonly):
+   a. Wait for node to see the store deploy reach canonical-state finalization via `wait_for_deploy_finalized`
    b. Read the value via `Node.registry_lookup()` (exploratory deploy — instant)
    c. Assert data matches the original random string
 
@@ -46,7 +45,7 @@ Cross-node propagation — store on V1, read on every other node:
 - `rho:registry:insertArbitrary` correctly stores data and returns a `rho:id:` URI
 - `rho:registry:lookup` correctly retrieves stored data by URI via exploratory deploy
 - Registry state propagates to all nodes (V2, V3, readonly) via block replication
-- Finalization is necessary for reliable cross-node registry reads
+- Canonical-state deploy finalization is necessary for reliable cross-node registry reads (block-hash finalization is not sufficient — a block can finalize while merge-rejected deploy effects are not yet included)
 - Exploratory deploy can read registry state without creating blocks
 - Readonly nodes can read finalized registry state
 
@@ -62,8 +61,7 @@ Cross-node propagation — store on V1, read on every other node:
 - Session-scoped `shared_shard` fixture (3 validators + readonly)
 - `Node.deploy_rho_file()` with substitutions for store contract (real deploy)
 - `Node.registry_lookup()` for read step (delegates to `f1r3fly.contracts.registry_lookup` via exploratory deploy)
-- `wait_for_deploy_included()` from `infra/polling.py`
-- `wait_for_finalized()` from `infra/polling.py`
+- `wait_for_deploy_finalized()` from `infra/polling.py` (canonical-state deploy tracking — the per-deploy successor to block-hash `wait_for_finalized`)
 - `par_as_uri` from pyf1r3fly for registry URI extraction (uses `par_as_uri` instead of `par_as_string`)
 
 ## Related

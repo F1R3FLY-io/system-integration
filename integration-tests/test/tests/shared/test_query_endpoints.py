@@ -14,7 +14,7 @@ import logging
 import pytest
 
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID
-from ...infra.polling import wait_for_deploy_included, wait_for_finalized
+from ...infra.polling import wait_for_deploy_finalized
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -311,8 +311,7 @@ def test_registry_endpoint(shared_shard, timeouts) -> None:
         VALIDATOR1_ID.private_key(),
         phlo_limit=100_000,
     )
-    info = wait_for_deploy_included(v1, deploy_id, timeouts.deploy_inclusion)
-    wait_for_finalized(v1, info.blockNumber, timeouts.finalization)
+    wait_for_deploy_finalized(v1, deploy_id, timeouts.finalization)
 
     # Use the existing registry lookup via gRPC to get a known URI
     # (system contract URIs are always available)
@@ -342,10 +341,8 @@ def test_query_with_block_hash(shared_shard, timeouts) -> None:
         VALIDATOR1_ID.private_key(),
         phlo_limit=100_000,
     )
-    info = wait_for_deploy_included(v1, deploy_id, timeouts.deploy_inclusion)
-    wait_for_finalized(v1, info.blockNumber, timeouts.finalization)
-
-    block_hash = info.blockHash
+    status = wait_for_deploy_finalized(v1, deploy_id, timeouts.finalization)
+    block_hash = status.latestBlockHash.hex()
 
     # Validators endpoint with explicit block hash
     result = ro.api_get(f"/validators?block_hash={block_hash}")

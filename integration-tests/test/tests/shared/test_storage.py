@@ -17,7 +17,7 @@ import pytest
 from f1r3fly.par import par_as_string, par_as_uri
 
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import wait_for_deploy_included, wait_for_finalized
+from ...infra.polling import wait_for_deploy_finalized, wait_for_deploy_included
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -34,7 +34,9 @@ def _random_string(length: int = 20) -> str:
 def _store_data(node, key, random_data, timeouts):
     """Deploy store-data.rho (real deploy — creates state).
 
-    Returns the registry URI and block number.
+    Returns ``(uri, store_deploy_id, block_number)``. The ``deploy_id``
+    lets callers poll ``wait_for_deploy_finalized`` on other nodes for the
+    actual canonical-state inclusion.
     """
     store_deploy_id = node.deploy_rho_file(
         STORE_DATA_CONTRACT,
@@ -54,7 +56,7 @@ def _store_data(node, key, random_data, timeouts):
     assert uri.startswith("rho:id:"), (
         f"Registry URI should start with 'rho:id:', got '{uri}'"
     )
-    return uri, block_info.blockNumber
+    return uri, store_deploy_id, block_info.blockNumber
 
 
 def _read_data(readonly_node, uri):
@@ -78,11 +80,13 @@ def test_data_is_stored_and_served_by_node(shared_shard, timeouts) -> None:
     ro = shared_shard.readonly
     random_data = _random_string(20)
 
-    uri, store_block_number = _store_data(v1, VALIDATOR1_ID, random_data, timeouts)
+    uri, store_deploy_id, _ = _store_data(v1, VALIDATOR1_ID, random_data, timeouts)
     logging.info("Stored '%s' at %s on V1", random_data, uri)
 
-    # Wait for readonly to finalize past the store block
-    wait_for_finalized(ro, store_block_number, timeouts.finalization)
+    # Wait for readonly to see the deploy's canonical-state inclusion.
+    # Unlike LFB-height polling, this correctly handles the case where the
+    # deploy's initial block finalizes but effects were merge-rejected.
+    wait_for_deploy_finalized(ro, store_deploy_id, timeouts.finalization)
 
     read_data = _read_data(ro, uri)
 
@@ -111,11 +115,11 @@ def test_data_stored_on_one_validator_readable_on_readonly(shared_shard, timeout
     for node, key in zip(validators, VALIDATOR_KEYS):
         random_data = _random_string(20)
 
-        uri, store_block_number = _store_data(node, key, random_data, timeouts)
+        uri, store_deploy_id, store_block_number = _store_data(node, key, random_data, timeouts)
         logging.info("Stored '%s' at %s on %s (block #%d)",
                      random_data, uri, node.name, store_block_number)
 
-        wait_for_finalized(ro, store_block_number, timeouts.finalization)
+        wait_for_deploy_finalized(ro, store_deploy_id, timeouts.finalization)
 
         read_data = _read_data(ro, uri)
 

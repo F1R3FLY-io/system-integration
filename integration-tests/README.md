@@ -27,7 +27,7 @@ test/
 │   ├── timeouts.py          TimeoutHierarchy (one scale factor → all timeouts)
 │   ├── ports.py             PortAllocator (socket-verified, thread-safe)
 │   ├── cleanup.py           CleanupRegistry (crash-resilient: atexit + session hooks)
-│   ├── polling.py           Node-aware wrappers around f1r3fly.polling (deploy_and_read, wait_for_finalized, etc.)
+│   ├── polling.py           Node-aware wrappers around f1r3fly.polling (deploy_and_read, wait_for_finalized, wait_for_deploy_finalized, etc.)
 │   ├── assertions.py        Deploy/shard assertions (re-exported from f1r3fly.deploy + f1r3fly.par)
 │   ├── log_events.py        Structured log event parsing + log scanning
 │   ├── token_metadata.py    HTTP /api/status token helper (on-chain queries via pyf1r3fly)
@@ -223,7 +223,7 @@ The `NodeHandle` protocol abstracts all infrastructure operations:
 
 ### Node wraps pyf1r3fly
 
-**gRPC:** `deploy_string`, `deploy_rho_file`, `send_deploy` (pre-built proto), `propose` (via `_internal_client` on port 40402), `exploratory_deploy`, `find_deploy`, `get_block`, `get_blocks`, `last_finalized_block`, `is_finalized`. Uses `_external_client` (port 40401) for most operations and `_internal_client` (port 40402) for `ProposeService`.
+**gRPC:** `deploy_string`, `deploy_rho_file`, `send_deploy` (pre-built proto), `propose` (via `_internal_client` on port 40402), `exploratory_deploy`, `find_deploy`, `get_block`, `get_blocks`, `last_finalized_block`, `is_finalized`, `deploy_finalization_status` (canonical-state per-deploy tracking — prefer over `is_finalized` for deploy tracking). Uses `_external_client` (port 40401) for most operations and `_internal_client` (port 40402) for `ProposeService`.
 
 **Vault:** `node.vault.get_balance(addr)` (exploratory deploy, readonly only on Rust node), `node.vault.deploy_get_balance(addr, key)` (real deploy, works on validators), `node.vault.transfer_ensure(from, to, amount, key)`, `node.vault.read_transfer_result(deploy_id, block_hash)`. Use `node.get_vault(shard_id)` to construct a `VaultAPI` with an explicit shard_id.
 
@@ -363,7 +363,7 @@ def test_something(provider, timeouts):
 
 ### Deploy, finalize, and read
 
-For contract tests that deploy code and read results from the `deployId` channel, use `deploy_and_read`. It handles the full workflow: deploy -> wait for inclusion -> wait for finalization -> verify not errored -> read deployId channel:
+For contract tests that deploy code and read results from the `deployId` channel, use `deploy_and_read`. It handles the full workflow: deploy -> wait for inclusion -> wait for canonical-state finalization (`wait_for_deploy_finalized`) -> read deployId channel at the canonical block:
 
 ```python
 from ...infra.polling import deploy_and_read
@@ -376,6 +376,8 @@ pars, block_hash, block_number = deploy_and_read(
 # pars is a list of Par values from the deployId channel
 value = par_as_int(pars[0])
 ```
+
+`block_hash` and `block_number` refer to the canonical-state block containing the deploy's effects. If the deploy was first included in block X, merge-rejected, then re-included in block Y, the returned values point at Y. Terminal failures raise `DeployError` (Rholang execution failure or past-`deployLifespan` expiration).
 
 For `.rho` files with substitutions:
 
@@ -429,7 +431,7 @@ def test_something(provider, timeouts):
 | `F1r3flyClient` (gRPC) | Docker/K8s lifecycle (`Provider`) |
 | `VaultAPI` (balance, transfer, deploy_get_balance) | `.rho` file resolution + substitution |
 | `par.py` (Par extraction) | Log event parsing (`log_events.py`) |
-| `polling.py` (`poll_until`, `deploy_and_read`, `wait_for_finalized`, `deploy_with_fallback`) | Node-aware polling wrappers (`infra/polling.py`) |
+| `polling.py` (`poll_until`, `deploy_and_read`, `wait_for_finalized`, `wait_for_deploy_finalized`, `deploy_with_fallback`) | Node-aware polling wrappers (`infra/polling.py`) |
 | `deploy.py` (`check_deploy_succeeded/errored`, `find_deploy_in_block`) | Assert wrappers + multi-node checks (`infra/assertions.py`) |
 | `contracts.py` (`registry_lookup`, `registry_query`) | `Node.registry_lookup()`, `Node.registry_query()` |
 | `system_contracts.py` (token metadata queries) | Resource monitoring, cleanup, port allocation |

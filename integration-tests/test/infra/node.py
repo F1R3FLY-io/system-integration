@@ -274,11 +274,15 @@ class Node:
         return registry_lookup(self._external_client(), uri, block_hash)
 
     def registry_query(
-        self, uri: str, method: str, param: str = "Nil", block_hash: str = "",
+        self, uri: str, method: str, param="Nil", block_hash: str = "",
     ) -> list:
         """Query a registry-registered contract via exploratory deploy.
 
         Read-only — no block created, no phlo consumed. Returns Par results.
+        Default ``param="Nil"`` matches the 3-arg pattern
+        ``(@method, @param, ret)`` used by bridge contracts. Pass
+        ``param=None`` for contracts whose pattern is the 2-arg
+        ``(@method, ret)``.
         """
         from f1r3fly.contracts import registry_query
         return registry_query(self._external_client(), uri, method, param, block_hash)

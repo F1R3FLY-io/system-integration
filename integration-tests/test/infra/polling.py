@@ -14,6 +14,7 @@ from f1r3fly.polling import (
     poll_until,
     wait_for_deploy_included as _client_wait_for_deploy_included,
     wait_for_finalized as _client_wait_for_finalized,
+    wait_for_deploy_finalized as _client_wait_for_deploy_finalized,
     deploy_and_read as _client_deploy_and_read,
     deploy_with_fallback as _client_deploy_with_fallback,
     DeployError,
@@ -27,6 +28,7 @@ __all__ = [
     "wait_for_node_running",
     "wait_for_deploy_included",
     "wait_for_finalized",
+    "wait_for_deploy_finalized",
     "deploy_and_read",
     "deploy_with_fallback",
     "wait_for_block_visible",
@@ -110,6 +112,29 @@ def wait_for_finalized(node, block_number: int, timeout: int) -> None:
     Node-aware wrapper around ``f1r3fly.polling.wait_for_finalized``.
     """
     _client_wait_for_finalized(node._external_client(), block_number, timeout)
+
+
+def wait_for_deploy_finalized(
+    node,
+    deploy_id: str,
+    timeout: int,
+    interval: float = 3.0,
+):
+    """Poll ``deploy_finalization_status`` until the deploy reaches Finalized.
+
+    Node-aware wrapper around ``f1r3fly.polling.wait_for_deploy_finalized``.
+    Use this for deploy tracking instead of block-hash finalization — it
+    reports the deploy's actual canonical-state inclusion, correctly
+    handling the case where a block finalizes while the deploy's effects
+    were rejected by merge and later re-included.
+
+    Returns the ``DeployFinalizationStatusInfo`` on success.
+    Raises ``DeployError`` on terminal Failed/Expired, ``TimeoutError``
+    if Pending past ``timeout``.
+    """
+    return _client_wait_for_deploy_finalized(
+        node._external_client(), deploy_id, timeout, interval
+    )
 
 
 def deploy_and_read(
