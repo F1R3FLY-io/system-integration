@@ -117,7 +117,7 @@ def generate_compose(
         ],
         "environment": [
             "OPENAI_ENABLED=false",
-            "RUST_LOG=info",
+            f"RUST_LOG={os.environ.get('RUST_LOG', 'info')}",
         ],
     }
     registry.register_container(bootstrap_host)
@@ -174,7 +174,7 @@ def generate_compose(
             ],
             "environment": [
                 "OPENAI_ENABLED=false",
-                "RUST_LOG=info",
+                f"RUST_LOG={os.environ.get('RUST_LOG', 'info')}",
             ],
         }
         registry.register_container(host)
@@ -220,7 +220,7 @@ def generate_compose(
             ],
             "environment": [
                 "OPENAI_ENABLED=false",
-                "RUST_LOG=info",
+                f"RUST_LOG={os.environ.get('RUST_LOG', 'info')}",
             ],
         }
         registry.register_container(ro_host)
