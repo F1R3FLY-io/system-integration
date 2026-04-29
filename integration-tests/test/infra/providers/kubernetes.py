@@ -187,7 +187,7 @@ class K8sProvider:
     def cleanup_all(self) -> None:
         raise NotImplementedError(
             "Implement as this session's own registered-resource cleanup. "
-            "Mirror DockerProvider.cleanup_all which delegates to CleanupRegistry. "
+            "Mirror DockerProvider.cleanup_all which delegates to DockerCleanupRegistry. "
             "Distinct from force_cleanup_all_test_resources (which spans all sessions)."
         )
 

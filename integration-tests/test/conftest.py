@@ -11,7 +11,7 @@ import pytest
 
 import logging
 
-from .infra.cleanup import CleanupRegistry
+from .infra.cleanup import DockerCleanupRegistry
 from .infra.config import NodeConf, ResourcePaths, ShardConfig, TimeoutConfig
 from .infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from .infra.node import Node
@@ -72,12 +72,12 @@ def pytest_configure(config):
 
 def pytest_sessionstart(session):
     """Clean up stale resources from crashed sessions."""
-    CleanupRegistry.cleanup_stale_sessions()
+    DockerCleanupRegistry.cleanup_stale_sessions()
 
 
 def pytest_sessionfinish(session, exitstatus):
     """Belt-and-suspenders cleanup."""
-    CleanupRegistry.cleanup_stale_sessions()
+    DockerCleanupRegistry.cleanup_stale_sessions()
 
 
 # ── Session-scoped fixtures ──────────────────────────────────────────
@@ -108,9 +108,9 @@ def port_allocator(request) -> PortAllocator:
 
 
 @pytest.fixture(scope="session")
-def cleanup_registry(request, session_id) -> CleanupRegistry:
+def cleanup_registry(request, session_id) -> DockerCleanupRegistry:
     keep = request.config.getoption("--keep-running")
-    registry = CleanupRegistry(session_id, keep_running=keep)
+    registry = DockerCleanupRegistry(session_id, keep_running=keep)
     if keep:
         # Make the session_id visible so the user can reuse it on the next
         # invocation via `--skip-setup --session-id <id>`.

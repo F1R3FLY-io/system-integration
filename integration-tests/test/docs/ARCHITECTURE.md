@@ -93,9 +93,9 @@ All framework-created resources carry one of three session-prefixed patterns:
 
 ---
 
-## 4. `CleanupRegistry` — defense-in-depth teardown
+## 4. `DockerCleanupRegistry` — defense-in-depth teardown (Docker provider)
 
-Defined in `infra/cleanup.py`. Four independent cleanup paths ensure resources don't leak even on abnormal termination:
+Defined in `infra/cleanup.py`. Tracks resources created by the Docker provider (containers, volumes, networks, temp dirs); other providers (e.g. Subprocess, K8s) own their own resource lifetime via the `Provider` trait's `cleanup_all` / `force_cleanup_all_test_resources` methods. Four independent cleanup paths ensure resources don't leak even on abnormal termination:
 
 | Layer | Trigger | Scope |
 |---|---|---|
@@ -221,7 +221,7 @@ Design for `NotImplementedError` with clear guidance as a first pass — `K8sPro
 | `config.py` | `TimeoutConfig`, `ShardConfig`, `NodeConfig`, `ResourcePaths`, `NodeConf` (HOCON parser), `resolve_node_image()` |
 | `timeouts.py` | `TimeoutHierarchy` |
 | `ports.py` | `PortAllocator` |
-| `cleanup.py` | `CleanupRegistry` (Docker-specific today; see Section 4) |
+| `cleanup.py` | `DockerCleanupRegistry` (see Section 4); other providers own their own resource lifetime |
 | `polling.py` | Node-aware wrappers around `f1r3fly.polling` |
 | `assertions.py` | Deploy/shard assertions re-exported from `f1r3fly.deploy` + `f1r3fly.par` |
 | `log_events.py` | Structured log event parsing + `scan_for_errors` |

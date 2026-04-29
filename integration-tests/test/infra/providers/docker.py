@@ -10,7 +10,7 @@ import logging
 import subprocess
 from typing import Dict, List, Optional, Sequence
 
-from ..cleanup import CleanupRegistry
+from ..cleanup import DockerCleanupRegistry
 from ..compose import generate_compose
 from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_image
 from ..genesis import generate_genesis
@@ -299,7 +299,7 @@ class DockerProvider:
     def __init__(
         self,
         port_allocator: PortAllocator,
-        registry: CleanupRegistry,
+        registry: DockerCleanupRegistry,
         timeouts: TimeoutHierarchy,
         paths: Optional[ResourcePaths] = None,
     ) -> None:
@@ -784,10 +784,10 @@ class DockerProvider:
         """Delegate to the Docker-specific aggressive cleanup helper.
 
         Keeps the shell-out-to-``docker`` logic in one place
-        (:py:class:`CleanupRegistry`) while exposing a provider-neutral
+        (:py:class:`DockerCleanupRegistry`) while exposing a provider-neutral
         entry point for ``shardctl test-reset``.
         """
-        CleanupRegistry.force_cleanup_all_test_resources()
+        DockerCleanupRegistry.force_cleanup_all_test_resources()
 
     # ── Session adoption (--skip-setup --session-id) ────────────────
 
