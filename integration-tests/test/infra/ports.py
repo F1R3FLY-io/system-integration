@@ -48,8 +48,9 @@ class PortAllocator:
     def allocate(self) -> PortMapping:
         """Allocate a 6-port block for a single node.
 
-        Skips ranges where the base port is already in use (TIME_WAIT
-        from a previous test run, or another process).
+        Skips a block if any of its 6 ports is already bound (TIME_WAIT
+        from a previous test, ephemeral assignment by another process,
+        or a leftover container).
 
         Raises RuntimeError if the entire test range is exhausted.
         """
@@ -57,9 +58,15 @@ class PortAllocator:
             while self._next + _BLOCK_SIZE <= self._ceiling:
                 base = self._next
                 self._next += _BLOCK_SIZE
-                if self._is_port_free(base):
+                busy = next(
+                    (p for p in range(base, base + _BLOCK_SIZE)
+                     if not self._is_port_free(p)),
+                    None,
+                )
+                if busy is None:
                     return PortMapping.from_base(base)
-                logger.debug("Port %d in use, skipping", base)
+                logger.debug("Block %d-%d skipped: port %d in use",
+                             base, base + _BLOCK_SIZE - 1, busy)
             raise RuntimeError(
                 f"test port range exhausted ({_BASE}-{self._ceiling}). "
                 f"Too many concurrent nodes or leftover TIME_WAIT sockets."

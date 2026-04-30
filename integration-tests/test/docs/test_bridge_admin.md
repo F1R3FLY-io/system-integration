@@ -78,5 +78,4 @@ Queries use `deploy_and_read()` (real deploy — creates blocks, exercises cross
 
 - [bridge-v2.rho](../../resources/bridge-v2.rho) -- the bridge contract
 - [bridge.rho](../../resources/bridge.rho) -- the original bridge contract (v1, with admin API)
-- [Bridge Admin Bug -- RESOLVED](../../../docs/bridge-admin-bug.md) -- Blake2b512Random count_view bug (PR #468)
-- [Shard Degradation](../../../docs/shard-degradation-context.md) -- finalizer timeouts under sustained load
+- f1r3node-rust PR #468 -- Blake2b512Random count_view bug fix (resolved bridge admin issue)

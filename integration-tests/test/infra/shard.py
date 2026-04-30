@@ -34,12 +34,14 @@ class Shard:
         config,         # ShardConfig
         timeouts,       # TimeoutHierarchy
         genesis_dir: Optional[str] = None,
+        adopted: bool = False,
     ) -> None:
         self._provider = provider
         self._handles = handles
         self._config = config
         self._timeouts = timeouts
         self._genesis_dir = genesis_dir
+        self._adopted = adopted
         self._destroyed = False
 
         # Build Node wrappers
@@ -72,6 +74,24 @@ class Shard:
             handles=handles,
             config=config,
             timeouts=timeouts,
+        )
+
+    @classmethod
+    def from_handles(cls, provider, handles, config, timeouts) -> "Shard":
+        """Build a Shard around already-running handles (no provider.create_shard).
+
+        Used by the ``--skip-setup --session-id`` path to wrap containers
+        adopted from a previous session. ``destroy()`` on an adopted shard
+        is a no-op — the shard was kept alive intentionally and will be
+        cleaned up explicitly by ``shardctl test-reset`` or the next
+        ``shardctl test --keep-running`` cycle.
+        """
+        return cls(
+            provider=provider,
+            handles=handles,
+            config=config,
+            timeouts=timeouts,
+            adopted=True,
         )
 
     @property
@@ -169,10 +189,18 @@ class Shard:
     # ── Lifecycle ───────────────────────────────────────────────────
 
     def destroy(self) -> None:
-        """Destroy the shard and all its resources."""
+        """Destroy the shard and all its resources.
+
+        No-op for adopted shards (session reused via ``--skip-setup``):
+        the user asked to keep them, so we leave them for explicit
+        cleanup via ``shardctl test-reset``.
+        """
         if self._destroyed:
             return
         self._destroyed = True
+        if self._adopted:
+            logger.info("Adopted shard left running (--skip-setup)")
+            return
         if not self._provider.keep_running:
             for node in self._nodes.values():
                 node.close()

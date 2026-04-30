@@ -86,4 +86,3 @@ Runs all 4 phases sequentially on a fresh 3-validator shard with readonly observ
 
 - [test_shard_degradation](test_shard_degradation.md) -- sustained load test with degradation detection
 - [test_bridge_admin](test_bridge_admin.md) -- sustained load with complex contract interactions
-- [Shard Degradation](../../../docs/shard-degradation-context.md) -- known finalizer timeout issues

@@ -6,10 +6,10 @@
 #   - enabled: false - service is skipped unless explicitly named or --all flag is used
 #
 # Examples:
-#   shardctl clone              # Clones only enabled services
-#   shardctl clone --all        # Clones all services (including disabled)
-#   shardctl build-service -a   # Builds all enabled services
-#   shardctl build-service my-disabled-service --docker  # Builds specific service even if disabled
+#   shardctl clone                                           # Clones only enabled services
+#   shardctl clone --include-disabled                        # Clones all services (including disabled)
+#   shardctl build-service                                   # Builds all enabled services (source + Docker)
+#   shardctl build-service my-disabled-service --docker-only # Builds specific service even if disabled
 
 # Startup order for compose files
 # The 'up' command brings up each compose file in order, waiting for each to succeed.

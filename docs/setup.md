@@ -1,10 +1,68 @@
-# Service Build Dependencies
+# Setup
 
-These are only needed if you're building services from source. If you're using pre-built Docker images (see [Quick Start](../README.md#quick-start)), you can skip this entirely.
+Two paths:
+- **Pre-built images** — fastest. Skip to [Quick start](../README.md#quick-start) in the main README.
+- **Build from source** — needed if you're working on a service or want to use a custom branch. Continue below.
+
+For node + env-file configuration, see [configuration.md](configuration.md). For the compose-file structure, see [../COMPOSE_STRUCTURE.md](../COMPOSE_STRUCTURE.md). For the CLI, see [cli-reference.md](cli-reference.md).
+
+---
+
+## Full multi-service setup
+
+When you want everything (blockchain + Embers API + F1R3Sky AT Protocol stack + monitoring) running locally:
+
+### 1. Clone service repositories
+
+```bash
+poetry run shardctl clone
+```
+
+Clones every enabled service from `services.yml`: f1r3node (Scala), f1r3node-rust (Rust), rust-client, f1r3sky-backend, embers. Each becomes an independent git repo under `services/` (git-ignored from this parent repo).
+
+### 2. Build Docker images
+
+```bash
+poetry run shardctl build-service --docker-only            # Build all
+poetry run shardctl build-service f1r3node --docker-only   # Build one
+poetry run shardctl build-service --docker-only --sync     # Sync branches first
+```
+
+Source builds take 10–30 minutes per service depending on hardware. To skip and use pre-built images from Docker Hub, run `poetry run shardctl pull` instead.
+
+### 3. Start everything
+
+```bash
+poetry run shardctl up
+poetry run shardctl wait
+```
+
+`shardctl up` (no args) starts every service in the `startup_order` from `services.yml`. `shardctl wait` blocks until nodes report Running.
+
+### 4. Endpoints
+
+When all services are running:
+
+| Service | URL |
+|---|---|
+| F1R3node API (validator1) | http://localhost:40413 |
+| F1R3node read-only | http://localhost:40453 |
+| Embers API | http://localhost:8080 |
+| F1R3Sky PDS | http://localhost:2583 |
+| Grafana | http://localhost:3000 |
+| Prometheus | http://localhost:9090 |
+
+For just a node shard (no service stack), see [../README.md#quick-start](../README.md#quick-start).
+
+---
+
+## Service build dependencies
+
+Per-service toolchains required only when building a service from source. If you're using pre-built Docker images, skip these entirely.
 
 Note: f1r3node (Scala) and f1r3node-rust are the **same repository** ([F1R3FLY-io/f1r3node](https://github.com/F1R3FLY-io/f1r3node)) on different branches. See `services.yml` for branch mappings.
 
-## Python 3.10 (pyenv)
+### Python 3.10 (pyenv)
 
 Required for `shardctl` and integration tests. On many recent Linux distributions, the default Python is 3.13, which is not compatible. [pyenv](https://github.com/pyenv/pyenv) is recommended:
 
@@ -33,7 +91,7 @@ pyenv local 3.10  # Sets Python 3.10 for this project
 
 Alternatively, use [asdf](https://asdf-vm.com/) with the python plugin, or your system package manager.
 
-## F1R3node Rust (Pure Rust blockchain node)
+### F1R3node Rust (Pure Rust blockchain node)
 
 The Rust node builds with standard Rust tooling — no Nix required.
 
@@ -56,7 +114,7 @@ The Rust node builds with standard Rust tooling — no Nix required.
 
 - **Optional:** [`just`](https://github.com/casey/just) (task runner), [`grpcurl`](https://github.com/fullstorydev/grpcurl) (gRPC CLI)
 
-## F1R3node Scala (Scala blockchain node)
+### F1R3node Scala (Scala blockchain node)
 
 **Option 1: Nix (recommended)** — provides the complete dev environment with all dependencies pinned:
 
@@ -81,7 +139,7 @@ Then use `nix develop` or `direnv allow` inside the f1r3node repo.
   cabal install alex happy BNFC
   ```
 
-## Embers (Rust API service)
+### Embers (Rust API service)
 
 - **Rust 1.91+**
   ```bash
@@ -91,12 +149,12 @@ Then use `nix develop` or `direnv allow` inside the f1r3node repo.
 - **protobuf-compiler** — Protocol buffers compiler
 - **clang** — C/C++ compiler for some Rust dependencies
 
-## Rust Client
+### Rust Client
 
 - **Rust 1.85.0+** (latest stable)
 - **Cargo** — Comes with Rust installation
 
-## F1R3Sky Services (AT Protocol - Node.js/TypeScript)
+### F1R3Sky Services (AT Protocol - Node.js/TypeScript)
 
 - **Node.js 18+** — Version 20.11 recommended for Docker builds
 

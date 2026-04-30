@@ -87,5 +87,4 @@ Uses a module-scoped baseline standalone. Joiners with mismatched configs must e
 
 ## Related
 
-- [Native Token Metadata implementation](../../../docs/session-context-2026-04-14-16.md)
 - f1r3node-rust PR #481 — on-chain contract, config, API, startup verification

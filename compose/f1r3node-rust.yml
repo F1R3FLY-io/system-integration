@@ -16,8 +16,10 @@
 #   Validator3:  40430-40435
 #   Observer:    40450-40455
 
+name: f1r3fly-rust
+
 x-rnode: &default-rnode
-  image: ${F1R3FLY_RUST_IMAGE:-f1r3flyindustries/f1r3fly-rust-node:latest}
+  image: ${F1R3FLY_NODE_IMAGE:-f1r3flyindustries/f1r3fly-rust-node:latest}
   user: root
   restart: always
   networks:
