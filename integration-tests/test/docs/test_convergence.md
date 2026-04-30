@@ -90,7 +90,7 @@ With all validators active and heartbeat producing blocks, the clique oracle eve
 
 - Session-scoped `shared_shard` fixture (3 validators + readonly)
 - `node_conf` fixture for FTT value (parsed from config via pyhocon)
-- `check_node_logs_after_test` autouse fixture (scans all `rnode.test.*` containers for PANIC after each test)
+- `check_node_logs_after_test` autouse fixture for fatal-log detection — scans all `rnode.test.*` containers after each test against `FATAL_PATTERNS` (panics, `InvalidBondsCache`, `RootRepository` divergence, structural self-validation failures, `FATAL`); see [ARCHITECTURE.md § 7](ARCHITECTURE.md#7-log-scanning)
 - `Node.pause()` / `Node.unpause()` for container pause simulation
 - `Node.deploy_string()` on all validators for active state
 - `Node.get_block()`, `Node.last_finalized_block()` for FT queries

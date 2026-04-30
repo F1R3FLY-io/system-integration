@@ -41,7 +41,7 @@ Note: FT monotonicity across heights is NOT tested because it is not a valid pro
 ## Infrastructure used
 
 - Session-scoped `shared_shard` fixture (3 validators + readonly)
-- `check_node_logs_after_test` autouse fixture for panic detection
+- `check_node_logs_after_test` autouse fixture for fatal-log detection (panics + `FATAL_PATTERNS`; see [ARCHITECTURE.md § 7](ARCHITECTURE.md#7-log-scanning))
 - `node_conf` fixture for FTT value (parsed from `conf/rust.conf` via pyhocon)
 - `Node.deploy_string()`, `Node.get_blocks()`, `Node.get_block()`, `Node.find_deploy()`
 - `Node.last_finalized_block()` for LFB

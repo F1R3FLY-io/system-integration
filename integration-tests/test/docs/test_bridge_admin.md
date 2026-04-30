@@ -72,7 +72,7 @@ Queries use `deploy_and_read()` (real deploy — creates blocks, exercises cross
 - `Node.registry_query()` for exploratory deploy queries (delegates to `f1r3fly.contracts.registry_query`)
 - `wait_for_finalized()` from `infra/polling.py` for all-node finalization check
 - `par_as_list`, `par_as_uri`, `par_as_int`, `par_as_string` from pyf1r3fly for typed Par extraction
-- `check_node_logs_after_test` autouse fixture for panic detection
+- `check_node_logs_after_test` autouse fixture for fatal-log detection (panics + `FATAL_PATTERNS`; see [ARCHITECTURE.md § 7](ARCHITECTURE.md#7-log-scanning))
 
 ## Related
 

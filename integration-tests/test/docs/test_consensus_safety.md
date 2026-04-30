@@ -64,7 +64,7 @@ Pause V1 (heaviest validator, 60 stake) for 30 seconds. V2+V3 produce independen
 - `_poll_lfb_advances` / `_poll_lfb_stalls` helpers for finalization checks
 - `assert_all_nodes_agree_on_block()` for post-state agreement
 - `wait_for_block_visible()` / `wait_for_deploy_included()` for synchronization
-- `check_node_logs_after_test` autouse fixture for panic detection
+- `check_node_logs_after_test` autouse fixture for fatal-log detection (panics + `FATAL_PATTERNS`; see [ARCHITECTURE.md § 7](ARCHITECTURE.md#7-log-scanning))
 - Readonly node included in all tests for observer consistency verification
 
 ## Related

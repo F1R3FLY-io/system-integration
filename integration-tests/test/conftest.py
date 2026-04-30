@@ -218,24 +218,22 @@ def all_nodes(shared_shard) -> list:
 
 @pytest.fixture(autouse=True)
 def check_node_logs_after_test(provider):
-    """Post-test log scan for panics on all active nodes.
+    """Post-test log scan for fatal patterns on all active nodes.
 
     Runs after every test (shared, custom, standalone). Queries the
-    provider for all active node handles and scans their logs for
-    PANIC entries via the provider-agnostic ``handle.logs()`` method.
+    provider for all active node handles and scans their logs against
+    ``FATAL_PATTERNS`` (panics, InvalidBondsCache, RootRepository
+    divergence, etc.) via the provider-agnostic ``handle.logs()`` method.
 
-    Per-test (not per-session) so it pinpoints which test caused the
-    panic and fails fast before teardown destroys the evidence.
+    Per-test (not per-session) so it pinpoints which test triggered
+    the failure and fails fast before teardown destroys the evidence.
 
     Provider-agnostic: works with Docker, Kubernetes, or any future
     provider that implements the NodeHandle protocol.
-
-    Currently checks for PANIC only. ERROR/WARN whitelist will be built
-    incrementally by running tests and triaging normal log entries.
     """
     yield
 
-    from .infra.log_events import scan_for_errors, format_errors
+    from .infra.log_events import scan_logs, format_errors
 
     all_errors = []
     for handle in provider.active_handles:
@@ -243,9 +241,7 @@ def check_node_logs_after_test(provider):
             logs = handle.logs()
         except Exception:
             continue
-        errors = scan_for_errors(logs, handle.name)
-        critical = [e for e in errors if e.level == "PANIC"]
-        all_errors.extend(critical)
+        all_errors.extend(scan_logs(logs, handle.name))
 
     if all_errors:
         pytest.fail(format_errors(all_errors), pytrace=False)

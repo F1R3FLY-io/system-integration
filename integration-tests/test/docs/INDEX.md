@@ -13,6 +13,7 @@ The `shared_shard` fixture brings up bootstrap + 3 validators + readonly once pe
 | Tests | File | Summary |
 |---|---|---|
 | 2 | [test_bridge_admin](test_bridge_admin.md) | Bridge contract deploy, URI registration, query API |
+| 7 | [test_contract_lifecycle](test_contract_lifecycle.md) | Multi-contract parallel deploy + cross-node state agreement + contract-to-contract interaction + multi-block state evolution under merge |
 | 3 | [test_convergence](test_convergence.md) | Network recovery from DAG tip divergence; FT convergence across nodes |
 | 1 | [test_dag_correctness](test_dag_correctness.md) | Multi-parent DAG structural correctness; determinism + FT caching regression |
 | 4 | [test_deployment](test_deployment.md) | Deploy lifecycle: syntax validation, phlo errors, cross-validator lookup |
@@ -24,7 +25,7 @@ The `shared_shard` fixture brings up bootstrap + 3 validators + readonly once pe
 | 5 | [test_wallets](test_wallets.md) | PoS vault transfers, authorization failures, insufficient funds, Block API transfers |
 | 23 | [test_web_api](test_web_api.md) | HTTP API: strict assertions, cross-node consistency, views, status, bond-status |
 
-**Total: 60 tests across 11 files.**
+**Total: 67 tests across 12 files.**
 
 ---
 
@@ -71,7 +72,7 @@ Items known but not covered by the framework today. See [deferred-test-coverage.
 
 | Directory | Files | Tests |
 |---|---|---|
-| `tests/shared/` | 11 | 60 |
+| `tests/shared/` | 12 | 67 |
 | `tests/custom/` | 8 | 20 |
 | `tests/standalone/` | 3 | 14 |
-| **Total** | **22** | **94** |
+| **Total** | **23** | **101** |

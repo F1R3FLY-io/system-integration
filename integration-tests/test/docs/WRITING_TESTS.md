@@ -26,7 +26,7 @@ Heuristic: if your test starts with "the shard is already running and I just wan
 import pytest
 
 from ...infra.keys import VALIDATOR1_ID
-from ...infra.polling import wait_for_deploy_included, wait_for_finalized
+from ...infra.polling import wait_for_deploy_finalized
 
 pytestmark = pytest.mark.xdist_group("shared")  # pin to one xdist worker
 
@@ -37,10 +37,7 @@ def test_something(validator1_node, readonly_node, timeouts):
         '@1!(42)',
         VALIDATOR1_ID.private_key(),
     )
-    block_info = wait_for_deploy_included(
-        validator1_node, deploy_id, timeouts.deploy_inclusion
-    )
-    wait_for_finalized(validator1_node, block_info.blockNumber, timeouts.finalization)
+    wait_for_deploy_finalized(validator1_node, deploy_id, timeouts.finalization)
 
     # Now read from the readonly observer
     ...
@@ -137,22 +134,29 @@ Or extract the setup into a fixture when multiple tests share it — pattern is 
 
 ## Common deploy + wait patterns
 
-### Submit a deploy, wait for inclusion, wait for finalization
+### Submit a deploy, wait for canonical-state finalization
+
+For deploy tracking, prefer `wait_for_deploy_finalized` over `wait_for_finalized`. The latter waits on block-hash finalization (LFB advancing past a height); the former waits on the deploy reaching canonical-state inclusion via `deploy_finalization_status`. They differ when a deploy is included in a block that finalizes but whose effects were merge-rejected — `wait_for_finalized` returns success, `wait_for_deploy_finalized` continues polling until the deploy lands in a finalized canonical block.
 
 ```python
-from ...infra.polling import wait_for_deploy_included, wait_for_finalized
+from ...infra.polling import wait_for_deploy_finalized
 
 deploy_id = node.deploy_string('@1!(42)', key.private_key())
-block_info = wait_for_deploy_included(node, deploy_id, timeouts.deploy_inclusion)
-wait_for_finalized(node, block_info.blockNumber, timeouts.finalization)
+status = wait_for_deploy_finalized(node, deploy_id, timeouts.finalization)
+# status.latestBlockHash points at the canonical-state block
 ```
+
+Use `wait_for_finalized(block_number)` only when the test cares about LFB advancement to a specific height (rare — most assertions are about a deploy's outcome, not the chain's height).
 
 ### Deploy + read result in one helper
 
 ```python
 from ...infra.polling import deploy_and_read
 
-# Submit, wait for inclusion, read data at name on the resulting block
+# Submit, wait for canonical-state finalization, read deployId channel at the canonical block.
+# Returns (par_list, canonical_block_hash, canonical_block_number) — block_hash and number
+# refer to the canonical-state block, which may differ from the first-inclusion block if
+# the deploy was merge-rejected and re-included in a later block.
 result = deploy_and_read(node, term, channel_name, timeouts)
 ```
 

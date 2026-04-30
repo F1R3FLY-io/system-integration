@@ -44,7 +44,7 @@ Regression test for concurrent propose handling. Deploys and attempts a manual p
 - `"NoNewDeploys"` — deploy was already included by the auto-proposer (PR #472 adds informative message)
 - `"another propose is in progress"` — heartbeat holds the propose lock
 
-After receiving the expected response, verifies **all nodes** (validators + readonly) advance LFB by 3+ blocks, proving no crash or stall. Panic detection is handled by the `check_node_logs_after_test` conftest fixture.
+After receiving the expected response, verifies **all nodes** (validators + readonly) advance LFB by 3+ blocks, proving no crash or stall. Fatal-log detection (panics + `FATAL_PATTERNS`) is handled by the `check_node_logs_after_test` conftest fixture; see [ARCHITECTURE.md § 7](ARCHITECTURE.md#7-log-scanning).
 
 ## Setup
 

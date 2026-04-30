@@ -141,9 +141,11 @@ CI runners are slower than laptops — `--timeout-scale=1.5` (or `2.0`) bumps ev
 
 `infra/log_events.py` + autouse fixture in `conftest.py` (`check_node_logs_after_test`).
 
-After **every test**, the fixture pulls logs from every active node via `handle.logs()` and runs `scan_for_errors()`. Today it fails the test only on `PANIC`. WARN/ERROR detection is disabled until `ACCEPTABLE_PATTERNS` is populated — building that whitelist is a separate track (see root `docs/TODO.md`).
+After **every test**, the fixture pulls logs from every active node via `handle.logs()` and runs `scan_logs()`, which matches each line against `FATAL_PATTERNS` (panics, `InvalidBondsCache`, `RootRepository` state divergence, structural self-validation failures, `FATAL`). Any match fails the test with the matching pattern's description prepended. Anything outside that list is ignored — add a new entry to `FATAL_PATTERNS` to gate on a new class of consensus or runtime bug.
 
 Per-test (not per-session) so the failing test name is the one that surfaces, not whatever ran last.
+
+The model is **allowlist-of-fatal**, not blacklist-of-acceptable. An earlier iteration scanned for any unexpected ERROR/WARN/PANIC and filtered through an `ACCEPTABLE_PATTERNS` whitelist; that proved unmaintainable as every new test surfaced new normal-operation log lines that needed triage and added to the whitelist. The current model gates on known consensus/runtime bug signatures only — anything not in `FATAL_PATTERNS` is by definition not a fatal.
 
 ---
 
@@ -210,9 +212,9 @@ Design for `NotImplementedError` with clear guidance as a first pass — `K8sPro
 | `timeouts.py` | `TimeoutHierarchy` |
 | `ports.py` | `PortAllocator` |
 | `cleanup.py` | `CleanupRegistry` (Docker-specific today; see Section 4) |
-| `polling.py` | Node-aware wrappers around `f1r3fly.polling` |
+| `polling.py` | Node-aware wrappers around `f1r3fly.polling` (`deploy_and_read`, `wait_for_deploy_finalized` for canonical-state per-deploy tracking, `wait_for_finalized` for block-height advancement, `deploy_with_fallback`, `poll_until`) |
 | `assertions.py` | Deploy/shard assertions re-exported from `f1r3fly.deploy` + `f1r3fly.par` |
-| `log_events.py` | Structured log event parsing + `scan_for_errors` |
+| `log_events.py` | Structured log event parsing + `scan_logs` (`FATAL_PATTERNS`) |
 | `token_metadata.py` | HTTP `/api/status` token helper (on-chain queries via pyf1r3fly) |
 | `genesis.py` | Custom genesis file generation |
 | `compose.py` | Dynamic Docker Compose YAML generation |
