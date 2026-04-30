@@ -1303,13 +1303,17 @@ def test_cmd(
 
 @app.command(name="test-reset")
 def test_reset_cmd():
-    """Force-remove all integration test containers, networks, and volumes.
+    """Force-remove all integration test resources from every provider.
 
-    Aggressively wipes every Docker resource matching the test-framework
-    prefixes: containers ``rnode.test.*``, networks ``f1r3fly-test-*``,
-    volumes ``test-*``. Running containers are force-stopped. Use this to
-    reset to a clean slate — including when ``--keep-running`` left a shard
-    up. Idempotent.
+    Aggressively wipes:
+      * Docker: containers ``rnode.test.*``, networks ``f1r3fly-test-*``,
+        volumes ``test-*`` (running containers are force-stopped).
+      * Subprocess: every node process whose argv references the
+        ``.subprocess-data`` token, plus all session data dirs under
+        ``integration-tests/.subprocess-data/``.
+
+    Use this to reset to a clean slate — including when ``--keep-running``
+    left a shard up. Idempotent.
 
     Examples:
         poetry run shardctl test-reset
@@ -1322,16 +1326,17 @@ def test_reset_cmd():
         raise typer.Exit(1)
 
     # Dispatch via the active provider's classmethod — keeps the cleanup
-    # contract provider-agnostic at the seam (DockerProvider delegates to
-    # CleanupRegistry today; K8sProvider would scan namespaces). Running
-    # this from a subprocess (with PYTHONPATH pointing at integration-tests/)
-    # keeps shardctl free of pytest/test-module imports.
+    # contract provider-agnostic at the seam. Running from a subprocess
+    # (with PYTHONPATH pointing at integration-tests/) keeps shardctl free
+    # of pytest/test-module imports.
     result = subprocess.run(
         [
             sys.executable,
             "-c",
             "from test.infra.providers.docker import DockerProvider; "
-            "DockerProvider.force_cleanup_all_test_resources()",
+            "from test.infra.providers.subprocess import SubprocessProvider; "
+            "DockerProvider.force_cleanup_all_test_resources(); "
+            "SubprocessProvider.force_cleanup_all_test_resources()",
         ],
         cwd=config.root_dir,
         env={**os.environ, "PYTHONPATH": str(config.root_dir / "integration-tests")},

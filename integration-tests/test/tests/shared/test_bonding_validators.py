@@ -46,6 +46,7 @@ from ...infra.keys import (
 from ...infra.polling import (
     poll_until,
     wait_for_block_visible,
+    wait_for_block_visible_on_all_nodes,
     wait_for_deploy_included,
     wait_for_finalized,
 )
@@ -140,6 +141,7 @@ def _bond_lifecycle(
         wait_for_finalized(proposer_node, bond_block_number, timeouts.finalization)
         assert_block_finalized_on_all_nodes(
             [v1, v2, v3, joiner, ro], bond_block_hash,
+            timeout=timeouts.finalization,
         )
         bond_block_info = proposer_node.get_block(bond_block_hash)
         bonds_post = {
@@ -200,6 +202,7 @@ def _bond_lifecycle(
         wait_for_finalized(joiner, joiner_block.blockNumber, timeouts.finalization)
         assert_block_finalized_on_all_nodes(
             [v1, v2, v3, joiner, ro], joiner_block.blockHash,
+            timeout=timeouts.finalization,
         )
         logging.info(
             "Joiner %s proposed block #%d (%s); finalized on all nodes",
@@ -238,6 +241,7 @@ def _bond_lifecycle(
         wait_for_finalized(v1, v1_post_block.blockNumber, timeouts.finalization)
         assert_block_finalized_on_all_nodes(
             [v1, v2, v3, joiner, ro], v1_post_block.blockHash,
+            timeout=timeouts.finalization,
         )
         logging.info(
             "V1 block #%d (%s) justifies %s; finalized on all nodes",
@@ -263,8 +267,13 @@ def _bond_lifecycle(
                 node, deploy_id, timeouts.deploy_inclusion,
             )
             wait_for_finalized(node, block.blockNumber, timeouts.finalization)
+            wait_for_block_visible_on_all_nodes(
+                [v1, v2, v3, joiner, ro], block.blockHash,
+                timeout=timeouts.finalization,
+            )
             assert_block_finalized_on_all_nodes(
                 [v1, v2, v3, joiner, ro], block.blockHash,
+                timeout=timeouts.finalization,
             )
 
         logging.info(

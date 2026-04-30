@@ -5,6 +5,7 @@ Shard assertions: test-specific helpers for multi-node agreement checks.
 """
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 # Re-export Par extraction from pyf1r3fly
@@ -69,7 +70,12 @@ def assert_all_nodes_agree_on_block(nodes, block_hash: str) -> None:
     )
 
 
-def assert_block_finalized_on_all_nodes(nodes, block_hash: str) -> None:
+def assert_block_finalized_on_all_nodes(
+    nodes,
+    block_hash: str,
+    timeout: int = 0,
+    interval: float = 2.0,
+) -> None:
     """Assert every node has the block AND reports `isFinalized=True`.
 
     Stricter than `wait_for_block_visible`, which passes for any block in
@@ -81,18 +87,27 @@ def assert_block_finalized_on_all_nodes(nodes, block_hash: str) -> None:
     `Invalid(InvalidBondsCache)`). The proposer's block is finalized
     locally; if any peer's view is not, that's the bug.
 
-    Does NOT poll. Caller is responsible for waiting for finalization
-    first (use `wait_for_finalized` or `poll_until` on a reference node).
+    By default does NOT poll (timeout=0) — caller is responsible for waiting
+    for finalization first via `wait_for_finalized` or `poll_until`. Set
+    ``timeout > 0`` to opt into polling for the per-block ``isFinalized``
+    field, which can lag the LFB advance by a few seconds in high-contention
+    multi-validator scenarios (see TODO §2.1).
     """
-    not_finalized = {}
-    for node in nodes:
-        block = node.get_block(block_hash)
-        if not block.blockInfo.isFinalized:
-            not_finalized[node.name] = {
-                "block_number": block.blockInfo.blockNumber,
-                "fault_tolerance": float(block.blockInfo.faultTolerance),
-            }
+    deadline = time.time() + timeout
+    not_finalized: dict = {}
+    while True:
+        not_finalized = {}
+        for node in nodes:
+            block = node.get_block(block_hash)
+            if not block.blockInfo.isFinalized:
+                not_finalized[node.name] = {
+                    "block_number": block.blockInfo.blockNumber,
+                    "fault_tolerance": float(block.blockInfo.faultTolerance),
+                }
+        if not not_finalized or time.time() >= deadline:
+            break
+        time.sleep(interval)
     assert not not_finalized, (
         f"Block {block_hash[:16]}... is not finalized on "
-        f"{len(not_finalized)} node(s): {not_finalized}"
+        f"{len(not_finalized)} node(s) after {timeout}s: {not_finalized}"
     )

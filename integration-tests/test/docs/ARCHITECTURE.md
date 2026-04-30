@@ -13,12 +13,15 @@ session (pytest session)
   │
   ├── session_id            8-char hex, fresh per pytest invocation
   ├── port_allocator        socket-verified, worker-partitioned ranges
-  ├── cleanup_registry      tracks resources + orchestrates teardown
   ├── timeouts              one scale factor derives every timeout
-  ├── resource_paths        resolves conf/, genesis/, certs/
+  ├── resource_paths        resolves conf/, genesis/, certs/, repo_root
   ├── node_conf             HOCON-parsed defaults.conf + rust.conf
   │
-  └── provider  (scope=session)          DockerProvider | K8sProvider (stub)
+  └── provider  (scope=session)          chosen by --provider flag:
+                                          DockerProvider | SubprocessProvider | K8sProvider (stub)
+        │  (each provider owns its own resource lifetime — Docker uses
+        │   DockerCleanupRegistry internally; Subprocess tracks PIDs +
+        │   data dirs internally)
         │
         ├── shared_shard  (scope=session)  session-wide 3-validator shard
         │     └── Node wrappers: boot / validator1..N / readonly
@@ -70,26 +73,29 @@ Session-scoped fixtures are built once; tests sharing a fixture run on one pytes
 | `force_cleanup_all_test_resources()` **classmethod** | **User-invoked only.** Aggressive force-remove of every framework resource on this backend, regardless of status. Backs `shardctl test-reset`. Never called from pytest hooks. |
 | `adopt_session(session_id) -> List[NodeHandle]` | Reuse a shard from a previous `--keep-running` run. Backs `pytest --skip-setup --session-id <id>`. |
 
-Two provider impls today:
+Three provider impls today (selected via `--provider={docker,subprocess}`; default is `docker`):
 - **`DockerProvider`** (`infra/providers/docker.py`) — full impl, shells out to `docker` + `docker compose`.
+- **`SubprocessProvider`** (`infra/providers/subprocess.py`) — full impl, spawns the locally-built `services/f1r3node-rust/target/release/node` binary directly as `subprocess.Popen` instances on `localhost`. No Docker, no image build. Per-session data dirs under `integration-tests/.subprocess-data/<session_id>/`. Pre-built binary required (set `F1R3FLY_NODE_BINARY` to override path).
 - **`K8sProvider`** (`infra/providers/kubernetes.py`) — stub. Every Protocol method raises `NotImplementedError` with a one-line implementation hint (kubectl/helm equivalents).
 
 ---
 
 ## 3. Resource naming conventions
 
-All framework-created resources carry one of three session-prefixed patterns:
+All framework-created resources carry session-prefixed patterns. Docker provider uses three Docker-resource patterns; subprocess provider uses a single per-session data-dir tree:
 
-| Resource type | Pattern | Example |
-|---|---|---|
-| Container | `rnode.test.{session_id}.{role}` | `rnode.test.b86b2dd6.validator1` |
-| Network | `f1r3fly-test-{session_id}` or `f1r3fly-test-{session_id}-{role}` | `f1r3fly-test-b86b2dd6` |
-| Volume | `test-{session_id}-{name}-data` | `test-b86b2dd6-validator1-data` |
+| Resource type | Pattern | Example | Provider |
+|---|---|---|---|
+| Container | `rnode.test.{session_id}.{role}` | `rnode.test.b86b2dd6.validator1` | Docker |
+| Network | `f1r3fly-test-{session_id}` or `f1r3fly-test-{session_id}-{role}` | `f1r3fly-test-b86b2dd6` | Docker |
+| Volume | `test-{session_id}-{name}-data` | `test-b86b2dd6-validator1-data` | Docker |
+| Data dir | `integration-tests/.subprocess-data/{session_id}/{role}/` | `.subprocess-data/b86b2dd6/validator1/` | Subprocess |
+| Log file | `integration-tests/.subprocess-data/{session_id}/{role}.log` | `.subprocess-data/b86b2dd6/boot.log` | Subprocess |
 
 **Why:**
 - Parallel pytest workers (xdist) can't collide — each invocation gets its own `session_id`.
 - Crashed sessions leave behind deterministically-named zombies that stale-scan logic can identify and remove.
-- `shardctl test-reset` can find every framework resource without requiring a metadata store.
+- `shardctl test-reset` can find every framework resource (Docker + subprocess) without requiring a metadata store.
 
 ---
 
@@ -234,4 +240,5 @@ Design for `NotImplementedError` with clear guidance as a first pass — `K8sPro
 | `metrics.py` | Prometheus metric helpers |
 | `providers/base.py` | `Provider` + `NodeHandle` Protocols |
 | `providers/docker.py` | `DockerProvider` + `DockerNodeHandle` |
+| `providers/subprocess.py` | `SubprocessProvider` + `SubprocessNodeHandle` (host-process backend) |
 | `providers/kubernetes.py` | `K8sProvider` + `K8sNodeHandle` (stub) |

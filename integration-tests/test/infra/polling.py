@@ -30,6 +30,7 @@ __all__ = [
     "deploy_and_read",
     "deploy_with_fallback",
     "wait_for_block_visible",
+    "wait_for_block_visible_on_all_nodes",
     "DeployError",
 ]
 
@@ -242,6 +243,39 @@ def wait_for_block_visible(node, block_hash: str, timeout: int):
         timeout=timeout,
         interval=3.0,
         description=f"block {block_hash[:16]}... visible on {node.name}",
+    )
+
+
+def wait_for_block_visible_on_all_nodes(nodes, block_hash: str, timeout: int):
+    """Poll until every node can return the block via ``get_block``.
+
+    Synchronization barrier for assertions on freshly-proposed blocks.
+    There is a brief window between gossip-receipt and block-store add
+    on a peer where ``getBlock`` returns ``"received but not added yet"``
+    (see ``casper/src/rust/api/block_api.rs:1288``). Tests that propose
+    a block and immediately query it on every peer race that window.
+
+    Use this before ``assert_block_finalized_on_all_nodes`` (or any other
+    cross-node block assertion on a recently-proposed block).
+    """
+    pending = {n.name for n in nodes}
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        still_pending = set()
+        for node in nodes:
+            if node.name not in pending:
+                continue
+            try:
+                node.get_block(block_hash)
+            except Exception:
+                still_pending.add(node.name)
+        pending = still_pending
+        if not pending:
+            return
+        time.sleep(2.0)
+    raise TimeoutError(
+        f"Block {block_hash[:16]}... not visible on {len(pending)} node(s) "
+        f"after {timeout}s: {sorted(pending)}"
     )
 
 

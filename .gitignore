@@ -3,6 +3,10 @@ services/*/
 
 tmp
 
+# Subprocess provider per-session data dirs (data + logs from
+# `pytest --provider=subprocess` runs)
+integration-tests/.subprocess-data/
+
 # Python
 __pycache__/
 *.py[cod]

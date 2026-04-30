@@ -51,6 +51,14 @@ def pytest_addoption(parser):
         "--monitor", action="store_true", default=False,
         help="Enable resource monitoring (logs peak memory/CPU per container)",
     )
+    group.addoption(
+        "--provider", action="store", default="docker",
+        choices=["docker", "subprocess"],
+        help="Infrastructure backend: 'docker' (default) spawns nodes as "
+             "containers; 'subprocess' spawns the locally-built node binary "
+             "directly on the host (set F1R3FLY_NODE_BINARY or build "
+             "services/f1r3node-rust first).",
+    )
 
 
 def pytest_configure(config):
@@ -70,14 +78,33 @@ def pytest_configure(config):
     )
 
 
+def _stale_cleanup_for_provider(provider_choice: str) -> None:
+    """Dispatch stale-session cleanup to the right provider.
+
+    Each provider owns its own resource-discovery logic; the conftest hook
+    just routes by `--provider`. This is the only place provider awareness
+    leaks into the conftest hook layer.
+    """
+    if provider_choice == "docker":
+        DockerCleanupRegistry.cleanup_stale_sessions()
+    elif provider_choice == "subprocess":
+        from .infra.providers.subprocess import SubprocessProvider
+        SubprocessProvider.cleanup_stale_sessions()
+    else:
+        # Unknown provider — silently skip rather than crash session start.
+        pass
+
+
 def pytest_sessionstart(session):
     """Clean up stale resources from crashed sessions."""
-    DockerCleanupRegistry.cleanup_stale_sessions()
+    choice = session.config.getoption("--provider", default="docker")
+    _stale_cleanup_for_provider(choice)
 
 
 def pytest_sessionfinish(session, exitstatus):
     """Belt-and-suspenders cleanup."""
-    DockerCleanupRegistry.cleanup_stale_sessions()
+    choice = session.config.getoption("--provider", default="docker")
+    _stale_cleanup_for_provider(choice)
 
 
 # ── Session-scoped fixtures ──────────────────────────────────────────
@@ -108,22 +135,6 @@ def port_allocator(request) -> PortAllocator:
 
 
 @pytest.fixture(scope="session")
-def cleanup_registry(request, session_id) -> DockerCleanupRegistry:
-    keep = request.config.getoption("--keep-running")
-    registry = DockerCleanupRegistry(session_id, keep_running=keep)
-    if keep:
-        # Make the session_id visible so the user can reuse it on the next
-        # invocation via `--skip-setup --session-id <id>`.
-        logging.warning(
-            "Session %s started with --keep-running. "
-            "To reuse this shard: `pytest --skip-setup --session-id %s`",
-            session_id, session_id,
-        )
-    yield registry
-    registry.cleanup_all()
-
-
-@pytest.fixture(scope="session")
 def node_conf() -> NodeConf:
     """Effective node configuration parsed from defaults.conf + rust.conf."""
     return NodeConf.resolve()
@@ -135,15 +146,48 @@ def resource_paths() -> ResourcePaths:
 
 
 @pytest.fixture(scope="session")
-def provider(
-    port_allocator, cleanup_registry, timeouts, resource_paths
-) -> DockerProvider:
-    return DockerProvider(
-        port_allocator=port_allocator,
-        registry=cleanup_registry,
-        timeouts=timeouts,
-        paths=resource_paths,
-    )
+def provider(request, port_allocator, session_id, timeouts, resource_paths):
+    """Construct the chosen Provider (Docker or Subprocess).
+
+    Each provider owns its own resource lifecycle. For Docker, a
+    `DockerCleanupRegistry` is created inline and passed in. For Subprocess,
+    the provider tracks PIDs and data dirs internally; no shared registry.
+
+    Yields the provider; calls `cleanup_all()` on teardown unless
+    `--keep-running` is set.
+    """
+    choice = request.config.getoption("--provider")
+    keep = request.config.getoption("--keep-running")
+
+    if keep:
+        logging.warning(
+            "Session %s started with --keep-running. "
+            "To reuse this shard: `pytest --skip-setup --session-id %s`",
+            session_id, session_id,
+        )
+
+    if choice == "docker":
+        registry = DockerCleanupRegistry(session_id, keep_running=keep)
+        prov = DockerProvider(
+            port_allocator=port_allocator,
+            registry=registry,
+            timeouts=timeouts,
+            paths=resource_paths,
+        )
+    elif choice == "subprocess":
+        from .infra.providers.subprocess import SubprocessProvider
+        prov = SubprocessProvider(
+            port_allocator=port_allocator,
+            session_id=session_id,
+            keep_running=keep,
+            timeouts=timeouts,
+            paths=resource_paths,
+        )
+    else:
+        raise pytest.UsageError(f"unknown --provider: {choice!r}")
+
+    yield prov
+    prov.cleanup_all()
 
 
 # ── Shared shard fixtures ───────────────────────────────────────────
