@@ -9,7 +9,7 @@ Resource naming:
   - Volume names: ``test-{session_id}-{role}-data``
   - Network: ``f1r3fly-test-{session_id}``
   - Rust-only (no Scala/JVM support)
-  - All resources registered with ``CleanupRegistry``
+  - All resources registered with ``DockerCleanupRegistry``
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Tuple
 
 import yaml
 
-from .cleanup import CleanupRegistry
+from .cleanup import DockerCleanupRegistry
 from .config import ResourcePaths, ShardConfig
 from .keys import BOOTSTRAP_NODE_ID
 from .types import PortMapping, ValidatorIdentity
@@ -39,7 +39,7 @@ def generate_compose(
     port_assignments: Dict[str, PortMapping],
     session_id: str,
     paths: ResourcePaths,
-    registry: CleanupRegistry,
+    registry: DockerCleanupRegistry,
 ) -> str:
     """Generate a docker-compose YAML for a custom shard.
 

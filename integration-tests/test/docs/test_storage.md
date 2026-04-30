@@ -22,17 +22,19 @@ Single-validator round-trip on V1:
 2. Deploy `store-data.rho` on V1 with the random data (real deploy)
 3. Wait for deploy inclusion, read the registry URI from the `deployId` channel via `par_as_uri`
 4. Validate URI starts with `rho:id:`
-5. Read the value back via `Node.registry_lookup()` (exploratory deploy — instant)
-6. Assert `read_data == random_data`
+5. Wait for readonly to finalize past the store block, then assert `assert_block_finalized_on_all_nodes` — the store block must be finalized on every validator and the readonly observer, not just the proposer
+6. Read the value back via `Node.registry_lookup()` (exploratory deploy — instant)
+7. Assert `read_data == random_data`
 
-### test_data_stored_on_one_validator_readable_on_all
+### test_data_stored_on_one_validator_readable_on_readonly
 
-Cross-node propagation — store on V1, read on every other node:
-1. Store data on V1 (same as above steps 1-4) and capture the store deploy id
-2. For each other node (V2, V3, readonly):
-   a. Wait for node to see the store deploy reach canonical-state finalization via `wait_for_deploy_finalized`
-   b. Read the value via `Node.registry_lookup()` (exploratory deploy — instant)
-   c. Assert data matches the original random string
+Cross-validator propagation — store on each of V1/V2/V3 in turn, read on readonly:
+1. For each validator (V1, V2, V3):
+   a. Store data via `_store_data` (returns URI, deploy id, block number)
+   b. Wait for the deploy to reach canonical-state finalization via `wait_for_deploy_finalized` (handles merge-rejection recovery; returns the canonical block hash via `status.latestBlockHash`)
+   c. Assert `assert_block_finalized_on_all_nodes` on the canonical block — catches a peer that accepted the block at the protocol level but rejected it at validation time
+   d. Read the value via `Node.registry_lookup()` on readonly (exploratory deploy)
+   e. Assert data matches the original random string
 
 ## Setup
 
@@ -53,15 +55,17 @@ Cross-node propagation — store on V1, read on every other node:
 
 - Registry URI starts with `rho:id:` (validated in `_store_data`)
 - Store deploy data has exactly 1 Par value (`len(data.par) == 1`)
+- Store block reaches `isFinalized=True` on every node (`assert_block_finalized_on_all_nodes`)
 - Same-node: `read_data == random_data`
-- Cross-node: `read_data == random_data` on V2, V3, and readonly
+- Cross-validator: `read_data == random_data` for every store, read via readonly
 
 ## Infrastructure used
 
 - Session-scoped `shared_shard` fixture (3 validators + readonly)
 - `Node.deploy_rho_file()` with substitutions for store contract (real deploy)
 - `Node.registry_lookup()` for read step (delegates to `f1r3fly.contracts.registry_lookup` via exploratory deploy)
-- `wait_for_deploy_finalized()` from `infra/polling.py` (canonical-state deploy tracking — the per-deploy successor to block-hash `wait_for_finalized`)
+- `wait_for_deploy_finalized()` from `infra/polling.py` — canonical-state deploy tracking (per-deploy successor to block-hash `wait_for_finalized`)
+- `assert_block_finalized_on_all_nodes()` from `infra/assertions.py` — asserts `isFinalized=True` on every node for the canonical block
 - `par_as_uri` from pyf1r3fly for registry URI extraction (uses `par_as_uri` instead of `par_as_string`)
 
 ## Related

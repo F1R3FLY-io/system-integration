@@ -17,7 +17,10 @@ import logging
 
 import pytest
 
-from ...infra.assertions import assert_all_nodes_agree_on_block
+from ...infra.assertions import (
+    assert_all_nodes_agree_on_block,
+    assert_block_finalized_on_all_nodes,
+)
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import (
     all_blocks_visible,
@@ -119,6 +122,11 @@ def test_dag_correctness(shared_shard, node_conf, timeouts) -> None:
     lfb_number = lfb.blockInfo.blockNumber
     logging.info("LFB at block #%d (FTT=%.2f) -- verifying FT on LFB ancestor chain",
                  lfb_number, ftt)
+
+    # The LFB itself must be finalized on every node, not just V1. Catches
+    # the case where a peer accepted the block at the protocol level but
+    # rejected it at validation time (e.g. InvalidBondsCache).
+    assert_block_finalized_on_all_nodes(all_nodes, lfb_hash)
 
     # Collect finalized block hashes by walking the parent chain from LFB
     finalized_hashes = []

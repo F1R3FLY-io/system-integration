@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Generator, List, Optional, Tuple
+from typing import Dict, FrozenSet, Generator, List, Optional, Tuple
 
 
 # ── Structured event queries ───────────────────────────────────────────
@@ -90,10 +90,6 @@ FATAL_PATTERNS: List[Tuple[re.Pattern, str]] = [
         "Panic in node process",
     ),
     (
-        re.compile(r"InvalidBondsCache"),
-        "Non-deterministic post-state hash computation (InvalidBondsCache)",
-    ),
-    (
         re.compile(r"validateAndSetCurrentRoot FAILED.*not in roots store"),
         "RootRepository state divergence (replay/play mismatch)",
     ),
@@ -122,6 +118,62 @@ def scan_logs(logs: str, node_name: str) -> List[LogError]:
                 ))
                 break
     return out
+
+
+# ── Forbidden patterns (autouse, opt-out via marker) ──────────────────
+#
+# Patterns that must NEVER appear in any test's logs unless that test
+# explicitly opts out via @pytest.mark.allow_forbidden_patterns(...).
+#
+# Each entry has a comment naming the bug class it catches AND the tests
+# that legitimately need to opt out. Adding a pattern requires running the
+# full suite to confirm it doesn't fire on tests that aren't already
+# opting out.
+FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
+    # Bond-block bonds_cache mismatch — proposer ↔ replay divergence.
+    # No legitimate test should produce this.
+    "InvalidBondsCache": re.compile(r"InvalidBondsCache"),
+    "BondsCacheMismatch": re.compile(r"do not match block's bond cache"),
+
+    # Any block recorded as invalid. Opt-outs:
+    #   tests/custom/test_consensus_safety.py::test_validator_failure_recovery
+    #   tests/custom/test_consensus_safety.py::test_validator_failure_halts_finalization
+    "RecordingInvalidBlock": re.compile(r"Recording invalid block"),
+
+    # DAG storage missing a referenced hash. Opt-outs:
+    #   tests/shared/test_convergence.py::test_network_recovers_from_validator_pause
+    "DAGStorageMissingHash": re.compile(r"DAG storage is missing hash"),
+}
+
+
+def scan_for_forbidden(
+    logs: str,
+    node_name: str,
+    allowed: FrozenSet[str] = frozenset(),
+) -> List[LogError]:
+    """Scan log output for forbidden-pattern matches not in `allowed`.
+
+    `allowed` is a set of pattern keys (from FORBIDDEN_PATTERNS) that the
+    caller expects to see. Lines matching allowed patterns are skipped;
+    lines matching non-allowed patterns produce LogError entries with
+    level="FORBIDDEN".
+
+    Complementary to ``scan_logs`` (FATAL_PATTERNS) — that path catches
+    always-fail signatures with no opt-out; this one catches patterns that
+    have legitimate test-level opt-outs via marker.
+    """
+    matches: List[LogError] = []
+    for line in logs.splitlines():
+        for key, pattern in FORBIDDEN_PATTERNS.items():
+            if key in allowed:
+                continue
+            if pattern.search(line):
+                short = line[:250] + "..." if len(line) > 250 else line
+                matches.append(
+                    LogError(node=node_name, level="FORBIDDEN", message=short)
+                )
+                break
+    return matches
 
 
 def format_errors(errors: List[LogError], max_display: int = 30) -> str:

@@ -22,6 +22,20 @@ def resolve_node_image() -> str:
     return os.environ.get("F1R3FLY_NODE_IMAGE") or _DEFAULT_IMAGE
 
 
+def resolve_node_binary(repo_root: str) -> str:
+    """Resolve the node binary path from the ``F1R3FLY_NODE_BINARY`` env var.
+
+    Falls back to ``services/f1r3node-rust/target/release/node`` under the
+    repo root. Used by ``SubprocessProvider`` to spawn nodes directly
+    without Docker. The binary must be pre-built — set ``F1R3FLY_NODE_BINARY``
+    or run ``cd services/f1r3node-rust && cargo build --release -p node``.
+    """
+    override = os.environ.get("F1R3FLY_NODE_BINARY")
+    if override:
+        return override
+    return os.path.join(repo_root, "services", "f1r3node-rust", "target", "release", "node")
+
+
 @dataclasses.dataclass(frozen=True)
 class TimeoutConfig:
     """Base timeout values. Everything else derives from these via scale."""
@@ -98,6 +112,8 @@ class ResourcePaths:
     standalone_bonds: str
     standalone_wallets: str
     certs_dir: str
+    repo_root: str
+    integration_tests: str
 
     @classmethod
     def resolve(cls) -> "ResourcePaths":
@@ -120,12 +136,14 @@ class ResourcePaths:
                 integration_tests, "genesis", "standalone-wallets.txt"
             ),
             certs_dir=os.path.join(integration_tests, "certs"),
+            repo_root=repo_root,
+            integration_tests=integration_tests,
         )
 
         # Fail fast if any resource is missing
         for field in dataclasses.fields(paths):
             path = getattr(paths, field.name)
-            if field.name == "certs_dir":
+            if field.name in ("certs_dir", "repo_root", "integration_tests"):
                 if not os.path.isdir(path):
                     raise FileNotFoundError(
                         f"Test resource directory '{field.name}' not found at {path}"

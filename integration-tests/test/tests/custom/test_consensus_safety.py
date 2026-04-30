@@ -69,6 +69,7 @@ def _poll_lfb_stalls(nodes, duration, interval=5.0):
 # ═══════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_validator_failure_recovery(provider, timeouts) -> None:
     """Kill V3, verify V1+V2 continue finalizing. Restart V3, verify convergence.
 
@@ -175,6 +176,7 @@ def test_validator_failure_recovery(provider, timeouts) -> None:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_validator_failure_halts_finalization(provider, timeouts) -> None:
     """Kill V3, verify finalization STOPS. Restart V3, verify it resumes.
 

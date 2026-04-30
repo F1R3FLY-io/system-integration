@@ -13,12 +13,15 @@ session (pytest session)
   │
   ├── session_id            8-char hex, fresh per pytest invocation
   ├── port_allocator        socket-verified, worker-partitioned ranges
-  ├── cleanup_registry      tracks resources + orchestrates teardown
   ├── timeouts              one scale factor derives every timeout
-  ├── resource_paths        resolves conf/, genesis/, certs/
+  ├── resource_paths        resolves conf/, genesis/, certs/, repo_root
   ├── node_conf             HOCON-parsed defaults.conf + rust.conf
   │
-  └── provider  (scope=session)          DockerProvider | K8sProvider (stub)
+  └── provider  (scope=session)          chosen by --provider flag:
+                                          DockerProvider | SubprocessProvider | K8sProvider (stub)
+        │  (each provider owns its own resource lifetime — Docker uses
+        │   DockerCleanupRegistry internally; Subprocess tracks PIDs +
+        │   data dirs internally)
         │
         ├── shared_shard  (scope=session)  session-wide 3-validator shard
         │     └── Node wrappers: boot / validator1..N / readonly
@@ -70,32 +73,35 @@ Session-scoped fixtures are built once; tests sharing a fixture run on one pytes
 | `force_cleanup_all_test_resources()` **classmethod** | **User-invoked only.** Aggressive force-remove of every framework resource on this backend, regardless of status. Backs `shardctl test-reset`. Never called from pytest hooks. |
 | `adopt_session(session_id) -> List[NodeHandle]` | Reuse a shard from a previous `--keep-running` run. Backs `pytest --skip-setup --session-id <id>`. |
 
-Two provider impls today:
+Three provider impls today (selected via `--provider={docker,subprocess}`; default is `docker`):
 - **`DockerProvider`** (`infra/providers/docker.py`) — full impl, shells out to `docker` + `docker compose`.
+- **`SubprocessProvider`** (`infra/providers/subprocess.py`) — full impl, spawns the locally-built `services/f1r3node-rust/target/release/node` binary directly as `subprocess.Popen` instances on `localhost`. No Docker, no image build. Per-session data dirs under `integration-tests/.subprocess-data/<session_id>/`. Pre-built binary required (set `F1R3FLY_NODE_BINARY` to override path).
 - **`K8sProvider`** (`infra/providers/kubernetes.py`) — stub. Every Protocol method raises `NotImplementedError` with a one-line implementation hint (kubectl/helm equivalents).
 
 ---
 
 ## 3. Resource naming conventions
 
-All framework-created resources carry one of three session-prefixed patterns:
+All framework-created resources carry session-prefixed patterns. Docker provider uses three Docker-resource patterns; subprocess provider uses a single per-session data-dir tree:
 
-| Resource type | Pattern | Example |
-|---|---|---|
-| Container | `rnode.test.{session_id}.{role}` | `rnode.test.b86b2dd6.validator1` |
-| Network | `f1r3fly-test-{session_id}` or `f1r3fly-test-{session_id}-{role}` | `f1r3fly-test-b86b2dd6` |
-| Volume | `test-{session_id}-{name}-data` | `test-b86b2dd6-validator1-data` |
+| Resource type | Pattern | Example | Provider |
+|---|---|---|---|
+| Container | `rnode.test.{session_id}.{role}` | `rnode.test.b86b2dd6.validator1` | Docker |
+| Network | `f1r3fly-test-{session_id}` or `f1r3fly-test-{session_id}-{role}` | `f1r3fly-test-b86b2dd6` | Docker |
+| Volume | `test-{session_id}-{name}-data` | `test-b86b2dd6-validator1-data` | Docker |
+| Data dir | `integration-tests/.subprocess-data/{session_id}/{role}/` | `.subprocess-data/b86b2dd6/validator1/` | Subprocess |
+| Log file | `integration-tests/.subprocess-data/{session_id}/{role}.log` | `.subprocess-data/b86b2dd6/boot.log` | Subprocess |
 
 **Why:**
 - Parallel pytest workers (xdist) can't collide — each invocation gets its own `session_id`.
 - Crashed sessions leave behind deterministically-named zombies that stale-scan logic can identify and remove.
-- `shardctl test-reset` can find every framework resource without requiring a metadata store.
+- `shardctl test-reset` can find every framework resource (Docker + subprocess) without requiring a metadata store.
 
 ---
 
-## 4. `CleanupRegistry` — defense-in-depth teardown
+## 4. `DockerCleanupRegistry` — defense-in-depth teardown (Docker provider)
 
-Defined in `infra/cleanup.py`. Four independent cleanup paths ensure resources don't leak even on abnormal termination:
+Defined in `infra/cleanup.py`. Tracks resources created by the Docker provider (containers, volumes, networks, temp dirs); other providers (e.g. Subprocess, K8s) own their own resource lifetime via the `Provider` trait's `cleanup_all` / `force_cleanup_all_test_resources` methods. Four independent cleanup paths ensure resources don't leak even on abnormal termination:
 
 | Layer | Trigger | Scope |
 |---|---|---|
@@ -141,11 +147,21 @@ CI runners are slower than laptops — `--timeout-scale=1.5` (or `2.0`) bumps ev
 
 `infra/log_events.py` + autouse fixture in `conftest.py` (`check_node_logs_after_test`).
 
-After **every test**, the fixture pulls logs from every active node via `handle.logs()` and runs `scan_logs()`, which matches each line against `FATAL_PATTERNS` (panics, `InvalidBondsCache`, `RootRepository` state divergence, structural self-validation failures, `FATAL`). Any match fails the test with the matching pattern's description prepended. Anything outside that list is ignored — add a new entry to `FATAL_PATTERNS` to gate on a new class of consensus or runtime bug.
+After **every test**, the fixture pulls logs from every active node via `handle.logs()` and runs two complementary scans:
+
+1. **`scan_logs()`** — matches each line against `FATAL_PATTERNS` (panics, `RootRepository` divergence, structural self-validation failures, `FATAL`). Any match fails the test with the matching pattern's description prepended. **No opt-out mechanism** — these signatures should never appear under any legitimate workload.
+2. **`scan_for_forbidden()`** — matches each line against `FORBIDDEN_PATTERNS` (`InvalidBondsCache`, `BondsCacheMismatch`, `Recording invalid block`, `DAG storage is missing hash`). These are strict invariants by default, but a test can opt out when it legitimately produces them as part of its verification:
+
+   ```python
+   @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
+   def test_validator_failure_recovery(...): ...
+   ```
+
+   The marker takes one or more pattern keys from `FORBIDDEN_PATTERNS` (defined in `infra/log_events.py`). Adding a pattern is a hard tightening — run the full suite to confirm no untagged test trips it. Existing opt-outs are listed in the source comment next to each pattern.
 
 Per-test (not per-session) so the failing test name is the one that surfaces, not whatever ran last.
 
-The model is **allowlist-of-fatal**, not blacklist-of-acceptable. An earlier iteration scanned for any unexpected ERROR/WARN/PANIC and filtered through an `ACCEPTABLE_PATTERNS` whitelist; that proved unmaintainable as every new test surfaced new normal-operation log lines that needed triage and added to the whitelist. The current model gates on known consensus/runtime bug signatures only — anything not in `FATAL_PATTERNS` is by definition not a fatal.
+The model is **allowlist-of-fatal**, not blacklist-of-acceptable. An earlier iteration scanned for any unexpected ERROR/WARN/PANIC and filtered through an `ACCEPTABLE_PATTERNS` whitelist; that proved unmaintainable as every new test surfaced new normal-operation log lines that needed triage and added to the whitelist. The current model gates on known consensus/runtime bug signatures only — `FATAL_PATTERNS` for the always-fail set, `FORBIDDEN_PATTERNS` for the marker-opt-outable set. Anything not in either list is by definition not a fatal.
 
 ---
 
@@ -211,10 +227,10 @@ Design for `NotImplementedError` with clear guidance as a first pass — `K8sPro
 | `config.py` | `TimeoutConfig`, `ShardConfig`, `NodeConfig`, `ResourcePaths`, `NodeConf` (HOCON parser), `resolve_node_image()` |
 | `timeouts.py` | `TimeoutHierarchy` |
 | `ports.py` | `PortAllocator` |
-| `cleanup.py` | `CleanupRegistry` (Docker-specific today; see Section 4) |
+| `cleanup.py` | `DockerCleanupRegistry` (see Section 4); other providers own their own resource lifetime |
 | `polling.py` | Node-aware wrappers around `f1r3fly.polling` (`deploy_and_read`, `wait_for_deploy_finalized` for canonical-state per-deploy tracking, `wait_for_finalized` for block-height advancement, `deploy_with_fallback`, `poll_until`) |
 | `assertions.py` | Deploy/shard assertions re-exported from `f1r3fly.deploy` + `f1r3fly.par` |
-| `log_events.py` | Structured log event parsing + `scan_logs` (`FATAL_PATTERNS`) |
+| `log_events.py` | Structured log event parsing + `scan_logs` (`FATAL_PATTERNS`) + `scan_for_forbidden` (`FORBIDDEN_PATTERNS` with marker opt-out) |
 | `token_metadata.py` | HTTP `/api/status` token helper (on-chain queries via pyf1r3fly) |
 | `genesis.py` | Custom genesis file generation |
 | `compose.py` | Dynamic Docker Compose YAML generation |
@@ -224,4 +240,5 @@ Design for `NotImplementedError` with clear guidance as a first pass — `K8sPro
 | `metrics.py` | Prometheus metric helpers |
 | `providers/base.py` | `Provider` + `NodeHandle` Protocols |
 | `providers/docker.py` | `DockerProvider` + `DockerNodeHandle` |
+| `providers/subprocess.py` | `SubprocessProvider` + `SubprocessNodeHandle` (host-process backend) |
 | `providers/kubernetes.py` | `K8sProvider` + `K8sNodeHandle` (stub) |

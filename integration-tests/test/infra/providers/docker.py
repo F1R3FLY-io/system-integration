@@ -10,7 +10,7 @@ import logging
 import subprocess
 from typing import Dict, List, Optional, Sequence
 
-from ..cleanup import CleanupRegistry
+from ..cleanup import DockerCleanupRegistry
 from ..compose import generate_compose
 from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_image
 from ..genesis import generate_genesis
@@ -174,7 +174,10 @@ class DockerNodeHandle:
             return {"memory_mb": 0, "cpu_percent": 0, "memory_limit_mb": 0}
 
     def stop(self) -> None:
-        _docker("stop", self._name)
+        # 30s grace period (vs Docker's 10s default) — rnode needs time to
+        # flush LMDB state to disk under load. Tests that recreate against
+        # the same volume (e.g. token-config drift) rely on this.
+        _docker("stop", "-t", "30", self._name)
 
     def remove(self) -> None:
         _docker("rm", "-f", self._name)
@@ -296,7 +299,7 @@ class DockerProvider:
     def __init__(
         self,
         port_allocator: PortAllocator,
-        registry: CleanupRegistry,
+        registry: DockerCleanupRegistry,
         timeouts: TimeoutHierarchy,
         paths: Optional[ResourcePaths] = None,
     ) -> None:
@@ -353,11 +356,35 @@ class DockerProvider:
 
         project_name = f"test-{self._session_id}"
 
-        # Start all services
-        result = _compose("up", "-d", compose_file=compose_path, project_name=project_name)
-        if result.returncode != 0:
-            logger.error("docker compose up failed: %s", result.stderr)
-            raise RuntimeError(f"docker compose up failed: {result.stderr}")
+        # Start all services. Retry on Docker-on-Mac transient network race
+        # (network just created but daemon reports "not found" when attaching
+        # the first container) — clean up the partial state and try again.
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            result = _compose("up", "-d", compose_file=compose_path, project_name=project_name)
+            if result.returncode == 0:
+                break
+
+            stderr = result.stderr or ""
+            transient_network_race = (
+                "failed to set up container networking" in stderr
+                and "not found" in stderr
+            )
+            if not transient_network_race or attempt == max_attempts:
+                logger.error("docker compose up failed: %s", stderr)
+                raise RuntimeError(f"docker compose up failed: {stderr}")
+
+            logger.warning(
+                "docker compose up hit transient network race (attempt %d/%d), "
+                "tearing down and retrying",
+                attempt, max_attempts,
+            )
+            _compose(
+                "down", "--volumes", "--remove-orphans",
+                compose_file=compose_path, project_name=project_name,
+            )
+            import time
+            time.sleep(2)
 
         # Build handles
         handles: List[DockerNodeHandle] = []
@@ -757,10 +784,10 @@ class DockerProvider:
         """Delegate to the Docker-specific aggressive cleanup helper.
 
         Keeps the shell-out-to-``docker`` logic in one place
-        (:py:class:`CleanupRegistry`) while exposing a provider-neutral
+        (:py:class:`DockerCleanupRegistry`) while exposing a provider-neutral
         entry point for ``shardctl test-reset``.
         """
-        CleanupRegistry.force_cleanup_all_test_resources()
+        DockerCleanupRegistry.force_cleanup_all_test_resources()
 
     # ── Session adoption (--skip-setup --session-id) ────────────────
 

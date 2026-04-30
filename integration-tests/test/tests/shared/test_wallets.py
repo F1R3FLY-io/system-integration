@@ -18,19 +18,28 @@ import logging
 import pytest
 from f1r3fly.vault import TransferResult
 
+from ...infra.assertions import assert_block_finalized_on_all_nodes
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import poll_until, wait_for_deploy_included, wait_for_finalized
 
 pytestmark = pytest.mark.xdist_group("shared")
 
 
-def _transfer_and_read_result(node, from_addr, to_addr, amount, key, timeouts) -> TransferResult:
-    """Submit a transfer and read the result after block inclusion."""
+def _transfer_and_read_result(
+    node, from_addr, to_addr, amount, key, timeouts, all_nodes=None
+) -> TransferResult:
+    """Submit a transfer, wait for finalization, and read the result.
+
+    When `all_nodes` is provided, also assert the transfer block finalized
+    on every node (catches the case where a peer rejected the block).
+    """
     deploy_id = node.vault.transfer_ensure(from_addr, to_addr, amount, key)
 
     block_info = wait_for_deploy_included(node, deploy_id, timeouts.deploy_inclusion)
 
     wait_for_finalized(node, block_info.blockNumber, timeouts.finalization)
+    if all_nodes is not None:
+        assert_block_finalized_on_all_nodes(all_nodes, block_info.blockHash)
 
     return node.vault.read_transfer_result(deploy_id, block_hash=block_info.blockHash)
 
@@ -66,6 +75,7 @@ def test_validator1_pay_validator2(shared_shard, timeouts) -> None:
 
     result = _transfer_and_read_result(
         v1, v1_vault, v2_vault, transfer_amount, v1_key, timeouts,
+        all_nodes=shared_shard.all_nodes,
     )
     assert result.success, f"Transfer failed: {result.reason}"
 
@@ -108,6 +118,7 @@ def test_validator2_pay_validator3(shared_shard, timeouts) -> None:
 
     result = _transfer_and_read_result(
         v2, v2_vault, v3_vault, transfer_amount, v2_key, timeouts,
+        all_nodes=shared_shard.all_nodes,
     )
     assert result.success, f"Transfer failed: {result.reason}"
 
@@ -142,6 +153,7 @@ def test_transfer_failed_with_invalid_key(shared_shard, timeouts) -> None:
 
     result = _transfer_and_read_result(
         v3, v3_vault, v2_vault, 100, v2_key, timeouts,
+        all_nodes=shared_shard.all_nodes,
     )
     assert not result.success, "Transfer should have failed with Invalid AuthKey"
     assert result.reason == "Invalid AuthKey", (
@@ -166,6 +178,7 @@ def test_transfer_failed_with_insufficient_funds(shared_shard, timeouts) -> None
 
     result = _transfer_and_read_result(
         v2, v1_vault, v2_vault, overdraw_amount, v1_key, timeouts,
+        all_nodes=shared_shard.all_nodes,
     )
     assert not result.success, "Transfer should have failed with Insufficient funds"
     assert result.reason == "Insufficient funds", (

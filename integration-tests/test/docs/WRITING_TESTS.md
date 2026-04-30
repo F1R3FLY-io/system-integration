@@ -173,6 +173,40 @@ poll_until(
 )
 ```
 
+### Assert a block is finalized on every node
+
+```python
+from ...infra.assertions import assert_block_finalized_on_all_nodes
+from ...infra.polling import wait_for_finalized
+
+# Wait for finalization on a reference node first
+wait_for_finalized(reference_node, block_number, timeouts.finalization)
+
+# Then assert every node reports isFinalized=True for the block.
+# Catches the case where a peer accepted the block at the protocol
+# level (in store, returned by get_block) but rejected it at validation
+# time (e.g. Invalid(InvalidBondsCache)) — the proposer finalizes locally
+# but the peer never does. A readonly-only check would miss this.
+assert_block_finalized_on_all_nodes(shard.all_nodes, block_hash)
+```
+
+Use this whenever a deploy block must finalize cluster-wide for the test's invariant to hold (transfers, registry stores, joiner activation). It does NOT poll — caller is responsible for waiting first.
+
+---
+
+## Forbidden-pattern log scanning
+
+The autouse `check_node_logs_after_test` fixture fails any test whose nodes emit a line matching `FORBIDDEN_PATTERNS` (`infra/log_events.py`) — currently `InvalidBondsCache`, `BondsCacheMismatch`, `Recording invalid block`, `DAG storage is missing hash`.
+
+If your test legitimately produces one of these (e.g. you intentionally crash a validator and observe the recovery), opt out with a marker:
+
+```python
+@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
+def test_validator_failure_recovery(...): ...
+```
+
+You can name multiple keys: `@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock", "DAGStorageMissingHash")`. Use sparingly — these patterns mark known bug classes, and silencing them weakens regression coverage. See ARCHITECTURE.md §7 for the full list.
+
 ---
 
 ## Per-test documentation convention

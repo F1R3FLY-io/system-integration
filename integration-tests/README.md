@@ -96,9 +96,10 @@ Each worker gets a non-overlapping host port range automatically. No coordinatio
 
 | Flag | Effect |
 |---|---|
+| `--provider={docker,subprocess}` | Infrastructure backend. `docker` (default) spawns nodes as containers; `subprocess` spawns the locally-built `services/f1r3node-rust/target/release/node` binary directly on the host. Set `F1R3FLY_NODE_BINARY` to override the binary path. |
 | `--keep-running` | Start shard, run tests, **don't tear down** after. Prints the session ID for reuse. |
 | `--skip-setup --session-id <id>` | Adopt a shard from a previous `--keep-running` run. Skip bring-up (~2s vs ~60s fresh). |
-| `--monitor` | Sample Docker resource usage (peak memory, CPU) across all framework containers. Report embedded in `report.json`. |
+| `--monitor` | Sample Docker resource usage (peak memory, CPU) across all framework containers. Report embedded in `report.json`. (Docker provider only.) |
 | `--timeout-scale <f>` | Multiplier for every derived timeout. Use `1.5`–`2.0` on slow CI runners. |
 
 ---
@@ -153,7 +154,7 @@ When you do need manual cleanup (after a crashed run or when you're done with `-
 poetry run shardctl test-reset
 ```
 
-This force-removes every container/network/volume matching `rnode.test.*` / `f1r3fly-test-*` / `test-*`. Aggressive — it will clobber a `--keep-running` shard you forgot about. Safe on CI (each job runs in an isolated VM) and on local dev (you almost never have two framework shards running simultaneously).
+This force-removes every Docker resource matching `rnode.test.*` / `f1r3fly-test-*` / `test-*` AND every subprocess node + session data dir under `integration-tests/.subprocess-data/`. Aggressive — it will clobber a `--keep-running` shard you forgot about. Safe on CI (each job runs in an isolated VM) and on local dev (you almost never have two framework shards running simultaneously).
 
 ---
 

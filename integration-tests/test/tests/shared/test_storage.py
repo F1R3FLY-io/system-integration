@@ -16,6 +16,7 @@ import string
 import pytest
 from f1r3fly.par import par_as_string, par_as_uri
 
+from ...infra.assertions import assert_block_finalized_on_all_nodes
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import wait_for_deploy_finalized, wait_for_deploy_included
 
@@ -34,9 +35,10 @@ def _random_string(length: int = 20) -> str:
 def _store_data(node, key, random_data, timeouts):
     """Deploy store-data.rho (real deploy — creates state).
 
-    Returns ``(uri, store_deploy_id, block_number)``. The ``deploy_id``
-    lets callers poll ``wait_for_deploy_finalized`` on other nodes for the
-    actual canonical-state inclusion.
+    Returns ``(uri, store_deploy_id, block_number)``. Callers use the
+    ``deploy_id`` to poll ``wait_for_deploy_finalized`` for canonical-state
+    inclusion (the canonical block hash is then available via
+    ``status.latestBlockHash``).
     """
     store_deploy_id = node.deploy_rho_file(
         STORE_DATA_CONTRACT,
@@ -83,10 +85,12 @@ def test_data_is_stored_and_served_by_node(shared_shard, timeouts) -> None:
     uri, store_deploy_id, _ = _store_data(v1, VALIDATOR1_ID, random_data, timeouts)
     logging.info("Stored '%s' at %s on V1", random_data, uri)
 
-    # Wait for readonly to see the deploy's canonical-state inclusion.
-    # Unlike LFB-height polling, this correctly handles the case where the
-    # deploy's initial block finalizes but effects were merge-rejected.
-    wait_for_deploy_finalized(ro, store_deploy_id, timeouts.finalization)
+    # Wait for readonly to see the deploy reach canonical-state finalization
+    # (handles merge-rejection recovery), then assert the canonical block is
+    # finalized on every node — catches a peer that rejected the block at
+    # validation time (e.g. Invalid(InvalidBondsCache)).
+    status = wait_for_deploy_finalized(ro, store_deploy_id, timeouts.finalization)
+    assert_block_finalized_on_all_nodes(shared_shard.all_nodes, status.latestBlockHash.hex())
 
     read_data = _read_data(ro, uri)
 
@@ -119,7 +123,8 @@ def test_data_stored_on_one_validator_readable_on_readonly(shared_shard, timeout
         logging.info("Stored '%s' at %s on %s (block #%d)",
                      random_data, uri, node.name, store_block_number)
 
-        wait_for_deploy_finalized(ro, store_deploy_id, timeouts.finalization)
+        status = wait_for_deploy_finalized(ro, store_deploy_id, timeouts.finalization)
+        assert_block_finalized_on_all_nodes(shared_shard.all_nodes, status.latestBlockHash.hex())
 
         read_data = _read_data(ro, uri)
 

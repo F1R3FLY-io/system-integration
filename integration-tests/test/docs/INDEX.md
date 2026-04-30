@@ -12,6 +12,7 @@ The `shared_shard` fixture brings up bootstrap + 3 validators + readonly once pe
 
 | Tests | File | Summary |
 |---|---|---|
+| 2 | [test_bonding_validators](test_bonding_validators.md) | V4 first bond + V5 second-bond succession (8-phase lifecycle on shared shard) |
 | 2 | [test_bridge_admin](test_bridge_admin.md) | Bridge contract deploy, URI registration, query API |
 | 7 | [test_contract_lifecycle](test_contract_lifecycle.md) | Multi-contract parallel deploy + cross-node state agreement + contract-to-contract interaction + multi-block state evolution under merge |
 | 3 | [test_convergence](test_convergence.md) | Network recovery from DAG tip divergence; FT convergence across nodes |
@@ -25,7 +26,7 @@ The `shared_shard` fixture brings up bootstrap + 3 validators + readonly once pe
 | 5 | [test_wallets](test_wallets.md) | PoS vault transfers, authorization failures, insufficient funds, Block API transfers |
 | 23 | [test_web_api](test_web_api.md) | HTTP API: strict assertions, cross-node consistency, views, status, bond-status |
 
-**Total: 67 tests across 12 files.**
+**Total: 69 tests across 13 files.**
 
 ---
 
@@ -36,7 +37,6 @@ Each test builds its own `ShardConfig` and calls `provider.create_shard(...)`. U
 | Tests | File | Summary |
 |---|---|---|
 | 4 | [test_asymmetric_bonds](test_asymmetric_bonds.md) | Consensus with unequal stake weights (60/20/15) |
-| 1 | [test_bonding_validators](test_bonding_validators.md) | New validator bonds via PoS contract, becomes proposer at epoch |
 | 5 | [test_consensus_safety](test_consensus_safety.md) | Consensus safety under validator failure, FTT boundaries, epochs |
 | 1 | [test_load](test_load.md) | Deploy throughput + finalization latency benchmark |
 | 1 | [test_shard_degradation](test_shard_degradation.md) | Production-readiness gate: 150 deploys, sustained load |
@@ -44,7 +44,7 @@ Each test builds its own `ShardConfig` and calls `provider.create_shard(...)`. U
 | 1 | [test_trim_state](test_trim_state.md) | Joiner syncs from Last Finalized State instead of replaying genesis |
 | 6 | [test_websocket](test_websocket.md) | `/ws/events` block, genesis, transfer, lifecycle events + startup replay |
 
-**Total: 20 tests across 8 files.**
+**Total: 19 tests across 7 files.**
 
 ---
 
@@ -72,7 +72,7 @@ Items known but not covered by the framework today. See [deferred-test-coverage.
 
 | Directory | Files | Tests |
 |---|---|---|
-| `tests/shared/` | 12 | 67 |
-| `tests/custom/` | 8 | 20 |
+| `tests/shared/` | 13 | 69 |
+| `tests/custom/` | 7 | 19 |
 | `tests/standalone/` | 3 | 14 |
-| **Total** | **23** | **101** |
+| **Total** | **23** | **102** |

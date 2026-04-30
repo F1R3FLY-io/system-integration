@@ -2,102 +2,129 @@
 
 ## Purpose
 
-Verifies that a new validator can dynamically bond to a running network via the PoS (Proof of Stake) contract and become an active block proposer at the next epoch boundary. This is the core validator onboarding flow: a new node joins the network, submits a bond transaction, waits for the epoch to change, and then participates in consensus.
+End-to-end validator-bonding lifecycle on the session-shared shard. Verifies that a new validator can dynamically bond via the PoS contract, become an active block proposer at the next epoch boundary, and that subsequent bonds (V5 after V4) succeed under the multi-proposer bonds-cache composition path. The second-bond test exists specifically to catch the failure mode where the second bond never finalizes — the symptom Stacy reported in v0.4.13 that surfaces as `InvalidBondsCache` on the bond block.
 
 ## Setup
 
-- **Topology**: Custom 2-validator shard (V1, V2) + readonly observer + 1 dynamically added joiner (V4)
-- **Heartbeat**: Disabled (manual block orchestration for deterministic block numbering)
-- **FTT**: -1 (instant finalization)
+Both tests run on the session-scoped `shared_shard` fixture: bootstrap + V1, V2, V3 + readonly observer. Production-config inherited from `conf/rust.conf` (no per-test config builder).
+
+- **Topology**: 3 genesis validators (V1, V2, V3, all stake=100) + readonly observer + dynamically-added joiner (V4, then V5)
+- **Heartbeat**: Enabled (production semantics, real propagation timing)
+- **FTT**: From `rust.conf` (`fault-tolerance-threshold = 0.1`)
 - **include_readonly**: True
-- **Epoch length**: 4 blocks (epoch changes at blocks 4, 8, 12, ...)
-- **Quarantine length**: 20
-- **Synchrony constraint threshold**: 0 (disabled)
-
-### Bond configuration
-
-| Validator | Stake | Role |
-|-----------|-------|------|
-| V1 | 10,000,000 | Genesis validator |
-| V2 | 10,000,000 | Genesis validator |
-| V4 | 10,000,000 | Bonds at block 2, active at block 5 |
+- **Epoch length**: 4 blocks (`epoch-length = 4` in `conf/rust.conf` — keeps the bonding-test cadence tight)
+- **Quarantine length**: 10
+- **Number of active validators**: 10000
 
 ### Genesis wallet seeding
 
-V4's vault is seeded at genesis with 50,000,000,000,000,000 tokens (same as other genesis validators) so it has sufficient funds to cover the bond amount plus phlo costs. The vault address is derived from V4's public key via `PrivateKey.get_public_key().get_vault_address()`.
+V4's and V5's vaults are seeded at genesis with `50_000_000_000_000_000` tokens each via the `shared_shard` fixture's `extra_wallets` so they have phlo to cover bond + transaction costs. Vault addresses are derived from the public key via `PrivateKey.get_public_key().get_vault_address()`.
 
-## Phases
+### Bond configuration
 
-### Phase 1: Genesis verification
+| Validator | Stake | When bonded | Test |
+|---|---|---|---|
+| V1, V2, V3 | 100 each | Genesis | (already bonded) |
+| V4 | 10,000,000 | First bond | `test_bonding_validators` |
+| V5 | 10,000,000 | Second bond | `test_double_bond_succession` |
 
-The genesis block (block #0) is fetched and verified to have exactly 2 bonds. V4's public key is confirmed absent from genesis bonds, establishing the baseline that the joiner has not bonded yet.
+### Test ordering
 
-### Phase 1b: Block 1 — Initial deploy
+Pytest collects tests in source order. `test_double_bond_succession` includes a precondition assertion at the top that V4 must already be bonded — if you reorder or skip `test_bonding_validators`, the second test fails fast with a clear "test order changed?" message.
 
-V1 deploys and proposes block 1.
+## Tests
 
-### Phase 2: Add joiner to network
+### `test_bonding_validators`
 
-V4 is added to the shard via `shard.add_joiner()`. The joiner node starts, syncs with the bootstrap node, and waits until block 1 is visible. The joiner uses the same epoch/quarantine/synchrony CLI options as the genesis validators plus `--heartbeat-disabled`.
+Bonds V4 via V1 (genesis validator V1 deploys the bond contract). Runs the full 8-phase `_bond_lifecycle` helper. After this test, V4 is permanently in the on-chain bonds map; the joiner subprocess/container is removed at exit.
+
+### `test_double_bond_succession`
+
+Bonds V5 on a shard that already has V4 bonded (precondition asserted at top). Bond is deployed via **V2** (different proposer than V4's bond) to exercise the multi-proposer path through the bonds_cache / justification-set composition. **This test reproduces Stacy's bonding bug** when run against a binary that contains the second-bond regression — symptom is `InvalidBondsCache` on the V5 bond block, then a cascade of invalid blocks as the bonds-cache divergence between V1's replay path and V2's proposer path propagates.
+
+## Phases (`_bond_lifecycle`)
+
+Both tests share the same 8-phase helper.
+
+### Phase 1: Pre-bond LFB inspection
+
+Read the LFB on V1, build the current bonds map. Assert the joiner is NOT in the current bonds (precondition for a meaningful bonding test). Logs the LFB block number and existing bond count.
+
+### Phase 2: Joiner attaches as a follower
+
+The joiner is added to the shard via `provider.add_node(...)` — same path used in `Shard.add_joiner()`. Joiner starts as a non-bonded follower, syncs the existing chain, and reaches Running.
 
 ### Phase 3: Verify joiner cannot propose pre-bond
 
-V4 deploys code and attempts to propose. This fails with `F1r3flyClientException` because V4 is not in the active validator set — it hasn't bonded yet.
+Joiner deploys a small Rholang term and attempts to propose. Must fail because the joiner is not in the active validator set. Logged as "Joiner correctly rejected on propose pre-bond".
 
-### Phase 4: Block 2 — Bond transaction
+### Phase 4: Bond block finalizes cross-node
 
-V1 deploys the `bond.rho` contract with V4's private key and the bond amount (10,000,000). The contract invokes `PoS.bond()` which records V4's stake in the bonds map. After V1 proposes, the bonds map is verified to contain V4 with the correct stake, and the total bond count is asserted to have increased from 2 to 3.
+Proposer (V1 for first bond, V2 for second bond) deploys `bond.rho` with the joiner's private key and stake amount. The bond deploy lands in a block (typically within a few rounds), and the framework waits for that block's height to be finalized via LFB advancement, then asserts the **specific block hash** is finalized on **all five nodes** (V1, V2, V3, joiner, readonly) — this catches the InvalidBondsCache failure mode where the proposer's block is finalized locally but a peer rejected it at validation time. Polls per-node `isFinalized` to ride out the FT-propagation lag (see `assert_block_finalized_on_all_nodes` in `infra/assertions.py`).
 
-### Phase 5: Block 3 — Filler deploy, verify joiner still inactive
+After finalization, reads the bonds map from the bond block and asserts:
+- Joiner appears in bonds with the expected stake
+- Total bond count increased by exactly 1
 
-V1 deploys and proposes block 3. V4 syncs this block and attempts to propose again. This still fails — the bond is recorded but the epoch hasn't changed yet (block 3 < epoch boundary at block 4). Bonded validators become active at the *next* epoch boundary, not immediately.
+### Phase 5: Wait for epoch boundary
 
-### Phase 6: Block 4 — Epoch boundary
+LFB must advance past the next epoch boundary (`epoch-length = 4`). Bonded validators are not immediately active — they activate at the next epoch boundary. Logged as "LFB advanced past epoch boundary (#N)".
 
-V1 deploys and proposes block 4, which triggers the epoch change. V4 syncs this block.
+### Phase 6: Joiner produces its first block
 
-### Phase 7: Block 5 — V2 filler to advance DAG
+Joiner deploys + proposes (this time successfully — it's now in the active set). The framework polls `_joiner_proposed` for any block where `sender == joiner_pubkey`, then waits for that block to finalize, then asserts the specific block hash is finalized on all 5 nodes. Logged as "Joiner proposed block #N (hash); finalized on all nodes".
 
-V2 deploys and proposes block 5. This is necessary because V4's earlier rejected propose attempts left a "previous block" context. If V4 proposed immediately after the epoch change, its parent set would reference the rejected context and the self-validation check would reject with `InvalidParents` ("validator has not made progress"). Having V2 propose first gives V4 a fresh parent that breaks the no-progress condition.
+### Phase 7: V1 produces a block justifying the joiner
 
-### Phase 8: Block 6 — Joiner proposes
+The framework polls until V1 produces a block whose justification set includes the joiner's latest block. Then waits for finalization, then asserts the specific V1-block hash is finalized on all 5 nodes. This phase exercises peak DAG contention — V1, V2, V3, joiner all racing at the same height — and would race a "test polls by block_number, asserts by block_hash" mismatch without the polling fix in `assert_block_finalized_on_all_nodes`.
 
-V4 deploys and proposes successfully. The block is verified visible on V1, V2, and the readonly observer, confirming the joiner is now an active participant in consensus and its blocks propagate to all nodes.
+### Phase 8: Post-bond network liveness
 
-## What it proves
+For each of V1, V2, V3, joiner: deploy a `liveness-{validator}` term, wait for inclusion, wait for finalization, then `wait_for_block_visible_on_all_nodes` (rides out the gRPC `received but not added yet` window — see TODO §2.9), then `assert_block_finalized_on_all_nodes` on all 5 nodes. Confirms the network is fully healthy after the joiner integrates.
 
-- Genesis block has exactly the expected bonds (2) and joiner is absent
-- The PoS bond contract correctly records a new validator's stake in the bonds map
-- Bond count increases from 2 to 3 after bonding
-- Bonded validators are not immediately active — they must wait for the epoch boundary
-- The epoch-length parameter controls when bonded validators become active
-- A joiner node can sync with the network, bond, and become a proposer
-- The DAG parent validation works correctly across the bonding/activation transition
-- Joiner's block is visible on all nodes including readonly
-- `shard.add_joiner()` correctly manages joiner node lifecycle (start, sync, cleanup)
+## What the tests prove
+
+- PoS `bond.rho` correctly records a new validator's stake in the on-chain bonds map
+- Bond count increases by exactly 1 after each successful bond
+- Bonded validators activate at the next epoch boundary (not immediately)
+- The bond block finalizes consistently on every node — same hash, same `isFinalized=True`, same FT
+- Joiner's first block produces and finalizes cross-node post-activation
+- V1 (genesis validator) produces blocks that justify the joiner's blocks (justification set wiring)
+- All 4 active validators (incl. joiner) produce blocks that finalize cross-node post-bond (network liveness)
+- Sequential bonds (V4 then V5, via different proposers) compose correctly through the bonds-cache layer
 
 ## Key assertions
 
-- Genesis: exactly 2 bonds, V4 not present
-- Block 1: V4's public key not in bonds map
-- Pre-bond propose: `pytest.raises(F1r3flyClientException)`
-- Block 2: `bonds_map[V4.public_hex] == 10,000,000`, `len(bonds_map) == 3`
-- Pre-epoch propose: `pytest.raises(F1r3flyClientException)`
-- Block 6: `joiner.propose()` succeeds (returns block hash)
-- Block 6 visible on V1, V2, and readonly: `wait_for_block_visible()` succeeds on all
+- Pre-bond: `joiner.public_hex not in bonds`
+- Pre-bond propose: raises `F1r3flyClientException`
+- Bond block: `bonds[joiner.public_hex] == stake`, `len(bonds) == expected_bonds_after`
+- Bond block: `isFinalized=True` on **every** node (V1, V2, V3, joiner, readonly)
+- Joiner first block: `isFinalized=True` on every node
+- V1 justifies-joiner block: `isFinalized=True` on every node
+- Post-bond liveness: each validator's deploy block is visible AND finalized on every node
+
+## Forbidden-pattern coverage
+
+The autouse `check_node_logs_after_test` fixture scans every node's logs after the test for forbidden patterns defined in `infra/log_events.py`:
+- `InvalidBondsCache`
+- `RecordingInvalidBlock`
+- `DAGStorageMissingHash`
+
+These tests are **not** opted out via `@pytest.mark.allow_forbidden_patterns` — the bond lifecycle is expected to be clean. If the V5 second-bond regression is present, the scanner will fire on `Bonds in proof of stake contract do not match block's bond cache` and `Recording invalid block ... for InvalidBondsCache`.
 
 ## Infrastructure used
 
-- `ShardConfig` with `global_cli_options`, `extra_wallets`, `include_readonly=True`
-- `Shard.create()` / `shard.destroy()` lifecycle
-- `shard.add_joiner()` context manager for mid-test joiner attachment
-- `Node.deploy_rho_file()` for deploying bond.rho with substitutions
-- `Node.deploy_string()`, `Node.propose()`, `Node.get_block()`, `Node.get_blocks()`
-- `wait_for_block_visible()` from `infra/polling.py` for block visibility polling
+- `shared_shard` (session-scoped fixture) — 3-validator shard + readonly with V4/V5 vaults pre-seeded
+- `provider.add_node(...)` — attaches a non-bonded follower mid-session
+- `Node.deploy_rho_file("bond.rho", ...)` — bond contract deployment with substitutions
+- `Node.deploy_string()` / `Node.propose()` / `Node.get_block()` / `Node.last_finalized_block()`
+- `wait_for_deploy_included()`, `wait_for_finalized()`, `wait_for_block_visible_on_all_nodes()` — all from `infra/polling.py`
+- `assert_block_finalized_on_all_nodes(...)` with `timeout=timeouts.finalization` — rides out FT propagation lag
+- `poll_until()` for `_joiner_proposed` / `_v1_justifies_joiner` predicates
 
 ## Related
 
 - [PoS bond contract](../../resources/wallets/bond.rho) — the Rholang contract used for bonding
-- [Consensus Protocol docs](../../../services/f1r3node-rust/docs/casper/CONSENSUS_PROTOCOL.md) -- Epoch Boundaries
+- [Consensus Protocol docs](../../../services/f1r3node-rust/docs/casper/CONSENSUS_PROTOCOL.md) — Epoch Boundaries
 - [test_asymmetric_bonds](test_asymmetric_bonds.md) — tests consensus with unequal stakes (complementary)
-- [test_trim_state](test_trim_state.md) — tests joiner synchronization via LFS (next migration target)
+- [test_trim_state](test_trim_state.md) — tests joiner synchronization via LFS

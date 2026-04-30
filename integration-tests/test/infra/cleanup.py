@@ -51,7 +51,7 @@ def _safe(label: str, fn) -> None:
         logger.debug("Cleanup '%s' failed (non-fatal): %s", label, e)
 
 
-class CleanupRegistry:
+class DockerCleanupRegistry:
     """Tracks and cleans up Docker resources created during a test session.
 
     Each resource is registered by name when created. ``cleanup_all()``
@@ -111,7 +111,7 @@ class CleanupRegistry:
             )
             if total:
                 logger.info(
-                    "CleanupRegistry: --keep-running, skipping cleanup of "
+                    "DockerCleanupRegistry: --keep-running, skipping cleanup of "
                     "%d resources for session %s",
                     total, self.session_id,
                 )
@@ -152,7 +152,7 @@ class CleanupRegistry:
 
         if removed:
             logger.info(
-                "CleanupRegistry: removed %d resources for session %s",
+                "DockerCleanupRegistry: removed %d resources for session %s",
                 len(removed),
                 self.session_id,
             )

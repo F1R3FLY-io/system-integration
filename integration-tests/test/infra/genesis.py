@@ -2,7 +2,7 @@
 
 Creates temporary ``bonds.txt`` and ``wallets.txt`` files for shards
 with non-default validator sets. The temp directory is registered with
-``CleanupRegistry`` for crash-safe cleanup.
+``DockerCleanupRegistry`` for crash-safe cleanup.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import shutil
 import tempfile
 from typing import List, Optional, Tuple
 
-from .cleanup import CleanupRegistry
+from .cleanup import DockerCleanupRegistry
 from .config import ResourcePaths, ShardConfig
 from .types import ValidatorIdentity
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 def generate_genesis(
     config: ShardConfig,
     paths: ResourcePaths,
-    registry: CleanupRegistry,
+    registry: DockerCleanupRegistry,
 ) -> str:
     """Write custom genesis files to a temp directory.
 

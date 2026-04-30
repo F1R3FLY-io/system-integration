@@ -11,7 +11,7 @@ import pytest
 
 import logging
 
-from .infra.cleanup import CleanupRegistry
+from .infra.cleanup import DockerCleanupRegistry
 from .infra.config import NodeConf, ResourcePaths, ShardConfig, TimeoutConfig
 from .infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from .infra.node import Node
@@ -51,6 +51,14 @@ def pytest_addoption(parser):
         "--monitor", action="store_true", default=False,
         help="Enable resource monitoring (logs peak memory/CPU per container)",
     )
+    group.addoption(
+        "--provider", action="store", default="docker",
+        choices=["docker", "subprocess"],
+        help="Infrastructure backend: 'docker' (default) spawns nodes as "
+             "containers; 'subprocess' spawns the locally-built node binary "
+             "directly on the host (set F1R3FLY_NODE_BINARY or build "
+             "services/f1r3node-rust first).",
+    )
 
 
 def pytest_configure(config):
@@ -61,15 +69,42 @@ def pytest_configure(config):
             "The session ID is printed by a prior `shardctl test --keep-running` run."
         )
 
+    config.addinivalue_line(
+        "markers",
+        "allow_forbidden_patterns(*keys): exempt this test from named "
+        "FORBIDDEN_PATTERNS keys (e.g. 'RecordingInvalidBlock'). Use only "
+        "when the test legitimately produces the pattern as part of its "
+        "verification. See infra/log_events.py for the pattern set.",
+    )
+
+
+def _stale_cleanup_for_provider(provider_choice: str) -> None:
+    """Dispatch stale-session cleanup to the right provider.
+
+    Each provider owns its own resource-discovery logic; the conftest hook
+    just routes by `--provider`. This is the only place provider awareness
+    leaks into the conftest hook layer.
+    """
+    if provider_choice == "docker":
+        DockerCleanupRegistry.cleanup_stale_sessions()
+    elif provider_choice == "subprocess":
+        from .infra.providers.subprocess import SubprocessProvider
+        SubprocessProvider.cleanup_stale_sessions()
+    else:
+        # Unknown provider — silently skip rather than crash session start.
+        pass
+
 
 def pytest_sessionstart(session):
     """Clean up stale resources from crashed sessions."""
-    CleanupRegistry.cleanup_stale_sessions()
+    choice = session.config.getoption("--provider", default="docker")
+    _stale_cleanup_for_provider(choice)
 
 
 def pytest_sessionfinish(session, exitstatus):
     """Belt-and-suspenders cleanup."""
-    CleanupRegistry.cleanup_stale_sessions()
+    choice = session.config.getoption("--provider", default="docker")
+    _stale_cleanup_for_provider(choice)
 
 
 # ── Session-scoped fixtures ──────────────────────────────────────────
@@ -100,22 +135,6 @@ def port_allocator(request) -> PortAllocator:
 
 
 @pytest.fixture(scope="session")
-def cleanup_registry(request, session_id) -> CleanupRegistry:
-    keep = request.config.getoption("--keep-running")
-    registry = CleanupRegistry(session_id, keep_running=keep)
-    if keep:
-        # Make the session_id visible so the user can reuse it on the next
-        # invocation via `--skip-setup --session-id <id>`.
-        logging.warning(
-            "Session %s started with --keep-running. "
-            "To reuse this shard: `pytest --skip-setup --session-id %s`",
-            session_id, session_id,
-        )
-    yield registry
-    registry.cleanup_all()
-
-
-@pytest.fixture(scope="session")
 def node_conf() -> NodeConf:
     """Effective node configuration parsed from defaults.conf + rust.conf."""
     return NodeConf.resolve()
@@ -127,15 +146,48 @@ def resource_paths() -> ResourcePaths:
 
 
 @pytest.fixture(scope="session")
-def provider(
-    port_allocator, cleanup_registry, timeouts, resource_paths
-) -> DockerProvider:
-    return DockerProvider(
-        port_allocator=port_allocator,
-        registry=cleanup_registry,
-        timeouts=timeouts,
-        paths=resource_paths,
-    )
+def provider(request, port_allocator, session_id, timeouts, resource_paths):
+    """Construct the chosen Provider (Docker or Subprocess).
+
+    Each provider owns its own resource lifecycle. For Docker, a
+    `DockerCleanupRegistry` is created inline and passed in. For Subprocess,
+    the provider tracks PIDs and data dirs internally; no shared registry.
+
+    Yields the provider; calls `cleanup_all()` on teardown unless
+    `--keep-running` is set.
+    """
+    choice = request.config.getoption("--provider")
+    keep = request.config.getoption("--keep-running")
+
+    if keep:
+        logging.warning(
+            "Session %s started with --keep-running. "
+            "To reuse this shard: `pytest --skip-setup --session-id %s`",
+            session_id, session_id,
+        )
+
+    if choice == "docker":
+        registry = DockerCleanupRegistry(session_id, keep_running=keep)
+        prov = DockerProvider(
+            port_allocator=port_allocator,
+            registry=registry,
+            timeouts=timeouts,
+            paths=resource_paths,
+        )
+    elif choice == "subprocess":
+        from .infra.providers.subprocess import SubprocessProvider
+        prov = SubprocessProvider(
+            port_allocator=port_allocator,
+            session_id=session_id,
+            keep_running=keep,
+            timeouts=timeouts,
+            paths=resource_paths,
+        )
+    else:
+        raise pytest.UsageError(f"unknown --provider: {choice!r}")
+
+    yield prov
+    prov.cleanup_all()
 
 
 # ── Shared shard fixtures ───────────────────────────────────────────
@@ -149,9 +201,24 @@ def shared_shard(request, provider, timeouts) -> Shard:
     the shard (crash nodes, deplete wallets) should create their own
     via ``provider.create_shard()`` instead.
 
+    Seeds vaults for VALIDATOR4_ID and VALIDATOR5_ID at genesis. Existing
+    tests do not depend on these wallets being absent; bonding tests
+    (`tests/shared/test_bonding_validators.py`) add the joiners mid-session
+    and the bond deploys are signed by V4 / V5 keys, which require their
+    vaults to exist for phlo + stake.
+
     With ``--skip-setup --session-id <id>``, adopts an existing shard
     from a previous ``--keep-running`` run instead of creating a fresh one.
     """
+    from .infra.keys import VALIDATOR4_ID, VALIDATOR5_ID
+    joiner_balance = 50_000_000_000_000_000
+    extra_wallets = [
+        (
+            ident.private_key().get_public_key().get_vault_address(),
+            joiner_balance,
+        )
+        for ident in (VALIDATOR4_ID, VALIDATOR5_ID)
+    ]
     config = ShardConfig(
         bonds=[
             (VALIDATOR1_ID, 100),
@@ -160,6 +227,7 @@ def shared_shard(request, provider, timeouts) -> Shard:
         ],
         heartbeat=True,
         include_readonly=True,
+        extra_wallets=extra_wallets,
     )
 
     if request.config.getoption("--skip-setup"):
@@ -217,34 +285,53 @@ def all_nodes(shared_shard) -> list:
 
 
 @pytest.fixture(autouse=True)
-def check_node_logs_after_test(provider):
-    """Post-test log scan for fatal patterns on all active nodes.
+def check_node_logs_after_test(request, provider):
+    """Post-test log scan for fatal + forbidden patterns on all active nodes.
 
     Runs after every test (shared, custom, standalone). Queries the
-    provider for all active node handles and scans their logs against
-    ``FATAL_PATTERNS`` (panics, InvalidBondsCache, RootRepository
-    divergence, etc.) via the provider-agnostic ``handle.logs()`` method.
+    provider for all active node handles and runs two scans on each
+    node's logs (via the provider-agnostic ``handle.logs()`` method):
 
-    Per-test (not per-session) so it pinpoints which test triggered
-    the failure and fails fast before teardown destroys the evidence.
+      * FATAL_PATTERNS (`scan_logs`) — always fail. Panics, RootRepository
+        divergence, structural self-validation failures, FATAL keyword.
+        No opt-out mechanism.
+      * FORBIDDEN_PATTERNS (`scan_for_forbidden`) — fail unless the test
+        opts out via ``@pytest.mark.allow_forbidden_patterns(<key>, ...)``.
+        Pattern keys are defined in infra/log_events.py (e.g.
+        "InvalidBondsCache", "RecordingInvalidBlock",
+        "DAGStorageMissingHash").
 
-    Provider-agnostic: works with Docker, Kubernetes, or any future
-    provider that implements the NodeHandle protocol.
+    Per-test (not per-session) so the failing test name surfaces, not
+    whatever ran last, and the failure fires before teardown destroys
+    the evidence.
+
+    Provider-agnostic: works with Docker, Subprocess, K8s, or any
+    future provider that implements the NodeHandle protocol.
     """
     yield
 
-    from .infra.log_events import scan_logs, format_errors
+    from .infra.log_events import (
+        scan_logs,
+        scan_for_forbidden,
+        format_errors,
+    )
 
-    all_errors = []
+    # Collect opt-out keys from this test's markers.
+    allowed = frozenset()
+    for marker in request.node.iter_markers("allow_forbidden_patterns"):
+        allowed = allowed | frozenset(marker.args)
+
+    fatal: list = []
     for handle in provider.active_handles:
         try:
             logs = handle.logs()
         except Exception:
             continue
-        all_errors.extend(scan_logs(logs, handle.name))
+        fatal.extend(scan_logs(logs, handle.name))
+        fatal.extend(scan_for_forbidden(logs, handle.name, allowed))
 
-    if all_errors:
-        pytest.fail(format_errors(all_errors), pytrace=False)
+    if fatal:
+        pytest.fail(format_errors(fatal), pytrace=False)
 
 
 # ── Resource monitoring ──────────────────────────────────────────────

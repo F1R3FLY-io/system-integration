@@ -75,6 +75,7 @@ def _poll_lfb_all_nodes(nodes, target, timeout):
     )
 
 
+@pytest.mark.allow_forbidden_patterns("DAGStorageMissingHash")
 def test_network_recovers_from_validator_pause(shared_shard, node_conf, timeouts) -> None:
     """Pause validator1 for 30s to force DAG tip divergence, then verify
     the network converges and LFB advances on all nodes.
