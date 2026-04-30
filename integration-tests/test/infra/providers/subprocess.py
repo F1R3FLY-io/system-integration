@@ -78,6 +78,8 @@ class SubprocessNodeHandle:
         spawn_args: List[str],
         spawn_env: dict,
         identity: Optional[ValidatorIdentity] = None,
+        volume_name: Optional[str] = None,
+        use_shard_conf: bool = False,
     ) -> None:
         self._name = name
         self._ports = ports
@@ -91,6 +93,11 @@ class SubprocessNodeHandle:
         self._spawn_args = spawn_args
         self._spawn_env = spawn_env
         self._identity = identity
+        # Recreate context: which conf was mounted, and the persistent
+        # data-dir identifier (Docker-named volumes map to a stable
+        # subdir in subprocess-data/).
+        self._volume_name = volume_name
+        self._use_shard_conf = use_shard_conf
 
     # ── Properties ──────────────────────────────────────────────────
 
@@ -126,6 +133,24 @@ class SubprocessNodeHandle:
     @property
     def data_dir(self) -> Path:
         return self._data_dir
+
+    @property
+    def volume_name(self) -> Optional[str]:
+        """Persistent identifier for the data dir, mirroring Docker's volume_name.
+
+        Returned by Docker's ``DockerNodeHandle.volume_name`` so that
+        ``recreate_standalone`` can re-mount the same volume. On subprocess,
+        we map it to a stable subdir under the session root.
+        """
+        return self._volume_name
+
+    @property
+    def use_shard_conf(self) -> bool:
+        """Whether this handle was spawned with ``rust.conf`` (shard config)
+        rather than ``standalone-dev.conf``. Recreate honours this so the
+        new process keeps the same config family.
+        """
+        return self._use_shard_conf
 
     @property
     def pid(self) -> int:
@@ -548,33 +573,82 @@ class SubprocessProvider:
 
     # ── Standalone ──────────────────────────────────────────────────
 
-    def create_standalone(self, config: NodeConfig, wait_running: bool = True) -> SubprocessNodeHandle:
+    def create_standalone(
+        self,
+        config: NodeConfig,
+        wait_running: bool = True,
+        volume_name: Optional[str] = None,
+        use_shard_conf: bool = False,
+    ) -> SubprocessNodeHandle:
+        """Create a standalone node as a host subprocess.
+
+        Args:
+            config: Node configuration with CLI flags/options.
+            wait_running: If True (default), wait for the node to reach
+                Running state. Set False for tests that expect startup failure.
+            volume_name: Stable identifier for the data dir, mirroring
+                Docker's named volume. When provided, the data dir lives at
+                ``<session_root>/<volume_name>/`` and is reused on
+                ``recreate_standalone``. When omitted, an auto-numbered
+                ``standalone<N>`` subdir is used (anonymous, single-use).
+            use_shard_conf: If True, mount ``rust.conf`` (shard config) and
+                shard genesis files instead of ``standalone-dev.conf``.
+                Used for observers joining a standalone baseline.
+        """
         self._standalone_counter += 1
         suffix = self._standalone_counter
         role_key = f"standalone{suffix}"
+        # If a stable volume_name was provided, use it as the data subdir
+        # so recreate_standalone can find the same directory.
+        data_subdir = volume_name if volume_name else role_key
         ports = self._ports.allocate()
 
         extra_cli = self._build_extra_cli(config)
-        cli = [
+        cli: List[str] = [
             "-s",
             f"--validator-private-key={_BOOTSTRAP_PRIVATE_KEY}",
             "--allow-private-addresses",
-            f"--bonds-file={self._paths.standalone_bonds}",
-            f"--wallets-file={self._paths.standalone_wallets}",
         ]
+        if use_shard_conf:
+            # Shard-conf standalone: mount the multi-validator genesis
+            # files so joiners agree on bonds/wallets.
+            cli += [
+                f"--bonds-file={self._paths.genesis_bonds}",
+                f"--wallets-file={self._paths.genesis_wallets}",
+            ]
+        else:
+            cli += [
+                f"--bonds-file={self._paths.standalone_bonds}",
+                f"--wallets-file={self._paths.standalone_wallets}",
+            ]
         cli.extend(extra_cli)
 
-        # Override config-file: standalone uses its own conf (smaller
-        # validator set, instant finalization, etc.), not rust.conf.
-        # _spawn() always passes --config-file=rust_conf; replace with
-        # standalone_conf via a per-call override.
+        # Config-file selection mirrors DockerProvider:
+        #   default → standalone-dev.conf (small validator set, instant finalization)
+        #   use_shard_conf=True → rust.conf (shard config; required when joiners
+        #     will connect)
+        config_file = (
+            self._paths.rust_conf if use_shard_conf else self._paths.standalone_conf
+        )
+
+        # TLS cert selection: when joiners will connect (use_shard_conf=True),
+        # mount the prebaked bootstrap cert so its SAN contains
+        # BOOTSTRAP_NODE_ID — joiners' TLS verification keys off that ID.
+        # An auto-generated cert has a fresh node ID and joiners reject it
+        # with `Hostname verification failed: ... not found in certificate
+        # CN or SAN`.
+        cert_subdir = "bootstrap" if use_shard_conf else None
+
         handle = self._spawn_with_config_override(
             role_key=role_key,
             role=NodeRole.STANDALONE,
             ports=ports,
-            config_file=self._paths.standalone_conf,
+            config_file=config_file,
             cli_args=cli,
-            cert_subdir=None,  # standalone auto-generates
+            cert_subdir=cert_subdir,
+            data_subdir=data_subdir,
+            volume_name=volume_name,
+            use_shard_conf=use_shard_conf,
         )
 
         if wait_running:
@@ -589,6 +663,95 @@ class SubprocessProvider:
         self._active_handles.append(handle)
         return handle
 
+    def recreate_standalone(
+        self,
+        handle: SubprocessNodeHandle,
+        config: NodeConfig,
+        wait_running: bool = True,
+    ) -> SubprocessNodeHandle:
+        """Recreate a standalone with new config but the same data dir.
+
+        Mirrors ``DockerProvider.recreate_standalone``: stops the existing
+        process, then spawns a new one against the same data subdir (so
+        LMDB state persists across the restart). Used for restart-drift
+        tests.
+
+        The new process inherits ``volume_name`` and ``use_shard_conf``
+        from the original handle, so the conf file family is preserved.
+        Logs are appended to the original log file so post-restart events
+        and pre-restart context appear in one place (matching Docker's
+        stdout continuation across container recreation).
+        """
+        ports = handle.ports
+        volume_name = handle.volume_name
+        use_shard_conf = handle.use_shard_conf
+
+        # Stop the previous process; data dir on disk persists.
+        if handle.is_running():
+            handle.stop()
+        if handle in self._active_handles:
+            self._active_handles.remove(handle)
+
+        # Same data subdir — derive from volume_name (preferred) or fall
+        # back to the existing data_dir's name when no volume_name was set.
+        data_subdir = volume_name or handle.data_dir.name
+
+        extra_cli = self._build_extra_cli(config)
+        cli: List[str] = [
+            "-s",
+            f"--validator-private-key={_BOOTSTRAP_PRIVATE_KEY}",
+            "--allow-private-addresses",
+        ]
+        if use_shard_conf:
+            cli += [
+                f"--bonds-file={self._paths.genesis_bonds}",
+                f"--wallets-file={self._paths.genesis_wallets}",
+            ]
+        else:
+            cli += [
+                f"--bonds-file={self._paths.standalone_bonds}",
+                f"--wallets-file={self._paths.standalone_wallets}",
+            ]
+        cli.extend(extra_cli)
+
+        config_file = (
+            self._paths.rust_conf if use_shard_conf else self._paths.standalone_conf
+        )
+
+        # See create_standalone: shard-conf standalones must use the
+        # prebaked bootstrap cert so joiners can validate its SAN.
+        cert_subdir = "bootstrap" if use_shard_conf else None
+
+        # Reuse role_key for the node name so test logs / docs are stable
+        # across the recreate. If the handle had a volume_name, use it as
+        # the role_key marker; otherwise keep the original subdir name.
+        role_key = data_subdir
+
+        new_handle = self._spawn_with_config_override(
+            role_key=role_key,
+            role=NodeRole.STANDALONE,
+            ports=ports,
+            config_file=config_file,
+            cli_args=cli,
+            cert_subdir=cert_subdir,
+            data_subdir=data_subdir,
+            log_mode="a",  # append, don't truncate the original log
+            volume_name=volume_name,
+            use_shard_conf=use_shard_conf,
+        )
+
+        if wait_running:
+            wait_for_node_running(
+                get_logs=new_handle.logs,
+                is_running=new_handle.is_running,
+                node_name=new_handle.name,
+                timeout=self._timeouts.node_startup,
+                status_url=f"http://{new_handle.grpc_host}:{new_handle.ports.http}/api/status",
+            )
+
+        self._active_handles.append(new_handle)
+        return new_handle
+
     def _spawn_with_config_override(
         self,
         role_key: str,
@@ -597,11 +760,28 @@ class SubprocessProvider:
         config_file: str,
         cli_args: List[str],
         cert_subdir: Optional[str],
+        data_subdir: Optional[str] = None,
+        log_mode: str = "w",
+        volume_name: Optional[str] = None,
+        use_shard_conf: bool = False,
     ) -> SubprocessNodeHandle:
-        """Like ``_spawn`` but uses ``config_file`` instead of rust.conf."""
-        data_dir = self._session_root / role_key
+        """Like ``_spawn`` but uses ``config_file`` instead of rust.conf.
+
+        Args:
+            data_subdir: Override the subdir name under ``session_root``.
+                Used by ``recreate_standalone`` to keep the same data dir
+                across restarts.
+            log_mode: ``"w"`` (default) truncates; ``"a"`` appends. Use
+                append on recreate so the recreated node's logs join the
+                original log file (mirrors Docker's stdout continuation
+                across container recreation).
+            volume_name / use_shard_conf: stored on the handle for
+                ``recreate_standalone`` to read.
+        """
+        subdir = data_subdir or role_key
+        data_dir = self._session_root / subdir
         data_dir.mkdir(parents=True, exist_ok=True)
-        log_path = self._session_root / f"{role_key}.log"
+        log_path = self._session_root / f"{subdir}.log"
 
         cmd: List[str] = [
             str(self._binary), "run",
@@ -626,7 +806,7 @@ class SubprocessProvider:
         env.setdefault("RUST_LOG", "info")
         env.setdefault("OPENAI_ENABLED", "false")
 
-        log_fh = open(log_path, "w")
+        log_fh = open(log_path, log_mode)
         proc = subprocess.Popen(
             cmd, stdout=log_fh, stderr=subprocess.STDOUT, env=env,
             start_new_session=True,
@@ -642,6 +822,8 @@ class SubprocessProvider:
             log_fh=log_fh,
             spawn_args=cmd,
             spawn_env=env,
+            volume_name=volume_name,
+            use_shard_conf=use_shard_conf,
         )
 
     def destroy_standalone(self, handle: SubprocessNodeHandle) -> None:

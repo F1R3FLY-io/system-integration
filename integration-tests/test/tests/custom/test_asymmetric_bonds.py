@@ -36,6 +36,7 @@ from ...infra.polling import (
     get_blocks_if_enough,
     poll_until,
     try_find_deploy,
+    wait_for_lfb_with_ft,
 )
 from ...infra.shard import Shard
 
@@ -167,6 +168,13 @@ def test_finalization_asymmetric_bonds(asymmetric_shard, timeouts) -> None:
     No single validator can finalize alone. V1 + at least one other
     validator must build on a block for it to finalize (FT > 0.33).
     Finalized blocks must have FT >= FTT on all nodes including readonly.
+
+    In a multi-parent DAG with asymmetric bonds, the LFB pointer can
+    advance ahead of the cached per-block FT field — a block becomes
+    the LFB via V1 alone (FT = 60/95 = 0.263) before V2's signature
+    lifts the clique to FT = 80/95 = 0.368. ``wait_for_lfb_with_ft``
+    polls the combined predicate (single gRPC call per iteration, no
+    torn reads).
     """
     all_nodes = asymmetric_shard.all_nodes
     validators = asymmetric_shard.validators
@@ -179,34 +187,14 @@ def test_finalization_asymmetric_bonds(asymmetric_shard, timeouts) -> None:
     validators[1].deploy_string("@2002!(2)", VALIDATOR2_ID.private_key())
     validators[2].deploy_string("@2003!(3)", VALIDATOR3_ID.private_key())
 
-    # All nodes (including readonly) must advance LFB to target AND have its
-    # FT propagate to >= FTT. In a multi-parent DAG with asymmetric bonds, the
-    # LFB advances ahead of FT — a block can be finalized via V1 alone (FT =
-    # 60/95 = 0.263) before V2's signature lifts the clique to FT = 80/95 =
-    # 0.368. We poll on the combined predicate so the assertion isn't sampled
-    # mid-propagation.
     target = initial_lfb_number + 3
-    for node in all_nodes:
-        poll_until(
-            predicate=lambda n=node: (
-                (n.last_finalized_block().blockInfo.blockNumber, float(n.last_finalized_block().blockInfo.faultTolerance))
-                if n.last_finalized_block().blockInfo.blockNumber >= target
-                and float(n.last_finalized_block().blockInfo.faultTolerance) >= _FTT
-                else None
-            ),
-            timeout=timeouts.finalization * 6,
-            interval=5.0,
-            description=f"{node.name} LFB >= #{target} AND FT >= {_FTT}",
-        )
+    timeout = timeouts.finalization * 6
 
-    # Final state log (post-poll, both invariants already hold)
     for node in all_nodes:
-        lfb = node.last_finalized_block()
-        ft = float(lfb.blockInfo.faultTolerance)
-        logging.info("%s: LFB #%d, FT=%.2f", node.name, lfb.blockInfo.blockNumber, ft)
-        assert ft >= _FTT, (
-            f"{node.name}: finalized block #{lfb.blockInfo.blockNumber} "
-            f"has FT={ft}, expected >= FTT={_FTT}"
+        info = wait_for_lfb_with_ft(node, target, _FTT, timeout=timeout, interval=5.0)
+        logging.info(
+            "%s: LFB #%d, FT=%.2f",
+            node.name, info.blockNumber, float(info.faultTolerance),
         )
 
     logging.info("Finalization verified on all %d nodes (FT >= %.2f)", len(all_nodes), _FTT)

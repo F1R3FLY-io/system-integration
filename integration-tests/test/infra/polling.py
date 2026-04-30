@@ -29,6 +29,7 @@ __all__ = [
     "wait_for_deploy_included",
     "wait_for_finalized",
     "wait_for_deploy_finalized",
+    "wait_for_lfb_with_ft",
     "deploy_and_read",
     "deploy_with_fallback",
     "wait_for_block_visible",
@@ -140,6 +141,44 @@ def wait_for_deploy_finalized(
     """
     return _client_wait_for_deploy_finalized(
         node._external_client(), deploy_id, timeout, interval
+    )
+
+
+def wait_for_lfb_with_ft(
+    node,
+    target_number: int,
+    ftt: float,
+    timeout: int,
+    interval: float = 2.0,
+):
+    """Poll until ``node``'s LFB satisfies BOTH invariants:
+
+    - ``blockNumber >= target_number``
+    - ``faultTolerance >= ftt``
+
+    Single ``last_finalized_block()`` call per iteration — no torn reads
+    between the two fields. Returns the final ``BlockInfo`` once both
+    hold. Use when a test must verify cross-node propagation of the
+    cached per-block FT field, not just the LFB pointer.
+
+    The Rust node updates the LFB pointer (via local clique oracle) and
+    the per-block ``faultTolerance`` field (via
+    ``propagate_ft_to_finalized_blocks``) on separate paths. They can be
+    out of sync — especially on observer/readonly nodes. Asserting on
+    the cached field is a stronger invariant than ``isFinalized`` alone.
+    """
+    def _check():
+        lfb_info = node.last_finalized_block().blockInfo
+        if (lfb_info.blockNumber >= target_number
+                and float(lfb_info.faultTolerance) >= ftt):
+            return lfb_info
+        return None
+
+    return poll_until(
+        predicate=_check,
+        timeout=timeout,
+        interval=interval,
+        description=f"{node.name} LFB >= #{target_number} AND FT >= {ftt}",
     )
 
 
