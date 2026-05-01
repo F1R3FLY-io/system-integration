@@ -16,6 +16,7 @@
 #   SKIP_LINT=1          - Skip all lint checks (ruff lint + format)
 #   SKIP_RUFF=1          - Skip ruff linting only
 #   SKIP_FORMAT=1        - Skip ruff formatting check only (legacy: SKIP_BLACK)
+#   SKIP_YAML=1          - Skip YAML validation
 #   SKIP_TESTS=1         - Skip pytest unit tests
 #   VERBOSE=1            - Show all test output (not just failures)
 #   QUICK=1              - Skip tests, lint only
@@ -46,6 +47,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 SKIP_LINT="${SKIP_LINT:-0}"
 SKIP_RUFF="${SKIP_RUFF:-0}"
 SKIP_FORMAT="${SKIP_FORMAT:-${SKIP_BLACK:-0}}"
+SKIP_YAML="${SKIP_YAML:-0}"
 SKIP_TESTS="${SKIP_TESTS:-0}"
 VERBOSE="${VERBOSE:-0}"
 QUICK="${QUICK:-0}"
@@ -251,15 +253,87 @@ pid_lint=$!
 ) &
 pid_test=$!
 
+# --- YAML validation (background) ---
+# Mirrors ci.yml's YAML step: parse compose/*.yml, services.yml, *.yml, *.yaml
+# with yaml.safe_load. Catches malformed YAML that pre-commit would only see
+# when the file is staged.
+(
+    total=0; passed=0; failed=0; skipped=0; has_failure=0
+    if [[ "$SKIP_YAML" == "1" ]]; then
+        echo -e "  ${CYAN}[yaml]${NC} validate ${YELLOW}SKIP${NC} (SKIP_YAML=1)" >&3
+        echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/yaml.counts"
+        exit 0
+    fi
+
+    python_cmd=""
+    if command -v poetry &> /dev/null && poetry run python3 -c "import yaml" &> /dev/null 2>&1; then
+        python_cmd="poetry run python3"
+    elif command -v python3 &> /dev/null && python3 -c "import yaml" &> /dev/null 2>&1; then
+        python_cmd="python3"
+    fi
+
+    if [[ -z "$python_cmd" ]]; then
+        echo -e "  ${CYAN}[yaml]${NC} validate ${YELLOW}SKIP${NC} (pyyaml not available)" >&3
+        skipped=$((skipped + 1))
+        echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/yaml.counts"
+        exit 0
+    fi
+
+    total=$((total + 1))
+    yaml_out="$RESULTS_DIR/yaml.out"
+    if (cd "$REPO_ROOT" && $python_cmd - <<'PYSCRIPT' > "$yaml_out" 2>&1
+import glob
+import sys
+
+import yaml
+
+errors = []
+seen = set()
+for pattern in ("compose/*.yml", "services.yml", "*.yml", "*.yaml"):
+    for f in glob.glob(pattern):
+        if f in seen:
+            continue
+        seen.add(f)
+        try:
+            with open(f) as fh:
+                yaml.safe_load(fh)
+        except yaml.YAMLError as e:
+            errors.append(f"{f}: {e}")
+
+for e in errors:
+    print(e, file=sys.stderr)
+sys.exit(1 if errors else 0)
+PYSCRIPT
+    ); then
+        echo -e "  ${CYAN}[yaml]${NC} validate ${GREEN}PASS${NC}" >&3
+        passed=$((passed + 1))
+    else
+        echo -e "  ${CYAN}[yaml]${NC} validate ${RED}FAIL${NC}" >&3
+        failed=$((failed + 1))
+        has_failure=1
+        {
+            echo ""
+            echo -e "${RED}FAIL${NC}: yaml validation"
+            echo "--- Output ---"
+            cat "$yaml_out"
+            echo "--------------"
+        } >> "$RESULTS_DIR/yaml-failures.out"
+    fi
+    rm -f "$yaml_out"
+
+    echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/yaml.counts"
+) &
+pid_yaml=$!
+
 # Wait for all check suites to finish
-wait "$pid_lint" "$pid_test" 2>/dev/null || true
+wait "$pid_lint" "$pid_test" "$pid_yaml" 2>/dev/null || true
 
 # Close the saved fd
 exec 3>&-
 
 # Show failure details and aggregate results
 TESTS_TOTAL=0; TESTS_PASSED=0; TESTS_FAILED=0; TESTS_SKIPPED=0; FAILED=0
-for suite in lint test; do
+for suite in lint test yaml; do
     # Show failure details if any
     if [[ -f "$RESULTS_DIR/${suite}-failures.out" ]]; then
         echo ""
@@ -308,6 +382,7 @@ else
     echo "  SKIP_LINT=1 git push     - Skip all lint checks"
     echo "  SKIP_RUFF=1 git push     - Skip ruff lint only"
     echo "  SKIP_FORMAT=1 git push   - Skip ruff format only"
+    echo "  SKIP_YAML=1 git push     - Skip YAML validation"
     echo "  SKIP_TESTS=1 git push    - Skip unit tests"
     echo "  TEST_TIMEOUT=60          - Set per-test timeout (default: 120s)"
     exit 1
