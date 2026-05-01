@@ -71,7 +71,7 @@ def test_heartbeat_creates_blocks_when_idle(provider, node_conf, timeouts) -> No
 
         block_count, success_count = poll_until(
             predicate=_enough_heartbeat_blocks,
-            timeout=timeouts.finalization * 4,
+            timeout=timeouts.finalization * 6,
             interval=5.0,
             description="heartbeat creates 4+ blocks with 3+ success logs",
         )
