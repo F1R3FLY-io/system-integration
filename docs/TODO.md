@@ -11,21 +11,22 @@ tracked in [F1R3FLY-io/f1r3node Issues](https://github.com/F1R3FLY-io/f1r3node/i
 
 ## 1. Test Suite Baseline
 
-Last full run: **2026-04-28 (Gate 1.1)** on `refactor/integration-test-framework`
-working tree — 92 passed / 2 failed in 34m36s, no forbidden-pattern trips.
+Last full runs: **2026-05-01** on `refactor/integration-test-framework@32ed01c`
+against `rust/staging@96d81971` (post-#488 merge) via subprocess provider — 3
+clean wall-clock runs at **91 passed / 0 failed** in 26:36 / 27:04 / 26:58.
 
-Spot-check 2026-04-30 on `rust/staging` HEAD (`bfaa2c89` self-contained binary)
-via subprocess provider:
+Earlier reference points retained for context:
 
-- `test_shard_degradation` — 3/3 runs pass at 646.7s (was failing at 710s in
-  §1.1). Stable across runs. Graduated out of the deselect list (§ 2.5).
-- `test_finalization_asymmetric_bonds` — still fails (PR #484 fixed the
-  validator side; readonly observer's FT cache path still broken). § 2.1 +
-  smoking-gun evidence dump confirms.
+- §1.1 (Gate 1.1) on 2026-04-28: 92 passed / 2 failed in 34:36 (Docker provider).
+- Subprocess+`rust/staging@bfaa2c89` spot-check 2026-04-30: `test_shard_degradation`
+  graduated out of deselect (3/3 stable at ~647s, § 2.5);
+  `test_finalization_asymmetric_bonds` confirmed as a real observer FT-cache
+  divergence bug (§ 2.1).
 
-**Image:** `f1r3flyindustries/f1r3fly-rust-node:local` built from
-`fix/genesis-validator-late-join-recovery@66a0ed42` (PR #489 — late-joiner fix
-+ flaky-test serialization).
+**Binary:** built from `services/f1r3node-rust-baseline` checkout pinned to
+`rust/staging@96d81971`. Path passed via `F1R3FLY_NODE_BINARY` env var when
+the default build (`services/f1r3node-rust/target/release/node`) is on a
+different branch.
 
 **Canonical run command:**
 
@@ -43,9 +44,10 @@ poetry run pytest \
   -v --tb=short -n auto --dist=loadgroup --timeout=1200
 ```
 
-Effective parallelism is ~2.05× (4255s of work in 2076s wall-clock). `loadgroup`
-pins all `@shared` tests to one worker and all `@custom` to one worker; xdist
-workers idle while the long `@shared`/`@custom` tails finish sequentially.
+Wall-clock is dominated by the `@shared` and `@custom` tails: `loadgroup` pins
+all `@shared` tests to one worker and all `@custom` to one worker, so xdist
+workers idle once the standalone fan-out finishes. Today's runs land in the
+26-27 min band consistently.
 
 ### 1.1 Baseline status — single source of truth
 
