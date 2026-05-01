@@ -1,6 +1,6 @@
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
 import requests
 from f1r3fly.crypto import PrivateKey
@@ -35,12 +35,6 @@ class ApiStatus:
 class PrepareResponse:
     names: List[str]
     seq_number: int
-
-
-@dataclass
-class DataResponse:
-    exprs: List[Union[str, int]]
-    length: int
 
 
 def _check_reponse(response: requests.Response) -> None:
@@ -140,15 +134,6 @@ class HttpClient:
         _check_reponse(rep)
         return rep.text
 
-    def data_at_name(self, name: str, depth: int, name_type: str) -> DataResponse:
-        data_at_name_url = self.url + "/data-at-name"
-        rep = requests.post(
-            data_at_name_url, json={"name": {name_type: {"data": name}}, "depth": depth}, timeout=60
-        )
-        _check_reponse(rep)
-        message = rep.json()
-        return DataResponse(exprs=message["exprs"], length=message["length"])
-
     def last_finalized_block(self) -> Dict:
         last_finalized_block_url = self.url + "/last-finalized-block"
         rep = requests.get(last_finalized_block_url, timeout=60)
@@ -173,5 +158,17 @@ class HttpClient:
     def get_deploy(self, deploy_id: str) -> Dict:
         deploy_url = f"{self.url}/deploy/{deploy_id}"
         rep = requests.get(deploy_url, timeout=60)
+        _check_reponse(rep)
+        return rep.json()
+
+    def get_deploy_detail(self, deploy_id: str) -> Dict:
+        deploy_url = f"{self.url}/deploy/{deploy_id}?view=detail"
+        rep = requests.get(deploy_url, timeout=60)
+        _check_reponse(rep)
+        return rep.json()
+
+    def explore_deploy(self, term: str) -> Dict:
+        explore_url = self.url + "/explore-deploy"
+        rep = requests.post(explore_url, json={"term": term}, timeout=60)
         _check_reponse(rep)
         return rep.json()

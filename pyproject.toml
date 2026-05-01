@@ -29,6 +29,7 @@ pycryptodome = "*"
 pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git" }
 requests = "*"
 pytest-timeout = "^2.4.0"
+websocket-client = "^1.9.0"
 
 [tool.poetry.scripts]
 shardctl = "shardctl.cli:app"
@@ -67,13 +68,19 @@ python_files = [
 	"test_dag_correctness.py",
 	"test_finalization.py",
 	"test_propose.py",
+	"test_replay_correctness.py",
+	"test_convergence.py",
+	"test_load.py",
 	"test_consensus_health.py",
+	"test_websocket.py",
 	"test_synchrony_constraint.py",
 	"test_asymmetric_bonds.py",
 	"test_bonding_validators.py",
 	"test_trim_state.py",
 	"test_slash.py",
 	"test_unbond.py",
+	"test_bridge_admin.py",
+	"test_shard_degradation.py",
 ]
 markers = [
 	"xdist_group: assign test to an xdist load group (shard, standalone, custom)",

@@ -177,6 +177,13 @@ def _is_rust_node() -> bool:
     return "rust" in image.lower()
 
 
+def _get_conf_file() -> str:
+    """Determine which HOCON config file to use based on DEFAULT_IMAGE."""
+    if _is_rust_node():
+        return "rust.conf"
+    return "scala.conf"
+
+
 def _get_compose_file() -> str:
     """Determine which compose file to use based on DEFAULT_IMAGE env var."""
     if _is_rust_node():
@@ -695,6 +702,14 @@ def pytest_runtest_teardown(item, nextitem) -> None:
     if item.nodeid != _last_shard_test_nodeid:
         return
 
+    skip_setup = item.config.getoption("--skip-setup")
+    keep_running = item.config.getoption("--keep-running")
+    if skip_setup or keep_running:
+        logging.info(
+            "Last shard test completed -- shard left running (--skip-setup or --keep-running)."
+        )
+        return
+
     logging.info("Last shard test completed -- tearing down shard environment.")
     _compose_down()
     _shard_started = False
@@ -747,7 +762,13 @@ def pytest_addoption(parser: Parser) -> None:
         "--skip-setup",
         action="store_true",
         default=False,
-        help="skip shard setup (assume already running)",
+        help="skip shard setup and teardown (assume already running)",
+    )
+    parser.addoption(
+        "--keep-running",
+        action="store_true",
+        default=False,
+        help="start shard normally but skip teardown (leave running for debugging)",
     )
 
 
@@ -840,6 +861,8 @@ def shard(
     Use --skip-setup to skip compose up/down (when shard is already running).
     """
     skip_setup = request.config.getoption("--skip-setup")
+    keep_running = request.config.getoption("--keep-running")
+    skip_teardown = skip_setup or keep_running
     timeout = command_line_options.node_startup_timeout
 
     if not skip_setup:
@@ -865,15 +888,11 @@ def shard(
         yield
 
     finally:
-        # Always tear down when not skipping setup, even if the shard never
-        # reached Running state. Previously, _compose_down was only called
-        # when _shard_started was True, which meant partially started shards
-        # (e.g. _compose_up succeeded but _wait_for_running_state timed out)
-        # were never cleaned up, leaving containers running and consuming
-        # resources for all subsequent tests.
-        if not skip_setup:
+        if not skip_teardown:
             _compose_down()
             _shard_started = False
+        elif keep_running:
+            logging.info("--keep-running: shard left running for debugging.")
 
 
 def _make_node(docker_client: DockerClient, container_name: str, command_timeout: int) -> Node:
@@ -979,16 +998,21 @@ CUSTOM_JOINER_CONTAINER = "rnode.custom.joiner"
 BOOTSTRAP_NODE_ID = "1e780e5dfbe0a3d9470a2b414f502d59402e09c2"
 BOOTSTRAP_PRIVATE_KEY_HEX = "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
 
-# Port base offsets for custom shard nodes (host ports).
+# Default port base for custom shard nodes (host ports).
 # Each node uses 6 consecutive ports: protocol, ext-gRPC, int-gRPC,
-# HTTP, discovery, admin-HTTP.
-_CUSTOM_PORT_BASES = {
-    "boot": 40500,
-    "validator1": 40510,
-    "validator2": 40520,
-    "validator3": 40530,
-    "joiner": 40540,
-}
+# HTTP, discovery, admin-HTTP. Tests can pass different bases to avoid
+# TIME_WAIT conflicts when running back-to-back.
+_DEFAULT_CUSTOM_PORT_BASE = 40500
+
+
+def _custom_port_bases(base: int = _DEFAULT_CUSTOM_PORT_BASE) -> dict:
+    return {
+        "boot": base,
+        "validator1": base + 10,
+        "validator2": base + 20,
+        "validator3": base + 30,
+        "joiner": base + 40,
+    }
 
 
 @dataclasses.dataclass
@@ -1043,6 +1067,7 @@ class CustomShard:
     network_name: str
     genesis_dir: str
     bootstrap_host: str
+    port_bases: dict
 
 
 def _generate_custom_genesis(
@@ -1099,6 +1124,7 @@ def _generate_custom_compose(
     required_signatures: Optional[int] = None,
     global_cli_options: Optional[Dict[str, str]] = None,
     per_node_cli_options: Optional[Dict[str, Dict[str, str]]] = None,
+    port_bases: Optional[dict] = None,
 ) -> str:
     """Generate a complete docker-compose YAML file for a custom shard.
 
@@ -1169,45 +1195,17 @@ def _generate_custom_compose(
             max_ram_pct,
         )
 
-    # F1R3_* runtime tuning for Rust nodes (must match compose/f1r3node-rust.yml).
-    # These env vars are read via OnceLock on first use; Scala ignores them.
-    rust_env = (
-        [
-            # NOTE: All F1R3_SYNCHRONY_* vars intentionally omitted here.
-            # They override per-validator CLI settings at runtime via OnceLock, breaking
-            # test_synchrony_constraint which sets different thresholds per node.
-            # In particular, F1R3_SYNCHRONY_FINALIZED_BASELINE_ENABLED=1 enables a
-            # permissive check that bypasses the threshold the test expects to trigger.
-            # The static compose (docker-compose.rust.yml) sets these via x-rnode anchor.
-            "F1R3_HEARTBEAT_FRONTIER_CHASE_MAX_LAG=0",
-            "F1R3_HEARTBEAT_SELF_PROPOSE_COOLDOWN_MS=15000",
-            "F1R3_FINALIZER_WORK_BUDGET_MS=8000",
-            "F1R3_FINALIZER_CATCHUP_WORK_BUDGET_MS=8000",
-            "F1R3_FINALIZER_STEP_TIMEOUT_MS=1000",
-            "F1R3_FINALIZER_CATCHUP_STEP_TIMEOUT_MS=1000",
-            "F1R3_FINALIZER_MAX_CLIQUE_CANDIDATES=128",
-            "F1R3_FINALIZER_CANDIDATE_RANKING=recency_stake",
-            "F1R3_BLOCK_RETRIEVER_PEER_REQUERY_COOLDOWN_MS=500",
-            "F1R3_BLOCK_RETRIEVER_BROADCAST_ONLY_COOLDOWN_MS=500",
-            "F1R3_BLOCK_RETRIEVER_DEPENDENCY_RECOVERY_COOLDOWN_MS=500",
-            "F1R3_BLOCK_RETRIEVER_STALE_REQUEST_LIFETIME_MULTIPLIER=6",
-            "F1R3_BLOCK_RETRIEVER_MAX_RETRIES_PER_HASH=32",
-            "F1R3_BLOCK_RETRIEVER_KNOWN_PEER_REQUERY_SOFT_LIMIT=8",
-            "F1R3_BLOCK_RETRIEVER_MIN_REREQUEST_INTERVAL_MS=500",
-            "F1R3_BLOCK_RETRIEVER_RETRY_BUDGET_QUARANTINE_MS=10000",
-            "F1R3_BLOCK_RETRIEVER_DEDUP_QUERIED_PEERS=0",
-            "F1R3_MAX_BLOCKS_IN_PROCESSING=2048",
-            "F1R3_MAX_USER_DEPLOYS_PER_BLOCK=32",
-        ]
-        if rust
-        else []
-    )
+    # Rust nodes use HOCON config (defaults.conf + override file) for all
+    # runtime tuning. No F1R3_* env vars needed — they were removed in v0.4.10.
+    rust_env = ["RUST_LOG=info"] if rust else []
 
     services: Dict = {}
 
     # ── Bootstrap node ──
     boot_host = CUSTOM_BOOT_CONTAINER
-    boot_base = _CUSTOM_PORT_BASES["boot"]
+    if port_bases is None:
+        port_bases = _custom_port_bases()
+    boot_base = port_bases["boot"]
     boot_command = (
         (
             []
@@ -1241,7 +1239,7 @@ def _generate_custom_compose(
         "ports": [f"{boot_base + p}:4040{p}" for p in range(6)],
         "volumes": [
             "boot-data:/var/lib/rnode",
-            f"{abs_conf}/default.conf:/var/lib/rnode/rnode.conf",
+            f"{abs_conf}/{_get_conf_file()}:/var/lib/rnode/rnode.conf",
             f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
             f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
         ]
@@ -1275,7 +1273,7 @@ def _generate_custom_compose(
         node_key = f"validator{slot}"
         host = f"rnode.custom.{node_key}"
         cert_dir = f"validator{slot}"
-        base_port = _CUSTOM_PORT_BASES[node_key]
+        base_port = port_bases[node_key]
 
         validator_command = (
             (
@@ -1311,7 +1309,7 @@ def _generate_custom_compose(
             "ports": [f"{base_port + p}:4040{p}" for p in range(6)],
             "volumes": [
                 f"{node_key}-data:/var/lib/rnode",
-                f"{abs_conf}/default.conf:/var/lib/rnode/rnode.conf",
+                f"{abs_conf}/{_get_conf_file()}:/var/lib/rnode/rnode.conf",
                 f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
                 f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
             ]
@@ -1359,14 +1357,16 @@ def _generate_custom_compose(
     return compose_path
 
 
-def _custom_compose_cmd(compose_file: str, *args: str) -> List[str]:
+def _custom_compose_cmd(
+    compose_file: str, *args: str, project_name: str = CUSTOM_PROJECT_NAME
+) -> List[str]:
     """Build a docker-compose command for the custom shard."""
     tests_dir = _get_tests_dir()
     repo_root = os.path.dirname(tests_dir)
     return [
         *_docker_compose_bin(),
         "--project-name",
-        CUSTOM_PROJECT_NAME,
+        project_name,
         "--env-file",
         os.path.join(repo_root, ".env.node"),
         "-f",
@@ -1375,7 +1375,9 @@ def _custom_compose_cmd(compose_file: str, *args: str) -> List[str]:
     ]
 
 
-def _custom_compose_up(compose_file: str, *services: str) -> None:
+def _custom_compose_up(
+    compose_file: str, *services: str, project_name: str = CUSTOM_PROJECT_NAME
+) -> None:
     """Bring up custom shard services via docker-compose.
 
     When *services* is empty, starts all services defined in the compose
@@ -1386,7 +1388,7 @@ def _custom_compose_up(compose_file: str, *services: str) -> None:
     label = f"services: {', '.join(services)}" if services else "(all)"
     logging.info("Starting custom shard %s ...", label)
     result = subprocess.run(
-        _custom_compose_cmd(compose_file, "up", "-d", *services),
+        _custom_compose_cmd(compose_file, "up", "-d", *services, project_name=project_name),
         cwd=tests_dir,
         capture_output=True,
         check=False,
@@ -1457,6 +1459,42 @@ def _describe_port_owner(port: int) -> str:
     return "\n\n".join(outputs).strip()
 
 
+def _kill_process_on_port(port: int) -> bool:
+    """Kill any process (e.g. lingering docker-proxy) listening on a port.
+
+    Returns True if a process was found and killed.
+    """
+    # Try fuser first (most direct), then lsof as fallback
+    for cmd in [
+        ["fuser", "-k", f"{port}/tcp"],
+        ["lsof", "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
+    ]:
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if cmd[0] == "lsof" and result.stdout.strip():
+                for pid in result.stdout.strip().split("\n"):
+                    pid = pid.strip()
+                    if pid.isdigit():
+                        subprocess.run(
+                            ["kill", "-9", pid],
+                            capture_output=True,
+                            check=False,
+                        )
+                        logging.info("Killed PID %s holding port %d", pid, port)
+                return True
+            elif cmd[0] == "fuser" and result.returncode == 0:
+                logging.info("fuser killed process on port %d", port)
+                return True
+        except FileNotFoundError:
+            continue
+    return False
+
+
 def _wait_for_port_free(port: int, timeout: float = 15.0, force_cleanup: bool = True) -> None:
     """Wait until a TCP port is available for binding.
 
@@ -1464,16 +1502,21 @@ def _wait_for_port_free(port: int, timeout: float = 15.0, force_cleanup: bool = 
     state for a few seconds.  This function polls until the port is free
     or raises RuntimeError after the timeout.
 
+    If a port is stuck (e.g. lingering docker-proxy from a cancelled CI
+    run), attempts to kill the owning process directly.
+
     Args:
         port: TCP port number to check.
         timeout: Maximum seconds to wait.
         force_cleanup: If True, call _force_cleanup_custom_containers()
-            as a last resort when ports are stuck.  Set to False when
-            called from within a running custom shard (e.g. add_peer_to_shard)
-            to avoid destroying the active shard and its network.
+            and _kill_process_on_port() as last resorts when ports are
+            stuck.  Set to False when called from within a running custom
+            shard (e.g. add_peer_to_shard) to avoid destroying the active
+            shard and its network.
     """
     deadline = time.time() + timeout
-    retry_cleanup_done = False
+    cleanup_attempted = False
+    kill_attempted = False
     while time.time() < deadline:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1481,15 +1524,15 @@ def _wait_for_port_free(port: int, timeout: float = 15.0, force_cleanup: bool = 
                 s.bind(("0.0.0.0", port))
                 return
             except OSError:
-                # One extra cleanup pass can clear lingering docker-proxy
-                # listeners from aborted/overlapping custom shard teardowns.
-                if (
-                    force_cleanup
-                    and not retry_cleanup_done
-                    and time.time() >= (deadline - timeout / 2)
-                ):
+                elapsed = time.time() - (deadline - timeout)
+                # At 1/3 timeout: try removing containers by name
+                if force_cleanup and not cleanup_attempted and elapsed >= timeout / 3:
                     _force_cleanup_custom_containers()
-                    retry_cleanup_done = True
+                    cleanup_attempted = True
+                # At 2/3 timeout: kill whatever process holds the port
+                if force_cleanup and not kill_attempted and elapsed >= 2 * timeout / 3:
+                    _kill_process_on_port(port)
+                    kill_attempted = True
                 time.sleep(1)
     owner = _describe_port_owner(port)
     details = f"\nPort owner diagnostics:\n{owner}" if owner else ""
@@ -1518,14 +1561,18 @@ def _wait_for_port_range_free(
         _wait_for_port_free(base + offset, timeout=timeout, force_cleanup=force_cleanup)
 
 
-def _wait_for_custom_ports_free(num_validators: int, timeout: float = 60.0) -> None:
+def _wait_for_custom_ports_free(
+    num_validators: int, timeout: float = 60.0, port_bases: dict = None
+) -> None:
     """Wait for all custom shard host ports to be free.
 
     Previous custom shard teardown leaves kernel sockets in TIME_WAIT.
     """
+    if port_bases is None:
+        port_bases = _custom_port_bases()
     node_keys = ["boot"] + [f"validator{i + 1}" for i in range(num_validators)]
     for key in node_keys:
-        base = _CUSTOM_PORT_BASES[key]
+        base = port_bases[key]
         _wait_for_port_range_free(base, timeout=timeout)
 
 
@@ -1557,26 +1604,41 @@ def _wait_for_port_listening(host: str, port: int, timeout: float = 120.0) -> No
     raise RuntimeError(f"Port {host}:{port} not listening after {timeout}s")
 
 
-def _custom_compose_down(compose_file: str) -> None:
+def _custom_compose_down(compose_file: str, project_name: str = CUSTOM_PROJECT_NAME) -> None:
     """Tear down the custom shard via docker-compose."""
     tests_dir = _get_tests_dir()
     logging.info("Stopping custom shard ...")
     subprocess.run(
-        _custom_compose_cmd(compose_file, "down", "--volumes", "--remove-orphans"),
+        _custom_compose_cmd(
+            compose_file, "down", "--volumes", "--remove-orphans", project_name=project_name
+        ),
         cwd=tests_dir,
         check=False,
     )
 
 
 def _make_custom_node(
-    docker_client: DockerClient, container_name: str, command_timeout: int
+    docker_client: DockerClient, container_name: str, command_timeout: int, port_base: int = 0
 ) -> Node:
-    """Create a Node wrapper for a custom shard container."""
-    return Node.from_container_name(
-        docker_client=docker_client,
-        container_name=container_name,
+    """Create a Node wrapper for a custom shard container.
+
+    Port base determines the host port mapping. Each node uses 6 consecutive
+    ports starting from its base: protocol, ext-gRPC, int-gRPC, HTTP,
+    discovery, admin-HTTP.
+    """
+    from .rnode import PortMapping
+
+    container = docker_client.containers.get(container_name)
+    ports = PortMapping(
+        http=port_base + 3,
+        external_grpc=port_base + 1,
+        internal_grpc=port_base + 2,
+    )
+    return Node(
+        container=container,
         command_timeout=command_timeout,
         network=CUSTOM_NETWORK,
+        ports=ports,
     )
 
 
@@ -1607,6 +1669,7 @@ def start_custom_shard(
     extra_wallets: Optional[List[Tuple[str, int]]] = None,
     global_cli_options: Optional[Dict[str, str]] = None,
     per_node_cli_options: Optional[Dict[str, Dict[str, str]]] = None,
+    port_base: int = _DEFAULT_CUSTOM_PORT_BASE,
 ) -> Generator[CustomShard, None, None]:
     """Start a fully customizable shard for a single test.
 
@@ -1659,6 +1722,8 @@ def start_custom_shard(
     """
     tests_dir = _get_tests_dir()
     timeout = command_line_options.node_startup_timeout
+    port_bases = _custom_port_bases(port_base)
+    project_name = f"{CUSTOM_PROJECT_NAME}-{port_base}"
 
     container_names = [CUSTOM_BOOT_CONTAINER]
     for idx in range(len(bonds)):
@@ -1688,6 +1753,7 @@ def start_custom_shard(
             required_signatures=required_signatures,
             global_cli_options=effective_global_opts,
             per_node_cli_options=per_node_cli_options,
+            port_bases=port_bases,
         )
 
         # Clean any leftover state from a previous run.
@@ -1695,7 +1761,7 @@ def start_custom_shard(
         # removes containers from its own project context and misses
         # leftovers from a previous test or CI job.
         _force_cleanup_custom_containers()
-        _custom_compose_down(compose_file)
+        _custom_compose_down(compose_file, project_name=project_name)
 
         # Wait for all custom shard ports to be released (kernel TIME_WAIT).
         # Checking only boot is insufficient -- validator ports may still be
@@ -1703,8 +1769,8 @@ def start_custom_shard(
         # Also wait for the joiner port range: add_peer_to_shard teardown stops
         # the joiner container but doesn't wait for its ports, so a previous
         # test's joiner may still hold 40540-40545 in TIME_WAIT.
-        _wait_for_custom_ports_free(len(bonds))
-        _wait_for_port_range_free(_CUSTOM_PORT_BASES["joiner"])
+        _wait_for_custom_ports_free(len(bonds), port_bases=port_bases)
+        _wait_for_port_range_free(port_bases["joiner"])
 
         # ── Staggered startup: boot first, then validators ──
         # Starting all JVM containers simultaneously creates a memory
@@ -1716,8 +1782,8 @@ def start_custom_shard(
 
         def _do_staggered_startup() -> None:
             # Phase 1: start boot alone
-            _custom_compose_up(compose_file, "boot")
-            boot_http_port = _CUSTOM_PORT_BASES["boot"] + 3  # HTTP API port
+            _custom_compose_up(compose_file, "boot", project_name=project_name)
+            boot_http_port = port_bases["boot"] + 3  # HTTP API port
             logging.info(
                 "Waiting for boot HTTP port %d to accept connections...",
                 boot_http_port,
@@ -1725,16 +1791,16 @@ def start_custom_shard(
             _wait_for_port_listening("localhost", boot_http_port, timeout=120)
             logging.info("Boot HTTP port is listening, starting validators...")
             # Phase 2: start validators (boot is already running)
-            _custom_compose_up(compose_file)
+            _custom_compose_up(compose_file, project_name=project_name)
 
         try:
             _do_staggered_startup()
         except (subprocess.CalledProcessError, RuntimeError):
             logging.warning("Custom shard startup failed, cleaning up and retrying...")
             _force_cleanup_custom_containers()
-            _custom_compose_down(compose_file)
-            _wait_for_custom_ports_free(len(bonds))
-            _wait_for_port_range_free(_CUSTOM_PORT_BASES["joiner"])
+            _custom_compose_down(compose_file, project_name=project_name)
+            _wait_for_custom_ports_free(len(bonds), port_bases=port_bases)
+            _wait_for_port_range_free(port_bases["joiner"])
             _do_staggered_startup()
 
         logging.info(
@@ -1752,6 +1818,7 @@ def start_custom_shard(
                 docker_client,
                 name,
                 command_line_options.command_timeout,
+                port_base=port_bases[key],
             )
 
         yield CustomShard(
@@ -1759,15 +1826,16 @@ def start_custom_shard(
             network_name=CUSTOM_NETWORK,
             genesis_dir=genesis_dir,
             bootstrap_host=CUSTOM_BOOT_CONTAINER,
+            port_bases=port_bases,
         )
 
     finally:
         for node in nodes.values():
             node.stop_logging()
         if compose_file:
-            _custom_compose_down(compose_file)
-        _wait_for_custom_ports_free(len(bonds))
-        _wait_for_port_range_free(_CUSTOM_PORT_BASES["joiner"])
+            _custom_compose_down(compose_file, project_name=project_name)
+        _wait_for_custom_ports_free(len(bonds), port_bases=port_bases)
+        _wait_for_port_range_free(port_bases["joiner"])
         if genesis_dir and os.path.exists(genesis_dir):
             shutil.rmtree(genesis_dir, ignore_errors=True)
         if compose_file and os.path.exists(compose_file):
@@ -1855,7 +1923,8 @@ def add_peer_to_shard(
             else:
                 command.append(k)
 
-    base_port = _CUSTOM_PORT_BASES["joiner"]
+    port_bases = shard.port_bases
+    base_port = port_bases["joiner"]
     ports = {f"4040{p}/tcp": base_port + p for p in range(6)}
 
     volumes = {
@@ -1863,7 +1932,7 @@ def add_peer_to_shard(
             "bind": "/var/lib/rnode/",
             "mode": "rw",
         },
-        os.path.join(abs_conf, "default.conf"): {
+        os.path.join(abs_conf, _get_conf_file()): {
             "bind": "/var/lib/rnode/rnode.conf",
             "mode": "ro",
         },
@@ -1896,7 +1965,7 @@ def add_peer_to_shard(
         # the joiner container tries to start.
         # timeout=120: Linux TIME_WAIT is up to 60s; the default 60s
         # timeout races with it and can fail on busy CI runners.
-        _wait_for_port_range_free(_CUSTOM_PORT_BASES["joiner"], timeout=120.0, force_cleanup=False)
+        _wait_for_port_range_free(port_bases["joiner"], timeout=120.0, force_cleanup=False)
 
         # Match the custom shard's JVM tuning so the joiner doesn't
         # claim more RAM than its share (see _generate_custom_compose).
@@ -1929,6 +1998,7 @@ def add_peer_to_shard(
             docker_client,
             container_name,
             command_line_options.command_timeout,
+            port_base=port_bases["joiner"],
         )
         yield node
 
@@ -1948,4 +2018,4 @@ def add_peer_to_shard(
             docker_client.volumes.get(joiner_volume).remove()
         except Exception:
             pass
-        _wait_for_port_range_free(_CUSTOM_PORT_BASES["joiner"])
+        _wait_for_port_range_free(port_bases["joiner"])

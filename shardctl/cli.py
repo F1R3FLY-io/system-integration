@@ -45,11 +45,8 @@ def _resolve_compose_files(config: Config, services: Optional[List[str]]) -> Lis
             compose_file = config.resolve_compose_file(svc)
             if not compose_file.exists():
                 console.print(f"[red]Compose file not found: {compose_file}[/red]")
-                console.print(
-                    "[dim]Available: "
-                    f"{', '.join(f.stem for f in sorted(config.compose_dir.glob('*.yml')))}"
-                    "[/dim]"
-                )
+                available = ", ".join(f.stem for f in sorted(config.compose_dir.glob("*.yml")))
+                console.print(f"[dim]Available: {available}[/dim]")
                 raise typer.Exit(1)
             files.append(compose_file)
         return files
@@ -81,9 +78,8 @@ def clone(
 ):
     """Clone service repositories with their configured branches.
 
-    By default, only enabled services are cloned. Use --include-disabled
-    to also clone disabled services.
-    Specify service names to clone only specific services
+    By default, only enabled services are cloned. Use --include-disabled to also
+    clone disabled services. Specify service names to clone only specific services
     (overrides --include-disabled).
 
     This command reads repository URLs and branches from services.yml and clones
@@ -119,8 +115,7 @@ def clone(
             if not service_repos:
                 return
     else:
-        # Get service repositories from config
-        # (filter by enabled unless --include-disabled is specified)
+        # Filter by enabled unless --include-disabled is specified.
         service_repos = config.get_service_repos(only_enabled=not include_disabled)
 
         if not service_repos:
@@ -133,8 +128,8 @@ def clone(
             else:
                 console.print(
                     "[yellow]No enabled service repositories found.[/yellow]\n"
-                    "[dim]Use --include-disabled to clone disabled "
-                    "services or check your services.yml file.[/dim]"
+                    "[dim]Use --include-disabled to clone disabled services "
+                    "or check your services.yml file.[/dim]"
                 )
             return
 
@@ -143,9 +138,9 @@ def clone(
 
     # Clone services
     if services:
+        names = ", ".join(service_repos.keys())
         console.print(
-            f"[bold blue]Cloning {len(service_repos)} service(s): "
-            f"{', '.join(service_repos.keys())}...[/bold blue]\n"
+            f"[bold blue]Cloning {len(service_repos)} service(s): {names}...[/bold blue]\n"
         )
     elif include_disabled:
         console.print(
@@ -468,20 +463,18 @@ def build(
             console.print("[yellow]No enabled services with build configurations found[/yellow]")
             return
 
+        n = len(build_configs)
         if no_docker:
             console.print(
-                f"[bold blue]Building {len(build_configs)} "
-                "enabled service(s) from source...[/bold blue]\n"
+                f"[bold blue]Building {n} enabled service(s) from source...[/bold blue]\n"
             )
         elif docker_only:
             console.print(
-                "[bold blue]Building Docker images for "
-                f"{len(build_configs)} enabled service(s)...[/bold blue]\n"
+                f"[bold blue]Building Docker images for {n} enabled service(s)...[/bold blue]\n"
             )
         else:
             console.print(
-                f"[bold blue]Building {len(build_configs)} "
-                "enabled service(s) (source + Docker)...[/bold blue]\n"
+                f"[bold blue]Building {n} enabled service(s) (source + Docker)...[/bold blue]\n"
             )
 
         for svc_name, build_config in build_configs.items():
@@ -562,8 +555,8 @@ def build(
                 )
             else:
                 console.print(
-                    "[dim]No Docker build command configured "
-                    f"for {svc_name}, skipping Docker build[/dim]"
+                    f"[dim]No Docker build command configured for {svc_name}, "
+                    "skipping Docker build[/dim]"
                 )
 
         console.print()
@@ -685,8 +678,8 @@ def setup(
 ):
     """Clone service repositories into the services/ directory.
 
-    By default, only enabled services are cloned. Use --include-disabled
-    to also clone disabled services.
+    By default, only enabled services are cloned. Use --include-disabled to also
+    clone disabled services.
 
     This command reads repository URLs from services.yml and clones them
     into the services/ directory. Each service becomes an independent git
@@ -699,31 +692,29 @@ def setup(
         services_config_file = config.root_dir / "services.yml"
         if services_config_file.exists() and not force:
             console.print(
-                "[yellow]Configuration file already exists at "
-                f"{services_config_file}[/yellow]\n"
+                f"[yellow]Configuration file already exists at {services_config_file}[/yellow]\n"
                 "[dim]Use --force to overwrite[/dim]"
             )
         else:
             create_services_config_example(services_config_file)
         return
 
-    # Get service repositories from config
-    # (filter by enabled unless --include-disabled is specified)
+    # Filter by enabled unless --include-disabled is specified.
     service_repos = config.get_service_repos(only_enabled=not include_disabled)
 
     if not service_repos:
         if include_disabled:
             console.print(
                 "[yellow]No service repositories configured.[/yellow]\n"
-                "[dim]Run 'shardctl setup --create-config' to "
-                "create an example configuration.[/dim]"
+                "[dim]Run 'shardctl setup --create-config' to create "
+                "an example configuration.[/dim]"
             )
         else:
             console.print(
                 "[yellow]No enabled service repositories found.[/yellow]\n"
                 "[dim]Use --include-disabled to clone disabled services "
-                "or run 'shardctl setup --create-config' to create an "
-                "example configuration.[/dim]"
+                "or run 'shardctl setup --create-config' to create "
+                "an example configuration.[/dim]"
             )
         return
 
@@ -765,7 +756,8 @@ def build_service_cmd(
 ):
     """Build a service using its configured build commands.
 
-    By default, builds all ENABLED services (source + Docker images).
+    By default, this command builds all ENABLED services (both from source AND
+    creates Docker images).
     Use --no-docker to skip Docker image building.
     Use --docker-only to skip source build and only build Docker images.
     Use --sync to fetch and checkout the branch from services.yml before building.
@@ -776,18 +768,18 @@ def build_service_cmd(
     the appropriate build commands for the specified service(s).
 
     Examples:
-        shardctl build-service                    # Build all (source + Docker)
-        shardctl build-service --no-docker        # Build all (source only)
-        shardctl build-service --docker-only      # Build all (Docker only)
-        shardctl build-service --sync             # Sync branches, then build
-        shardctl build-service --docker-only --sync  # Sync, Docker only
-        shardctl build-service --include-disabled # Build all incl. disabled
-        shardctl build-service f1r3node           # Build f1r3node
-        shardctl build-service f1r3node --no-docker  # f1r3node source only
-        shardctl build-service f1r3node --docker-only  # f1r3node Docker only
-        shardctl build-service f1r3node --sync    # Sync f1r3node, then build
-        shardctl build-service --list             # List enabled services
-        shardctl build-service --list --include-disabled  # List all
+        shardctl build-service                          # All enabled (source + Docker)
+        shardctl build-service --no-docker              # All enabled (source only)
+        shardctl build-service --docker-only            # All enabled (Docker only)
+        shardctl build-service --sync                   # Sync branches, then build
+        shardctl build-service --docker-only --sync     # Sync, then Docker only
+        shardctl build-service --include-disabled       # All services incl. disabled
+        shardctl build-service f1r3node                 # Only f1r3node (src + Docker)
+        shardctl build-service f1r3node --no-docker     # Only f1r3node (source only)
+        shardctl build-service f1r3node --docker-only   # Only f1r3node (Docker only)
+        shardctl build-service f1r3node --sync          # Sync f1r3node, then build
+        shardctl build-service --list                   # List enabled services
+        shardctl build-service --list --include-disabled  # List all (incl. disabled)
     """
     config = Config()
 
@@ -831,22 +823,18 @@ def build_service_cmd(
             console.print("[yellow]No enabled services with build configurations found[/yellow]")
             return
 
+        n = len(build_configs)
         if no_docker:
             console.print(
-                f"[bold blue]Building {len(build_configs)}"
-                " enabled service(s) from source...[/bold blue]\n"
+                f"[bold blue]Building {n} enabled service(s) from source...[/bold blue]\n"
             )
         elif docker_only:
             console.print(
-                "[bold blue]Building Docker images for"
-                f" {len(build_configs)} enabled service(s)..."
-                "[/bold blue]\n"
+                f"[bold blue]Building Docker images for {n} enabled service(s)...[/bold blue]\n"
             )
         else:
             console.print(
-                f"[bold blue]Building {len(build_configs)}"
-                " enabled service(s) (source + Docker)..."
-                "[/bold blue]\n"
+                f"[bold blue]Building {n} enabled service(s) (source + Docker)...[/bold blue]\n"
             )
 
         # Get repository configs for branch info if syncing
@@ -908,8 +896,8 @@ def build_service_cmd(
     if not service:
         console.print("[red]Error: SERVICE argument is required[/red]")
         console.print(
-            "[dim]Use --list to see available services;"
-            " omit SERVICE to build all enabled services[/dim]"
+            "[dim]Use --list to see available services; "
+            "omit SERVICE to build all enabled services[/dim]"
         )
         raise typer.Exit(1)
 
@@ -918,10 +906,9 @@ def build_service_cmd(
 
     if not build_config:
         console.print(
-            f"[red]No build configuration found for"
-            f" service '{service}'[/red]\n"
-            "[dim]Add build configuration to services.yml"
-            " or use --list to see available services[/dim]"
+            f"[red]No build configuration found for service '{service}'[/red]\n"
+            "[dim]Add build configuration to services.yml or "
+            "use --list to see available services[/dim]"
         )
         raise typer.Exit(1)
 
@@ -962,8 +949,8 @@ def build_service_cmd(
             console.print(f"[dim]No Docker build command configured for {service}, skipping[/dim]")
         else:
             console.print(
-                f"[dim]No Docker build command configured"
-                f" for {service}, skipping Docker build[/dim]"
+                f"[dim]No Docker build command configured for {service}, "
+                "skipping Docker build[/dim]"
             )
 
 
@@ -1043,8 +1030,8 @@ def reset_cmd(
     if not yes:
         console.print()
         console.print(
-            "[red]This will stop all containers and permanently"
-            " delete all blockchain data volumes[/red]"
+            "[red]This will stop all containers and permanently delete "
+            "all blockchain data volumes[/red]"
         )
         if not Confirm.ask("Are you sure?"):
             console.print("[yellow]Cancelled[/yellow]")
@@ -1076,6 +1063,11 @@ def test_cmd(
     skip_setup: bool = typer.Option(
         False, "--skip-setup", help="Skip shard bring-up/teardown (assume shard is already running)"
     ),
+    keep_running: bool = typer.Option(
+        False,
+        "--keep-running",
+        help="Start shard normally but leave it running after tests (for debugging)",
+    ),
     extra_args: Optional[List[str]] = typer.Option(
         None, "--pytest-args", "-a", help="Additional arguments to pass to pytest"
     ),
@@ -1085,7 +1077,11 @@ def test_cmd(
     Tests bring up a fresh shard using the same configuration as the dev
     setup (conf, genesis, certs), run the test suite, then tear down.
 
-    Use --skip-setup to run tests against an already-running shard.
+    Use --skip-setup to run tests against an already-running shard (no start, no teardown).
+    Use --keep-running to start shard normally but leave it running after tests (for debugging).
+
+    Image priority: env var > --image flag > --rust/--scala flag > hardcoded default.
+    Set F1R3FLY_RUST_IMAGE or F1R3FLY_SCALA_IMAGE to override without flags.
 
     Examples:
         poetry run shardctl test                         # Run all tests (Scala image)
@@ -1094,7 +1090,9 @@ def test_cmd(
         poetry run shardctl test --rust                   # Run against Rust image
         poetry run shardctl test test_web_api --verbose   # Verbose output
         poetry run shardctl test --skip-setup             # Test against running shard
+        poetry run shardctl test --keep-running           # Leave shard up after tests
         poetry run shardctl test --image myimage:latest   # Custom image
+        F1R3FLY_RUST_IMAGE=mynode:dev shardctl test --rust  # Env var override
     """
     config = Config()
     tests_dir = config.root_dir / "integration-tests"
@@ -1104,13 +1102,23 @@ def test_cmd(
         console.print(f"[dim]Expected: {tests_dir}[/dim]")
         raise typer.Exit(1)
 
-    # Determine the Docker image to use
-    if image:
+    # Determine the Docker image to use.
+    # Priority: env var > --image flag > --rust/--scala flag > hardcoded default.
+    env_rust = os.environ.get("F1R3FLY_RUST_IMAGE")
+    env_scala = os.environ.get("F1R3FLY_SCALA_IMAGE")
+
+    if rust and env_rust:
+        docker_image = env_rust
+    elif not rust and env_scala:
+        docker_image = env_scala
+    elif image:
         docker_image = image
     elif rust:
         docker_image = "f1r3flyindustries/f1r3fly-rust-node:latest"
     else:
         docker_image = "f1r3flyindustries/f1r3fly-scala-node:latest"
+
+    is_rust = "rust" in docker_image.lower()
 
     console.print("[bold blue]Running integration tests[/bold blue]")
     console.print(f"  Image: [cyan]{docker_image}[/cyan]")
@@ -1120,9 +1128,16 @@ def test_cmd(
         console.print("  Mode:  [yellow]skip-setup (using running shard)[/yellow]")
     console.print()
 
-    # Build pytest command
+    # Build pytest command.
+    # Set DEFAULT_IMAGE for conftest.py (compose file selection, custom shard).
+    # Set F1R3FLY_RUST_IMAGE or F1R3FLY_SCALA_IMAGE so the static compose
+    # files pick up the image via ${VAR:-default} substitution.
     env = os.environ.copy()
     env["DEFAULT_IMAGE"] = docker_image
+    if is_rust:
+        env["F1R3FLY_RUST_IMAGE"] = docker_image
+    else:
+        env["F1R3FLY_SCALA_IMAGE"] = docker_image
 
     pytest_args = ["-v", "--tb=short", "--log-cli-level=WARNING"]
     if verbose:
@@ -1133,6 +1148,9 @@ def test_cmd(
 
     if skip_setup:
         pytest_args.append("--skip-setup")
+
+    if keep_running:
+        pytest_args.append("--keep-running")
 
     if extra_args:
         pytest_args.extend(extra_args)
@@ -1199,7 +1217,7 @@ def test_reset_cmd():
                     "--project-name",
                     project_name,
                     "--env-file",
-                    str(tests_dir / ".env.node"),
+                    str(config.root_dir / ".env.node"),
                     "-f",
                     str(compose_path),
                     "down",

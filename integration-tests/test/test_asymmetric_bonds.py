@@ -12,9 +12,15 @@ Bond configuration:
     validator3  15   (15.8% of total)
     Total:      95
 
-With FTT=0.5, a block needs FT > 0.5 to finalize. This is achievable when
-the majority stake (V1=60 alone is 63.2%, exceeding 50%) builds on a block.
-Finalization should occur faster than with equal weights and FTT=0.99.
+With FTT=0.5, a block needs normalized FT > 0.5 to finalize.
+The formula is: FT = (agreeing_weight * 2 - total_weight) / total_weight.
+
+    V1 alone (60):       FT = (60*2 - 95) / 95  = 0.26  (not enough)
+    V1 + V3 (60+15=75):  FT = (75*2 - 95) / 95  = 0.58  (finalizes)
+    V1 + V2 (60+20=80):  FT = (80*2 - 95) / 95  = 0.68  (finalizes)
+    All three (95):       FT = (95*2 - 95) / 95  = 1.0   (finalizes)
+
+No single validator can finalize alone. At least V1 + one other is needed.
 """
 
 import logging
@@ -62,6 +68,7 @@ def test_fault_tolerance_asymmetric_bonds(
         command_line_options,
         bonds=_ASYMMETRIC_BONDS,
         ftt=0.5,
+        port_base=40600,
     ) as shard:
         v1 = shard.nodes["validator1"]
         v2 = shard.nodes["validator2"]
@@ -123,15 +130,16 @@ def test_finalization_asymmetric_bonds(
 ) -> None:
     """Verify finalization advances with asymmetric bonds and FTT=0.5.
 
-    With V1 holding 63.2% stake and FTT=0.5, blocks should finalize as
-    soon as V1 (and at least one other validator) builds on them. This
-    should happen within 60 seconds with heartbeat active.
+    No single validator can finalize alone. V1 + at least one other
+    validator must build on a block for it to finalize (FT > 0.5).
+    With heartbeat active, this should happen within 60 seconds.
     """
     with start_custom_shard(
         docker_client,
         command_line_options,
         bonds=_ASYMMETRIC_BONDS,
         ftt=0.5,
+        port_base=40650,
     ) as shard:
         v1 = shard.nodes["validator1"]
         v2 = shard.nodes["validator2"]
@@ -199,6 +207,7 @@ def test_cross_validator_state_agreement_asymmetric(
         command_line_options,
         bonds=_ASYMMETRIC_BONDS,
         ftt=0.5,
+        port_base=40660,
     ) as shard:
         v1 = shard.nodes["validator1"]
         v2 = shard.nodes["validator2"]

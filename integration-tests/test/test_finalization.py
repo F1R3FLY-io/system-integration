@@ -5,10 +5,10 @@ Tests that verify block finalization advances correctly in a multi-validator
 shard with heartbeat-driven block creation.
 
 Uses the session-scoped shard fixture (boot + 3 validators + readonly)
-with fault-tolerance-threshold = 0.99 and equal bond weights (1000 each).
-With 3 validators at equal weight, a block's fault tolerance reaches 1.0
-when all validators have built on it, exceeding the 0.99 threshold. This
-should happen within a few heartbeat rounds (~15-30s).
+with fault-tolerance-threshold = 0.1 and equal bond weights (1000 each).
+With 3 validators at equal weight, a block's fault tolerance reaches 0.33
+when 2 validators have built on it (exceeding the 0.1 threshold) and 1.0
+when all 3 have. Finalization should happen within a few heartbeat rounds.
 """
 
 import logging
@@ -42,9 +42,9 @@ def test_finalizes_block(
 ) -> None:
     """Verify that finalization advances within 60 seconds.
 
-    With 3 equal-weight validators (1000 bond each) and FTT=0.99, a block
-    is finalized when all 3 validators have built upon it, giving it
-    FT = (3000/3000) * 2 - 1 = 1.0 > 0.99.
+    With 3 equal-weight validators (1000 bond each) and FTT=0.1, a block
+    is finalized when 2+ validators have built upon it. At 2/3 agreement:
+    FT = (2000*2 - 3000) / 3000 = 0.33 > 0.1. At 3/3: FT = 1.0.
 
     The heartbeat creates blocks every 5-10 seconds on each validator. After
     3-4 rounds where each validator builds on the others' blocks, early blocks
@@ -113,7 +113,8 @@ def test_finalizes_block(
             node_lfb.blockInfo.blockHash[:16],
         )
 
-    # Verify the finalized block has valid FT exceeding the threshold (0.99)
+    # Verify the finalized block has valid FT exceeding the configured threshold.
+    # With FTT=0.1 and 3 equal-weight validators, FT reaches 0.33 at 2/3 agreement.
     finalized_block = validator1_node.get_block(final_lfb_hash)
     ft = float(finalized_block.blockInfo.faultTolerance)
     logging.info(
@@ -121,7 +122,7 @@ def test_finalizes_block(
         final_lfb_number,
         ft,
     )
-    assert ft > 0.99, (
-        f"Finalized block #{final_lfb_number} has FT={ft}, expected > 0.99 "
+    assert ft > 0.1, (
+        f"Finalized block #{final_lfb_number} has FT={ft}, expected > 0.1 "
         f"(the fault-tolerance-threshold)"
     )
