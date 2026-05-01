@@ -28,7 +28,7 @@ urllib3 = ">=1.24.2"
 ecdsa = "*"
 eth-hash = { version = "*", extras = ["pycryptodome"] }
 pycryptodome = "*"
-pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git", branch = "refactor/test-framework-utilities" }
+pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git", rev = "946b3a7" }
 requests = "*"
 pytest-timeout = "^2.4.0"
 websocket-client = "^1.9.0"

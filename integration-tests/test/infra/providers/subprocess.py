@@ -438,6 +438,11 @@ class SubprocessProvider:
 
         port_map = {role: self._ports.allocate() for role in roles}
 
+        def _extra_cli(node_key: str) -> List[str]:
+            merged = dict(config.global_cli_options)
+            merged.update(config.per_node_cli_options.get(node_key, {}))
+            return [k if v == "" else f"{k}={v}" for k, v in sorted(merged.items())]
+
         handles: List[SubprocessNodeHandle] = []
 
         # ── Bootstrap ──
@@ -453,6 +458,7 @@ class SubprocessProvider:
             boot_cli.append(f"--fault-tolerance-threshold={config.ftt}")
         if not config.heartbeat:
             boot_cli.append("--heartbeat-disabled")
+        boot_cli += _extra_cli("boot")
 
         boot_handle = self._spawn(
             role_key="boot",
@@ -483,6 +489,7 @@ class SubprocessProvider:
                 v_cli.append(f"--fault-tolerance-threshold={config.ftt}")
             if not config.heartbeat:
                 v_cli.append("--heartbeat-disabled")
+            v_cli += _extra_cli(role_key)
 
             handles.append(self._spawn(
                 role_key=role_key,
@@ -503,6 +510,7 @@ class SubprocessProvider:
                 f"--bonds-file={genesis_dir}/bonds.txt",
                 f"--wallets-file={genesis_dir}/wallets.txt",
             ]
+            ro_cli += _extra_cli("readonly")
             handles.append(self._spawn(
                 role_key="readonly",
                 role=NodeRole.READONLY,

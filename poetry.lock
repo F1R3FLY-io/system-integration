@@ -1247,8 +1247,8 @@ dev = ["grpcio-tools (>=1.60.0)", "isort (>=5.12.0)", "mypy (>=1.7.0)", "mypy-pr
 [package.source]
 type = "git"
 url = "https://github.com/F1R3FLY-io/pyf1r3fly.git"
-reference = "refactor/test-framework-utilities"
-resolved_reference = "7685ba4ec332ac23f0d9a7a74f3569e3c1544d53"
+reference = "946b3a7"
+resolved_reference = "946b3a71a0a7830e338d6dd9a5ff5d3456063ce8"
 
 [[package]]
 name = "pyflakes"
@@ -1763,4 +1763,4 @@ test = ["pytest", "websockets"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "e8f09eb1e38afa77e9052c7f56262585ecb097d61bc13bd0c7d182eb3d4783a1"
+content-hash = "1851d29bf0a4d5d8b90ca2017d28a18849f63ef5ff7fa7dfd87a08aac4445df3"
