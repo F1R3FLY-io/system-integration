@@ -55,8 +55,11 @@ poetry install
 # Clone all service repositories with correct branches
 poetry run shardctl clone
 
-# Start services
-poetry run shardctl up
+# Start Rust shard (recommended — Scala is deprecated)
+poetry run shardctl up f1r3node-rust
+
+# Start Rust standalone (single node, fastest for dev)
+poetry run shardctl up f1r3node-rust-standalone
 
 # View status
 poetry run shardctl status
@@ -87,7 +90,8 @@ Bypass with `--no-verify` (not recommended).
 ## Service Repositories
 
 Services are defined in `services.yml` with their git URLs and branches:
-- **f1r3node**: Blockchain node (main + rust-dev branches)
+- **f1r3node**: Scala blockchain node (dev branch)
+- **f1r3node-rust**: Rust blockchain node (dev branch, separate repo)
 - **embers**: Blockchain API bridge (main branch)
 - **embers-frontend**: Web UI for embers (main branch)
 - **f1r3sky-backend**: AT Protocol services (main branch)

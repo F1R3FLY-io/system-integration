@@ -22,6 +22,9 @@ For service-specific build tools (Rust, Node.js, SBT), see [docs/prerequisites.m
 ```bash
 poetry run shardctl up f1r3node-rust
 poetry run shardctl wait
+
+# Scala shard (deprecated — will be removed in a future release)
+poetry run shardctl up f1r3node
 ```
 
 Genesis takes ~2-3 minutes. `shardctl wait` blocks until all nodes report Running.
@@ -88,7 +91,7 @@ F1R3FLY_SCALA_IMAGE=f1r3flyindustries/f1r3fly-scala-node:v1.2.3 poetry run shard
 
 | Variable | Default | Used by |
 |---|---|---|
-| `F1R3FLY_RUST_IMAGE` | `f1r3flyindustries/f1r3fly-rust-node:latest` | All Rust node compose files |
+| `F1R3FLY_IMAGE` | `f1r3flyindustries/f1r3node-rust:latest` | All Rust node compose files |
 | `F1R3FLY_SCALA_IMAGE` | `f1r3flyindustries/f1r3fly-scala-node:latest` | All Scala node compose files |
 
 ## Full Setup (All Services)

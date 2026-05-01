@@ -43,6 +43,24 @@ This document captures user stories that drive feature development. User stories
 
 Stories below are candidates for future epochs. Move to "Completed Stories" when implemented.
 
+#### US-002: Automated Benchmark and Demo for Rust Shard
+
+> As a **project/team lead**, I want **an automated benchmark and demo that starts a Rust shard from the standalone f1r3node-rust repo, runs deploy/propose cycles, and reports consensus metrics** so that **I can validate shard stability and performance before production deployment without manual setup**.
+
+**Implemented in:** EPOCH-002
+
+**Scope:** This story targets the standalone `f1r3node-rust` repository only (`services/f1r3node-rust/`). It does NOT support the Scala node or the hybrid Rust node from `f1r3node/`. All feature branches (including dev) must be merged to main before this work begins.
+
+**Acceptance Criteria:**
+- [ ] Automated script starts a Rust shard (bootstrap + 3 validators + observer) using f1r3node-rust images
+- [ ] Runs deploy/propose cycles across all validators without manual intervention
+- [ ] Collects and displays block finalization times per validator
+- [ ] Verifies all validators reach consensus on each block (post-state hash agreement)
+- [ ] Generates a summary report with key metrics (throughput, latency, success rate)
+- [ ] Works as a single `shardctl` command (e.g., `shardctl benchmark`)
+
+---
+
 #### US-001: Migrate to Rust-Only f1r3node
 
 > As a **developer**, I want **the system-integration tooling to use the standalone f1r3node-rust repository as the sole node implementation** so that **the build system is simpler (no Nix/SBT), maintenance is reduced to one codebase, and the Scala/Rust duality is eliminated from shardctl and compose files**.

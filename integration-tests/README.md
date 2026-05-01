@@ -72,9 +72,16 @@ poetry run shardctl test --scala                   # Scala (default image)
 poetry run shardctl test --image mynode:dev         # Custom image
 F1R3FLY_RUST_IMAGE=mynode:dev shardctl test --rust  # Env var override (highest priority)
 
-# Via pytest directly (set DEFAULT_IMAGE + compose image var)
-DEFAULT_IMAGE=f1r3flyindustries/f1r3fly-rust-node:latest \
-F1R3FLY_RUST_IMAGE=f1r3flyindustries/f1r3fly-rust-node:latest \
+# Via pytest directly — set DEFAULT_IMAGE (conftest.py) + compose image var.
+
+# Rust
+DEFAULT_IMAGE=f1r3flyindustries/f1r3node-rust:latest \
+F1R3FLY_RUST_IMAGE=f1r3flyindustries/f1r3node-rust:latest \
+  poetry run pytest integration-tests/test/ -v --tb=short --log-cli-level=WARNING
+
+# Scala
+DEFAULT_IMAGE=f1r3flyindustries/f1r3fly-scala-node:latest \
+F1R3FLY_SCALA_IMAGE=f1r3flyindustries/f1r3fly-scala-node:latest \
   poetry run pytest integration-tests/test/ -v --tb=short --log-cli-level=WARNING
 ```
 

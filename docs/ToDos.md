@@ -147,6 +147,97 @@ tasks:
 
 ---
 
+### EPOCH-002: Automated Shard Benchmark and Demo
+
+```yaml
+---
+epoch_id: EPOCH-002
+title: "Automated Shard Benchmark and Demo"
+status: pending
+priority: p1
+user_story: US-002
+blocked_by: []
+prerequisite: "Merge feature/f1r3node-rust-integration-option and dev into main before starting"
+created_at: 2026-03-27
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-002-1
+    title: "Merge feature branches to main"
+    status: pending
+    acceptance:
+      - "feature/f1r3node-rust-integration-option merged to dev"
+      - "dev merged to main"
+      - "All pre-push checks pass (ruff lint, format, unit tests)"
+      - "Working branch created from main"
+
+  - id: TASK-002-2
+    title: "Create benchmark script infrastructure"
+    status: pending
+    blocked_by: [TASK-002-1]
+    acceptance:
+      - "New shardctl benchmark command added to CLI"
+      - "Script starts f1r3node-rust shard via compose/f1r3node-rust.yml"
+      - "Waits for all nodes to reach Running state (reuses shardctl wait)"
+      - "Only supports f1r3node-rust images (not Scala or hybrid)"
+
+  - id: TASK-002-3
+    title: "Implement deploy/propose cycle runner"
+    status: pending
+    blocked_by: [TASK-002-2]
+    acceptance:
+      - "Deploys Rholang contracts to each validator in round-robin"
+      - "Triggers propose on each validator after deploy"
+      - "Configurable number of rounds (default: 10)"
+      - "Uses HTTP API (port 40403/40413/40423/40433)"
+
+  - id: TASK-002-4
+    title: "Collect consensus and finalization metrics"
+    status: pending
+    blocked_by: [TASK-002-3]
+    acceptance:
+      - "Records block finalization time per propose"
+      - "Verifies post-state hash agreement across all validators"
+      - "Detects and reports any consensus failures"
+      - "Captures block height progression"
+
+  - id: TASK-002-5
+    title: "Generate benchmark summary report"
+    status: pending
+    blocked_by: [TASK-002-4]
+    acceptance:
+      - "Prints formatted table with per-round metrics"
+      - "Shows aggregate stats: min/max/avg/p95 finalization time"
+      - "Reports throughput (blocks/sec, deploys/sec)"
+      - "Reports consensus success rate"
+      - "Exit code reflects pass/fail (all blocks finalized = pass)"
+
+  - id: TASK-002-6
+    title: "Add cleanup and error handling"
+    status: pending
+    blocked_by: [TASK-002-5]
+    acceptance:
+      - "Shard is torn down after benchmark completes (or on error/Ctrl-C)"
+      - "Handles node startup timeout gracefully"
+      - "Handles deploy/propose failures with retry logic"
+      - "Optional --keep flag to leave shard running after benchmark"
+---
+```
+
+**Context:** The f1r3node-rust standalone repository provides a Rust-native blockchain node with multi-node shard support. This epoch creates an automated benchmark that exercises the full consensus path (deploy → propose → finalize → verify) and produces metrics for evaluating shard readiness.
+
+**Scope:**
+- f1r3node-rust images ONLY (not Scala node, not hybrid Rust from f1r3node repo)
+- Uses existing compose/f1r3node-rust.yml infrastructure
+- Builds on existing shardctl CLI (new `benchmark` subcommand)
+- NOT in scope: changes to f1r3node-rust repo, CI integration, long-running soak tests
+
+**Prerequisites:**
+- All feature branches merged to main (TASK-002-1)
+- f1r3node-rust Docker image available locally or from registry
+
+---
+
 <!-- Add more epochs following the same format -->
 
 ---

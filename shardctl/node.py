@@ -625,7 +625,7 @@ def pull(node_type: Optional[NodeType] = None):
     if node_type is None or node_type == NodeType.SCALA:
         images_to_pull.append(("Scala", "f1r3flyindustries/f1r3fly-scala-node:latest"))
     if node_type is None or node_type == NodeType.RUST:
-        images_to_pull.append(("Rust", "f1r3flyindustries/f1r3fly-rust-node:latest"))
+        images_to_pull.append(("Rust", "f1r3flyindustries/f1r3node-rust:latest"))
 
     label = images_to_pull[0][0] if len(images_to_pull) == 1 else "all"
     console.print(f"[blue]Pulling latest {label} node image(s)...[/blue]")
