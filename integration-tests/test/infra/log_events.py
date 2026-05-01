@@ -101,6 +101,14 @@ FATAL_PATTERNS: List[Tuple[re.Pattern, str]] = [
         re.compile(r"\bFATAL\b"),
         "Fatal error causing node crash",
     ),
+    (
+        re.compile(r"SystemRuntimeError\(ConsumeFailed\)"),
+        "Replay rig divergence (ConsumeFailed during play→replay)",
+    ),
+    (
+        re.compile(r"BUG FOUND"),
+        "System contract or replay engine flagged a structural bug",
+    ),
 ]
 
 
