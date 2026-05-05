@@ -2,11 +2,11 @@
 
 ## Purpose
 
-End-to-end validator-bonding lifecycle on the session-shared shard. Verifies that a new validator can dynamically bond via the PoS contract, become an active block proposer at the next epoch boundary, and that subsequent bonds (V5 after V4) succeed under the multi-proposer bonds-cache composition path. The second-bond test exists specifically to catch the failure mode where the second bond never finalizes — the symptom Stacy reported in v0.4.13 that surfaces as `InvalidBondsCache` on the bond block.
+End-to-end validator-bonding lifecycle on the session-shared shard. Verifies that a new validator can dynamically bond via the PoS contract, become an active block proposer at the next epoch boundary, and that subsequent bonds (V5 after V4) succeed under the multi-proposer bonds-cache composition path. The second-bond phase covers the failure mode where the second bond never finalizes, surfaced as `InvalidBondsCache` on the bond block.
 
 ## Setup
 
-Both tests run on the session-scoped `shared_shard` fixture: bootstrap + V1, V2, V3 + readonly observer. Production-config inherited from `conf/rust.conf` (no per-test config builder).
+The test runs on the session-scoped `shared_shard` fixture: bootstrap + V1, V2, V3 + readonly observer. Production-config inherited from `conf/rust.conf` (no per-test config builder).
 
 - **Topology**: 3 genesis validators (V1, V2, V3, all stake=100) + readonly observer + dynamically-added joiner (V4, then V5)
 - **Heartbeat**: Enabled (production semantics, real propagation timing)
@@ -22,29 +22,31 @@ V4's and V5's vaults are seeded at genesis with `50_000_000_000_000_000` tokens 
 
 ### Bond configuration
 
-| Validator | Stake | When bonded | Test |
+| Validator | Stake | When bonded | Phase |
 |---|---|---|---|
 | V1, V2, V3 | 100 each | Genesis | (already bonded) |
-| V4 | 10,000,000 | First bond | `test_bonding_validators` |
-| V5 | 10,000,000 | Second bond | `test_double_bond_succession` |
+| V4 | 10,000,000 | First bond | Phase A |
+| V5 | 10,000,000 | Second bond | Phase B |
 
-### Test ordering
+### Why one test, not two
 
-Pytest collects tests in source order. `test_double_bond_succession` includes a precondition assertion at the top that V4 must already be bonded — if you reorder or skip `test_bonding_validators`, the second test fails fast with a clear "test order changed?" message.
+Phase B's preconditions (V4 already bonded; second-bond-after-first state) only exist as a consequence of Phase A's success, so the two phases run as a single test rather than separate pytest functions where Phase B could be selected in isolation and fail fast on its precondition.
 
-## Tests
+## Test
 
 ### `test_bonding_validators`
 
-Bonds V4 via V1 (genesis validator V1 deploys the bond contract). Runs the full 8-phase `_bond_lifecycle` helper. After this test, V4 is permanently in the on-chain bonds map; the joiner subprocess/container is removed at exit.
+Two-phase test:
 
-### `test_double_bond_succession`
+**Phase A** — Bonds V4 via V1 (genesis validator V1 deploys the bond contract). Runs the full 8-phase `_bond_lifecycle` helper. After this phase, V4 is permanently in the on-chain bonds map.
 
-Bonds V5 on a shard that already has V4 bonded (precondition asserted at top). Bond is deployed via **V2** (different proposer than V4's bond) to exercise the multi-proposer path through the bonds_cache / justification-set composition. **This test reproduces Stacy's bonding bug** when run against a binary that contains the second-bond regression — symptom is `InvalidBondsCache` on the V5 bond block, then a cascade of invalid blocks as the bonds-cache divergence between V1's replay path and V2's proposer path propagates.
+**Phase B** — Bonds V5 on the now-4-bonded shard via **V2** (different proposer than V4's bond) to exercise the multi-proposer path through the bonds_cache / justification-set composition. The failure mode this phase covers is `InvalidBondsCache` on the V5 bond block followed by a cascade of invalid blocks as the bonds-cache divergence between V1's replay path and V2's proposer path propagates.
 
-## Phases (`_bond_lifecycle`)
+A sanity assertion between phases confirms V4 is in the on-chain bonds map before Phase B starts, so a Phase A regression that "passes" but doesn't actually bond V4 surfaces here loudly.
 
-Both tests share the same 8-phase helper.
+## Sub-phases (`_bond_lifecycle`)
+
+Both Phase A and Phase B run the same 8-sub-phase helper described below.
 
 ### Phase 1: Pre-bond LFB inspection
 

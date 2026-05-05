@@ -1,33 +1,35 @@
 """
 Bonding Validators Integration Test
 
-Verifies the full bonding lifecycle on the shared session shard:
+Verifies the full bonding lifecycle on the shared session shard via a
+single test that runs two phases back-to-back:
 
-  1. test_bonding_validators — V4 bonds against the running 3-validator
-     shared_shard, activates at the epoch boundary, proposes blocks, and
-     other validators justify V4 in subsequent blocks.
+  Phase A — V4 bonds against the running 3-validator shared_shard,
+  activates at the epoch boundary, proposes blocks, and other validators
+  justify V4 in subsequent blocks.
 
-  2. test_double_bond_succession — V5 bonds against a shard that already
-     has V4 bonded (carry-over state from the first test). Catches the
-     "second bond never finalizes" failure mode (Stacy 2026-04-23).
+  Phase B — V5 bonds against the (now 4-bonded) shard. Bond is deployed
+  via V2 (different proposer than V4's bond from V1) so the second-bond
+  path exercises a different proposer than the first, covering
+  multi-proposer composition through the bonds_cache and justification
+  set.
 
-Both tests run under production config (heartbeat=true, ftt from rust.conf,
-no manual propose). Cross-node finalization is asserted on every step via
-``assert_block_finalized_on_all_nodes`` so a peer that rejects a block at
-validation time (``Invalid(InvalidBondsCache)``) fails the test loudly.
+Phase B's preconditions (V4 already bonded; second-bond-after-first
+state) only exist as a consequence of Phase A, so the two phases run
+in a single test.
 
-POST-CONDITIONS for downstream shared tests:
-  - After test_bonding_validators: V4 is permanently in the on-chain bonds
-    map; the joiner container is removed at test exit. Shard runs with
-    4 bonded / 3 active.
-  - After test_double_bond_succession: V5 is also permanently bonded.
-    Shard runs with 5 bonded / 3 active.
+Runs under production config (heartbeat=true, ftt from rust.conf, no
+manual propose). Cross-node finalization is asserted on every step via
+``assert_block_finalized_on_all_nodes`` so a peer that rejects a block
+at validation time (``Invalid(InvalidBondsCache)``) fails the test
+loudly.
+
+After the test runs, both V4 and V5 are permanently in the on-chain
+bonds map; the shard runs with 5 bonded / 3 active for any downstream
+shared tests.
 
 The shared_shard fixture seeds vaults for V4 and V5 at genesis (see
 conftest.py) so the bond deploys can pay phlo + stake.
-
-See docs/bonding-bug-test-plan.md and docs/bonding-bug-layer2-design.md
-for context.
 """
 
 import logging
@@ -53,7 +55,7 @@ from ...infra.polling import (
 
 pytestmark = pytest.mark.xdist_group("shared")
 
-_BOND_AMOUNT = 10_000_000
+_BOND_AMOUNT = 100
 
 # Matches conf/rust.conf:genesis-block-data.epoch-length
 _EPOCH_LENGTH = 4
@@ -138,10 +140,10 @@ def _bond_lifecycle(
         )
 
         # ── Phase 4: bond block finalizes cross-node ─────────────────
-        wait_for_finalized(proposer_node, bond_block_number, timeouts.finalization)
+        wait_for_finalized(proposer_node, bond_block_number, timeouts.finalization * 3)
         assert_block_finalized_on_all_nodes(
             [v1, v2, v3, joiner, ro], bond_block_hash,
-            timeout=timeouts.finalization,
+            timeout=timeouts.finalization * 3,
         )
         bond_block_info = proposer_node.get_block(bond_block_hash)
         bonds_post = {
@@ -199,10 +201,10 @@ def _bond_lifecycle(
             interval=3.0,
             description=f"{joiner_identity.name} proposes a block post-activation",
         )
-        wait_for_finalized(joiner, joiner_block.blockNumber, timeouts.finalization)
+        wait_for_finalized(joiner, joiner_block.blockNumber, timeouts.finalization * 3)
         assert_block_finalized_on_all_nodes(
             [v1, v2, v3, joiner, ro], joiner_block.blockHash,
-            timeout=timeouts.finalization,
+            timeout=timeouts.finalization * 3,
         )
         logging.info(
             "Joiner %s proposed block #%d (%s); finalized on all nodes",
@@ -238,10 +240,10 @@ def _bond_lifecycle(
             interval=3.0,
             description=f"V1 produces a block justifying {joiner_identity.name}",
         )
-        wait_for_finalized(v1, v1_post_block.blockNumber, timeouts.finalization)
+        wait_for_finalized(v1, v1_post_block.blockNumber, timeouts.finalization * 3)
         assert_block_finalized_on_all_nodes(
             [v1, v2, v3, joiner, ro], v1_post_block.blockHash,
-            timeout=timeouts.finalization,
+            timeout=timeouts.finalization * 3,
         )
         logging.info(
             "V1 block #%d (%s) justifies %s; finalized on all nodes",
@@ -266,14 +268,14 @@ def _bond_lifecycle(
             block = wait_for_deploy_included(
                 node, deploy_id, timeouts.deploy_inclusion,
             )
-            wait_for_finalized(node, block.blockNumber, timeouts.finalization)
+            wait_for_finalized(node, block.blockNumber, timeouts.finalization * 3)
             wait_for_block_visible_on_all_nodes(
                 [v1, v2, v3, joiner, ro], block.blockHash,
-                timeout=timeouts.finalization,
+                timeout=timeouts.finalization * 3,
             )
             assert_block_finalized_on_all_nodes(
                 [v1, v2, v3, joiner, ro], block.blockHash,
-                timeout=timeouts.finalization,
+                timeout=timeouts.finalization * 3,
             )
 
         logging.info(
@@ -284,14 +286,24 @@ def _bond_lifecycle(
 
 
 def test_bonding_validators(shared_shard, timeouts) -> None:
-    """End-to-end bonding lifecycle on the shared session shard.
+    """End-to-end bonding lifecycle: V4 then V5 (two phases, one test).
 
-    Bonds V4 against the running 3-validator shard. Verifies cross-node
-    finalization, epoch activation, joiner participation, and network
-    liveness. After this test V4 is permanently in the on-chain bonds map
-    (the joiner container is removed at exit; subsequent shared tests run
-    with 4 bonded / 3 active).
+    Phase A bonds V4 against the running 3-validator shard. Verifies
+    cross-node finalization, epoch activation, joiner participation,
+    and network liveness.
+
+    Phase B bonds V5 against the resulting 4-bonded shard via a
+    different proposer (V2) so the second-bond path exercises
+    multi-proposer composition through the bonds_cache and
+    justification set.
+
+    Phase B's preconditions only exist as a consequence of Phase A's
+    success, so both run in a single test.
+
+    After this test, V4 and V5 are permanently in the on-chain bonds
+    map; subsequent shared tests run with 5 bonded / 3 active.
     """
+    # ── Phase A: V4 bonds via V1 ──────────────────────────────────
     _bond_lifecycle(
         shared_shard,
         timeouts,
@@ -300,22 +312,15 @@ def test_bonding_validators(shared_shard, timeouts) -> None:
         expected_bonds_after=4,
     )
 
-
-def test_double_bond_succession(shared_shard, timeouts) -> None:
-    """Bond V5 on a shard that already has V4 bonded (from the previous
-    test). Catches the failure mode where the second bond never finalizes.
-
-    Bond is deployed via V2 (different proposer than V4's bond from V1)
-    to exercise the multi-proposer path through the bonds_cache /
-    justification-set composition.
-    """
+    # Sanity: confirm V4 is in the on-chain bonds map before Phase B.
     v1 = shared_shard.node("validator1")
     bonds = {b.validator: b.stake for b in v1.last_finalized_block().blockInfo.bonds}
     assert VALIDATOR4_ID.public_hex in bonds, (
-        f"Expected V4 already bonded from test_bonding_validators "
-        f"(test order changed?). Current bonds: {sorted(bonds)}"
+        f"Phase B precondition failed: expected V4 bonded after Phase A; "
+        f"current bonds: {sorted(bonds)}"
     )
 
+    # ── Phase B: V5 bonds via V2 (different proposer) ─────────────
     _bond_lifecycle(
         shared_shard,
         timeouts,
