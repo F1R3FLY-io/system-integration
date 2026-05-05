@@ -490,6 +490,39 @@ in the same pass.
 
 ---
 
+### 2.11 `shared_shard` fixture readonly-startup race causes baseline cascade failures
+
+The session-scoped `shared_shard` fixture in `conftest.py` calls `provider.create_shard(config)` which spins up boot + 3 validators + readonly. Intermittently, the **readonly node** fails to transition `Initializing → Running` during the ApprovedBlock handshake — `wait_for_node_running` raises, the fixture errors, and **every** `@shared`-grouped test that runs in that pytest session ERRORs at setup.
+
+**Observed (2026-05-02 baseline runs):**
+
+- Baseline 1 (no `-x`): all **65 @shared tests errored** at setup with the same root cause
+- Baseline 2 (`-x` flag): `-x` halted at first 2 failures so only 1 cascaded ERROR was visible, but the underlying fixture failure was identical
+
+**Last log lines from the broken readonly:**
+
+```
+"Starting to request ApprovedBlockRequest"
+"Creating new F1r3fly channel to peer rnode://...@127.0.0.1?protocol=41000&discovery=41004"
+[exit before next expected event]
+```
+
+The readonly process exits during the ApprovedBlock receive, before logging `"ApprovedBlock is signed by …"` or transitioning to `Running`. Same family as §2.12 (validator-startup-stalls under `RUST_LOG=debug`) but distinct trigger — this happens at default `info` level under no contention.
+
+**Frequency:** ~10-20% of fresh `shared_shard` setups in our environment. Not deterministic; user's reference baseline runs on the same hardware achieved 91/0 cleanly multiple times.
+
+**Cascade impact:** because `shared_shard` is session-scoped, one fixture failure invalidates all 60+ `@shared` tests in the run. Wall-clock cost is full ~26 min if `-n auto` is in flight (xdist workers complete in-flight tests before honoring `-x`).
+
+**Suggested investigation paths:**
+
+- Add retry logic in `provider.create_shard()`: if any node fails `wait_for_node_running`, tear down + retry once (most flakes resolve on second attempt). Cheap fix that absorbs the noise.
+- Investigate `comm/src/rust/transport/grpc_transport_receiver.rs` subscription handler for a race with the `restore_approved_state` path — same suspect as §2.12.
+- Increase `node_startup` timeout in heavy-parallel runs.
+
+**Impact:** PR #491 baseline runs intermittently fail to verify the @shared group, blocking confidence in the integration suite. Workaround until fixed: retry the baseline run on cascade failure (the readonly boots cleanly on subsequent attempts ~80% of the time).
+
+---
+
 ## 3. Test Framework Tasks
 
 ### 3.1 Working-tree fixes (uncommitted)

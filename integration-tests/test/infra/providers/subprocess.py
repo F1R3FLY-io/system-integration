@@ -162,6 +162,16 @@ class SubprocessNodeHandle:
         if not self._log_path.exists():
             return ""
         text = self._log_path.read_text(errors="replace")
+        # Guard against a post-exit visibility race: a fast-failing child
+        # (e.g. config-validation tests where the node exits in <250ms)
+        # can leave the log file empty for a brief window after wait()
+        # returns. Poll for content with a bounded budget; the fast path
+        # (text already populated) is unchanged.
+        if not text and self._proc is not None and self._proc.poll() is not None:
+            deadline = time.monotonic() + 0.5
+            while not text and time.monotonic() < deadline:
+                time.sleep(0.02)
+                text = self._log_path.read_text(errors="replace")
         if tail is None:
             return text
         return "\n".join(text.splitlines()[-tail:])
