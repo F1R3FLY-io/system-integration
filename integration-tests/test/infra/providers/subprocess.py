@@ -976,6 +976,52 @@ class SubprocessProvider:
             pass
 
     @classmethod
+    def cleanup_session(cls, session_id: str) -> None:
+        """Cleanup resources for one specific subprocess session.
+
+        Reaps:
+          1. Node processes whose argv contains the path
+             ``/.subprocess-data/<session_id>/`` (leading + trailing slash
+             prevent collision with sessions whose IDs share a prefix).
+          2. The session data directory under
+             ``<integration-tests>/.subprocess-data/<session_id>/``.
+
+        Idempotent: safe to invoke when no resources for this session
+        exist. Sessions for other IDs are not touched.
+        """
+        # 1. Reap processes scoped to this session by argv path match.
+        pattern = f"/{_DATA_DIR_BASENAME}/{session_id}/"
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", pattern],
+                capture_output=True, text=True, timeout=10,
+            )
+            pids = [int(p) for p in (result.stdout or "").split() if p.strip().isdigit()]
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pids = []
+
+        for pid in pids:
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.5)
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+
+        # 2. Remove the session data dir only.
+        try:
+            paths = ResourcePaths.resolve()
+            session_dir = cls._data_dir_base(paths) / session_id
+            if session_dir.exists():
+                shutil.rmtree(session_dir, ignore_errors=True)
+        except FileNotFoundError:
+            pass
+
+    @classmethod
     def cleanup_stale_sessions(cls) -> None:
         """Conservative stale-session cleanup. Called from
         ``pytest_sessionstart`` and ``pytest_sessionfinish``.

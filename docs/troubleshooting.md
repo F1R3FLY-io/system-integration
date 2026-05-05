@@ -7,7 +7,7 @@
 | "casper instance was not available yet" | `shardctl wait` — blockchain needs 2-3 min |
 | Nodes stuck, won't complete genesis | `shardctl reset -y` then `shardctl up` |
 | Volumes/containers left behind from a crashed `shardctl up` | `shardctl reset --force` (skips compose detection, prefix-scans `rnode.*` + `f1r3fly-*`) |
-| Integration test framework state stuck | `shardctl test-reset` (force-removes `rnode.test.*` / `f1r3fly-test-*` / `test-*` regardless of status) |
+| Integration test framework state stuck | `shardctl test-reset` (force-removes `rnode.test.*` / `f1r3fly-test-*` / `test-*` regardless of status). Add `--session-id <id>` to scope cleanup to one session when other agents own concurrent sessions. |
 | Docker "outside of rootfs" on macOS | Switch Docker to gRPC FUSE ([details below](#docker-outside-of-rootfs-error)) |
 | Build fails with "better-sqlite3" | Docker build: `shardctl build-service f1r3sky-backend-bsky` |
 

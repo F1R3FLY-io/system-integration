@@ -789,6 +789,11 @@ class DockerProvider:
         """
         DockerCleanupRegistry.force_cleanup_all_test_resources()
 
+    @classmethod
+    def cleanup_session(cls, session_id: str) -> None:
+        """Delegate to the registry's session-scoped cleanup."""
+        DockerCleanupRegistry.cleanup_session(session_id)
+
     # ── Session adoption (--skip-setup --session-id) ────────────────
 
     def adopt_session(self, session_id: str) -> List[DockerNodeHandle]:

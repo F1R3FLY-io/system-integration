@@ -274,6 +274,67 @@ class DockerCleanupRegistry:
                 _safe(f"rm volume {vol}", lambda v=vol: _docker("volume", "rm", "-f", v))
 
     @classmethod
+    def cleanup_session(cls, session_id: str) -> None:
+        """Force-remove Docker resources for one specific session.
+
+        Reaps:
+          1. Containers ``rnode.test.<session_id>.*``
+          2. Networks ``f1r3fly-test-<session_id>`` (and per-test
+             ``f1r3fly-test-<session_id>-standalone<N>`` networks)
+          3. Volumes ``test-<session_id>_*``
+
+        Resources are filtered first by Docker's ``name=`` substring
+        matcher (cheap narrowing) and then re-checked in Python with
+        anchored regexes so a longer session ID that shares a prefix
+        cannot collide. Idempotent — safe to invoke when no resources
+        for this session exist. Other sessions are not touched.
+        """
+        import re
+        container_re = re.compile(
+            rf"^{re.escape(_CONTAINER_PREFIX)}{re.escape(session_id)}\."
+        )
+        network_re = re.compile(
+            rf"^{re.escape(_NETWORK_PREFIX)}{re.escape(session_id)}"
+            r"(-standalone\d+)?$"
+        )
+        volume_re = re.compile(
+            rf"^{re.escape(_VOLUME_PREFIX)}{re.escape(session_id)}_"
+        )
+
+        # Containers — force-remove also stops running ones.
+        result = _docker(
+            "ps", "-a",
+            "--filter", f"name={_CONTAINER_PREFIX}{session_id}.",
+            "--format", "{{.Names}}",
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for name in result.stdout.strip().splitlines():
+                if container_re.match(name):
+                    _safe(f"rm container {name}", lambda n=name: _docker("rm", "-f", n))
+
+        # Networks (now safe — attached containers gone).
+        result = _docker(
+            "network", "ls",
+            "--filter", f"name={_NETWORK_PREFIX}{session_id}",
+            "--format", "{{.Name}}",
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for net in result.stdout.strip().splitlines():
+                if network_re.match(net):
+                    _safe(f"rm network {net}", lambda n=net: _docker("network", "rm", n))
+
+        # Volumes (now safe — using containers gone).
+        result = _docker(
+            "volume", "ls",
+            "--filter", f"name={_VOLUME_PREFIX}{session_id}_",
+            "--format", "{{.Name}}",
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for vol in result.stdout.strip().splitlines():
+                if volume_re.match(vol):
+                    _safe(f"rm volume {vol}", lambda v=vol: _docker("volume", "rm", "-f", v))
+
+    @classmethod
     def _remove_orphaned_test_resources(cls) -> None:
         """Remove any test-prefixed resources not associated with running sessions."""
         # Orphaned volumes

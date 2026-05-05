@@ -71,6 +71,7 @@ Session-scoped fixtures are built once; tests sharing a fixture run on one pytes
 | `destroy_standalone(handle)` | Tear down standalone |
 | `cleanup_all()` | Session-scoped teardown (called from fixture teardown + atexit) |
 | `force_cleanup_all_test_resources()` **classmethod** | **User-invoked only.** Aggressive force-remove of every framework resource on this backend, regardless of status. Backs `shardctl test-reset`. Never called from pytest hooks. |
+| `cleanup_session(session_id)` **classmethod** | **User-invoked only.** Same aggressiveness as the above, but scoped to one `session_id`. Other sessions are untouched. Backs `shardctl test-reset --session-id <id>` for the multi-agent-on-one-repo case. Idempotent. |
 | `adopt_session(session_id) -> List[NodeHandle]` | Reuse a shard from a previous `--keep-running` run. Backs `pytest --skip-setup --session-id <id>`. |
 
 Three provider impls today (selected via `--provider={docker,subprocess}`; default is `docker`):
@@ -112,9 +113,10 @@ Defined in `infra/cleanup.py`. Tracks resources created by the Docker provider (
 
 `SIGKILL` / OOM kills bypass 1 + 2. Layer 4 is the backstop.
 
-Two entry points:
+Three entry points:
 - `cleanup_stale_sessions()` — **conservative.** Only removes containers in sessions where *every* container has exited. Safe to call concurrently from parallel pytest workers. Used by hooks.
-- `force_cleanup_all_test_resources()` — **aggressive.** Removes everything matching the prefixes regardless of status. Used only by `shardctl test-reset`.
+- `force_cleanup_all_test_resources()` — **aggressive, broad.** Removes everything matching the prefixes regardless of status. Used by `shardctl test-reset` (no flag).
+- `cleanup_session(session_id)` — **aggressive, scoped.** Same force as above but only resources whose names match the given session ID — anchored regex on container/network/volume names prevents prefix collisions with sibling sessions. Used by `shardctl test-reset --session-id <id>`.
 
 ---
 

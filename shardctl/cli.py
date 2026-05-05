@@ -1,6 +1,7 @@
 """CLI application for shardctl."""
 
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -1302,21 +1303,36 @@ def test_cmd(
 
 
 @app.command(name="test-reset")
-def test_reset_cmd():
-    """Force-remove all integration test resources from every provider.
+def test_reset_cmd(
+    session_id: Optional[str] = typer.Option(
+        None,
+        "--session-id",
+        help=(
+            "Scope cleanup to one session ID (hex chars). Default: clean "
+            "every test session, regardless of owner. Use this when a "
+            "concurrent agent owns other sessions you must not disturb."
+        ),
+    ),
+):
+    """Force-remove integration test resources from every provider.
 
-    Aggressively wipes:
+    Without ``--session-id`` (default), aggressively wipes ALL sessions:
       * Docker: containers ``rnode.test.*``, networks ``f1r3fly-test-*``,
         volumes ``test-*`` (running containers are force-stopped).
       * Subprocess: every node process whose argv references the
         ``.subprocess-data`` token, plus all session data dirs under
         ``integration-tests/.subprocess-data/``.
 
+    With ``--session-id <id>``, scopes cleanup to that one session only.
+    Useful when running multiple agents in the same repo who shouldn't
+    interfere with each other's sessions. Other sessions are untouched.
+
     Use this to reset to a clean slate — including when ``--keep-running``
     left a shard up. Idempotent.
 
     Examples:
         poetry run shardctl test-reset
+        poetry run shardctl test-reset --session-id fec1aee8
     """
     config = Config()
     tests_dir = config.root_dir / "integration-tests"
@@ -1325,19 +1341,34 @@ def test_reset_cmd():
         console.print("[red]Integration tests directory not found[/red]")
         raise typer.Exit(1)
 
+    if session_id is not None:
+        if not re.fullmatch(r"[0-9a-f]{4,}", session_id):
+            console.print(
+                f"[red]Invalid --session-id {session_id!r}: expected hex chars (≥4)[/red]"
+            )
+            raise typer.Exit(1)
+        py_code = (
+            "from test.infra.providers.docker import DockerProvider; "
+            "from test.infra.providers.subprocess import SubprocessProvider; "
+            f"DockerProvider.cleanup_session({session_id!r}); "
+            f"SubprocessProvider.cleanup_session({session_id!r})"
+        )
+        success_msg = f"Test resources for session {session_id} cleaned."
+    else:
+        py_code = (
+            "from test.infra.providers.docker import DockerProvider; "
+            "from test.infra.providers.subprocess import SubprocessProvider; "
+            "DockerProvider.force_cleanup_all_test_resources(); "
+            "SubprocessProvider.force_cleanup_all_test_resources()"
+        )
+        success_msg = "Test resources cleaned."
+
     # Dispatch via the active provider's classmethod — keeps the cleanup
     # contract provider-agnostic at the seam. Running from a subprocess
     # (with PYTHONPATH pointing at integration-tests/) keeps shardctl free
     # of pytest/test-module imports.
     result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from test.infra.providers.docker import DockerProvider; "
-            "from test.infra.providers.subprocess import SubprocessProvider; "
-            "DockerProvider.force_cleanup_all_test_resources(); "
-            "SubprocessProvider.force_cleanup_all_test_resources()",
-        ],
+        [sys.executable, "-c", py_code],
         cwd=config.root_dir,
         env={**os.environ, "PYTHONPATH": str(config.root_dir / "integration-tests")},
         capture_output=True,
@@ -1348,7 +1379,7 @@ def test_reset_cmd():
     if result.returncode != 0:
         console.print(f"[yellow]Cleanup reported errors:[/yellow]\n{result.stderr}")
         raise typer.Exit(result.returncode)
-    console.print("[green]Test resources cleaned.[/green]")
+    console.print(f"[green]{success_msg}[/green]")
 
 
 @app.command(name="test-report")

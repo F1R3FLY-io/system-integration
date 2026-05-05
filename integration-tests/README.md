@@ -156,6 +156,14 @@ poetry run shardctl test-reset
 
 This force-removes every Docker resource matching `rnode.test.*` / `f1r3fly-test-*` / `test-*` AND every subprocess node + session data dir under `integration-tests/.subprocess-data/`. Aggressive — it will clobber a `--keep-running` shard you forgot about. Safe on CI (each job runs in an isolated VM) and on local dev (you almost never have two framework shards running simultaneously).
 
+When two agents share the repo and you must not disturb the other's session, scope the cleanup with `--session-id`:
+
+```bash
+poetry run shardctl test-reset --session-id <hex-id>
+```
+
+The session ID is the one printed by `--keep-running` (and recorded in subprocess-data dir names / Docker container names). Containers, networks, volumes, processes, and data dirs whose names don't match that ID are left untouched. Idempotent — running it for an unknown ID is a no-op.
+
 ---
 
 ## What's next?

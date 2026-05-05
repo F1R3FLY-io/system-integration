@@ -38,6 +38,10 @@ shardctl reset                    Stop F1R3FLY containers and remove blockchain 
 shardctl test-reset               Force-remove every integration-test resource
                                   (rnode.test.* / f1r3fly-test-* / test-*),
                                   including running containers
+  --session-id TEXT               Scope cleanup to one session ID only.
+                                  Other test sessions stay running. Useful
+                                  when a concurrent agent owns sessions you
+                                  must not disturb.
 shardctl clean [SERVICES...]      Delete cloned service repositories under services/
 ```
 

@@ -122,7 +122,7 @@ Test framework lives at [integration-tests/](integration-tests/). Canonical invo
   poetry run shardctl test-reset                                      # when done
   ```
 - **Image selection:** `F1R3FLY_NODE_IMAGE` env var (single source of truth). Default `f1r3flyindustries/f1r3fly-rust-node:latest`.
-- **Cleanup:** `shardctl test-reset` force-removes every `rnode.test.*` / `f1r3fly-test-*` / `test-*` resource, running or stopped.
+- **Cleanup:** `shardctl test-reset` force-removes every `rnode.test.*` / `f1r3fly-test-*` / `test-*` resource, running or stopped. Add `--session-id <id>` to scope cleanup to one session — useful when another agent owns concurrent sessions.
 - **Docs layout:**
   - [integration-tests/README.md](integration-tests/README.md) — running tests
   - [integration-tests/test/docs/ARCHITECTURE.md](integration-tests/test/docs/ARCHITECTURE.md) — framework internals (fixtures, Provider protocol, cleanup, ports, timeouts)
