@@ -109,6 +109,18 @@ FATAL_PATTERNS: List[Tuple[re.Pattern, str]] = [
         re.compile(r"BUG FOUND"),
         "System contract or replay engine flagged a structural bug",
     ),
+    (
+        re.compile(r"KvStoreError|KvStore error"),
+        "KvStore failure (e.g., parent-child race on mergeable-channels entry)",
+    ),
+    (
+        re.compile(r"UnknownRootError"),
+        "RSpace requested a root not in the local history store",
+    ),
+    (
+        re.compile(r"UNEXPECTED.*BlockException"),
+        "Tripwire: BlockException reached validate_with_effects despite the dependency-gate fix",
+    ),
 ]
 
 

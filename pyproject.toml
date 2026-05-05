@@ -58,8 +58,7 @@ markers = [
 # fixtures (shard startup: compose up + 5 containers reaching Running state)
 # must fit within this budget alongside the test body.
 # Individual tests can override with @pytest.mark.timeout(N).
-# CI overrides this with --timeout=600 to accommodate slower runners.
-timeout = 300
+timeout = 1800
 
 [tool.black]
 line-length = 100

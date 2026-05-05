@@ -149,17 +149,36 @@ def assert_block_finalized_on_all_nodes(
     field, which can lag the LFB advance by a few seconds in high-contention
     multi-validator scenarios (see TODO §2.1).
     """
+    from f1r3fly.client import F1r3flyClientException
+
     deadline = time.time() + timeout
     not_finalized: dict = {}
     while True:
         not_finalized = {}
         for node in nodes:
-            block = node.get_block(block_hash)
-            if not block.blockInfo.isFinalized:
-                not_finalized[node.name] = {
-                    "block_number": block.blockInfo.blockNumber,
-                    "fault_tolerance": float(block.blockInfo.faultTolerance),
-                }
+            try:
+                block = node.get_block(block_hash)
+                if not block.blockInfo.isFinalized:
+                    not_finalized[node.name] = {
+                        "block_number": block.blockInfo.blockNumber,
+                        "fault_tolerance": float(block.blockInfo.faultTolerance),
+                    }
+            except F1r3flyClientException as e:
+                # Transient race during high-contention multi-validator scenarios:
+                # a node has received the block hash via the propagation layer but
+                # hasn't fully indexed it for state-query gRPC calls yet. Treat as
+                # "not finalized yet on this node" and let the polling loop retry.
+                # Without this catch, a transient indexing race fails the assertion
+                # with a confusing error message that masks the real consensus state.
+                msg = str(e)
+                if "received but not added yet" in msg or "not added yet" in msg:
+                    not_finalized[node.name] = {
+                        "block_number": None,
+                        "fault_tolerance": None,
+                        "transient_error": "received but not added yet",
+                    }
+                else:
+                    raise
         if not not_finalized or time.time() >= deadline:
             break
         time.sleep(interval)
