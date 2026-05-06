@@ -31,6 +31,7 @@ pycryptodome = "*"
 pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git", rev = "946b3a7" }
 requests = "*"
 pytest-timeout = "^2.4.0"
+pytest-instafail = "^0.5.0"
 websocket-client = "^1.9.0"
 pyhocon = "^0.3.63"
 

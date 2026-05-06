@@ -56,9 +56,9 @@ Each test spins up a single node with no peers. Used for heartbeat timing, stand
 |---|---|---|
 | 2 | [test_heartbeat](test_heartbeat.md) | Standalone heartbeat config: idle block creation, disabled when max-parents=1 |
 | 1 | [test_propose](test_propose.md) | Deploy phlo price validation with custom `--min-phlo-price` |
-| 11 | [test_token_metadata](test_token_metadata.md) | Native token metadata standalone: config validation, restart drift, genesis blocking |
+| 7 | [test_token_metadata](test_token_metadata.md) | Native token metadata standalone: joiner mismatch, round-trip, restart drift, multi-shard, genesis blocking (validation rejections moved to Rust unit tests) |
 
-**Total: 14 tests across 3 files.**
+**Total: 10 tests across 3 files.**
 
 ---
 

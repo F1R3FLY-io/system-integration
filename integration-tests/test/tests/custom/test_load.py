@@ -235,7 +235,10 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
 
                 tracker.clear()
                 lfb_start = _get_lfb_number(v1)
-                metrics_before = scrape_metrics(v1)
+                metrics_before_by_v = {
+                    name: scrape_metrics(node) for name, node in nodes.items()
+                }
+                metrics_before = metrics_before_by_v["validator1"]
                 phase_time_start = time.time()
 
                 deploy_count, errors, submission_duration = _run_phase(
@@ -258,8 +261,15 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                 tracker.wait_for_finalization(timeout=finalization_timeout)
 
                 lfb_end = _get_lfb_number(v1)
-                metrics_after = scrape_metrics(v1)
+                metrics_after_by_v = {
+                    name: scrape_metrics(node) for name, node in nodes.items()
+                }
+                metrics_after = metrics_after_by_v["validator1"]
                 node_metrics = compute_metric_deltas(metrics_before, metrics_after)
+                node_metrics_by_validator = {
+                    name: compute_metric_deltas(metrics_before_by_v[name], metrics_after_by_v[name])
+                    for name in nodes
+                }
                 phase_time_end = time.time()
                 phase_total = phase_time_end - phase_time_start
 
@@ -288,6 +298,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                     lfb_rate_per_min=lfb_rate,
                     phase_duration=phase_total,
                     node_metrics=node_metrics,
+                    node_metrics_by_validator=node_metrics_by_validator,
                 )
                 all_reports.append(report)
 
@@ -297,8 +308,9 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                     phase_name, inc_p50, inc_p95, fin_p50, fin_p95,
                     lfb_start, lfb_end, lfb_rate, unfinalized,
                 )
-                if node_metrics:
-                    logging.info("  Node internals (V1):\n%s", format_node_metrics(node_metrics))
+                for v_name, m in node_metrics_by_validator.items():
+                    if m:
+                        logging.info("  Node internals (%s):\n%s", v_name, format_node_metrics(m))
 
         finally:
             tracker.shutdown()
@@ -306,7 +318,12 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
         logging.info(_format_report(all_reports))
 
         for report in all_reports:
-            if report.node_metrics:
+            if report.node_metrics_by_validator:
+                for v_name, m in report.node_metrics_by_validator.items():
+                    if m:
+                        logging.info("Node metrics for phase '%s' (%s):\n%s",
+                                     report.name, v_name, format_node_metrics(m))
+            elif report.node_metrics:
                 logging.info("Node metrics for phase '%s':\n%s",
                              report.name, format_node_metrics(report.node_metrics))
 

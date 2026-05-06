@@ -96,7 +96,9 @@ Each worker gets a non-overlapping host port range automatically. No coordinatio
 
 | Flag | Effect |
 |---|---|
-| `--provider={docker,subprocess}` | Infrastructure backend. `docker` (default) spawns nodes as containers; `subprocess` spawns the locally-built `services/f1r3node-rust/target/release/node` binary directly on the host. Set `F1R3FLY_NODE_BINARY` to override the binary path. |
+| `--provider={docker,subprocess}` | Infrastructure backend. `docker` (default) spawns nodes as containers using the `F1R3FLY_NODE_IMAGE` tag; `subprocess` spawns the locally-built node binary directly on the host. Set `F1R3FLY_NODE_BINARY=/abs/path/to/target/release/node` to override the default lookup at `services/f1r3node-rust/target/release/node`. **`F1R3FLY_NODE_BINARY` is ignored under the Docker provider** — to exercise a feature-branch binary, pass `--provider=subprocess`. |
+| `--instafail` | Print each test's traceback the moment it errors or fails, instead of buffering until session end. Strongly recommended under `-n auto` (xdist) — without it, a session-fixture failure on the `@shared` worker can hide behind 30+ identical ERROR markers for the duration of the run. Provided by `pytest-instafail`. |
+| `--maxfail=N` | Abort the session after N total failures/errors. Pair with `--instafail` for diagnostic runs. Useful as a "storm-stop" against fixture-failure cascades — e.g. `--maxfail=10` aborts a runaway session in ~10s instead of grinding through every dependent test. |
 | `--keep-running` | Start shard, run tests, **don't tear down** after. Prints the session ID for reuse. |
 | `--skip-setup --session-id <id>` | Adopt a shard from a previous `--keep-running` run. Skip bring-up (~2s vs ~60s fresh). |
 | `--monitor` | Sample Docker resource usage (peak memory, CPU) across all framework containers. Report embedded in `report.json`. (Docker provider only.) |

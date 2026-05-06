@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Comprehensive test suite for the native token metadata feature (Option B: on-chain TokenMetadata contract). Covers 6 groups spanning the full feature surface: happy path, joiner mismatch detection, config validation, restart drift, multi-shard isolation, and genesis ceremony blocking.
+Comprehensive test suite for the native token metadata feature (Option B: on-chain TokenMetadata contract). Covers 6 groups spanning the full feature surface: happy path, joiner mismatch detection, special-character round-trip, restart drift, multi-shard isolation, and genesis ceremony blocking. Pure validation-rejection cases live as Rust unit tests (see Group C below).
 
 ## Architecture
 
@@ -14,7 +14,7 @@ Group A (happy path) uses the session-scoped `shared_shard` fixture, asserting a
 - `handle.wait_for_exit(timeout)` / `handle.exit_code()` — exit code tracking
 - `log_events.find_event(node.logs(), event="...")` — structured log event parsing
 
-## Tests (17)
+## Tests (14 integration + 10 Rust unit)
 
 ### Group A -- Happy path (5 tests, shared shard)
 
@@ -40,15 +40,32 @@ Uses a module-scoped baseline standalone. Joiners with mismatched configs must e
 | `test_joiner_mismatch_all_three_fields` | all three | all three fields |
 | `test_joiner_matching_config_succeeds` | none (control) | `native_token_metadata_verified` event |
 
-### Group C -- Config validation (5 tests, standalone failure mode)
+### Group C -- Special character round-trip (1 test, standalone)
 
 | Test | Input | Expected behavior |
 |------|-------|-------------------|
-| `test_decimals_negative_rejected` | `--native-token-decimals=-1` | Clap rejects, non-zero exit |
-| `test_decimals_above_max_rejected` | `--native-token-decimals=19` | Clap rejects (max 18) |
-| `test_empty_string_name_rejected` | `--native-token-name=""` | Config validation, non-zero exit |
-| `test_whitespace_only_symbol_rejected` | `--native-token-symbol="   "` | Config validation, non-zero exit |
 | `test_special_characters_in_token_name_round_trip` | `F1R3-CAP/v2!` | Survives CLI -> template -> on-chain -> API |
+
+**Pure validation-rejection cases moved to Rust unit tests** (deterministic,
+microsecond runtime, no subprocess spawn / log race):
+
+| Test | Layer | Location |
+|------|-------|----------|
+| `accepts_valid_baseline` | `validate_native_token` | `casper/src/rust/casper_conf.rs` |
+| `rejects_empty_name`, `rejects_whitespace_only_name` | `validate_native_token` | `casper/src/rust/casper_conf.rs` |
+| `rejects_empty_symbol`, `rejects_whitespace_only_symbol` | `validate_native_token` | `casper/src/rust/casper_conf.rs` |
+| `rejects_decimals_above_max`, `accepts_decimals_at_max` | `validate_native_token` | `casper/src/rust/casper_conf.rs` |
+| `rejects_negative_decimals`, `rejects_decimals_above_clap_range`, `accepts_decimals_at_max` | clap parse | `node/src/rust/configuration/commandline/options.rs` |
+
+Run via `cargo test -p casper --lib native_token_validation_tests` and
+`cargo test -p node --lib native_token_clap_tests`. These were originally
+four standalone integration tests (`test_decimals_negative_rejected`,
+`test_decimals_above_max_rejected`, `test_empty_string_name_rejected`,
+`test_whitespace_only_symbol_rejected`) — moved because the assertions
+read process logs from disk to verify *which* error path fired, exposing
+a race when fast-failing nodes wrote their error string after the parent
+read the (still-empty) log file. Validation logic is a pure function;
+testing it at the unit-test layer eliminates the race entirely.
 
 ### Group D -- Restart drift (1 test)
 
@@ -68,7 +85,7 @@ Uses a module-scoped baseline standalone. Joiners with mismatched configs must e
 - All four contract methods (name, symbol, decimals, all) are consistent
 - All nodes report identical metadata via HTTP API; on-chain queries verified via exploratory (readonly) and real deploy (V1)
 - Mismatched joiners are detected and logged with specific field names
-- CLI validation catches invalid inputs (range, empty, whitespace)
+- CLI validation catches invalid inputs (negative/above-max decimals, empty/whitespace name/symbol) — verified at the unit-test layer in `casper_conf.rs` and `options.rs`
 - Special characters survive the full round-trip without corruption
 - Immutable on-chain contracts prevent config drift after genesis
 - Genesis ceremony blocks when validators disagree on token metadata

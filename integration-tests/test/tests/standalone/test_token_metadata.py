@@ -193,91 +193,10 @@ def test_joiner_matching_config_succeeds(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Group C -- Config validation / CLI parse errors
+# Group C -- Special character round-trip
 # ═══════════════════════════════════════════════════════════════════════
-
-
-def test_decimals_negative_rejected(provider, timeouts) -> None:
-    """--native-token-decimals=-1 is rejected at clap parse time."""
-    config = _standalone_config(decimals=-1)
-    handle = provider.create_standalone(config, wait_running=False)
-    node = Node(handle=handle, role=NodeRole.STANDALONE)
-    try:
-        exit_code = handle.wait_for_exit(timeout=timeouts.command)
-        assert exit_code is not None and exit_code != 0, (
-            f"Expected non-zero exit for decimals=-1, got {exit_code}"
-        )
-        logs = node.logs()
-        assert "native-token-decimals" in logs.lower() or "decimals" in logs.lower(), (
-            "Expected error message mentioning decimals"
-        )
-        logging.info("decimals=-1 rejected with exit_code=%d", exit_code)
-    finally:
-        node.close()
-        provider.destroy_standalone(handle)
-
-
-def test_decimals_above_max_rejected(provider, timeouts) -> None:
-    """--native-token-decimals=19 exceeds MAX (18), rejected by clap."""
-    config = _standalone_config(decimals=19)
-    handle = provider.create_standalone(config, wait_running=False)
-    node = Node(handle=handle, role=NodeRole.STANDALONE)
-    try:
-        exit_code = handle.wait_for_exit(timeout=timeouts.command)
-        assert exit_code is not None and exit_code != 0, (
-            f"Expected non-zero exit for decimals=19, got {exit_code}"
-        )
-        logs = node.logs()
-        assert "native-token-decimals" in logs.lower() or "decimals" in logs.lower(), (
-            "Expected error message mentioning decimals"
-        )
-        logging.info("decimals=19 rejected with exit_code=%d", exit_code)
-    finally:
-        node.close()
-        provider.destroy_standalone(handle)
-
-
-def test_empty_string_name_rejected(provider, timeouts) -> None:
-    """Empty native-token-name fails config validation at startup."""
-    config = _standalone_config(name="", symbol="GOOD", decimals=8)
-    handle = provider.create_standalone(config, wait_running=False)
-    node = Node(handle=handle, role=NodeRole.STANDALONE)
-    try:
-        exit_code = handle.wait_for_exit(timeout=timeouts.command)
-        assert exit_code is not None and exit_code != 0, (
-            f"Expected non-zero exit for empty name, got {exit_code}"
-        )
-        logs = node.logs()
-        assert (
-            "native-token-name must be non-empty" in logs
-            or "native token config invalid" in logs
-            or "a value is required for '--native-token-name" in logs
-        ), f"Unexpected failure output:\n{logs[-2000:]}"
-        logging.info("Empty name rejected with exit_code=%d", exit_code)
-    finally:
-        node.close()
-        provider.destroy_standalone(handle)
-
-
-def test_whitespace_only_symbol_rejected(provider, timeouts) -> None:
-    """Whitespace-only symbol is rejected the same as empty."""
-    config = _standalone_config(name="GOOD", symbol="   ", decimals=8)
-    handle = provider.create_standalone(config, wait_running=False)
-    node = Node(handle=handle, role=NodeRole.STANDALONE)
-    try:
-        exit_code = handle.wait_for_exit(timeout=timeouts.command)
-        assert exit_code is not None and exit_code != 0, (
-            f"Expected non-zero exit for whitespace symbol, got {exit_code}"
-        )
-        logs = node.logs()
-        assert (
-            "native-token-symbol must be non-empty" in logs
-            or "native token config invalid" in logs
-        ), f"Unexpected failure output:\n{logs[-2000:]}"
-        logging.info("Whitespace symbol rejected with exit_code=%d", exit_code)
-    finally:
-        node.close()
-        provider.destroy_standalone(handle)
+# Pure validation-rejection cases (empty/whitespace fields, out-of-range
+# decimals) are Rust unit tests in `casper_conf.rs` and `options.rs`.
 
 
 def test_special_characters_in_token_name_round_trip(provider, timeouts) -> None:

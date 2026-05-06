@@ -39,6 +39,9 @@ METRICS_TO_SCRAPE = [
     "dag_merge_combine_changes_time",
     "dag_merge_compute_trie_actions_time",
     "dag_merge_apply_trie_actions_time",
+    # dag_merger::merge rejection-expansion path
+    "dag_merge_rejection_expansion_time",
+    "dag_merge_rejection_expansion_fired",
     "block_replay_phase_reset_time",
     "block_replay_phase_user_deploys_time",
     "block_replay_phase_system_deploys_time",
@@ -50,6 +53,42 @@ METRICS_TO_SCRAPE = [
     "block_replay_deploy_refund_time",
     "block_replay_deploy_discard_event_log_time",
     "block_replay_deploy_check_replay_data_time",
+    # play_exploratory_par sub-step split (compute_bonds + active_validators).
+    "bonds_cache_reset_time",
+    "bonds_cache_inj_time",
+    "bonds_cache_get_data_time",
+    # Validate::block_summary sub-step breakdown.
+    "block_validation_block_hash_time",
+    "block_validation_timestamp_time",
+    "block_validation_shard_identifier_time",
+    "block_validation_deploys_shard_identifier_time",
+    "block_validation_repeat_deploy_time",
+    "block_validation_block_number_time",
+    "block_validation_future_transaction_time",
+    "block_validation_transaction_expiration_time",
+    "block_validation_time_based_expiration_time",
+    "block_validation_justification_follows_time",
+    "block_validation_parents_time",
+    "block_validation_sequence_number_time",
+    "block_validation_justification_regressions_time",
+    # Block creator (proposer side) phase breakdown.
+    "block_creator_prepare_user_deploys_time",
+    "block_creator_compute_parents_post_state_time",
+    "block_creator_compute_deploys_checkpoint_time",
+    "block_creator_package_block_time",
+    "block_creator_total_time",
+    # Finalization pipeline.
+    "finalizer_run_time",
+    "clique_oracle_compute_time",
+    # compute_rejected_buffer_admits (called from compute_parents_post_state).
+    "compute_rejected_buffer_admits_time",
+    # Counter: compute_parents_post_state falling back to a single parent
+    # because the visible-blocks set or LCA distance exceeded its caps.
+    "compute_parents_post_state_fallback_merge_scope_too_large_fired",
+    # DAG insert.
+    "dag_insert_time",
+    # Counter: is_mergeable_channel calls (every channel produce/consume).
+    "is_mergeable_channel_calls",
     # Runtime spawn timing
     "runtime_spawn_time",
     "runtime_spawn_replay_time",
@@ -149,6 +188,44 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
         count = metrics.get(key + ".count", 0)
         if count > 0:
             lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} blocks)")
+    # bonds_cache sub-step breakdown
+    bonds_sub = [
+        ("reset (load hot store)", "bonds_cache_reset_time"),
+        ("inj (Rholang query)", "bonds_cache_inj_time"),
+        ("get_data (collect)", "bonds_cache_get_data_time"),
+    ]
+    bonds_sub_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in bonds_sub)
+    if bonds_sub_has_data:
+        lines.append("  bonds_cache breakdown (avg per call):")
+        for label, key in bonds_sub:
+            avg = metrics.get(key, 0)
+            count = metrics.get(key + ".count", 0)
+            if count > 0:
+                lines.append(f"    {label}: {avg*1000:.1f}ms ({int(count)} calls)")
+    # block_summary sub-step breakdown
+    summary_steps = [
+        ("block_hash", "block_validation_block_hash_time"),
+        ("timestamp", "block_validation_timestamp_time"),
+        ("shard_identifier", "block_validation_shard_identifier_time"),
+        ("deploys_shard_identifier", "block_validation_deploys_shard_identifier_time"),
+        ("repeat_deploy", "block_validation_repeat_deploy_time"),
+        ("block_number", "block_validation_block_number_time"),
+        ("future_transaction", "block_validation_future_transaction_time"),
+        ("transaction_expiration", "block_validation_transaction_expiration_time"),
+        ("time_based_expiration", "block_validation_time_based_expiration_time"),
+        ("justification_follows", "block_validation_justification_follows_time"),
+        ("parents", "block_validation_parents_time"),
+        ("sequence_number", "block_validation_sequence_number_time"),
+        ("justification_regressions", "block_validation_justification_regressions_time"),
+    ]
+    summary_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in summary_steps)
+    if summary_has_data:
+        lines.append("  block_summary sub-steps (avg per call):")
+        for label, key in summary_steps:
+            avg = metrics.get(key, 0)
+            count = metrics.get(key + ".count", 0)
+            if count > 0:
+                lines.append(f"    {label}: {avg*1000:.2f}ms ({int(count)} calls)")
     # Checkpoint breakdown (merge vs replay)
     merge_key = "block_processing_stage_parents_post_state_time"
     replay_key = "block_processing_stage_replay_time"
@@ -183,6 +260,16 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             count = metrics.get(key + ".count", 0)
             if count > 0:
                 lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} merges)")
+    # dag_merger rejection-expansion path: called every merge, fires only
+    # when there are rejected source blocks with descendants in scope.
+    rej_exp_count = metrics.get("dag_merge_rejection_expansion_time.count", 0)
+    rej_exp_fired = metrics.get("dag_merge_rejection_expansion_fired.count", 0)
+    if rej_exp_count > 0:
+        rej_exp_avg = metrics.get("dag_merge_rejection_expansion_time", 0)
+        lines.append(
+            f"    rejection_expansion: {rej_exp_avg*1000:.2f}ms avg, "
+            f"called {int(rej_exp_count)}× ({int(rej_exp_fired)} fired)"
+        )
     # Replay phases
     replay_phases = [
         ("reset", "block_replay_phase_reset_time"),
@@ -213,6 +300,62 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             count = metrics.get(key + ".count", 0)
             if count > 0:
                 lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} deploys)")
+    # Block creator (proposer side) breakdown
+    creator_metrics = [
+        ("prepare_user_deploys", "block_creator_prepare_user_deploys_time"),
+        ("compute_parents_post_state", "block_creator_compute_parents_post_state_time"),
+        ("compute_deploys_checkpoint", "block_creator_compute_deploys_checkpoint_time"),
+        ("package_block", "block_creator_package_block_time"),
+        ("TOTAL", "block_creator_total_time"),
+    ]
+    creator_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in creator_metrics)
+    if creator_has_data:
+        lines.append("  Block creator (proposer) phases (avg per block created):")
+        for label, key in creator_metrics:
+            avg = metrics.get(key, 0)
+            count = metrics.get(key + ".count", 0)
+            if count > 0:
+                lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} blocks)")
+    # Finalization pipeline
+    fin_metrics = [
+        ("finalizer.run (top-level)", "finalizer_run_time"),
+        ("clique_oracle.compute_max_clique_weight", "clique_oracle_compute_time"),
+    ]
+    fin_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in fin_metrics)
+    if fin_has_data:
+        lines.append("  Finalization pipeline (avg per call):")
+        for label, key in fin_metrics:
+            avg = metrics.get(key, 0)
+            count = metrics.get(key + ".count", 0)
+            if count > 0:
+                lines.append(f"    {label}: {avg*1000:.1f}ms ({int(count)} calls)")
+    # compute_rejected_buffer_admits (called inside compute_parents_post_state)
+    admits_count = metrics.get("compute_rejected_buffer_admits_time.count", 0)
+    if admits_count > 0:
+        admits_avg = metrics.get("compute_rejected_buffer_admits_time", 0)
+        lines.append(
+            f"  compute_rejected_buffer_admits: {admits_avg*1000:.2f}ms avg, "
+            f"{int(admits_count)} calls"
+        )
+    # compute_parents_post_state fallback counter
+    fallback_fired = metrics.get(
+        "compute_parents_post_state_fallback_merge_scope_too_large_fired.count", 0
+    )
+    if fallback_fired > 0:
+        lines.append(
+            f"  merge_scope_too_large fallback fired {int(fallback_fired)}×"
+        )
+    # DAG insert
+    dag_insert_count = metrics.get("dag_insert_time.count", 0)
+    if dag_insert_count > 0:
+        dag_insert_avg = metrics.get("dag_insert_time", 0)
+        lines.append(
+            f"  dag.insert: {dag_insert_avg*1000:.2f}ms avg ({int(dag_insert_count)} inserts)"
+        )
+    # is_mergeable_channel call count (per channel produce/consume during deploy execution)
+    is_merge_calls = metrics.get("is_mergeable_channel_calls.count", 0)
+    if is_merge_calls > 0:
+        lines.append(f"  is_mergeable_channel calls: {int(is_merge_calls)}")
     # Runtime spawn timing
     spawn_metrics = [
         ("spawn_runtime", "runtime_spawn_time"),
@@ -269,6 +412,12 @@ class PhaseReport:
     lfb_rate_per_min: float
     phase_duration: float
     node_metrics: Optional[Dict[str, float]] = None
+    # Per-validator metric deltas for the phase, keyed by validator name.
+    # node_metrics (above) keeps the legacy v1-only view for callers that
+    # already consume it; node_metrics_by_validator is the broader picture
+    # that catches load on v2/v3 — important when v1 is mostly proposing
+    # while peers do the validation work.
+    node_metrics_by_validator: Optional[Dict[str, Dict[str, float]]] = None
 
 
 @dataclasses.dataclass

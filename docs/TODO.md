@@ -32,6 +32,7 @@ different branch.
 
 ```bash
 poetry run pytest \
+  --provider=subprocess \
   integration-tests/test/tests/shared/ \
   integration-tests/test/tests/custom/ \
   integration-tests/test/tests/standalone/ \
@@ -41,8 +42,24 @@ poetry run pytest \
   --deselect integration-tests/test/tests/shared/test_convergence.py::test_ft_convergence \
   --deselect integration-tests/test/tests/shared/test_bonding_validators.py \
   --deselect integration-tests/test/tests/shared/test_contract_lifecycle.py \
-  -v --tb=short -n auto --dist=loadgroup --timeout=1200
+  -v --tb=short --instafail --maxfail=10 -n auto --dist=loadgroup --timeout=1200
 ```
+
+`--instafail` (from `pytest-instafail`) prints each traceback the moment a test
+errors or fails, instead of buffering until session end — under `pytest-xdist`
+the controller normally serializes all tracebacks to the final summary, so a
+session-scoped fixture failure on the `@shared` worker can hide for 25+ minutes
+while every dependent test errors with the same message. `--maxfail=10` is a
+storm-stop: a fresh fixture-failure cascade aborts the run after the 10th
+ERROR (~10s) instead of grinding through all 39 `@shared` tests.
+
+> **`--provider=subprocess` is required.** The pytest default is `docker`,
+> which ignores `F1R3FLY_NODE_BINARY` and spawns the
+> `f1r3flyindustries/f1r3fly-rust-node:latest` image instead. To exercise a
+> locally-built binary on a feature branch, you must pass `--provider=subprocess`
+> AND set `F1R3FLY_NODE_BINARY=/abs/path/to/target/release/node` (or rely on
+> the default lookup at `services/f1r3node-rust/target/release/node`).
+> The 91/0 baselines above are all subprocess runs.
 
 Wall-clock is dominated by the `@shared` and `@custom` tails: `loadgroup` pins
 all `@shared` tests to one worker and all `@custom` to one worker, so xdist
