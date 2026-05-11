@@ -107,6 +107,11 @@ Services are defined in `services.yml` with their git URLs and branches:
    - `poetry run shardctl build-service <service> --no-docker` for source build only
    - `poetry run shardctl build-service --list` to see available services
 6. **README.md is a thin entry point** — for any specific topic, follow the link from the "Where to go next" table to the dedicated doc
+7. **CWD discipline for service-tree commands** — every `cargo`/`sbt`/`pytest` command must be run from inside the right service worktree (e.g. `services/f1r3node-rust-pr3/`). The Bash-tool cwd does NOT reliably persist between calls, so:
+   - **Always start the command with `cd <absolute path> && <cmd>`**, even when the previous call appeared to land you there.
+   - When working in a git worktree (e.g. `f1r3node-rust-pr1`, `f1r3node-rust-pr2`, `f1r3node-rust-pr3`), use the worktree's absolute path, not `services/f1r3node-rust/`.
+   - If `cargo` errors with `could not find Cargo.toml in /Users/spreston/src/firefly/system-integration`, the cwd silently reverted — re-issue the command with explicit `cd`.
+   - For background commands launched with `run_in_background: true`, the cwd reset bites especially hard because the process inherits the parent shell's cwd. Always prefix with `cd`.
 
 ## Integration Tests
 
