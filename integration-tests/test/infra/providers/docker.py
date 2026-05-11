@@ -136,17 +136,27 @@ class DockerNodeHandle:
         return None
 
     def wait_for_exit(self, timeout: int = 180) -> Optional[int]:
-        """Wait for the container to exit. Returns exit code or None on timeout."""
-        import time
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            code = self.exit_code()
-            if code is not None:
-                return code
-            if not self.is_running():
-                return self.exit_code()
-            time.sleep(3)
-        return None
+        """Wait for the container to exit. Returns exit code or None on timeout.
+
+        Uses ``docker wait`` — a daemon-blocking RPC that returns precisely
+        when the container exits, analogous to ``proc.wait()`` for a local
+        process. This avoids the polling race the previous implementation
+        had: it inspected ``State.Status`` and bailed early when the
+        container was momentarily in a transitional state (``created``,
+        ``removing``, ``restarting``) or when ``docker inspect`` transiently
+        failed under daemon contention, causing the function to return
+        ``None`` long before the timeout deadline.
+        """
+        try:
+            result = _docker("wait", self._name, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            return int(result.stdout.strip())
+        except ValueError:
+            return None
 
     def resource_usage(self) -> dict:
         """Return current memory and CPU usage from docker stats."""
