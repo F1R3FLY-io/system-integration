@@ -265,8 +265,14 @@ def test_restart_with_changed_token_config_fails_verification(
         new_node = Node(handle=new_handle, role=NodeRole.STANDALONE)
 
         exit_code = new_handle.wait_for_exit(timeout=timeouts.finalization * 3)
-        assert exit_code != 0, (
-            f"Expected non-zero exit on token metadata drift, got exit_code={exit_code}"
+        # wait_for_exit returns None on timeout. Without this is-not-None
+        # guard, `None != 0` is True and the assertion silently passes,
+        # making a timed-out (still-running) container look like a
+        # successful non-zero exit.
+        assert exit_code is not None and exit_code != 0, (
+            f"Expected non-zero exit on token metadata drift, got "
+            f"exit_code={exit_code} (None means wait_for_exit timed out "
+            f"after {timeouts.finalization * 3}s — node never exited)"
         )
         mismatch = find_event(new_node.logs(), event="native_token_metadata_mismatch")
         assert mismatch is not None, "Expected native_token_metadata_mismatch event"
