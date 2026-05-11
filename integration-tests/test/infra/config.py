@@ -36,6 +36,50 @@ def resolve_node_binary(repo_root: str) -> str:
     return os.path.join(repo_root, "services", "f1r3node-rust", "target", "release", "node")
 
 
+def resolve_node_defaults_conf(repo_root: str) -> str:
+    """Resolve the node's defaults.conf path.
+
+    Resolution order:
+    1. ``F1R3FLY_NODE_DEFAULTS_CONF`` env var (explicit path; CI sets this).
+    2. ``<repo_root>/services/f1r3node-rust/node/src/main/resources/defaults.conf``
+       — standard local-dev layout where f1r3node-rust is cloned under
+       system-integration's ``services/``.
+    3. ``<parent of repo_root>/node/src/main/resources/defaults.conf``
+       — CI layout where f1r3node is the outer checkout and
+       system-integration is nested inside it.
+
+    Raises FileNotFoundError listing all candidates tried if none match.
+    """
+    override = os.environ.get("F1R3FLY_NODE_DEFAULTS_CONF")
+    if override:
+        if not os.path.isfile(override):
+            raise FileNotFoundError(
+                f"F1R3FLY_NODE_DEFAULTS_CONF={override} but file does not exist"
+            )
+        return override
+
+    candidates = [
+        os.path.join(
+            repo_root, "services", "f1r3node-rust", "node", "src",
+            "main", "resources", "defaults.conf",
+        ),
+        os.path.join(
+            os.path.dirname(repo_root), "node", "src", "main",
+            "resources", "defaults.conf",
+        ),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+
+    raise FileNotFoundError(
+        "Could not locate node defaults.conf. Tried:\n"
+        + "\n".join(f"  - {p}" for p in candidates)
+        + "\n\nSet F1R3FLY_NODE_DEFAULTS_CONF to point at the node's "
+        "defaults.conf, or clone f1r3node-rust into services/."
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class TimeoutConfig:
     """Base timeout values. Everything else derives from these via scale."""
@@ -221,22 +265,18 @@ class NodeConf:
 
     @classmethod
     def resolve(cls) -> "NodeConf":
-        """Resolve from standard paths relative to the repo root."""
+        """Resolve from standard paths relative to the repo root.
+
+        ``defaults.conf`` is located via :func:`resolve_node_defaults_conf`,
+        which supports an env-var override plus local-dev and CI fallback
+        layouts. ``rust.conf`` is always at ``<repo_root>/conf/rust.conf``.
+        """
         integration_tests = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
         repo_root = os.path.dirname(integration_tests)
 
-        defaults_conf = os.path.join(
-            repo_root, "services", "f1r3node-rust", "node", "src",
-            "main", "resources", "defaults.conf",
-        )
+        defaults_conf = resolve_node_defaults_conf(repo_root)
         override_conf = os.path.join(repo_root, "conf", "rust.conf")
-
-        if not os.path.isfile(defaults_conf):
-            raise FileNotFoundError(
-                f"Node defaults.conf not found at {defaults_conf}. "
-                f"Is f1r3node-rust cloned in services/?"
-            )
 
         return cls.from_conf_files(defaults_conf, override_conf)
