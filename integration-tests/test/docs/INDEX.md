@@ -12,7 +12,7 @@ The `shared_shard` fixture brings up bootstrap + 3 validators + readonly once pe
 
 | Tests | File | Summary |
 |---|---|---|
-| 2 | [test_bonding_validators](test_bonding_validators.md) | V4 first bond + V5 second-bond succession (8-phase lifecycle on shared shard) |
+| 1 | [test_bonding_validators](test_bonding_validators.md) | V4 first bond + V5 second-bond succession + Phase C observer LFS-sync, with background load throughout |
 | 2 | [test_bridge_admin](test_bridge_admin.md) | Bridge contract deploy, URI registration, query API |
 | 7 | [test_contract_lifecycle](test_contract_lifecycle.md) | Multi-contract parallel deploy + cross-node state agreement + contract-to-contract interaction + multi-block state evolution under merge |
 | 3 | [test_convergence](test_convergence.md) | Network recovery from DAG tip divergence; FT convergence across nodes |
@@ -20,13 +20,14 @@ The `shared_shard` fixture brings up bootstrap + 3 validators + readonly once pe
 | 4 | [test_deployment](test_deployment.md) | Deploy lifecycle: syntax validation, phlo errors, cross-validator lookup |
 | 1 | [test_genesis_ceremony](test_genesis_ceremony.md) | Genesis ceremony completion validation across all nodes |
 | 2 | [test_heartbeat](test_heartbeat.md) | Heartbeat proposer creates blocks when LFB goes stale |
+| 1 | [test_observer_lfs_sync](test_observer_lfs_sync.md) | Fresh readonly observer LFS-syncs cleanly against an actively producing shard; deep cross-node post-state agreement on observer's LFB ancestor chain |
 | 12 | [test_query_endpoints](test_query_endpoints.md) | HTTP query endpoints (balance, validators, epoch, estimate-cost, etc.) |
 | 2 | [test_storage](test_storage.md) | Registry-based data storage + cross-node retrieval after finalization |
 | 5 | [test_token_metadata](test_token_metadata.md) | Native token metadata on the shared shard (happy path + cross-shard checks) |
 | 5 | [test_wallets](test_wallets.md) | PoS vault transfers, authorization failures, insufficient funds, Block API transfers |
 | 23 | [test_web_api](test_web_api.md) | HTTP API: strict assertions, cross-node consistency, views, status, bond-status |
 
-**Total: 69 tests across 13 files.**
+**Total: 69 tests across 14 files.**
 
 ---
 
@@ -40,11 +41,12 @@ Each test builds its own `ShardConfig` and calls `provider.create_shard(...)`. U
 | 5 | [test_consensus_safety](test_consensus_safety.md) | Consensus safety under validator failure, FTT boundaries, epochs |
 | 1 | [test_load](test_load.md) | Deploy throughput + finalization latency benchmark |
 | 1 | [test_shard_degradation](test_shard_degradation.md) | Production-readiness gate: 150 deploys, sustained load |
+| 1 | [test_joiner_self_proposes_at_epoch_boundary](test_joiner_self_proposes_at_epoch_boundary.md) | Negative-control for §2.15: deterministic single-node propose does NOT reproduce the bonding-drift bug; rules out architectural-shape-alone hypothesis |
 | 1 | [test_synchrony_constraint](test_synchrony_constraint.md) | Per-validator synchrony constraint threshold enforcement |
 | 1 | [test_trim_state](test_trim_state.md) | Joiner syncs from Last Finalized State instead of replaying genesis |
 | 6 | [test_websocket](test_websocket.md) | `/ws/events` block, genesis, transfer, lifecycle events + startup replay |
 
-**Total: 19 tests across 7 files.**
+**Total: 20 tests across 8 files.**
 
 ---
 
@@ -72,7 +74,7 @@ Items known but not covered by the framework today. See [deferred-test-coverage.
 
 | Directory | Files | Tests |
 |---|---|---|
-| `tests/shared/` | 13 | 69 |
-| `tests/custom/` | 7 | 19 |
+| `tests/shared/` | 14 | 69 |
+| `tests/custom/` | 8 | 20 |
 | `tests/standalone/` | 3 | 14 |
-| **Total** | **23** | **102** |
+| **Total** | **25** | **103** |

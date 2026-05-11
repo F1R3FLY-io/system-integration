@@ -64,8 +64,8 @@ Session-scoped fixtures are built once; tests sharing a fixture run on one pytes
 | `keep_running: bool` | Skip teardown on session end (via `--keep-running`) |
 | `active_handles: List[NodeHandle]` | Every handle this provider created; used by log scanner |
 | `create_shard(config) -> List[NodeHandle]` | Spin up bootstrap + validators + optional readonly |
-| `add_node(network, node_config, bootstrap) -> NodeHandle` | Attach a joiner |
-| `remove_node(handle)` | Tear down one joiner |
+| `add_node(network, node_config, bootstrap) -> NodeHandle` | Attach a joiner or observer (role taken from `node_config.role` — `JOINER` or `READONLY`). READONLY adds `--heartbeat-disabled` and skips validator-identity flags. |
+| `remove_node(handle)` | Tear down one joiner or observer |
 | `destroy_shard(handles)` | Tear down a full shard |
 | `create_standalone(config) -> NodeHandle` | Single-node shard for isolated tests |
 | `destroy_standalone(handle)` | Tear down standalone |
@@ -149,21 +149,28 @@ CI runners are slower than laptops — `--timeout-scale=1.5` (or `2.0`) bumps ev
 
 `infra/log_events.py` + autouse fixture in `conftest.py` (`check_node_logs_after_test`).
 
-After **every test**, the fixture pulls logs from every active node via `handle.logs()` and runs two complementary scans:
+After **every test**, the fixture pulls logs from every active node via `handle.logs()` and runs `scan_for_forbidden` against a single `FORBIDDEN_PATTERNS` dict. Any unmatched-by-opt-out hit fails the test before teardown destroys the evidence.
 
-1. **`scan_logs()`** — matches each line against `FATAL_PATTERNS` (panics, `RootRepository` divergence, structural self-validation failures, `FATAL`). Any match fails the test with the matching pattern's description prepended. **No opt-out mechanism** — these signatures should never appear under any legitimate workload.
-2. **`scan_for_forbidden()`** — matches each line against `FORBIDDEN_PATTERNS` (`InvalidBondsCache`, `BondsCacheMismatch`, `Recording invalid block`, `DAG storage is missing hash`). These are strict invariants by default, but a test can opt out when it legitimately produces them as part of its verification:
+`FORBIDDEN_PATTERNS` covers panics, KvStore failures, bonds-cache mismatches, missing DAG hashes, replay-rig divergence, structural self-validation failures, `FATAL` keyword, and similar consensus/runtime bug signatures — see [`infra/log_events.py`](../../test/infra/log_events.py) for the canonical list with per-pattern comments naming the bug class and known opt-outs.
 
-   ```python
-   @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
-   def test_validator_failure_recovery(...): ...
-   ```
+Tests that legitimately exercise a known bug class opt out per-pattern:
 
-   The marker takes one or more pattern keys from `FORBIDDEN_PATTERNS` (defined in `infra/log_events.py`). Adding a pattern is a hard tightening — run the full suite to confirm no untagged test trips it. Existing opt-outs are listed in the source comment next to each pattern.
+```python
+@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
+def test_validator_failure_recovery(...): ...
+
+# Multiple keys: opts out of every named pattern.
+@pytest.mark.allow_forbidden_patterns("DAGStorageMissingHash", "KvStoreError")
+def test_bonding_validators(...): ...
+```
+
+The marker takes one or more pattern keys from `FORBIDDEN_PATTERNS`. A log line matching multiple patterns fires on the first non-opted-out match (dict iteration order) — tests producing log lines that match several patterns must opt out of every applicable key.
+
+Adding a pattern is a hard tightening — run the full suite to confirm no untagged test trips it. Existing opt-outs are listed in the source comment next to each pattern.
 
 Per-test (not per-session) so the failing test name is the one that surfaces, not whatever ran last.
 
-The model is **allowlist-of-fatal**, not blacklist-of-acceptable. An earlier iteration scanned for any unexpected ERROR/WARN/PANIC and filtered through an `ACCEPTABLE_PATTERNS` whitelist; that proved unmaintainable as every new test surfaced new normal-operation log lines that needed triage and added to the whitelist. The current model gates on known consensus/runtime bug signatures only — `FATAL_PATTERNS` for the always-fail set, `FORBIDDEN_PATTERNS` for the marker-opt-outable set. Anything not in either list is by definition not a fatal.
+The model is **allowlist-of-fatal**, not blacklist-of-acceptable. An earlier iteration scanned for any unexpected ERROR/WARN/PANIC and filtered through an `ACCEPTABLE_PATTERNS` whitelist; that proved unmaintainable as every new test surfaced new normal-operation log lines that needed triage and added to the whitelist. The current model gates on known consensus/runtime bug signatures only — anything not in `FORBIDDEN_PATTERNS` is by definition not a fatal. (A prior iteration split this into `FATAL_PATTERNS` (no opt-out) + `FORBIDDEN_PATTERNS` (with opt-out); the split was collapsed because broad FATAL patterns shadowed FORBIDDEN opt-outs for sibling bug classes that share log-line shape, e.g. `KvStore error` matching both the parent-child race signature and the missing-DAG-hash signature.)
 
 ---
 
@@ -231,13 +238,13 @@ Design for `NotImplementedError` with clear guidance as a first pass — `K8sPro
 | `ports.py` | `PortAllocator` |
 | `cleanup.py` | `DockerCleanupRegistry` (see Section 4); other providers own their own resource lifetime |
 | `polling.py` | Node-aware wrappers around `f1r3fly.polling` (`deploy_and_read`, `wait_for_deploy_finalized` for canonical-state per-deploy tracking, `wait_for_finalized` for block-height advancement, `deploy_with_fallback`, `poll_until`) |
-| `assertions.py` | Deploy/shard assertions re-exported from `f1r3fly.deploy` + `f1r3fly.par` |
-| `log_events.py` | Structured log event parsing + `scan_logs` (`FATAL_PATTERNS`) + `scan_for_forbidden` (`FORBIDDEN_PATTERNS` with marker opt-out) |
+| `assertions.py` | Deploy/shard assertions re-exported from `f1r3fly.deploy` + `f1r3fly.par`; cross-node helpers (`assert_block_finalized_on_all_nodes`, `assert_bonds_map_consistent_across_nodes`, `assert_all_nodes_agree_on_block`, `assert_all_nodes_agree_on_lfb`, `assert_contracts_consistent_across_nodes`) |
+| `log_events.py` | Structured log event parsing + `scan_for_forbidden` (single unified `FORBIDDEN_PATTERNS` dict with per-pattern marker opt-out) |
 | `token_metadata.py` | HTTP `/api/status` token helper (on-chain queries via pyf1r3fly) |
 | `genesis.py` | Custom genesis file generation |
 | `compose.py` | Dynamic Docker Compose YAML generation |
 | `node.py` | `Node` — wraps handle + pyf1r3fly clients + HTTP helpers |
-| `shard.py` | `Shard` — collection of `Node`s + joiner lifecycle + adoption |
+| `shard.py` | `Shard` — collection of `Node`s + joiner/observer attach + adoption (`add_joiner` transient context-manager; `attach_joiner` persistent with identity; `attach_observer` persistent readonly) |
 | `resource_monitor.py` | `--monitor` flag implementation (peak memory/CPU via `docker stats`) |
 | `metrics.py` | Prometheus metric helpers |
 | `providers/base.py` | `Provider` + `NodeHandle` Protocols |

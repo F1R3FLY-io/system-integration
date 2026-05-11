@@ -192,11 +192,75 @@ assert_block_finalized_on_all_nodes(shard.all_nodes, block_hash)
 
 Use this whenever a deploy block must finalize cluster-wide for the test's invariant to hold (transfers, registry stores, joiner activation). It does NOT poll — caller is responsible for waiting first.
 
+### Assert the bonds map is identical on every node
+
+```python
+from ...infra.assertions import assert_bonds_map_consistent_across_nodes
+
+# After a bond block finalizes, every node must have computed the
+# same bonds map for that block (same keys + same stakes).
+expected = {**bonds_pre, joiner.public_hex: stake}
+assert_bonds_map_consistent_across_nodes(shard.all_nodes, bond_block_hash, expected)
+```
+
+Use after any block whose bonds map matters (bonding, slashing, stake change). Direct regression detector for `InvalidBondsCache`-style per-node divergence — finalization assertions prove every node *has* the block, not that they agree on its bonds map.
+
+---
+
+## Mid-test joiner / observer attach
+
+Three patterns for attaching nodes after the shard is already running. Pick by lifetime:
+
+| Method | Lifetime | Identity? | When |
+|---|---|---|---|
+| `Shard.add_joiner(identity)` | Context-managed (joiner removed on exit) | Required | Transient: bond + verify in one block, then tear down |
+| `Shard.attach_joiner(identity)` | Persistent (cleaned up at session end) | Required | Test bonds a validator that must remain live so subsequent shared tests see consistent on-chain bonds vs. live nodes |
+| `Shard.attach_observer()` | Persistent (cleaned up at session end) | None — readonly | Verify a fresh node can LFS-sync against the live shard (production scenario for forward-horizon rspace history sync) |
+
+### Transient joiner (`add_joiner`)
+
+```python
+from ...infra.keys import VALIDATOR4_ID
+
+with shard.add_joiner(VALIDATOR4_ID) as joiner:
+    joiner.deploy_string(...)
+    # joiner is removed on `with` exit
+```
+
+### Persistent joiner (`attach_joiner`)
+
+```python
+joiner = shard.attach_joiner(VALIDATOR4_ID)
+# joiner is now part of shard.all_nodes; addressable as
+# shard.node(VALIDATOR4_ID.name); cleaned up at session end
+```
+
+### Persistent observer (`attach_observer`)
+
+```python
+observer = shard.attach_observer()
+# Auto-named observer1, observer2, ... by the provider.
+# No validator identity; runs with --heartbeat-disabled (sync-only).
+# Addressable as shard.node(observer.name) or via the returned reference.
+```
+
+The observer attach exists to verify the LFS forward-horizon rspace sync (`services/f1r3node-rust/casper/src/rust/engine/lfs_horizon_requester.rs`) — fresh nodes coming up against a live shard need rspace history for every block within `max_parent_depth + depth_buffer` of LFB, not just LFB itself. A test like:
+
+```python
+observer = shard.attach_observer()
+target_lfb = v1.last_finalized_block().blockInfo
+wait_for_block_visible(observer, target_lfb.blockHash, timeout=timeouts.deploy_inclusion)
+expected_bonds = {b.validator: b.stake for b in target_lfb.bonds}
+assert_bonds_map_consistent_across_nodes([v1, observer], target_lfb.blockHash, expected_bonds)
+```
+
+asserts the observer reached the LFB AND computed the same bonds map V1 sees.
+
 ---
 
 ## Forbidden-pattern log scanning
 
-The autouse `check_node_logs_after_test` fixture fails any test whose nodes emit a line matching `FORBIDDEN_PATTERNS` (`infra/log_events.py`) — currently `InvalidBondsCache`, `BondsCacheMismatch`, `Recording invalid block`, `DAG storage is missing hash`.
+The autouse `check_node_logs_after_test` fixture fails any test whose nodes emit a line matching one of the keys in `FORBIDDEN_PATTERNS` (`infra/log_events.py`). Covers panics, KvStore failures, bonds-cache mismatches, missing DAG hashes, replay-rig divergence, structural self-validation failures, the `FATAL` keyword, and similar consensus/runtime bug signatures — see [`infra/log_events.py`](../../test/infra/log_events.py) for the canonical list with per-pattern comments.
 
 If your test legitimately produces one of these (e.g. you intentionally crash a validator and observe the recovery), opt out with a marker:
 
@@ -205,7 +269,9 @@ If your test legitimately produces one of these (e.g. you intentionally crash a 
 def test_validator_failure_recovery(...): ...
 ```
 
-You can name multiple keys: `@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock", "DAGStorageMissingHash")`. Use sparingly — these patterns mark known bug classes, and silencing them weakens regression coverage. See ARCHITECTURE.md §7 for the full list.
+You can name multiple keys: `@pytest.mark.allow_forbidden_patterns("DAGStorageMissingHash", "KvStoreError")`. **A single log line that matches multiple patterns must have every applicable key in the marker** — e.g. `KvStore error: Invalid argument: DAG storage is missing hash 1234...` matches both `KvStoreError` (catch-all) and `DAGStorageMissingHash` (specific case); opting out of only one still fails the test on the other.
+
+Use sparingly — these patterns mark known bug classes, and silencing them weakens regression coverage. See ARCHITECTURE.md §7 for details.
 
 ---
 
