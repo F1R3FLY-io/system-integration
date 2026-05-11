@@ -19,6 +19,7 @@ from ..polling import wait_for_node_running
 from ..ports import PortAllocator
 from ..timeouts import TimeoutHierarchy
 from ..types import NodeRole, PortMapping, ValidatorIdentity
+from .base import RetiredLogSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -310,6 +311,7 @@ class DockerProvider:
         self._session_id = registry.session_id
         self._standalone_counter = 0
         self._active_handles: list = []
+        self._retired_log_snapshots: List[RetiredLogSnapshot] = []
 
     @property
     def session_id(self) -> str:
@@ -322,6 +324,13 @@ class DockerProvider:
     @property
     def active_handles(self) -> list:
         return list(self._active_handles)
+
+    @property
+    def retired_log_snapshots(self) -> List[RetiredLogSnapshot]:
+        return list(self._retired_log_snapshots)
+
+    def clear_retired_log_snapshots(self) -> None:
+        self._retired_log_snapshots.clear()
 
     # ── Shard lifecycle ─────────────────────────────────────────────
 
@@ -668,7 +677,7 @@ class DockerProvider:
         _docker("volume", "rm", "-f", vol)
         _docker("network", "rm", handle.network_name)
 
-    # ── Joiner lifecycle ────────────────────────────────────────────
+    # ── Joiner / observer lifecycle ─────────────────────────────────
 
     def add_node(
         self,
@@ -677,18 +686,33 @@ class DockerProvider:
         bootstrap_handle: DockerNodeHandle,
         wait_running: bool = True,
     ) -> DockerNodeHandle:
-        """Add a joiner node to an existing shard.
+        """Add a joiner or observer node to an existing shard.
+
+        Role is taken from ``node_config.role``. JOINER attaches with
+        validator identity (proposes); READONLY attaches without
+        identity and with ``--heartbeat-disabled`` (sync-only).
 
         Args:
             wait_running: If True (default), wait for the node to reach
                 Running state. Set False for tests expecting startup failure
                 (e.g. token metadata mismatch).
         """
+        role = node_config.role
+        if role == NodeRole.JOINER:
+            self._joiner_counter = getattr(self, "_joiner_counter", 0) + 1
+            role_key = f"joiner{self._joiner_counter}"
+        elif role == NodeRole.READONLY:
+            self._observer_counter = getattr(self, "_observer_counter", 0) + 1
+            role_key = f"observer{self._observer_counter}"
+        else:
+            raise ValueError(
+                f"add_node only supports JOINER or READONLY, got {role}"
+            )
+
         ports = self._ports.allocate()
         identity = node_config.identity
-        self._joiner_counter = getattr(self, "_joiner_counter", 0) + 1
-        joiner_name = f"rnode.test.{self._session_id}.joiner{self._joiner_counter}"
-        volume_name = f"test-{self._session_id}-joiner{self._joiner_counter}-data"
+        node_name = f"rnode.test.{self._session_id}.{role_key}"
+        volume_name = f"test-{self._session_id}-{role_key}-data"
 
         bootstrap_url = (
             f"rnode://{BOOTSTRAP_NODE_ID}@{bootstrap_handle.name}"
@@ -703,13 +727,14 @@ class DockerProvider:
         for k, v in sorted(node_config.cli_options.items()):
             extra_cli.append(f"{k}={v}" if v else k)
 
-        # Joiner command depends on whether it has a validator identity
         cmd: List[str] = [
             "run",
-            f"--host={joiner_name}",
+            f"--host={node_name}",
             f"--bootstrap={bootstrap_url}",
             "--allow-private-addresses",
         ]
+        if role == NodeRole.READONLY:
+            cmd.append("--heartbeat-disabled")
         if identity:
             cmd.extend([
                 f"--validator-public-key={identity.public_hex}",
@@ -719,9 +744,9 @@ class DockerProvider:
 
         run_args = [
             "run", "-d", "--rm=false", "--user", "root",
-            "--name", joiner_name,
+            "--name", node_name,
             "--network", shard_network,
-            "--network-alias", joiner_name,
+            "--network-alias", node_name,
             "-v", f"{volume_name}:/var/lib/rnode",
             "-v", f"{self._paths.rust_conf}:/var/lib/rnode/rnode.conf:ro",
             "-p", f"{ports.protocol}:40400",
@@ -739,16 +764,17 @@ class DockerProvider:
 
         result = _docker(*run_args)
         if result.returncode != 0:
-            raise RuntimeError(f"docker run (joiner) failed: {result.stderr}")
+            raise RuntimeError(f"docker run ({role_key}) failed: {result.stderr}")
 
-        self._registry.register_container(joiner_name)
+        self._registry.register_container(node_name)
 
         handle = DockerNodeHandle(
-            name=joiner_name,
+            name=node_name,
             ports=ports,
             network=shard_network,
-            role=NodeRole.JOINER,
+            role=role,
             identity=identity,
+            volume_name=volume_name,
         )
 
         if wait_running:
@@ -765,14 +791,24 @@ class DockerProvider:
     def remove_node(self, handle: DockerNodeHandle) -> None:
         if handle in self._active_handles:
             self._active_handles.remove(handle)
+        # Snapshot the node's logs before any teardown that would
+        # destroy its container/volume, so the autouse log scanner
+        # still sees whatever the transient node emitted before its
+        # handle was detached.
+        try:
+            snapshot_text = handle.logs()
+        except Exception:
+            snapshot_text = ""
+        self._retired_log_snapshots.append(
+            RetiredLogSnapshot(name=handle.name, log_text=snapshot_text)
+        )
         if self.keep_running:
-            logger.info("Joiner %s kept running (--keep-running)", handle.name)
+            logger.info("Node %s kept running (--keep-running)", handle.name)
             return
 
         handle.remove()
-        joiner_suffix = handle.name.split("joiner")[-1] if "joiner" in handle.name else ""
-        vol = f"test-{self._session_id}-joiner{joiner_suffix}-data"
-        _docker("volume", "rm", "-f", vol)
+        if handle.volume_name:
+            _docker("volume", "rm", "-f", handle.volume_name)
 
     # ── Global cleanup ──────────────────────────────────────────────
 

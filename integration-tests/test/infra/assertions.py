@@ -126,6 +126,45 @@ def assert_contracts_consistent_across_nodes(
     return results
 
 
+def assert_bonds_map_consistent_across_nodes(
+    nodes,
+    block_hash: str,
+    expected_bonds: dict,
+) -> None:
+    """Assert every node's view of ``block_hash`` carries the same bonds map.
+
+    The bonds map is part of the block payload — every node that accepted
+    the block at validation time must compute the same map. A divergence
+    means at least one node's local replay produced a different result
+    (the failure mode of the original ``InvalidBondsCache`` bug, where a
+    bond block validated on the proposer but the bonds map computed
+    differently elsewhere).
+
+    Args:
+        nodes: Iterable of Node wrappers to query.
+        block_hash: Finalized block hash to check.
+        expected_bonds: ``{public_hex: stake}`` the bonds map must match
+            exactly on every node. Stake values must match — not just
+            key membership.
+
+    Raises:
+        AssertionError: with a per-node diff if any node disagrees.
+    """
+    per_node: dict = {}
+    for node in nodes:
+        block = node.get_block(block_hash)
+        per_node[node.name] = {
+            b.validator: b.stake for b in block.blockInfo.bonds
+        }
+    mismatches = {
+        name: bonds for name, bonds in per_node.items() if bonds != expected_bonds
+    }
+    assert not mismatches, (
+        f"Bonds map divergence at block {block_hash[:16]}... "
+        f"expected {expected_bonds}; mismatches: {mismatches}"
+    )
+
+
 def assert_block_finalized_on_all_nodes(
     nodes,
     block_hash: str,

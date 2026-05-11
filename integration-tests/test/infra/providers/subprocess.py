@@ -41,6 +41,7 @@ from ..polling import wait_for_node_running
 from ..ports import PortAllocator
 from ..timeouts import TimeoutHierarchy
 from ..types import NodeRole, PortMapping, ValidatorIdentity
+from .base import RetiredLogSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -307,6 +308,7 @@ class SubprocessProvider:
         self._session_root.mkdir(parents=True, exist_ok=True)
 
         self._active_handles: List[SubprocessNodeHandle] = []
+        self._retired_log_snapshots: List[RetiredLogSnapshot] = []
         self._standalone_counter = 0
         self._joiner_counter = 0
 
@@ -327,6 +329,13 @@ class SubprocessProvider:
     @property
     def active_handles(self) -> List[SubprocessNodeHandle]:
         return list(self._active_handles)
+
+    @property
+    def retired_log_snapshots(self) -> List[RetiredLogSnapshot]:
+        return list(self._retired_log_snapshots)
+
+    def clear_retired_log_snapshots(self) -> None:
+        self._retired_log_snapshots.clear()
 
     @staticmethod
     def _session_data_root(paths: ResourcePaths, session_id: str) -> Path:
@@ -852,7 +861,7 @@ class SubprocessProvider:
             return
         handle.remove()
 
-    # ── Joiner lifecycle ────────────────────────────────────────────
+    # ── Joiner / observer lifecycle ─────────────────────────────────
 
     def add_node(
         self,
@@ -861,17 +870,31 @@ class SubprocessProvider:
         bootstrap_handle: SubprocessNodeHandle,
         wait_running: bool = True,
     ) -> SubprocessNodeHandle:
-        """Add a joiner node to an existing shard.
+        """Add a joiner or observer node to an existing shard.
+
+        Role is taken from ``node_config.role``. JOINER attaches with
+        validator identity (proposes); READONLY attaches without
+        identity and with ``--heartbeat-disabled`` (sync-only).
 
         ``shard_network`` is the synthetic network name returned by
         ``bootstrap_handle.network_name``; it isn't a real network here but
         the parameter is kept for protocol parity.
         """
         del shard_network  # unused for subprocess
-        self._joiner_counter += 1
-        role_key = f"joiner{self._joiner_counter}"
-        ports = self._ports.allocate()
 
+        role = node_config.role
+        if role == NodeRole.JOINER:
+            self._joiner_counter += 1
+            role_key = f"joiner{self._joiner_counter}"
+        elif role == NodeRole.READONLY:
+            self._observer_counter = getattr(self, "_observer_counter", 0) + 1
+            role_key = f"observer{self._observer_counter}"
+        else:
+            raise ValueError(
+                f"add_node only supports JOINER or READONLY, got {role}"
+            )
+
+        ports = self._ports.allocate()
         bootstrap_url = self._bootstrap_url(bootstrap_handle)
         identity = node_config.identity
 
@@ -879,6 +902,8 @@ class SubprocessProvider:
             f"--bootstrap={bootstrap_url}",
             "--allow-private-addresses",
         ]
+        if role == NodeRole.READONLY:
+            cli.append("--heartbeat-disabled")
         if identity:
             cli += [
                 f"--validator-public-key={identity.public_hex}",
@@ -888,10 +913,10 @@ class SubprocessProvider:
 
         handle = self._spawn(
             role_key=role_key,
-            role=NodeRole.JOINER,
+            role=role,
             ports=ports,
             cli_args=cli,
-            cert_subdir=None,  # joiners auto-generate
+            cert_subdir=None,  # joiners/observers auto-generate
             identity=identity,
         )
 
@@ -910,6 +935,17 @@ class SubprocessProvider:
     def remove_node(self, handle: SubprocessNodeHandle) -> None:
         if handle in self._active_handles:
             self._active_handles.remove(handle)
+        # Snapshot the node's logs before any teardown that would
+        # destroy its data dir, so the autouse log scanner still sees
+        # whatever the transient node emitted (panics, forbidden
+        # patterns, etc.) before its handle was detached.
+        try:
+            snapshot_text = handle.logs()
+        except Exception:
+            snapshot_text = ""
+        self._retired_log_snapshots.append(
+            RetiredLogSnapshot(name=handle.name, log_text=snapshot_text)
+        )
         if self._keep_running:
             logger.info("Joiner %s kept running (--keep-running)", handle.name)
             return

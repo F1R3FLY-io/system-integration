@@ -10,12 +10,25 @@ the method signatures.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
 import typing_extensions
 
 from ..config import NodeConfig, ShardConfig
 from ..types import PortMapping
+
+
+@dataclass
+class RetiredLogSnapshot:
+    """Frozen log content captured from a node before its data dir was
+    destroyed. Used by the autouse log-scanner fixture so transient
+    nodes (attached via ``add_observer`` / ``add_joiner`` context
+    managers) don't escape the scanner when their handles are removed
+    from ``active_handles`` at context exit.
+    """
+    name: str
+    log_text: str
 
 
 class NodeHandle(typing_extensions.Protocol):
@@ -177,6 +190,24 @@ class Provider(typing_extensions.Protocol):
 
         Used by the log scanning fixture to inspect all node logs
         after each test, regardless of how the nodes were created.
+        """
+        ...
+
+    @property
+    def retired_log_snapshots(self) -> List[RetiredLogSnapshot]:
+        """Log snapshots captured from nodes that have been removed via
+        ``remove_node`` since the snapshots were last cleared. The
+        autouse log-scanner fixture iterates these alongside
+        ``active_handles`` so transient nodes (e.g. observers attached
+        with the ``add_observer`` context manager) cannot escape
+        scanning when their handles are detached at context exit.
+        """
+        ...
+
+    def clear_retired_log_snapshots(self) -> None:
+        """Drop all retired log snapshots. The autouse scanner calls
+        this after each test so snapshots from one test don't carry
+        forward into the next test's scan.
         """
         ...
 

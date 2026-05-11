@@ -147,7 +147,10 @@ class Shard:
         """Attach a joiner node to this shard.
 
         Yields a ``Node`` wrapper. On exit, removes the joiner and
-        cleans up its volume.
+        cleans up its volume. Before removal, the provider snapshots
+        the joiner's logs into its ``retired_log_snapshots`` bucket so
+        the autouse log scanner still sees any errors emitted while
+        the joiner was attached.
 
         Args:
             wait_running: If True (default), wait for the joiner to reach
@@ -185,6 +188,134 @@ class Shard:
         finally:
             joiner_node.close()
             self._provider.remove_node(handle)
+
+    def attach_joiner(
+        self,
+        identity: ValidatorIdentity,
+        cli_options: Optional[Dict[str, str]] = None,
+        cli_flags: Optional[set] = None,
+        wait_running: bool = True,
+    ) -> Node:
+        """Attach a persistent joiner to this shard.
+
+        Unlike ``add_joiner`` (context-managed, transient), the joiner
+        becomes part of the shard for the remainder of its lifetime:
+        addressable via ``shard.node(identity.name)``, included in
+        ``shard.all_nodes``, and torn down by ``Shard.destroy()`` at
+        session end.
+
+        Use when a test bonds a validator that must remain live so
+        consensus state and node liveness stay aligned for subsequent
+        tests on the same shard.
+        """
+        from .config import NodeConfig
+
+        if identity.name in self._nodes:
+            raise ValueError(
+                f"Cannot attach joiner '{identity.name}': name already in use"
+            )
+
+        node_config = NodeConfig(
+            role=NodeRole.JOINER,
+            identity=identity,
+            cli_flags=frozenset(cli_flags or set()),
+            cli_options=cli_options or {},
+        )
+        handle = self._provider.add_node(
+            shard_network=self.network_name,
+            node_config=node_config,
+            bootstrap_handle=self._handles[0],
+            wait_running=wait_running,
+        )
+        joiner = Node(handle=handle, role=NodeRole.JOINER, identity=identity)
+        self._handles.append(handle)
+        self._nodes[identity.name] = joiner
+        return joiner
+
+    @contextmanager
+    def add_observer(
+        self,
+        cli_options: Optional[Dict[str, str]] = None,
+        cli_flags: Optional[set] = None,
+        wait_running: bool = True,
+    ) -> Generator[Node, None, None]:
+        """Attach a transient readonly observer for the duration of a ``with`` block.
+
+        Symmetric to ``add_joiner`` (context-managed, no identity). On
+        exit the observer is removed and its volume cleaned up. Before
+        removal, the provider snapshots the observer's logs into its
+        ``retired_log_snapshots`` bucket so the autouse log scanner
+        still sees any post-attach errors emitted while syncing
+        against the live shard.
+
+        Use when a test wants to verify a fresh node can LFS-sync
+        against the live shard (production scenario for forward-horizon
+        rspace history sync) without leaving the observer alive past
+        the test's own assertions. For persistent attachment that
+        survives the test, use ``attach_observer``.
+        """
+        from .config import NodeConfig
+
+        node_config = NodeConfig(
+            role=NodeRole.READONLY,
+            identity=None,
+            cli_flags=frozenset(cli_flags or set()),
+            cli_options=cli_options or {},
+        )
+        handle = self._provider.add_node(
+            shard_network=self.network_name,
+            node_config=node_config,
+            bootstrap_handle=self._handles[0],
+            wait_running=wait_running,
+        )
+        observer = Node(handle=handle, role=NodeRole.READONLY, identity=None)
+        try:
+            yield observer
+        finally:
+            observer.close()
+            self._provider.remove_node(handle)
+
+    def attach_observer(
+        self,
+        cli_options: Optional[Dict[str, str]] = None,
+        cli_flags: Optional[set] = None,
+        wait_running: bool = True,
+    ) -> Node:
+        """Attach a persistent readonly observer to this shard.
+
+        Symmetric to ``attach_joiner`` but without a validator identity:
+        the observer never proposes (``--heartbeat-disabled``) and only
+        syncs + serves reads. Auto-named ``observer1``, ``observer2``,
+        ... by the provider; addressable via ``shard.node(name)``.
+
+        Use to verify that a fresh node can LFS-sync against the live
+        shard mid-test (the production scenario for forward-horizon
+        sync).
+        """
+        from .config import NodeConfig
+
+        node_config = NodeConfig(
+            role=NodeRole.READONLY,
+            identity=None,
+            cli_flags=frozenset(cli_flags or set()),
+            cli_options=cli_options or {},
+        )
+        handle = self._provider.add_node(
+            shard_network=self.network_name,
+            node_config=node_config,
+            bootstrap_handle=self._handles[0],
+            wait_running=wait_running,
+        )
+        # Provider names the observer ``observer{n}``; recover from handle.
+        observer_key = handle.name.split(".")[-1]
+        if observer_key in self._nodes:
+            raise ValueError(
+                f"Provider returned duplicate observer name: {observer_key}"
+            )
+        observer = Node(handle=handle, role=NodeRole.READONLY, identity=None)
+        self._handles.append(handle)
+        self._nodes[observer_key] = observer
+        return observer
 
     # ── Lifecycle ───────────────────────────────────────────────────
 

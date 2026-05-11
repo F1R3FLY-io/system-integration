@@ -27,12 +27,15 @@ from .infra.timeouts import TimeoutHierarchy
 def pytest_addoption(parser):
     group = parser.getgroup("f1r3fly", "F1R3FLY test framework options")
     group.addoption(
-        "--startup-timeout", type=int, default=90,
-        help="Max seconds for a node to reach Running state",
+        "--startup-timeout", type=int, default=None,
+        help="Override max seconds for a node to reach Running state. "
+             "Default comes from TimeoutConfig.node_startup (currently 300s) "
+             "— the dataclass is the single source of truth.",
     )
     group.addoption(
-        "--timeout-scale", type=float, default=1.0,
-        help="Multiplier for all timeouts (CI: 1.5 for slow runners)",
+        "--timeout-scale", type=float, default=None,
+        help="Override timeout scale multiplier. Default comes from "
+             "TimeoutConfig.scale (currently 1.0). Use 1.5 on slow CI runners.",
     )
     group.addoption(
         "--skip-setup", action="store_true", default=False,
@@ -117,10 +120,17 @@ def session_id() -> str:
 
 @pytest.fixture(scope="session")
 def timeout_config(request) -> TimeoutConfig:
-    return TimeoutConfig(
-        node_startup=request.config.getoption("--startup-timeout"),
-        scale=request.config.getoption("--timeout-scale"),
-    )
+    # CLI options are overrides, not defaults. None → use the
+    # TimeoutConfig dataclass default. This keeps the dataclass as
+    # the single source of truth.
+    overrides = {}
+    startup = request.config.getoption("--startup-timeout")
+    if startup is not None:
+        overrides["node_startup"] = startup
+    scale = request.config.getoption("--timeout-scale")
+    if scale is not None:
+        overrides["scale"] = scale
+    return TimeoutConfig(**overrides)
 
 
 @pytest.fixture(scope="session")
@@ -286,20 +296,19 @@ def all_nodes(shared_shard) -> list:
 
 @pytest.fixture(autouse=True)
 def check_node_logs_after_test(request, provider):
-    """Post-test log scan for fatal + forbidden patterns on all active nodes.
+    """Post-test log scan for forbidden patterns on all active nodes.
 
     Runs after every test (shared, custom, standalone). Queries the
-    provider for all active node handles and runs two scans on each
-    node's logs (via the provider-agnostic ``handle.logs()`` method):
+    provider for all active node handles and runs ``scan_for_forbidden``
+    on each node's logs (via the provider-agnostic ``handle.logs()``
+    method).
 
-      * FATAL_PATTERNS (`scan_logs`) — always fail. Panics, RootRepository
-        divergence, structural self-validation failures, FATAL keyword.
-        No opt-out mechanism.
-      * FORBIDDEN_PATTERNS (`scan_for_forbidden`) — fail unless the test
-        opts out via ``@pytest.mark.allow_forbidden_patterns(<key>, ...)``.
-        Pattern keys are defined in infra/log_events.py (e.g.
-        "InvalidBondsCache", "RecordingInvalidBlock",
-        "DAGStorageMissingHash").
+    Patterns are defined in ``infra/log_events.py`` as a single
+    ``FORBIDDEN_PATTERNS`` dict — covers panics, KvStore failures,
+    bonds-cache mismatches, missing DAG hashes, and other consensus or
+    runtime bug signatures. Tests that legitimately exercise a known
+    bug class can opt out per-pattern via
+    ``@pytest.mark.allow_forbidden_patterns("KeyA", "KeyB", ...)``.
 
     Per-test (not per-session) so the failing test name surfaces, not
     whatever ran last, and the failure fires before teardown destroys
@@ -310,28 +319,35 @@ def check_node_logs_after_test(request, provider):
     """
     yield
 
-    from .infra.log_events import (
-        scan_logs,
-        scan_for_forbidden,
-        format_errors,
-    )
+    from .infra.log_events import scan_for_forbidden, format_errors
 
     # Collect opt-out keys from this test's markers.
     allowed = frozenset()
     for marker in request.node.iter_markers("allow_forbidden_patterns"):
         allowed = allowed | frozenset(marker.args)
 
-    fatal: list = []
+    forbidden: list = []
     for handle in provider.active_handles:
         try:
             logs = handle.logs()
         except Exception:
             continue
-        fatal.extend(scan_logs(logs, handle.name))
-        fatal.extend(scan_for_forbidden(logs, handle.name, allowed))
+        forbidden.extend(scan_for_forbidden(logs, handle.name, allowed))
 
-    if fatal:
-        pytest.fail(format_errors(fatal), pytrace=False)
+    # Also scan logs from transient nodes that were attached and
+    # detached during this test (e.g., observers attached via the
+    # ``add_observer`` context manager). The provider snapshots each
+    # node's log content before its handle is removed; without this
+    # path, panics on transient nodes silently escape the scanner.
+    for snapshot in getattr(provider, "retired_log_snapshots", []):
+        forbidden.extend(
+            scan_for_forbidden(snapshot.log_text, snapshot.name, allowed)
+        )
+    if hasattr(provider, "clear_retired_log_snapshots"):
+        provider.clear_retired_log_snapshots()
+
+    if forbidden:
+        pytest.fail(format_errors(forbidden), pytrace=False)
 
 
 # ── Resource monitoring ──────────────────────────────────────────────

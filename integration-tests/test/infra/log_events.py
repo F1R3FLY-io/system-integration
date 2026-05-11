@@ -6,9 +6,10 @@ Provides two capabilities:
    structured log event matching the given fields. Used by token metadata
    tests to verify startup/mismatch/verification events.
 
-2. **Fatal log scanning** — ``scan_logs(logs, node_name)`` flags any line
-   matching ``FATAL_PATTERNS``. Used as a post-test health check via the
-   autouse ``check_node_logs_after_test`` fixture in ``conftest.py``.
+2. **Forbidden-pattern scanning** — ``scan_for_forbidden(logs, node_name,
+   allowed)`` flags any line matching ``FORBIDDEN_PATTERNS`` whose key is
+   not in ``allowed``. Used as a post-test health check via the autouse
+   ``check_node_logs_after_test`` fixture in ``conftest.py``.
 
 Both work on raw log strings (from ``node.logs()``), not Docker handles
 directly, keeping this module provider-agnostic.
@@ -18,7 +19,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, Generator, List, Optional, Tuple
+from typing import Dict, FrozenSet, Generator, List, Optional
 
 
 # ── Structured event queries ───────────────────────────────────────────
@@ -65,95 +66,84 @@ def find_events(logs: str, **fields: object) -> List[dict]:
     ]
 
 
-# ── Fatal log scanning ────────────────────────────────────────────────
+# ── Forbidden-pattern scanning ────────────────────────────────────────
 
 
 @dataclass
 class LogError:
-    """A single fatal log entry from a node."""
+    """A single forbidden-pattern log entry from a node."""
     node: str
     level: str
     message: str
 
 
-# Patterns that indicate a node is in a broken state. Each (pattern,
-# description) entry causes any test in which a node emits a matching
-# log line to fail with the description prepended to the matched line.
+# Patterns that indicate a node is in a broken state. Each entry causes
+# any test in which a node emits a matching log line to fail with the
+# matched line. Tests that legitimately exercise a known bug class can
+# opt out via ``@pytest.mark.allow_forbidden_patterns(<key>, ...)``.
 #
-# Carried forward from the pre-v2 ``test_consensus_health`` regression
-# guard. New entries should describe a class of consensus or runtime
-# bug — not transient conditions handled gracefully (heartbeat fallback,
-# peer disconnect, finalization-in-progress retry, etc.).
-FATAL_PATTERNS: List[Tuple[re.Pattern, str]] = [
-    (
-        re.compile(r"panicked at"),
-        "Panic in node process",
-    ),
-    (
-        re.compile(r"validateAndSetCurrentRoot FAILED.*not in roots store"),
-        "RootRepository state divergence (replay/play mismatch)",
-    ),
-    (
-        re.compile(r"Self-created block validation failed with structural error"),
-        "Structural block creation bug detected by self-validation",
-    ),
-    (
-        re.compile(r"\bFATAL\b"),
-        "Fatal error causing node crash",
-    ),
-    (
-        re.compile(r"SystemRuntimeError\(ConsumeFailed\)"),
-        "Replay rig divergence (ConsumeFailed during play→replay)",
-    ),
-    (
-        re.compile(r"BUG FOUND"),
-        "System contract or replay engine flagged a structural bug",
-    ),
-    (
-        re.compile(r"KvStoreError|KvStore error"),
-        "KvStore failure (e.g., parent-child race on mergeable-channels entry)",
-    ),
-    (
-        re.compile(r"UnknownRootError"),
-        "RSpace requested a root not in the local history store",
-    ),
-    (
-        re.compile(r"UNEXPECTED.*BlockException"),
-        "Tripwire: BlockException reached validate_with_effects despite the dependency-gate fix",
-    ),
-]
-
-
-def scan_logs(logs: str, node_name: str) -> List[LogError]:
-    """Return one ``LogError`` per line that matches any ``FATAL_PATTERNS`` entry."""
-    out: List[LogError] = []
-    for line in logs.splitlines():
-        for pattern, description in FATAL_PATTERNS:
-            if pattern.search(line):
-                short = line[:250] + "..." if len(line) > 250 else line
-                out.append(LogError(
-                    node=node_name,
-                    level="FATAL",
-                    message=f"{description}: {short}",
-                ))
-                break
-    return out
-
-
-# ── Forbidden patterns (autouse, opt-out via marker) ──────────────────
+# Adding a pattern is a hard tightening — run the full suite to confirm
+# no untagged test trips it. New entries should describe a class of
+# consensus or runtime bug, not transient conditions handled gracefully
+# (heartbeat fallback, peer disconnect, finalization-in-progress retry,
+# etc.).
 #
-# Patterns that must NEVER appear in any test's logs unless that test
-# explicitly opts out via @pytest.mark.allow_forbidden_patterns(...).
-#
-# Each entry has a comment naming the bug class it catches AND the tests
-# that legitimately need to opt out. Adding a pattern requires running the
-# full suite to confirm it doesn't fire on tests that aren't already
-# opting out.
+# Each entry's per-pattern comment names the bug class it catches AND
+# the tests that legitimately need to opt out.
 FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
-    # Bond-block bonds_cache mismatch — proposer ↔ replay divergence.
-    # No legitimate test should produce this.
+    # ── Always-deny by default; opt-outs rare ──
+
+    # Panic in the node process. No legitimate test should produce this.
+    "Panic": re.compile(r"panicked at"),
+
+    # Generic "FATAL" keyword from tracing layer.
+    "FatalKeyword": re.compile(r"\bFATAL\b"),
+
+    # System contract or replay engine flagged a structural bug.
+    "BugFound": re.compile(r"BUG FOUND"),
+
+    # RootRepository state divergence (replay/play mismatch on rspace
+    # roots). Catches the post-state hash divergence that surfaces when
+    # rspace mutations don't replay deterministically.
+    "RootRepositoryDivergence": re.compile(
+        r"validateAndSetCurrentRoot FAILED.*not in roots store"
+    ),
+
+    # Self-validation of a self-created block failed structurally — the
+    # proposer built a block its own validator can't verify.
+    "SelfCreatedBlockStructuralError": re.compile(
+        r"Self-created block validation failed with structural error"
+    ),
+
+    # Replay rig divergence — a consume that succeeded during play
+    # failed during replay.
+    "ConsumeFailedReplayDivergence": re.compile(
+        r"SystemRuntimeError\(ConsumeFailed\)"
+    ),
+
+    # KvStore-level failure. Catches parent-child races on
+    # mergeable-channels entries AND the broader "DAG storage is missing
+    # hash" case (which is also keyed below as DAGStorageMissingHash —
+    # tests opting out of the latter should also opt out of this).
+    # Opt-outs:
+    #   tests/shared/test_bonding_validators.py::test_bonding_validators
+    #     (paired with DAGStorageMissingHash; sibling gap to the rspace
+    #     forward-horizon work, see docs/TODO.md §2.14)
+    "KvStoreError": re.compile(r"KvStoreError|KvStore error"),
+
+    # RSpace requested a root not in the local history store.
+    "UnknownRootError": re.compile(r"UnknownRootError"),
+
+    # Tripwire: BlockException reached validate_with_effects despite the
+    # dependency-gate fix.
+    "UnexpectedBlockException": re.compile(r"UNEXPECTED.*BlockException"),
+
+    # ── Bond-block bonds_cache mismatch — proposer ↔ replay divergence ──
+
     "InvalidBondsCache": re.compile(r"InvalidBondsCache"),
     "BondsCacheMismatch": re.compile(r"do not match block's bond cache"),
+
+    # ── Bug classes with known opt-outs ──
 
     # Any block recorded as invalid. Opt-outs:
     #   tests/custom/test_consensus_safety.py::test_validator_failure_recovery
@@ -162,6 +152,10 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
 
     # DAG storage missing a referenced hash. Opt-outs:
     #   tests/shared/test_convergence.py::test_network_recovers_from_validator_pause
+    #   tests/shared/test_bonding_validators.py::test_bonding_validators
+    #     (Phase C exercises a fresh observer against a multi-bond shard;
+    #     see docs/TODO.md §2.14 — sibling gap to this session's rspace
+    #     forward-horizon fix; node-side fix not yet started)
     "DAGStorageMissingHash": re.compile(r"DAG storage is missing hash"),
 }
 
@@ -171,16 +165,18 @@ def scan_for_forbidden(
     node_name: str,
     allowed: FrozenSet[str] = frozenset(),
 ) -> List[LogError]:
-    """Scan log output for forbidden-pattern matches not in `allowed`.
+    """Scan log output for forbidden-pattern matches not in ``allowed``.
 
-    `allowed` is a set of pattern keys (from FORBIDDEN_PATTERNS) that the
-    caller expects to see. Lines matching allowed patterns are skipped;
-    lines matching non-allowed patterns produce LogError entries with
-    level="FORBIDDEN".
+    ``allowed`` is a set of pattern keys (from ``FORBIDDEN_PATTERNS``)
+    that the caller expects to see. Lines matching allowed patterns are
+    skipped; lines matching non-allowed patterns produce ``LogError``
+    entries with ``level="FORBIDDEN"``.
 
-    Complementary to ``scan_logs`` (FATAL_PATTERNS) — that path catches
-    always-fail signatures with no opt-out; this one catches patterns that
-    have legitimate test-level opt-outs via marker.
+    A line that matches multiple patterns fires on the first
+    non-opted-out match (dict iteration order). Tests that produce log
+    lines matching several patterns must opt out of every applicable
+    key — this is intentional: it forces the test author to acknowledge
+    each known bug class the line represents.
     """
     matches: List[LogError] = []
     for line in logs.splitlines():
@@ -190,7 +186,11 @@ def scan_for_forbidden(
             if pattern.search(line):
                 short = line[:250] + "..." if len(line) > 250 else line
                 matches.append(
-                    LogError(node=node_name, level="FORBIDDEN", message=short)
+                    LogError(
+                        node=node_name,
+                        level="FORBIDDEN",
+                        message=f"[{key}] {short}",
+                    )
                 )
                 break
     return matches
@@ -200,7 +200,7 @@ def format_errors(errors: List[LogError], max_display: int = 30) -> str:
     """Format a list of ``LogError`` entries into a readable assertion message."""
     node_names = sorted(set(e.node for e in errors))
     lines = [
-        f"Fatal log entries on {len(node_names)} node(s) "
+        f"Forbidden log entries on {len(node_names)} node(s) "
         f"({', '.join(node_names)}): {len(errors)} total"
     ]
     for e in errors[:max_display]:

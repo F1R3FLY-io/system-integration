@@ -40,7 +40,17 @@ def resolve_node_binary(repo_root: str) -> str:
 class TimeoutConfig:
     """Base timeout values. Everything else derives from these via scale."""
 
-    node_startup: int = 90
+    # 300s (was 90s) — accommodates the LFS forward-horizon rspace
+    # history sync that runs during joiner Initializing→Running
+    # transition (services/f1r3node-rust/casper/src/rust/engine/
+    # lfs_horizon_requester.rs). With max-parent-depth=100 default,
+    # a joiner against a non-trivial DAG syncs N ancestor rspace
+    # roots from peers; each root is a full StoreItemsMessage
+    # exchange (often paginated). Observed depths up to 130 roots
+    # under bonding-test bg load (~1+s per root). 300s covers that
+    # plus headroom; tests against shallow/empty DAGs unaffected
+    # since the sync just completes faster.
+    node_startup: int = 300
     deploy_inclusion: int = 10
     finalization: int = 45
     command: int = 60
