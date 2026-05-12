@@ -105,7 +105,15 @@ sed \
   -e "s|__RUNNER_ARCH__|$(esc "$RUNNER_AGENT_ARCH")|g" \
   "$CLOUD_INIT_TMPL" > "$CLOUD_INIT_RENDERED"
 
-SSH_KEY_PUB_RESOLVED="${SSH_KEY_PUB/#\~/$HOME}"
+# Resolve SSH public key path: ~ expansion (operator path) OR repo-relative
+# (CI / committed-in-repo path).
+if [[ "$SSH_KEY_PUB" == /* ]]; then
+  SSH_KEY_PUB_RESOLVED="$SSH_KEY_PUB"
+elif [[ "$SSH_KEY_PUB" == ~* ]]; then
+  SSH_KEY_PUB_RESOLVED="${SSH_KEY_PUB/#\~/$HOME}"
+else
+  SSH_KEY_PUB_RESOLVED="$SCRIPT_DIR/$SSH_KEY_PUB"
+fi
 
 echo "=== Launching $RUNNER_NAME ==="
 echo "  Shape:       $SHAPE"
