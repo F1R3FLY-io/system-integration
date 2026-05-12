@@ -878,6 +878,211 @@ This requires PR #3's CLI change — `--api-enable-reporting` now accepts a valu
 
 **Status:** Pre-existing on `rust/staging` baseline. Test workaround in place for B5; canary preserved in `test_observer_lfs_sync`. Node-side fix not started.
 
+### 2.17 Cross-crate "dead constants" in `casper::metrics_constants`
+
+Surfaced by [f1r3node PR #502 review](pr-502-review-notes.md) §4.
+
+`casper/src/rust/metrics_constants.rs` defines metric-name constants that are never imported anywhere because the emission site lives in a crate that doesn't depend on `casper`. Verified cases:
+
+- `IS_MERGEABLE_CHANNEL_CALLS_METRIC` — defined in casper, emitted from `rholang/src/rust/interpreter/reduce.rs` as a hardcoded `"is-mergeable-channel.calls"` literal. `rholang` doesn't depend on `casper`, so direct import is impossible.
+- `DAG_INSERT_TIME_METRIC` — defined in casper, emitted from `block-storage/src/rust/dag/block_dag_key_value_storage.rs` as a hardcoded `"dag.insert.time"` literal. `block-storage` doesn't depend on `casper` (dependency goes the other way).
+
+**Drift risk:** rename a casper-side constant → emission site keeps the old name silently. Likely more cases beyond the 2 verified — `casper::metrics_constants` has 35 entries, any cross-crate emission is at risk.
+
+**Fix (when picked up):** move each cross-crate constant to the emission crate (or a shared module), keeping the canonical definition co-located with the call site:
+
+- `IS_MERGEABLE_CHANNEL_CALLS_METRIC` → `rholang/src/rust/interpreter/metrics_constants.rs` (already exists for rholang's own metrics).
+- `DAG_INSERT_TIME_METRIC` → file-local `const` in `block-storage/src/rust/dag/block_dag_key_value_storage.rs` (block-storage has no other custom metrics; a new constants module is overkill).
+
+If casper ever needs to reference these constants, `pub use` re-export from the owning crate.
+
+**Repo:** f1r3node. **Branch:** `perf/runtime-manager-lock-free` (PR #502).
+
+### 2.18 Throughput optimization levers (load-test driven, 2026-05-07)
+
+After test_load tuning hit 0 unfinalized but high-phase finalization p50 sat at
+46.8s (1s margin under the 45s budget), per-block metric tracing identified the
+levers below. The merging-logic pair-dedup change (originally items #2 + #3 in
+the list) was implemented and reverted in the same session — equivalence-correct
+but a small regression on test_load's low-duplication workload (branches +14% in
+clean re-run). Remaining items are deferred and tracked here. See session report
+[`session-report-2026-05-07-proposer-cadence-and-config-tuning.md`](session-report-2026-05-07-proposer-cadence-and-config-tuning.md).
+
+#### Throughput-tuning settings: confirmed UNSAFE for `defaults.conf` promotion
+
+The four CLI overrides in `tests/custom/test_load.py::global_cli_options` (3s
+self-propose-cooldown, frontier-chase-max-lag=20, 3s stale-recovery-min-interval,
+max-user-deploys-per-block=128) were trialled in `conf/rust.conf` against the
+full baseline suite on 2026-05-07. The baseline run produced four hard
+regressions on previously-✅ tests:
+
+| Test | Failure mode |
+|------|--------------|
+| `shared/test_wallets::test_transfer_failed_with_invalid_key` | `assert_block_finalized_on_all_nodes(blockHash)` returns FT=-1.0 on all 5 nodes |
+| `shared/test_wallets::test_transfer_failed_with_insufficient_funds` | Same |
+| `shared/test_web_api::test_get_deploy_detail` | `deploy should be finalized` → False |
+| `shared/test_web_api::test_is_finalized_http` | `is-finalized` returns `false` on the deploy's blockHash |
+
+All four share one root cause: each test submits a deploy, `wait_for_finalized
+(blockNumber)` succeeds, then asserts finalization on the *specific* blockHash
+that contained the deploy — but a **sibling block at the same blockNumber
+finalized instead**. The chain's LFB advanced via a non-canonical-from-the-
+deploy's-perspective branch; the deploy's containing block stays at FT=-1.0.
+
+The two heartbeat overrides (3s cooldown + frontier-chase=20) raise the sibling
+rate, which is fine for `test_load` (which tracks deploy IDs, doesn't care
+which sibling wins) but breaks any realistic flow that follows a specific
+blockHash through finalization. `max-user-deploys-per-block = 128` and the
+3s `stale-recovery-min-interval` are unlikely contributors (single-deploy
+tests, recovery path not exercised) but the suite was killed before isolating
+them — keep all four bundled as test-shard-only.
+
+**Status:** overrides remain in `tests/custom/test_load.py::global_cli_options`
+where they enable the load test to drive 0 unfinalized; **NOT** in
+`conf/rust.conf` (would apply to every test) or `defaults.conf` (would apply
+to mainnet). The `has_new_parents`-on-deploy-trigger graft (item #9 below) is
+the precondition for safely raising propose cadence in production.
+
+
+
+#### #4 — Read parent timestamps from BlockMetadata
+
+[`casper/src/rust/validate.rs:531-566`](../services/f1r3node-rust-pr488/casper/src/rust/validate.rs) (`Validate::timestamp`) calls
+`block_store.get_unsafe(parent_hash)` once per parent — a full BlockMessage disk
+read just for one `i64` timestamp field. With wide DAGs (`max-number-of-parents
+= 100`) this scales linearly; observed cost is **26.8ms per validated block**
+(vs sub-ms for the sibling `block_number` validator next door, which uses
+`s.dag.lookup` against in-memory BlockMetadata).
+
+**Cost:** ~860ms saved per high-phase phase (32 blocks × 27ms).
+
+**Why deferred:** the in-memory `BlockMetadata` struct and its proto
+`BlockMetadataInternal` (`models/src/main/protobuf/CasperMessage.proto:110-126`)
+have no `timestamp` field. Adding one is wire-additive (field 12 unused) but
+needs a self-healing fallback for legacy storage rows where the field decodes
+as 0.
+
+**Fix shape:**
+- Add `int64 timestamp = 12;` to `BlockMetadataInternal`.
+- Add `pub timestamp: i64` to the `BlockMetadata` struct + update
+  `from_proto`, `to_proto`, `from_block`, `PartialEq`, `Hash`.
+- Switch `Validate::timestamp` signature to take `&mut CasperSnapshot` (matches
+  `block_number` next door); fast path reads `s.dag.lookup(parent_hash)?.timestamp`;
+  fallback when `metadata.timestamp == 0 && parent_block_number > 0` reads
+  `block_store.get_unsafe` for legacy rows.
+- Update tests in `casper/tests/batch2/validate_test.rs:348+` for the new
+  signature; add coverage for both fast path and fallback.
+
+**Risk:** medium — proto-additive change, but PartialEq/Hash on BlockMetadata
+extends to a new field which may surface in any test fixture comparing metadata
+by struct equality (limited to fixtures that build BlockMetadata literally
+rather than via `from_proto`/`from_block`).
+
+**Repo:** f1r3node. **Effort:** ~2 hours including proto regen cascade.
+
+#### #5 — bonds_cache by epoch instead of post-state-hash
+
+[`casper/src/rust/util/rholang/runtime_manager.rs:744-762`](../services/f1r3node-rust-pr488/casper/src/rust/util/rholang/runtime_manager.rs)
+caches bonds keyed by `post_state_hash`. Every block has a unique post-state,
+so the cache misses on every block validation — even though bonds only change
+at epoch boundaries (every `casper.genesis-block-data.epoch-length = 10000`
+blocks). The Rholang `getBonds` query at the miss path costs ~74ms.
+
+**Cost:** ~3s saved per high phase (~149ms/block × 21 blocks). Within an epoch
+the cache hit rate would jump from ~0% to ~99%.
+
+**Fix shape:**
+- Compute an epoch-stable cache key. Two options:
+  - Cache by `(epoch_number, parent_hashes_signature)` — sufficient since
+    bonds only change on bond/unbond/slash events at epoch boundaries.
+  - Read the bonds map directly from RSpace at the known PoS bonds channel,
+    bypassing the Rholang query entirely; cache by epoch number only.
+- Keep the existing post-state-hash cache as a secondary index for the same-state
+  case; the primary key changes to the epoch-stable form.
+
+**Risk:** medium — must verify bonds are truly epoch-stable across all PoS
+state transitions. The `synchrony-recovery-max-bypasses` and slashing paths
+need review for off-epoch bonds mutations.
+
+**Repo:** f1r3node.
+
+#### #6 — Conflicts_map disjoint-event short-circuit
+
+[`casper/src/rust/merging/dag_merger.rs:490-501`](../services/f1r3node-rust-pr488/casper/src/rust/merging/dag_merger.rs)
+iterates branch pairs unconditionally for the same-deploy-id pass. The
+`compute_conflict_map_event_indexed` predecessor doesn't pre-filter pairs whose
+`EventLogIndex` produce/consume sets are disjoint, so the inner pair-loop
+processes obviously-non-conflicting pairs before discarding them.
+
+**Cost:** speculative without measurement; conflicts_map currently 181ms × 29
+merges per high phase.
+
+**Fix shape:**
+- Build a per-branch BloomFilter (or HashSet) summary of the union of touched
+  channel hashes during the inverted-index pass.
+- Pre-filter `(s, t)` pairs whose summaries don't intersect before adding to
+  the conflict candidate set.
+- Compose with the pair-dedup commit (#3 — already landed) so the final
+  populate-loop runs only on pairs that survive both filters.
+
+**Risk:** low if BloomFilter false-positive rate is tracked. Equivalence test
+already exists (`event_indexed_conflicts_*_match_baseline`) so semantic drift
+will be caught.
+
+**Repo:** f1r3node.
+
+#### #7 — Pre-parse system-deploy sources
+
+`casper/src/rust/util/rholang/costacc/{pre_charge_deploy.rs,refund_deploy.rs}`
+define `source()` as a `&'static str`. Each call to `evaluate_system_source`
+re-parses the same string via `Compiler::source_to_adt_with_normalizer_env` —
+0.59ms per call × 5 system deploys/block × 100 deploys = ~2500 reparses per
+high-phase block.
+
+**Cost:** ~3ms/block direct; reduces allocator pressure on the
+`build_normalized_term` path.
+
+**Fix shape:**
+- Pre-parse each system-deploy source into `LazyLock<Par>` (or `OnceCell<Par>`)
+  at module load.
+- Adjust the dispatch path to clone the cached AST instead of calling the
+  compiler.
+
+**Risk:** low. Marginal savings, easy.
+
+**Repo:** f1r3node.
+
+#### #8 — Runtime spawn pooling
+
+[`casper/src/rust/util/rholang/runtime_manager.rs::spawn_runtime`](../services/f1r3node-rust-pr488/casper/src/rust/util/rholang/runtime_manager.rs)
+allocates a fresh runtime each call — 19ms × 46 calls = ~870ms/phase.
+
+**Cost:** ~870ms saved per phase if a pool can be primed.
+
+**Fix shape:**
+- Pool of pre-allocated runtimes. Each carries its own RSpace state, so the
+  pool API needs `acquire_with_root(state_hash) -> RuntimeHandle` semantics.
+- Non-trivial because runtime carries hot-store state that has to be reset to
+  the requested root before reuse.
+
+**Risk:** high — runtime state isolation is the foundation of replay
+determinism. Needs a careful design pass; flag for follow-up after #4–#7
+have shipped.
+
+**Repo:** f1r3node.
+
+#### #9 — has_new_parents check on deploy-triggered propose
+
+Sibling-ratio fix from the prior session. Reduces DAG width which compounds
+with #2/#3/#6 (less work per merge). Implementation sketch in session report.
+~50 lines in `casper/src/rust/api/block_api.rs:316-340` plus making
+`heartbeat_proposer.rs::inspect_parent_updates` `pub(crate)`.
+
+**Cost:** ratio 5.5:1 → ~2:1 estimated; reduces conflicts_map and branches
+input sizes by ~60%.
+
+**Repo:** f1r3node.
+
 ---
 
 ## 3. Test Framework Tasks

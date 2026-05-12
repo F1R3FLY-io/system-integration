@@ -53,6 +53,22 @@ METRICS_TO_SCRAPE = [
     "block_replay_deploy_refund_time",
     "block_replay_deploy_discard_event_log_time",
     "block_replay_deploy_check_replay_data_time",
+    # System-deploy evaluation breakdown — what happens inside a precharge
+    # or refund call (replay_system_deploy_internal -> eval_system_deploy ->
+    # evaluate_system_source / consume_system_result).
+    "block_replay_sysdeploy_eval_time",
+    "block_replay_sysdeploy_check_time",
+    "block_replay_sysdeploy_rig_time",
+    "block_replay_sysdeploy_checkpoint_mergeable_time",
+    "block_replay_sysdeploy_eval_evaluate_source_time",
+    "block_replay_sysdeploy_eval_consume_result_time",
+    # inj_attempt phases — the interior of every Rholang `evaluate` call:
+    # set initial cost, charge parsing cost, build normalized term (parse),
+    # reduce term (run AST through RSpace).
+    "inj_attempt_set_initial_cost_time",
+    "inj_attempt_charge_parsing_cost_time",
+    "inj_attempt_build_normalized_term_time",
+    "inj_attempt_reduce_term_time",
     # play_exploratory_par sub-step split (compute_bonds + active_validators).
     "bonds_cache_reset_time",
     "bonds_cache_inj_time",
@@ -300,6 +316,42 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             count = metrics.get(key + ".count", 0)
             if count > 0:
                 lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} deploys)")
+    # System-deploy evaluation breakdown — what runs inside every precharge
+    # / refund / close-block call. The eval phase = source-parse + reduce
+    # + result-consume; check / rig / checkpoint-mergeable are bookkeeping.
+    sysdeploy = [
+        ("eval (total)", "block_replay_sysdeploy_eval_time"),
+        ("  evaluate-source (parse + reduce)", "block_replay_sysdeploy_eval_evaluate_source_time"),
+        ("  consume-result", "block_replay_sysdeploy_eval_consume_result_time"),
+        ("rig", "block_replay_sysdeploy_rig_time"),
+        ("check", "block_replay_sysdeploy_check_time"),
+        ("checkpoint-mergeable", "block_replay_sysdeploy_checkpoint_mergeable_time"),
+    ]
+    sysdeploy_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in sysdeploy)
+    if sysdeploy_has_data:
+        lines.append("  System-deploy evaluation breakdown (avg per call):")
+        for label, key in sysdeploy:
+            avg = metrics.get(key, 0)
+            count = metrics.get(key + ".count", 0)
+            if count > 0:
+                lines.append(f"    {label}: {avg*1000:.2f}ms ({int(count)} calls)")
+    # inj_attempt phases — the four steps inside every Rholang `evaluate`
+    # call (set initial cost / charge parsing cost / build normalized term
+    # = parse / reduce term = run AST through RSpace).
+    inj_phases = [
+        ("set_initial_cost", "inj_attempt_set_initial_cost_time"),
+        ("charge_parsing_cost", "inj_attempt_charge_parsing_cost_time"),
+        ("build_normalized_term (parse)", "inj_attempt_build_normalized_term_time"),
+        ("reduce_term (run AST)", "inj_attempt_reduce_term_time"),
+    ]
+    inj_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in inj_phases)
+    if inj_has_data:
+        lines.append("  Rholang inj_attempt phases (avg per evaluate call):")
+        for label, key in inj_phases:
+            avg = metrics.get(key, 0)
+            count = metrics.get(key + ".count", 0)
+            if count > 0:
+                lines.append(f"    {label}: {avg*1000:.2f}ms ({int(count)} calls)")
     # Block creator (proposer side) breakdown
     creator_metrics = [
         ("prepare_user_deploys", "block_creator_prepare_user_deploys_time"),

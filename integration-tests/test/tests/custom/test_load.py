@@ -20,6 +20,7 @@ all deploys finalized within timeout, no node crashes.
 """
 
 import logging
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
@@ -195,6 +196,30 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
         ],
         heartbeat=True,
         include_readonly=True,
+        # Heartbeat tuning for stress-test load shape. Production defaults
+        # (15s self-propose-cooldown, 0 frontier-chase-max-lag, 12s stale-
+        # recovery-min-interval) are tuned for low-load stability and cap
+        # propose cadence well below what high-phase deploy submission needs.
+        # The values below open the propose cadence so validators can keep
+        # the deploy queue drained instead of accumulating 24s+ inclusion
+        # latency.
+        #
+        # Confirmed UNSAFE for promotion to defaults.conf (2026-05-07
+        # baseline run): the higher propose cadence + frontier-chase
+        # combination raises the sibling-block rate, which breaks any
+        # realistic test that follows a specific blockHash through
+        # finalization (test_wallets, test_web_api). See TODO §2.15.
+        global_cli_options={
+            "--heartbeat-self-propose-cooldown": "3seconds",
+            "--heartbeat-advanced-frontier-chase-max-lag": "20",
+            "--heartbeat-stale-recovery-min-interval": "3seconds",
+            # Larger blocks reduce the propose-per-deploy ratio and the
+            # number of cross-validator races. Default 32 floods the
+            # proposer at 10 d/s — at the new cooldown each validator
+            # produces a block per ~3 deploys. 128 lets a single block
+            # absorb a full second of submission across 3 validators.
+            "--max-user-deploys-per-block": "128",
+        },
     )
     shard = Shard.create(provider, config, timeouts)
     try:
@@ -338,11 +363,19 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                 f"Readonly LFB #{ro_lfb} is {lfb_gap} blocks behind V1 #{v1_lfb} after load test"
             )
 
-        # Hard assertions
+        # Hard assertions. Set LOAD_TEST_TELEMETRY_ONLY=1 to skip the
+        # finalization gate when collecting metrics across capacity limits.
         assert total_failures == 0, f"{total_failures} deploy(s) failed to submit"
-        assert total_unfinalized == 0, (
-            f"{total_unfinalized} deploy(s) not finalized within {finalization_timeout}s"
-        )
+        if os.environ.get("LOAD_TEST_TELEMETRY_ONLY"):
+            logging.warning(
+                "LOAD_TEST_TELEMETRY_ONLY set — skipping finalization gate "
+                "(%d deploy(s) not finalized within %ds)",
+                total_unfinalized, finalization_timeout,
+            )
+        else:
+            assert total_unfinalized == 0, (
+                f"{total_unfinalized} deploy(s) not finalized within {finalization_timeout}s"
+            )
         for node in shard.all_nodes:
             assert node.is_running(), f"{node.name} is not running after load test"
     finally:
