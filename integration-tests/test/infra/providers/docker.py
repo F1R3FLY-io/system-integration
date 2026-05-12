@@ -50,37 +50,55 @@ def _compose(*args: str, compose_file: str, project_name: str,
     )
 
 
-def _docker_run_with_network_recovery(
+def _docker_run_with_recovery(
     run_args: List[str],
     network_name: str,
     max_retries: int = 2,
 ) -> subprocess.CompletedProcess:
-    """Run ``docker run`` and transparently retry if the daemon reports the
-    target network is missing.
+    """Run ``docker run`` and transparently retry past two known daemon races:
 
-    The race we're guarding against: ``docker network create`` returns
-    success and ``docker network inspect`` confirms the network exists,
-    but a follow-up ``docker run`` references the same network name and
-    the daemon says "network not found". The window is small but
-    reproducible on contested daemons (mixed amd64/arm64, container
-    churn). When this happens we recreate the network and retry the
-    ``docker run`` — typically succeeds on the next attempt.
+    1. **Network not found.** ``docker network create`` returns success
+       and ``docker network inspect`` confirms the network exists, but a
+       follow-up ``docker run`` references it and the daemon says
+       "network not found". Recovery: recreate the network and retry.
+
+    2. **Container name conflict.** ``docker rm -f <name>`` returns
+       success but the daemon hasn't released the name. A follow-up
+       ``docker run --name <same>`` fails with "container name ... is
+       already in use by container <stale-id>". Recovery: force-remove
+       the stale container by ID and retry.
+
+    Both races are observed primarily on arm64 under daemon contention.
     """
+    import re
     import time
+
     for attempt in range(max_retries + 1):
         result = _docker(*run_args)
         if result.returncode == 0:
             return result
+
         stderr = result.stderr or ""
         is_network_race = (
             "failed to set up container networking" in stderr
             and "not found" in stderr
         )
-        if not is_network_race or attempt >= max_retries:
+        name_conflict = re.search(
+            r'is already in use by container "([0-9a-f]+)"', stderr
+        )
+
+        if attempt >= max_retries:
             return result
-        # Race detected: recreate the network and retry.
-        _docker("network", "create", network_name)
+
+        if is_network_race:
+            _docker("network", "create", network_name)
+        elif name_conflict:
+            _docker("rm", "-f", name_conflict.group(1))
+        else:
+            return result
+
         time.sleep(0.5 * (attempt + 1))
+
     return result
 
 
@@ -635,7 +653,7 @@ class DockerProvider:
             *extra_cli,
         ])
 
-        result = _docker_run_with_network_recovery(run_args, network_name)
+        result = _docker_run_with_recovery(run_args, network_name)
         if result.returncode != 0:
             raise RuntimeError(f"docker run failed: {result.stderr}")
 
@@ -715,7 +733,7 @@ class DockerProvider:
             *extra_cli,
         ]
 
-        result = _docker_run_with_network_recovery(run_args, network_name)
+        result = _docker_run_with_recovery(run_args, network_name)
         if result.returncode != 0:
             raise RuntimeError(f"docker run (recreate) failed: {result.stderr}")
 
@@ -835,7 +853,7 @@ class DockerProvider:
         _docker("volume", "create", volume_name)
         self._registry.register_volume(volume_name)
 
-        result = _docker_run_with_network_recovery(run_args, shard_network)
+        result = _docker_run_with_recovery(run_args, shard_network)
         if result.returncode != 0:
             raise RuntimeError(f"docker run ({role_key}) failed: {result.stderr}")
 
