@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import time
 from typing import Dict, List, Optional, Sequence
 
 from ..cleanup import DockerCleanupRegistry
@@ -50,56 +51,67 @@ def _compose(*args: str, compose_file: str, project_name: str,
     )
 
 
-def _docker_run_with_recovery(
-    run_args: List[str],
-    network_name: str,
-    max_retries: int = 2,
-) -> subprocess.CompletedProcess:
-    """Run ``docker run`` and transparently retry past two known daemon races:
+def _ensure_no_container(name: str, timeout: float = 10.0) -> None:
+    """Force-remove a container by name and wait until the daemon agrees.
 
-    1. **Network not found.** ``docker network create`` returns success
-       and ``docker network inspect`` confirms the network exists, but a
-       follow-up ``docker run`` references it and the daemon says
-       "network not found". Recovery: recreate the network and retry.
-
-    2. **Container name conflict.** ``docker rm -f <name>`` returns
-       success but the daemon hasn't released the name. A follow-up
-       ``docker run --name <same>`` fails with "container name ... is
-       already in use by container <stale-id>". Recovery: force-remove
-       the stale container by ID and retry.
-
-    Both races are observed primarily on arm64 under daemon contention.
+    Idempotent: no-op if no such container exists. After ``docker rm -f``
+    returns, ``docker inspect`` is polled until it reports not-present.
+    Eliminates the race where ``rm -f`` succeeds but the name is still
+    claimed when a follow-up ``docker run --name`` references it.
     """
-    import re
-    import time
+    _docker("rm", "-f", name)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _docker("inspect", "--type", "container", name).returncode != 0:
+            return
+        time.sleep(0.1)
+    raise RuntimeError(
+        f"Container {name!r} still visible to docker daemon after rm -f "
+        f"and {timeout}s wait"
+    )
 
-    for attempt in range(max_retries + 1):
-        result = _docker(*run_args)
-        if result.returncode == 0:
-            return result
 
-        stderr = result.stderr or ""
-        is_network_race = (
-            "failed to set up container networking" in stderr
-            and "not found" in stderr
+def _ensure_network(name: str, timeout: float = 10.0) -> None:
+    """Ensure a docker network with ``name`` exists and is daemon-visible.
+
+    Idempotent: creates if missing, accepts "already exists" silently.
+    After the create call returns, ``docker network inspect`` is polled
+    until consistently visible. Eliminates the race where ``network
+    create`` reports success but a follow-up ``docker run --network``
+    sees ``network not found``.
+    """
+    create = _docker("network", "create", name)
+    if create.returncode != 0 and "already exists" not in (create.stderr or ""):
+        raise RuntimeError(
+            f"docker network create {name!r} failed: {create.stderr.strip()}"
         )
-        name_conflict = re.search(
-            r'is already in use by container "([0-9a-f]+)"', stderr
-        )
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _docker("network", "inspect", name).returncode == 0:
+            return
+        time.sleep(0.1)
+    raise RuntimeError(
+        f"Network {name!r} not visible to docker daemon after create "
+        f"and {timeout}s wait"
+    )
 
-        if attempt >= max_retries:
-            return result
 
-        if is_network_race:
-            _docker("network", "create", network_name)
-        elif name_conflict:
-            _docker("rm", "-f", name_conflict.group(1))
-        else:
-            return result
+def _docker_run(
+    run_args: List[str], settle: float = 1.0
+) -> subprocess.CompletedProcess:
+    """Run ``docker run`` with a single retry after a brief settle.
 
-        time.sleep(0.5 * (attempt + 1))
-
-    return result
+    Caller is responsible for preconditions: container name is free
+    (``_ensure_no_container``) and target network is visible
+    (``_ensure_network``). The retry here is the last line of defense
+    against transient daemon hiccups that escape inspect-based checks —
+    it does not parse stderr to guess which race fired.
+    """
+    result = _docker(*run_args)
+    if result.returncode == 0:
+        return result
+    time.sleep(settle)
+    return _docker(*run_args)
 
 
 class DockerNodeHandle:
@@ -560,37 +572,7 @@ class DockerProvider:
         container_name = f"rnode.test.{self._session_id}.standalone{suffix}"
         network_name = f"f1r3fly-test-{self._session_id}-standalone{suffix}"
 
-        # Create the network. Without an explicit return-code check, transient
-        # daemon failures (the previous network with the same name still in a
-        # half-deleted state, daemon under load not propagating the create
-        # before docker run reads it) silently no-op here and resurface as a
-        # cryptic 'network not found' from docker run minutes later. Retry a
-        # few times with backoff and verify the network is inspectable before
-        # we hand its name to docker run.
-        import time
-        last_err = ""
-        for attempt in range(1, 4):
-            create = _docker("network", "create", network_name)
-            if create.returncode == 0:
-                # Confirm the daemon sees what it just created. Cheap insurance
-                # against propagation races on the daemon.
-                inspect = _docker("network", "inspect", network_name)
-                if inspect.returncode == 0:
-                    break
-                last_err = f"inspect after create failed: {inspect.stderr.strip()}"
-            else:
-                last_err = f"create failed: {create.stderr.strip()}"
-                # If the network already exists from a stale state, remove it
-                # and retry. (Don't fail-fast on the duplicate case.)
-                if "already exists" in (create.stderr or ""):
-                    _docker("network", "rm", network_name)
-            if attempt < 3:
-                time.sleep(0.5 * attempt)  # 0.5s, 1s backoff
-        else:
-            raise RuntimeError(
-                f"docker network create {network_name} did not stabilize "
-                f"after 3 attempts: {last_err or '(no stderr)'}"
-            )
+        _ensure_network(network_name)
         self._registry.register_network(network_name)
 
         # Build CLI args from config
@@ -653,7 +635,8 @@ class DockerProvider:
             *extra_cli,
         ])
 
-        result = _docker_run_with_recovery(run_args, network_name)
+        _ensure_no_container(container_name)
+        result = _docker_run(run_args)
         if result.returncode != 0:
             raise RuntimeError(f"docker run failed: {result.stderr}")
 
@@ -697,7 +680,8 @@ class DockerProvider:
         ports = handle.ports
 
         handle.stop()
-        handle.remove()
+        _ensure_no_container(container_name)
+        _ensure_network(network_name)
 
         extra_cli: List[str] = []
         for flag in sorted(config.cli_flags):
@@ -733,7 +717,7 @@ class DockerProvider:
             *extra_cli,
         ]
 
-        result = _docker_run_with_recovery(run_args, network_name)
+        result = _docker_run(run_args)
         if result.returncode != 0:
             raise RuntimeError(f"docker run (recreate) failed: {result.stderr}")
 
@@ -853,7 +837,9 @@ class DockerProvider:
         _docker("volume", "create", volume_name)
         self._registry.register_volume(volume_name)
 
-        result = _docker_run_with_recovery(run_args, shard_network)
+        _ensure_no_container(node_name)
+        _ensure_network(shard_network)
+        result = _docker_run(run_args)
         if result.returncode != 0:
             raise RuntimeError(f"docker run ({role_key}) failed: {result.stderr}")
 
