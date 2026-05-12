@@ -16,7 +16,7 @@ import pytest
 from ...infra.assertions import assert_all_nodes_agree_on_block
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID, VALIDATOR4_ID
-from ...infra.polling import poll_until, wait_for_block_visible
+from ...infra.polling import poll_until, try_find_deploy, wait_for_block_visible
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
@@ -319,15 +319,72 @@ def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
         logging.info("Pausing V3 (stake=50)...")
         v3.pause()
 
-        v1.deploy_string('@"post-boundary-v1"!(10)', VALIDATOR1_ID.private_key())
-        v2.deploy_string('@"post-boundary-v2"!(20)', VALIDATOR2_ID.private_key())
+        # Verify the property directly: blocks PROPOSED AFTER v3.pause()
+        # cannot be finalized under FTT=0.5 with only V1+V2 voting
+        # (FT = (150*2 - 200) / 200 = 0.5, which is NOT > 0.5 under
+        # strict-greater-than semantics). Observing the LFB alone is
+        # fragile: V3's already-cast votes on PRE-pause blocks can
+        # finalize after pause (those had FT=1.0), advancing the LFB —
+        # that's irrelevant to the strict-> property and shouldn't fail
+        # the test. Tracking specific post-pause block hashes isolates
+        # the actual invariant.
+        post_v1_deploy = v1.deploy_string(
+            '@"post-boundary-v1"!(10)', VALIDATOR1_ID.private_key(),
+        )
+        post_v2_deploy = v2.deploy_string(
+            '@"post-boundary-v2"!(20)', VALIDATOR2_ID.private_key(),
+        )
 
-        # Finalization should STOP — FT = (150*2 - 200) / 200 = 0.5, NOT > 0.5
-        logging.info("Verifying finalization halts (FT=0.5 is NOT > FTT=0.5, strict >)...")
-        _poll_lfb_stalls([v1, v2], duration=30, interval=5.0)
+        # V1 and V2 still CAN propose blocks (proposal needs only the
+        # proposer's bond, not finalization-stake) — wait for these
+        # deploys to be included in a proposed block on each validator.
+        post_v1_block = poll_until(
+            predicate=lambda: try_find_deploy(v1, post_v1_deploy),
+            timeout=timeouts.finalization,
+            interval=2.0,
+            description="post-boundary-v1 deploy proposed",
+        )
+        post_v2_block = poll_until(
+            predicate=lambda: try_find_deploy(v2, post_v2_deploy),
+            timeout=timeouts.finalization,
+            interval=2.0,
+            description="post-boundary-v2 deploy proposed",
+        )
+        post_v1_hash = post_v1_block.blockHash
+        post_v2_hash = post_v2_block.blockHash
+        logging.info(
+            "Post-pause blocks proposed: v1=%s, v2=%s",
+            post_v1_hash[:16], post_v2_hash[:16],
+        )
+
+        # Verify those specific blocks remain non-finalized over the
+        # observation window. Either V1 or V2 reporting them as
+        # finalized would mean FT=0.5 was treated as crossing FTT=0.5,
+        # violating strict-greater-than.
+        logging.info(
+            "Verifying post-pause blocks stay non-finalized (FT=0.5 NOT > FTT=0.5)..."
+        )
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            for node in (v1, v2):
+                for block_hash, label in (
+                    (post_v1_hash, "v1"), (post_v2_hash, "v2"),
+                ):
+                    if node.is_finalized(block_hash):
+                        raise AssertionError(
+                            f"Post-pause block {block_hash[:16]} from {label} "
+                            f"was finalized (observed on {node.name}) at "
+                            f"FT=0.5, FTT=0.5 — violates strict > semantics."
+                        )
+            time.sleep(2.0)
+        logging.info("Post-pause blocks remained non-finalized for 30s as expected")
         post_kill_lfb = _get_lfb_number(v1)
-        logging.info("V1 LFB after 30s stall: #%d (unchanged from #%d)",
-                     post_kill_lfb, pre_kill_lfb)
+        logging.info(
+            "V1 LFB after observation: #%d (pre-kill was #%d) — any LFB "
+            "advance came from V3's pre-pause in-flight votes finalizing "
+            "PRE-pause blocks, which is correct behavior",
+            post_kill_lfb, pre_kill_lfb,
+        )
 
         # ── Restart V3 ──
         logging.info("Unpausing V3...")
