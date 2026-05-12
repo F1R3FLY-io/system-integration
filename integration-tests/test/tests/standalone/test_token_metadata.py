@@ -289,16 +289,22 @@ def test_restart_with_changed_token_config_fails_verification(
         # handle is dead and the new container is at drift_handle.
         initial_handle = None
         initial_node.close()
+        # The drift node has to boot, scan existing LMDB state, detect the
+        # config-vs-on-chain mismatch, log, and exit. That's startup-bounded
+        # work, not finalization-bounded — use node_startup so the deadline
+        # scales the same way slow boots scale elsewhere in the framework.
+        # On arm64 this is 300s * 1.5 = 450s; plenty of headroom over the
+        # typical 30-60s the node actually needs to abort.
         try:
             exit_code = drift_handle.wait_for_exit(
-                timeout=timeouts.finalization * 3,
+                timeout=timeouts.node_startup,
             )
             # wait_for_exit returns None on timeout. None != 0 is True in
             # Python so the is-not-None guard is what catches a stuck node.
             assert exit_code is not None and exit_code != 0, (
                 f"Drift restart must abort with non-zero exit. Got "
                 f"exit_code={exit_code} (None = wait_for_exit timed out "
-                f"after {timeouts.finalization * 3}s; the node failed to "
+                f"after {timeouts.node_startup}s; the node failed to "
                 f"either complete startup or abort cleanly)."
             )
             logging.info(
