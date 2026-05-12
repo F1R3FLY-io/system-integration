@@ -106,12 +106,45 @@ def _docker_run(
     (``_ensure_network``). The retry here is the last line of defense
     against transient daemon hiccups that escape inspect-based checks —
     it does not parse stderr to guess which race fired.
+
+    If the first attempt fails after the daemon has registered the
+    container name (``docker run`` reserves the name early — before
+    binding ports or attaching the network — so late failures leave a
+    Created-state container holding the name), the retry would hit
+    "name already in use". Force-remove that half-created container
+    by ``--name`` between attempts. The first attempt's stderr is
+    preserved in the final result so the caller can see the real cause
+    instead of a misleading retry artifact.
     """
     result = _docker(*run_args)
     if result.returncode == 0:
         return result
+
+    first_err = (result.stderr or "(no stderr from first attempt)").strip()
+    container_name: Optional[str] = None
+    try:
+        container_name = run_args[run_args.index("--name") + 1]
+    except (ValueError, IndexError):
+        pass
+
     time.sleep(settle)
-    return _docker(*run_args)
+    if container_name is not None:
+        _ensure_no_container(container_name)
+
+    retry = _docker(*run_args)
+    if retry.returncode == 0:
+        return retry
+
+    retry_err = (retry.stderr or "(no stderr from retry)").strip()
+    return subprocess.CompletedProcess(
+        args=retry.args,
+        returncode=retry.returncode,
+        stdout=retry.stdout,
+        stderr=(
+            f"--- first attempt ---\n{first_err}\n"
+            f"--- retry (after cleaning {container_name!r}) ---\n{retry_err}"
+        ),
+    )
 
 
 class DockerNodeHandle:
