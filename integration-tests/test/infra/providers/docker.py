@@ -50,6 +50,40 @@ def _compose(*args: str, compose_file: str, project_name: str,
     )
 
 
+def _docker_run_with_network_recovery(
+    run_args: List[str],
+    network_name: str,
+    max_retries: int = 2,
+) -> subprocess.CompletedProcess:
+    """Run ``docker run`` and transparently retry if the daemon reports the
+    target network is missing.
+
+    The race we're guarding against: ``docker network create`` returns
+    success and ``docker network inspect`` confirms the network exists,
+    but a follow-up ``docker run`` references the same network name and
+    the daemon says "network not found". The window is small but
+    reproducible on contested daemons (mixed amd64/arm64, container
+    churn). When this happens we recreate the network and retry the
+    ``docker run`` — typically succeeds on the next attempt.
+    """
+    import time
+    for attempt in range(max_retries + 1):
+        result = _docker(*run_args)
+        if result.returncode == 0:
+            return result
+        stderr = result.stderr or ""
+        is_network_race = (
+            "failed to set up container networking" in stderr
+            and "not found" in stderr
+        )
+        if not is_network_race or attempt >= max_retries:
+            return result
+        # Race detected: recreate the network and retry.
+        _docker("network", "create", network_name)
+        time.sleep(0.5 * (attempt + 1))
+    return result
+
+
 class DockerNodeHandle:
     """Handle to a Docker container created by DockerProvider."""
 
@@ -601,7 +635,7 @@ class DockerProvider:
             *extra_cli,
         ])
 
-        result = _docker(*run_args)
+        result = _docker_run_with_network_recovery(run_args, network_name)
         if result.returncode != 0:
             raise RuntimeError(f"docker run failed: {result.stderr}")
 
@@ -681,7 +715,7 @@ class DockerProvider:
             *extra_cli,
         ]
 
-        result = _docker(*run_args)
+        result = _docker_run_with_network_recovery(run_args, network_name)
         if result.returncode != 0:
             raise RuntimeError(f"docker run (recreate) failed: {result.stderr}")
 
@@ -801,7 +835,7 @@ class DockerProvider:
         _docker("volume", "create", volume_name)
         self._registry.register_volume(volume_name)
 
-        result = _docker(*run_args)
+        result = _docker_run_with_network_recovery(run_args, shard_network)
         if result.returncode != 0:
             raise RuntimeError(f"docker run ({role_key}) failed: {result.stderr}")
 

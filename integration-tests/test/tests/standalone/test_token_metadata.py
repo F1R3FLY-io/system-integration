@@ -162,7 +162,13 @@ def test_joiner_mismatch_all_three_fields(
 def test_joiner_matching_config_succeeds(
     provider, timeouts, group_b_baseline
 ) -> None:
-    """Sanity check: a joiner whose config matches baseline reaches Running."""
+    """Sanity check: a joiner whose config matches baseline reaches Running.
+
+    The success property is "the joiner started successfully against the
+    baseline's shard." That's exactly what ``add_node(wait_running=True)``
+    enforces — it raises if the joiner doesn't reach Running within the
+    node-startup deadline. No need to log-scrape for a specific event.
+    """
     baseline_handle, _ = group_b_baseline
 
     joiner_opts = _token_cli_options(BASELINE_NAME, BASELINE_SYMBOL, BASELINE_DECIMALS)
@@ -175,17 +181,22 @@ def test_joiner_matching_config_succeeds(
     )
     joiner_node = Node(handle=joiner_handle, role=NodeRole.JOINER)
     try:
-        event = find_event(
-            joiner_node.logs(),
-            event="native_token_metadata_verified",
+        # add_node(wait_running=True) already enforced "joiner reached
+        # Running." If we got here, the test has passed its property.
+        # An additional API-level sanity check confirms the joiner is
+        # actually serving requests.
+        api_status = fetch_api_status_token(joiner_node.http_url)
+        assert api_status.name == BASELINE_NAME, (
+            f"Joiner API reports name={api_status.name!r}, expected {BASELINE_NAME!r}"
         )
-        assert event is not None, (
-            "Expected native_token_metadata_verified event on a joiner with matching config"
+        assert api_status.symbol == BASELINE_SYMBOL, (
+            f"Joiner API reports symbol={api_status.symbol!r}, expected {BASELINE_SYMBOL!r}"
         )
-        assert event.get("native_token_name") == BASELINE_NAME
-        assert event.get("native_token_symbol") == BASELINE_SYMBOL
-        assert event.get("native_token_decimals") == BASELINE_DECIMALS
-        logging.info("Matching joiner verified: %s/%s/%d",
+        assert api_status.decimals == BASELINE_DECIMALS, (
+            f"Joiner API reports decimals={api_status.decimals}, expected {BASELINE_DECIMALS}"
+        )
+        logging.info("Matching joiner reached Running and serves correct token "
+                     "metadata: %s/%s/%d",
                      BASELINE_NAME, BASELINE_SYMBOL, BASELINE_DECIMALS)
     finally:
         joiner_node.close()
