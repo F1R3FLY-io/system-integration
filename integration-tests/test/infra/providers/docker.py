@@ -508,8 +508,37 @@ class DockerProvider:
         container_name = f"rnode.test.{self._session_id}.standalone{suffix}"
         network_name = f"f1r3fly-test-{self._session_id}-standalone{suffix}"
 
-        # Create network
-        _docker("network", "create", network_name)
+        # Create the network. Without an explicit return-code check, transient
+        # daemon failures (the previous network with the same name still in a
+        # half-deleted state, daemon under load not propagating the create
+        # before docker run reads it) silently no-op here and resurface as a
+        # cryptic 'network not found' from docker run minutes later. Retry a
+        # few times with backoff and verify the network is inspectable before
+        # we hand its name to docker run.
+        import time
+        last_err = ""
+        for attempt in range(1, 4):
+            create = _docker("network", "create", network_name)
+            if create.returncode == 0:
+                # Confirm the daemon sees what it just created. Cheap insurance
+                # against propagation races on the daemon.
+                inspect = _docker("network", "inspect", network_name)
+                if inspect.returncode == 0:
+                    break
+                last_err = f"inspect after create failed: {inspect.stderr.strip()}"
+            else:
+                last_err = f"create failed: {create.stderr.strip()}"
+                # If the network already exists from a stale state, remove it
+                # and retry. (Don't fail-fast on the duplicate case.)
+                if "already exists" in (create.stderr or ""):
+                    _docker("network", "rm", network_name)
+            if attempt < 3:
+                time.sleep(0.5 * attempt)  # 0.5s, 1s backoff
+        else:
+            raise RuntimeError(
+                f"docker network create {network_name} did not stabilize "
+                f"after 3 attempts: {last_err or '(no stderr)'}"
+            )
         self._registry.register_network(network_name)
 
         # Build CLI args from config
