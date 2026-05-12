@@ -99,50 +99,80 @@ def _ensure_network(name: str, timeout: float = 10.0) -> None:
 def _docker_run(
     run_args: List[str], settle: float = 1.0
 ) -> subprocess.CompletedProcess:
-    """Run ``docker run`` with a single retry after a brief settle.
+    """Run ``docker run`` with a single retry that repairs daemon state.
 
-    Caller is responsible for preconditions: container name is free
-    (``_ensure_no_container``) and target network is visible
-    (``_ensure_network``). The retry here is the last line of defense
-    against transient daemon hiccups that escape inspect-based checks —
-    it does not parse stderr to guess which race fired.
+    Callers should set up preconditions via ``_ensure_no_container`` /
+    ``_ensure_network``, but ``_docker_run`` does not trust them — the
+    daemon's inspect-view and run-attach view diverge under contention
+    (a network that ``docker network inspect`` confirms can still be
+    invisible to ``docker run --network``).
 
-    If the first attempt fails after the daemon has registered the
-    container name (``docker run`` reserves the name early — before
-    binding ports or attaching the network — so late failures leave a
-    Created-state container holding the name), the retry would hit
-    "name already in use". Force-remove that half-created container
-    by ``--name`` between attempts. The first attempt's stderr is
-    preserved in the final result so the caller can see the real cause
-    instead of a misleading retry artifact.
+    If the first attempt fails, the retry repairs the two known forms
+    of state divergence before re-running:
+
+    1. **Half-created container.** ``docker run`` reserves the
+       container name early — before binding ports or attaching the
+       network — so late failures leave a Created-state container
+       holding the name. Force-remove by ``--name`` from ``run_args``.
+
+    2. **Network not found despite inspect claim.** When the first
+       attempt's stderr says "network ... not found", ``docker network
+       rm`` + ``docker network create`` are issued for the
+       ``--network`` value in ``run_args``. ``rm`` is a no-op if other
+       containers are attached (e.g. shard network in ``add_node``) —
+       harmless, since the retry will then surface the same error.
+
+    The first attempt's stderr is preserved in the returned
+    ``CompletedProcess`` so callers see the real cause instead of a
+    retry artifact.
     """
     result = _docker(*run_args)
     if result.returncode == 0:
         return result
 
     first_err = (result.stderr or "(no stderr from first attempt)").strip()
+    first_err_lc = first_err.lower()
+
     container_name: Optional[str] = None
+    network_name: Optional[str] = None
     try:
         container_name = run_args[run_args.index("--name") + 1]
     except (ValueError, IndexError):
         pass
+    try:
+        network_name = run_args[run_args.index("--network") + 1]
+    except (ValueError, IndexError):
+        pass
+
+    network_missing = (
+        "network" in first_err_lc and "not found" in first_err_lc
+    )
 
     time.sleep(settle)
     if container_name is not None:
         _ensure_no_container(container_name)
+    if network_missing and network_name is not None:
+        _docker("network", "rm", network_name)
+        _ensure_network(network_name)
 
     retry = _docker(*run_args)
     if retry.returncode == 0:
         return retry
 
     retry_err = (retry.stderr or "(no stderr from retry)").strip()
+    repair_notes = []
+    if container_name is not None:
+        repair_notes.append(f"cleaned {container_name!r}")
+    if network_missing and network_name is not None:
+        repair_notes.append(f"recreated network {network_name!r}")
+    repair_summary = ", ".join(repair_notes) if repair_notes else "no repair"
     return subprocess.CompletedProcess(
         args=retry.args,
         returncode=retry.returncode,
         stdout=retry.stdout,
         stderr=(
             f"--- first attempt ---\n{first_err}\n"
-            f"--- retry (after cleaning {container_name!r}) ---\n{retry_err}"
+            f"--- retry (after {repair_summary}) ---\n{retry_err}"
         ),
     )
 
