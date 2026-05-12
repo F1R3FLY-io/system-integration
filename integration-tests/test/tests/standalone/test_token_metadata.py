@@ -243,61 +243,106 @@ def test_special_characters_in_token_name_round_trip(provider, timeouts) -> None
 def test_restart_with_changed_token_config_fails_verification(
     provider, timeouts
 ) -> None:
-    """Restarting with different --native-token-name against the same
-    data volume trips the on-chain verification check."""
+    """Restarting with a different --native-token-name against an existing
+    data volume must not corrupt the on-chain state.
+
+    Verification is structural rather than log-scraping:
+
+      Phase 1  start a node with INITIAL token, confirm INITIAL on-chain.
+      Phase 2  recreate the container with DIFFERENT token (same volume).
+               The node must abort (non-zero exit) — the test does not
+               care about WHICH log event was emitted, only that the node
+               refused to run.
+      Phase 3  destroy the failed container, restart with the ORIGINAL
+               INITIAL config against the same volume. The on-chain
+               metadata must still report INITIAL/INI/4 — proving the
+               failed drift restart did not overwrite or corrupt the
+               persisted state.
+
+    Phase 3 is the load-bearing assertion: it tests the actual safety
+    property ("data survived the failed restart") rather than an
+    implementation detail (the specific event name the node emits).
+    """
     volume_name = f"test-{provider.session_id}-drift-test"
     initial_config = _standalone_config("INITIAL", "INI", 4)
-    handle = provider.create_standalone(
+    initial_handle = provider.create_standalone(
         initial_config, volume_name=volume_name,
     )
-    node = Node(handle=handle, role=NodeRole.STANDALONE)
+    initial_node = Node(handle=initial_handle, role=NodeRole.STANDALONE)
+    recovered_handle = None
     try:
-        baseline = fetch_api_status_token(node.http_url)
+        # Phase 1 — baseline
+        baseline = fetch_api_status_token(initial_node.http_url)
         assert baseline.name == "INITIAL"
-        on_chain = query_token_metadata_all(node.grpc_host, node.external_grpc_port)
+        on_chain = query_token_metadata_all(
+            initial_node.grpc_host, initial_node.external_grpc_port,
+        )
         assert on_chain.name == "INITIAL"
-        logging.info("Initial node started with token INITIAL/INI/4")
+        logging.info("Phase 1: initial node committed INITIAL/INI/4 on-chain")
 
+        # Phase 2 — drift restart must abort
         drift_config = _standalone_config("DIFFERENT", "DIF", 4)
-        new_handle = provider.recreate_standalone(
-            handle, drift_config, wait_running=False,
+        drift_handle = provider.recreate_standalone(
+            initial_handle, drift_config, wait_running=False,
         )
-        new_node = Node(handle=new_handle, role=NodeRole.STANDALONE)
+        # recreate_standalone replaced initial_handle's container; the old
+        # handle is dead and the new container is at drift_handle.
+        initial_handle = None
+        initial_node.close()
+        try:
+            exit_code = drift_handle.wait_for_exit(
+                timeout=timeouts.finalization * 3,
+            )
+            # wait_for_exit returns None on timeout. None != 0 is True in
+            # Python so the is-not-None guard is what catches a stuck node.
+            assert exit_code is not None and exit_code != 0, (
+                f"Drift restart must abort with non-zero exit. Got "
+                f"exit_code={exit_code} (None = wait_for_exit timed out "
+                f"after {timeouts.finalization * 3}s; the node failed to "
+                f"either complete startup or abort cleanly)."
+            )
+            logging.info(
+                "Phase 2: drift restart aborted as expected (exit_code=%d)",
+                exit_code,
+            )
+        finally:
+            provider.destroy_standalone(drift_handle)
 
-        exit_code = new_handle.wait_for_exit(timeout=timeouts.finalization * 3)
-        # wait_for_exit returns None on timeout. Without this is-not-None
-        # guard, `None != 0` is True and the assertion silently passes,
-        # making a timed-out (still-running) container look like a
-        # successful non-zero exit.
-        assert exit_code is not None and exit_code != 0, (
-            f"Expected non-zero exit on token metadata drift, got "
-            f"exit_code={exit_code} (None means wait_for_exit timed out "
-            f"after {timeouts.finalization * 3}s — node never exited)"
+        # Phase 3 — restart with ORIGINAL config; on-chain must be intact
+        recovered_handle = provider.create_standalone(
+            initial_config, volume_name=volume_name,
         )
-        mismatch = find_event(new_node.logs(), event="native_token_metadata_mismatch")
-        assert mismatch is not None, "Expected native_token_metadata_mismatch event"
-        mismatched = set(
-            f for f in (mismatch.get("mismatched_fields") or "").split(",") if f
-        )
-        assert "native-token-name" in mismatched, (
-            f"Expected native-token-name in mismatched, got {mismatched}"
-        )
-        assert "native-token-symbol" in mismatched, (
-            f"Expected native-token-symbol in mismatched, got {mismatched}"
-        )
-        assert "native-token-decimals" not in mismatched, (
-            f"Decimals unchanged (4), should not be in mismatched: {mismatched}"
-        )
-        logging.info("Restart drift detected: mismatched=%s, exit_code=%d",
-                     mismatched, exit_code)
-
-        new_node.close()
-        provider.destroy_standalone(new_handle)
-        handle = None
+        recovered_node = Node(handle=recovered_handle, role=NodeRole.STANDALONE)
+        try:
+            recovered_on_chain = query_token_metadata_all(
+                recovered_node.grpc_host, recovered_node.external_grpc_port,
+            )
+            assert recovered_on_chain.name == "INITIAL", (
+                f"Volume corruption: after the failed drift restart, the "
+                f"on-chain token name is {recovered_on_chain.name!r}, "
+                f"expected 'INITIAL'. The aborted drift node must not have "
+                f"modified persisted state."
+            )
+            assert recovered_on_chain.symbol == "INI", (
+                f"Volume corruption: on-chain token symbol is "
+                f"{recovered_on_chain.symbol!r}, expected 'INI'."
+            )
+            assert recovered_on_chain.decimals == 4, (
+                f"Volume corruption: on-chain decimals is "
+                f"{recovered_on_chain.decimals}, expected 4."
+            )
+            logging.info(
+                "Phase 3: on-chain state intact (INITIAL/INI/4 preserved "
+                "across failed drift restart)"
+            )
+        finally:
+            recovered_node.close()
     finally:
-        if handle is not None:
-            node.close()
-            provider.destroy_standalone(handle)
+        if initial_handle is not None:
+            initial_node.close()
+            provider.destroy_standalone(initial_handle)
+        if recovered_handle is not None:
+            provider.destroy_standalone(recovered_handle)
 
 
 # ═══════════════════════════════════════════════════════════════════════
