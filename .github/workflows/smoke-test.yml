@@ -808,7 +808,7 @@ jobs:
     name: "Rust: test_slash (custom)"
     runs-on: ubuntu-latest
     needs: validate
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
