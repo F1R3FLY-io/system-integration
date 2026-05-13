@@ -74,17 +74,31 @@ INSTANCE_OCID=$(oci compute instance launch \
 echo "  Instance: $INSTANCE_OCID"
 
 echo "=== [2/6] Waiting for golden bootstrap to complete (instance reaches STOPPED) ==="
-echo "    Expected ~3-5 min: apt installs, Docker, Python, Rust, OCI CLI, runner agent, staging image pull"
+echo "    Expected ~6-10 min: apt installs, Docker, Python, Rust, OCI CLI, runner agent, staging image pull"
 # Poll for STOPPED. cloud-init ends with `shutdown -h +1` (1-min grace).
-deadline=$(($(date +%s) + 900))
+# Two-stage wait:
+#   * up to ~15 min for OCI to natively see STOPPED
+#   * if still RUNNING by then, send SOFTSTOP — OS has almost certainly
+#     completed shutdown by then; this nudges OCI's view to catch up.
+#     SOFTSTOP is a no-op signal if the OS is already down.
+#   * then poll another ~15 min for STOPPED.
+deadline=$(($(date +%s) + 1500))     # 25 min total
+softstop_after=$(($(date +%s) + 900))  # nudge OCI after 15 min
+softstop_sent=0
 while true; do
   state=$(oci compute instance get --instance-id "$INSTANCE_OCID" --query 'data."lifecycle-state"' --raw-output 2>/dev/null || echo "?")
   echo "  [$(date +%H:%M:%S)] state=$state"
   if [[ "$state" == "STOPPED" ]]; then
     break
   fi
-  if [[ $(date +%s) -ge $deadline ]]; then
-    echo "ERROR: golden instance never reached STOPPED within 15 min" >&2
+  now=$(date +%s)
+  if [[ $softstop_sent -eq 0 && $now -ge $softstop_after ]]; then
+    echo "  [$(date +%H:%M:%S)] still RUNNING after 15 min — issuing SOFTSTOP to nudge OCI's view"
+    oci compute instance action --instance-id "$INSTANCE_OCID" --action SOFTSTOP --query 'data."lifecycle-state"' --raw-output >/dev/null 2>&1 || true
+    softstop_sent=1
+  fi
+  if [[ $now -ge $deadline ]]; then
+    echo "ERROR: golden instance never reached STOPPED within 25 min (even after SOFTSTOP)" >&2
     exit 1
   fi
   sleep 20
