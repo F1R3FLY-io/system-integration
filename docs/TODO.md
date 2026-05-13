@@ -302,6 +302,8 @@ and the propagation pass skipped it across the board.
 
 **Fix branch consideration:** the work on `fix/finalizer-cross-run-cache` (in `services/f1r3node-rust`) does **not** address this — that branch fixes the death-spiral mechanism, not cross-node propagation. Separate work needed.
 
+**See also:** [`real-flakes-tracker.md`](real-flakes-tracker.md) #4c — `test_validator1_pay_validator2` hits the same FT=±0.3333 stuck pattern on the validator side. Same `propagate_ft_to_finalized_blocks` gap as §2.1; resolves together when the FT-propagation fix lands.
+
 ### 2.3 `test_synchrony_constraint` documented gaps
 
 Two issues, currently masked by the test passing in the latest baseline because
@@ -317,6 +319,8 @@ the first-proposal exemption happens to evaluate correctly:
 
 **Fix needed (node-side):** expose the flag, or have the test framework generate
 per-test HOCON.
+
+**See also:** [`real-flakes-tracker.md`](real-flakes-tracker.md) #3 — different failure mode in the same test (validator3 exits before reaching Running during custom-shard startup). Tracked separately under §2.19.
 
 ### 2.4 OPENAI_API_KEY not passed to containers via `shard.yml`
 
@@ -370,6 +374,8 @@ resource contention.
 
 **Status:** Graduated out of the deselect list. Re-enabled in baseline
 canonical run command. Watch for re-flake on Docker provider or under load.
+
+**See also:** [`real-flakes-tracker.md`](real-flakes-tracker.md) #1 — CI Docker provider reproduces the load-driven finalizer-stall at 30-50% on arm64, 10-20% on amd64 across attempts 4-6. Related family: tracker #4a (`test_trim_state` LFB=0), #4b (`test_transfers_interleaved_with_queries` deploy finalization timeout). The throughput keystone fix (§2.18 #9 `has_new_parents` on deploy-trigger) plausibly closes all of them by removing the propose-rate amplifier under sustained load.
 
 ### 2.6 gRPC client builds malformed URI when peer hostname resolves to IPv6
 
@@ -540,6 +546,8 @@ The readonly process exits during the ApprovedBlock receive, before logging `"Ap
 - Increase `node_startup` timeout in heavy-parallel runs.
 
 **Impact:** PR #491 baseline runs intermittently fail to verify the @shared group, blocking confidence in the integration suite. Workaround until fixed: retry the baseline run on cascade failure (the readonly boots cleanly on subsequent attempts ~80% of the time).
+
+**See also:** [`real-flakes-tracker.md`](real-flakes-tracker.md) #3 — same "node exits before Running" family in a different fixture (validator3 in custom shards). Tracked under §2.19. Likely the same race in the comm/transport subscription path.
 
 ---
 
@@ -763,6 +771,8 @@ Both extensions mirror the `lfs_horizon_requester` orchestrator pattern, just ro
 | 3 — Rspace history roots (`RootRepositoryDivergence`) | `lfs_horizon_requester` orchestrator + `compute_forward_horizon_roots` reachability calc; PR #3 fixed a multi-root pagination collision (`HashMap<Path, HashSet<Hash>>` so shared cursors satisfy all roots, not just last writer) | PR #1 + PR #3 |
 
 Verified end-to-end against PR #3 binary: B5 5/5 stable, zero `RootRepositoryDivergence` / `DAGStorageMissingHash` / `KvStoreError` patterns across all five runs (mean 379s, range 367–391s). The `tests/shared/test_bonding_validators.py` marker for these three patterns can be removed once PR #1 + PR #3 land on `rust/staging`.
+
+**See also:** [`real-flakes-tracker.md`](real-flakes-tracker.md) #2 — joiner emitting `RootRepositoryDivergence` mid-sync on `test_joiner_matching_config_succeeds` is the same Layer-3 symptom. CI Docker reproduces at ~10% on arm64 against current `rust/staging`. Resolves automatically when PR #1 + PR #3 land on staging.
 
 ---
 
@@ -1082,6 +1092,35 @@ with #2/#3/#6 (less work per merge). Implementation sketch in session report.
 input sizes by ~60%.
 
 **Repo:** f1r3node.
+
+### 2.19 Validator exits before reaching Running state in custom-shard tests
+
+Tracked symptom: `RuntimeError: Node rnode.test.<id>.validator3 exited before reaching Running state. Last logs: ...` raised by the test framework's `wait_for_node_running` when the container exits before publishing the "Running" log marker.
+
+**Surface:** [`integration-tests/test/tests/custom/test_synchrony_constraint.py`](../integration-tests/test/tests/custom/test_synchrony_constraint.py) and likely other custom-shard tests. CI Docker repro at ~5-10% (small sample).
+
+**When in the test:** During custom-shard startup — bootstrap + N validators come up. One validator starts to boot, then crashes/exits before publishing "Running". Test framework polls, detects the exit, fails the test.
+
+**Hypothesis:**
+- Genesis-ceremony race: validator joins the shard but the bootstrap hands it an approved-block before storage init completes.
+- LFB stalls during boot and the validator gives up.
+- Cascading from peer state divergence (validator sees something it considers invalid and aborts).
+
+**Related family:** §2.11 (`shared_shard` readonly-startup race) is the same shape in a different fixture. Likely the same race in `comm/src/rust/transport/grpc_transport_receiver.rs` subscription handler vs `restore_approved_state`.
+
+**Tracker reference:** [`real-flakes-tracker.md`](real-flakes-tracker.md) #3. Action backlog item: file new f1r3node issue.
+
+### 2.20 Drift-restart node hangs on token-metadata mismatch (instead of aborting cleanly)
+
+Tracked symptom: when a standalone is recreated against a persisted volume with a `--native-token-name` that differs from the persisted metadata, Phase 2 of [`integration-tests/test/tests/standalone/test_token_metadata.py::test_restart_with_changed_token_config_fails_verification`](../integration-tests/test/tests/standalone/test_token_metadata.py) asserts the node aborts with non-zero exit. Observed outcomes across CI attempts: `exit=1` (clean abort, ~30%), `exit=137` (SIGKILL from docker grace-period, ~60%), `exit=None` (hang past 300s timeout, ~10%).
+
+**When in the test:** Phase 2 only. Phase 1 (initial node creation) reaches Running cleanly; the recreate is what hangs.
+
+**Hypothesis:** the token-metadata-mismatch detection is timing-sensitive. Possible: detection runs during a startup phase that doesn't reliably reach the "abort" path before something else holds the runtime open (heartbeat loop? approved-block check? gRPC server bind?). The SIGKILL outcome suggests docker stop's grace period expiring while the node is still in setup.
+
+**Distinct from:** §2.10 (genesis ceremony master proceeding despite mismatched validator token configs — resolved). §2.10 was the *genesis-time* variant; §2.20 is the *restart-against-persisted-volume* variant. Same code path family, different entry point.
+
+**Tracker reference:** [`real-flakes-tracker.md`](real-flakes-tracker.md) #5. Action backlog item: file new f1r3node issue.
 
 ---
 
