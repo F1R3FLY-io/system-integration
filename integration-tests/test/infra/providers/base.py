@@ -10,13 +10,17 @@ the method signatures.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Sequence
 
 import typing_extensions
 
 from ..config import NodeConfig, ShardConfig
 from ..types import PortMapping
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -62,6 +66,17 @@ class NodeHandle(typing_extensions.Protocol):
 
     def logs(self, tail: Optional[int] = None) -> str:
         """Fetch the node's stdout/stderr logs."""
+        ...
+
+    def archive_log(self, dest_path: Path) -> None:
+        """Persist the node's full stdout/stderr to ``dest_path``.
+
+        Called during teardown so node logs survive the destruction of
+        container/process resources. Implementations should:
+          - Create parent directories as needed.
+          - Capture the COMPLETE log (no tail truncation).
+          - Be exception-safe — failures are logged but do not propagate.
+        """
         ...
 
     def is_running(self) -> bool:
@@ -243,3 +258,32 @@ class Provider(typing_extensions.Protocol):
         produce a partial shard.
         """
         ...
+
+
+# ── Provider-agnostic helpers ───────────────────────────────────────────
+
+_ARCHIVE_BASENAME = "log-archive"
+
+
+def archive_root_for(integration_tests_dir: str, session_id: str) -> Path:
+    """Canonical on-disk location for archived node logs.
+
+    Producing the same path from every provider keeps the artifact upload
+    in CI (which captures the entire ``integration-tests/`` tree) language-
+    free: there's a single directory, one subdirectory per session.
+    """
+    return Path(integration_tests_dir) / _ARCHIVE_BASENAME / session_id
+
+
+def archive_handles(handles: Sequence[NodeHandle], archive_dir: Path) -> None:
+    """Archive each handle's full log into ``archive_dir/<handle.name>.log``.
+
+    Providers call this from their destroy/cleanup paths immediately
+    before container/process resources are removed. Errors are isolated
+    per-handle so one failed archive cannot block the rest of teardown.
+    """
+    for h in handles:
+        try:
+            h.archive_log(archive_dir / f"{h.name}.log")
+        except Exception as e:  # pragma: no cover — defensive
+            logger.warning("archive_handles: %s failed: %s", h.name, e)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from ..cleanup import DockerCleanupRegistry
@@ -20,7 +21,7 @@ from ..polling import wait_for_node_running
 from ..ports import PortAllocator
 from ..timeouts import TimeoutHierarchy
 from ..types import NodeRole, PortMapping, ValidatorIdentity
-from .base import RetiredLogSnapshot
+from .base import RetiredLogSnapshot, archive_handles, archive_root_for
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +287,27 @@ class DockerNodeHandle:
         args.append(self._name)
         result = _docker(*args)
         return (result.stdout or "") + (result.stderr or "")
+
+    def archive_log(self, dest_path: Path) -> None:
+        """Dump the container's full stdout/stderr to ``dest_path``.
+
+        Runs ``docker logs <container>`` with output redirected to the
+        destination file. Idempotent and exception-safe — a missing
+        container (e.g. already removed) results in an empty file
+        rather than a propagating error.
+        """
+        try:
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            with dest_path.open("w") as f:
+                subprocess.run(
+                    ["docker", "logs", self._name],
+                    stdout=f, stderr=subprocess.STDOUT,
+                    check=False, timeout=30,
+                )
+        except Exception as e:
+            logger.warning(
+                "DockerNodeHandle.archive_log: %s failed: %s", self._name, e
+            )
 
     def is_running(self) -> bool:
         result = _docker("inspect", "-f", "{{.State.Status}}", self._name)
@@ -648,6 +670,10 @@ class DockerProvider:
             logger.info("Shard kept running (--keep-running)")
             return
 
+        archive_handles(handles, archive_root_for(
+            self._paths.integration_tests, self._session_id
+        ))
+
         shard_key = f"shard-{self._session_id}"
         compose_files = getattr(self, "_compose_files", {})
         if shard_key in compose_files:
@@ -864,6 +890,10 @@ class DockerProvider:
             logger.info("Standalone %s kept running (--keep-running)", handle.name)
             return
 
+        archive_handles([handle], archive_root_for(
+            self._paths.integration_tests, self._session_id
+        ))
+
         handle.remove()
         suffix = handle.name.split("standalone")[-1] if "standalone" in handle.name else ""
         vol = f"test-{self._session_id}-standalone{suffix}-data"
@@ -1000,6 +1030,10 @@ class DockerProvider:
         if self.keep_running:
             logger.info("Node %s kept running (--keep-running)", handle.name)
             return
+
+        archive_handles([handle], archive_root_for(
+            self._paths.integration_tests, self._session_id
+        ))
 
         handle.remove()
         if handle.volume_name:

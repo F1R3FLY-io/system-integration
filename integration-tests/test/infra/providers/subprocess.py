@@ -41,7 +41,7 @@ from ..polling import wait_for_node_running
 from ..ports import PortAllocator
 from ..timeouts import TimeoutHierarchy
 from ..types import NodeRole, PortMapping, ValidatorIdentity
-from .base import RetiredLogSnapshot
+from .base import RetiredLogSnapshot, archive_handles, archive_root_for
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +176,23 @@ class SubprocessNodeHandle:
         if tail is None:
             return text
         return "\n".join(text.splitlines()[-tail:])
+
+    def archive_log(self, dest_path: Path) -> None:
+        """Copy the rnode stdout/stderr log file to ``dest_path``.
+
+        The log file lives under the session data root, which is
+        wiped at teardown. Copying out before that gives the artifact
+        upload a stable location to publish from. Exception-safe;
+        missing source becomes a no-op.
+        """
+        try:
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            if self._log_path.exists():
+                shutil.copyfile(self._log_path, dest_path)
+        except Exception as e:
+            logger.warning(
+                "SubprocessNodeHandle.archive_log: %s failed: %s", self._name, e
+            )
 
     # ── Process state ───────────────────────────────────────────────
 
@@ -591,6 +608,9 @@ class SubprocessProvider:
                 self._session_root,
             )
             return
+        archive_handles(handles, archive_root_for(
+            self._paths.integration_tests, self._session_id
+        ))
         for h in handles:
             try:
                 h.remove()
@@ -859,6 +879,9 @@ class SubprocessProvider:
         if self._keep_running:
             logger.info("Standalone %s kept running (--keep-running)", handle.name)
             return
+        archive_handles([handle], archive_root_for(
+            self._paths.integration_tests, self._session_id
+        ))
         handle.remove()
 
     # ── Joiner / observer lifecycle ─────────────────────────────────
@@ -949,6 +972,9 @@ class SubprocessProvider:
         if self._keep_running:
             logger.info("Joiner %s kept running (--keep-running)", handle.name)
             return
+        archive_handles([handle], archive_root_for(
+            self._paths.integration_tests, self._session_id
+        ))
         handle.remove()
 
     # ── Cleanup ─────────────────────────────────────────────────────
@@ -964,6 +990,13 @@ class SubprocessProvider:
                 len(self._active_handles), self._session_id, self._session_root,
             )
             return
+        # Safety net for handles that bypassed destroy_shard/destroy_standalone
+        # (e.g. tests that crashed before their finally clause ran). Archive
+        # before removal so post-mortem logs survive cleanup.
+        archive_handles(
+            list(self._active_handles),
+            archive_root_for(self._paths.integration_tests, self._session_id),
+        )
         # Stop all known handles first (graceful → escalate inside _stop_once).
         for h in list(self._active_handles):
             try:

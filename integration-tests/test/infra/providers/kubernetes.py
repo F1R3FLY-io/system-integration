@@ -14,6 +14,7 @@ When implemented, this provider will:
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional, Sequence
 
 from ..config import NodeConfig, ShardConfig
@@ -52,6 +53,13 @@ class K8sNodeHandle:
     def logs(self, tail: Optional[int] = None) -> str:
         raise NotImplementedError(
             "Implement via `kubectl logs <pod> -n <ns> [--tail N]`."
+        )
+
+    def archive_log(self, dest_path: Path) -> None:
+        raise NotImplementedError(
+            "Implement via `kubectl logs <pod> -n <ns> > dest_path` "
+            "(or `kubectl cp <ns>/<pod>:/path/to/log.file dest_path` "
+            "for non-stdout log files)."
         )
 
     def is_running(self) -> bool:
