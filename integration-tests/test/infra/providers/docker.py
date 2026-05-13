@@ -680,7 +680,7 @@ class DockerProvider:
 
         archive_handles(handles, archive_root_for(
             self._paths.integration_tests, self._session_id
-        ))
+        ) / f"shard{self._shard_counter}")
 
         shard_key = f"shard-{self._session_id}"
         compose_files = getattr(self, "_compose_files", {})

@@ -328,6 +328,7 @@ class SubprocessProvider:
         self._retired_log_snapshots: List[RetiredLogSnapshot] = []
         self._standalone_counter = 0
         self._joiner_counter = 0
+        self._shard_counter = 0
 
         # SIGTERM-safe: registered processes are reaped on cleanup_all (which
         # the conftest fixture calls on teardown) and on pytest_sessionfinish
@@ -457,6 +458,11 @@ class SubprocessProvider:
         True (default), waits for each node to reach ``isReady`` via
         ``/api/status``.
         """
+        # Per-shard discriminator. session_id is worker-scoped so multiple
+        # shards on the same worker share node names (boot, validator1, ...);
+        # incrementing here gives each shard a unique slot in the log archive
+        # so destroy_shard's archival doesn't overwrite earlier shards' logs.
+        self._shard_counter += 1
         # Genesis files (bonds.txt + wallets.txt) — written to a temp dir
         # under the session root so cleanup catches them.
         tmp_genesis_dir = self._session_root / "genesis"
@@ -610,7 +616,7 @@ class SubprocessProvider:
             return
         archive_handles(handles, archive_root_for(
             self._paths.integration_tests, self._session_id
-        ))
+        ) / f"shard{self._shard_counter}")
         for h in handles:
             try:
                 h.remove()
@@ -992,10 +998,12 @@ class SubprocessProvider:
             return
         # Safety net for handles that bypassed destroy_shard/destroy_standalone
         # (e.g. tests that crashed before their finally clause ran). Archive
-        # before removal so post-mortem logs survive cleanup.
+        # into a `leftover` subdir so it's clearly separate from the per-shard
+        # archives written by the normal destroy path.
         archive_handles(
             list(self._active_handles),
-            archive_root_for(self._paths.integration_tests, self._session_id),
+            archive_root_for(self._paths.integration_tests, self._session_id)
+            / "leftover",
         )
         # Stop all known handles first (graceful → escalate inside _stop_once).
         for h in list(self._active_handles):
