@@ -524,6 +524,7 @@ class DockerProvider:
         self._paths = paths or ResourcePaths.resolve()
         self._session_id = registry.session_id
         self._standalone_counter = 0
+        self._shard_counter = 0
         self._active_handles: list = []
         self._retired_log_snapshots: List[RetiredLogSnapshot] = []
 
@@ -577,7 +578,14 @@ class DockerProvider:
             registry=self._registry,
         )
 
-        project_name = f"test-{self._session_id}"
+        # Per-test compose project name. Each call to create_shard gets a
+        # unique project, so tests on the same xdist worker can't leave
+        # stale state in each other's compose project (e.g. a container
+        # ID that one test's teardown removed but another test's compose
+        # still references — surfaces as "Container ... Recreate" /
+        # "No such container" on the next compose up).
+        self._shard_counter += 1
+        project_name = f"test-{self._session_id}-{self._shard_counter}"
 
         # Start all services. Retry on Docker-on-Mac transient network race
         # (network just created but daemon reports "not found" when attaching

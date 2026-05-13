@@ -395,6 +395,7 @@ def pytest_runtest_makereport(item, call):
     is_shard_bringup_failure = (
         "exited before reaching Running" in longrepr
         or "did not reach Running" in longrepr
+        or "docker compose up failed" in longrepr
     )
     if not is_shard_bringup_failure:
         return
