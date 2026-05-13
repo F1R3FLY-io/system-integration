@@ -144,5 +144,10 @@ The baked image freezes a snapshot of:
 - Rust stable toolchain
 - OCI CLI
 - `f1r3flyindustries/f1r3fly-rust-node:staging` Docker image
+- `/etc/sysctl.d/99-ci-port-reservation.conf` reserving the test
+  PortAllocator's range (41000-49000) from kernel ephemeral
+  assignment (`net.ipv4.ip_local_reserved_ports`). Eliminates the
+  ephemeral-port race that surfaces as `Address already in use` at
+  rnode bind time under subprocess provider.
 
 The runner agent self-updates at registration if newer (no `--disableupdate` flag), so a stale baked agent is auto-recovered. But the **staging test image** is frozen as baked — re-bake when the node image is bumped or every quarter.

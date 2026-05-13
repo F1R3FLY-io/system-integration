@@ -74,6 +74,28 @@ write_files:
       systemctl restart docker
       sleep 3
 
+      log "=== Reserve test PortAllocator range from kernel ephemeral assignment ==="
+      # The integration-test framework's PortAllocator hands out ports in
+      # 41000-49000 to nodes-under-test (rnode gRPC + transport servers).
+      # Linux's default ephemeral range (32768-60999, per
+      # /proc/sys/net/ipv4/ip_local_port_range) overlaps with this. Without
+      # reservation, an outbound TCP connection from any host process can
+      # transiently grab a port between the allocator's pre-bind probe
+      # and the test process's actual bind, surfacing as
+      # "Address already in use" at the test node and causing the node to
+      # exit before reaching Running. Reserving the range tells the kernel
+      # never to pick these ports for ephemeral assignment, leaving them
+      # exclusively for the allocator.
+      mkdir -p /etc/sysctl.d
+      cat > /etc/sysctl.d/99-ci-port-reservation.conf <<'EOF'
+      # PortAllocator-managed range for integration tests. See
+      # integration-tests/test/infra/ports.py for the allocator's range.
+      net.ipv4.ip_local_reserved_ports = 41000-49000
+      EOF
+      sysctl -p /etc/sysctl.d/99-ci-port-reservation.conf
+      # Sanity-check the reservation took.
+      sysctl net.ipv4.ip_local_reserved_ports
+
       log "=== Install docker-compose v2 standalone ==="
       curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-$(uname -s)-$(uname -m)" \
         -o /usr/local/bin/docker-compose
