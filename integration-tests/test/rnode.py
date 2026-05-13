@@ -167,6 +167,29 @@ class Node:
             ports=ports,
         )
 
+    def get_peer_node_ip(self, network_name: str) -> str:
+        """Return this container's IPv4 address on the given Docker network.
+
+        Substring match on the network name so callers can pass either the
+        full ``<project>_<network>`` Docker-compose name or just the bare
+        suffix (e.g. ``"f1r3fly-test-custom"``).
+
+        Used by :class:`node_client.NodeClient` to open a raw TCP socket
+        from the host into the container's transport-layer port. Requires
+        native Linux Docker networking; WSL2/macOS/Windows hosts cannot
+        route to container IPs and the slashing tests skip on those
+        platforms accordingly.
+        """
+        self.container.reload()
+        networks = self.container.attrs['NetworkSettings']['Networks']
+        for name, config in networks.items():
+            if network_name in name:
+                return config['IPAddress']
+        raise RNodeAddressNotFoundError(
+            f"Container {self.name} not connected to network matching {network_name!r}; "
+            f"available networks: {list(networks.keys())}"
+        )
+
     def get_node_pem_cert(self) -> bytes:
         return self.shell_out("cat", rnode_certificate_path).encode('utf8')
 

@@ -80,6 +80,7 @@ python_files = [
 	"test_trim_state.py",
 	"test_bridge_admin.py",
 	"test_shard_degradation.py",
+	"test_slash.py",
 ]
 markers = [
 	"xdist_group: assign test to an xdist load group (shard, standalone, custom)",

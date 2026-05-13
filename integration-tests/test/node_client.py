@@ -1,13 +1,17 @@
 import logging
 from concurrent import futures
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from queue import Queue, Empty
-from typing import Generator, Iterator
-from pathlib import Path
+from typing import Generator, Iterator, Tuple
 import grpc
+from cryptography import x509
 from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePrivateKey
+from cryptography.x509.oid import NameOID
 from eth_hash.auto import keccak
 from f1r3fly.pb import CasperMessage_pb2
 from f1r3fly.pb.CasperMessage_pb2 import BlockMessageProto as BlockMessage, BlockRequestProto as BlockRequest  # pylint: disable=no-name-in-module
@@ -161,10 +165,60 @@ class NodeClient:
         self.server.stop(0)
 
 
+def _generate_fresh_protocol_credentials() -> Tuple[bytes, bytes]:
+    """Generate a fresh secp256r1 X.509 cert + PKCS#8 key pair.
+
+    Replaces ``resources/bootstrap_certificate/protocol.{cert,key}.pem``,
+    which has been expired since ``Jul  8 05:31:44 2020 GMT``. The Rust
+    node's :class:`comm::rust::transport::HostnameTrustManager` also
+    rejects the stored cert at its hostname-verification step (the CN
+    byte-matches the algorithm-derived F1r3fly address but
+    ``x509_parser::AttributeTypeAndValue::attr_value().as_str()`` has a
+    quirk with PrintableString encoding) — so a fresh cert sidesteps two
+    issues at once.
+
+    The cert's CN is set to the Keccak256-based F1r3fly address of its
+    own pubkey (last 20 bytes of ``keccak(x || y)`` where ``x`` / ``y``
+    are the 32-byte big-endian secp256r1 coordinates), matching the
+    algorithm in :func:`get_node_id_raw` above and
+    ``crypto/src/rust/util/certificate_helper.rs::public_address`` in
+    f1r3node-rust. Validity is 100 years from generation, so the cert
+    never silently expires inside a test run.
+
+    Used by :func:`node_protocol_client` exclusively. Other code paths
+    that need a bootstrap-style identity should generate their own pair
+    via this helper rather than reading the stored files.
+    """
+    private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+    pub = private_key.public_key().public_numbers()
+    pk_bytes = pub.x.to_bytes(32, 'big') + pub.y.to_bytes(32, 'big')
+    address_hex = keccak(pk_bytes)[12:].hex()
+
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, address_hex)])
+    now = datetime.now(timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=365 * 100))
+        .sign(private_key, hashes.SHA256())
+    )
+
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    key_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    return cert_pem, key_pem
+
+
 @contextmanager
 def node_protocol_client(network_name: str, docker_client: DockerClient, context: TestingContext) -> Generator[NodeClient, None, None]:
-    cert = Path("resources/bootstrap_certificate/protocol.cert.pem").read_bytes()
-    key = Path("resources/bootstrap_certificate/protocol.key.pem").read_bytes()
+    cert, key = _generate_fresh_protocol_credentials()
 
     with get_node_ip_of_network(docker_client, network_name) as node_ip:
         protocol_client = NodeClient(cert, key, node_ip, network_name, context.receive_timeout)
