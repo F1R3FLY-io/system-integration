@@ -104,8 +104,7 @@ def _ensure_no_container(name: str, timeout: float = 30.0) -> None:
     Eliminates the race where ``rm -f`` succeeds but the name is still
     claimed when a follow-up ``docker run --name`` references it.
 
-    Timeout default is 30s — under arm64 daemon load (especially early
-    in a fresh-VM CI run before caches warm) propagation can take
+    Timeout default is 30s — under daemon load, propagation can take
     >10s. On timeout, a daemon-state snapshot is included in the error
     so the failure is self-diagnostic.
     """
@@ -132,7 +131,7 @@ def _ensure_network(name: str, timeout: float = 30.0) -> None:
     sees ``network not found``.
 
     Timeout default is 30s — same reasoning as ``_ensure_no_container``:
-    arm64 daemon under load can take >10s to propagate. On timeout, a
+    daemon under load can take >10s to propagate. On timeout, a
     daemon-state snapshot is included in the error.
     """
     create = _docker("network", "create", name)

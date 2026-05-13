@@ -78,10 +78,18 @@ class PortAllocator:
 
     @staticmethod
     def _is_port_free(port: int) -> bool:
-        """Check if a port is bindable (not in TIME_WAIT or in use)."""
+        """Check if a port is bindable (not in TIME_WAIT or in use).
+
+        Deliberately does NOT set ``SO_REUSEADDR``: we want to know if a
+        plain ``bind()`` will succeed — which is what rnode's gRPC
+        server and Docker's host-port publishing both use. With
+        ``SO_REUSEADDR`` the probe accepts ports in TIME_WAIT that the
+        actual consumer would reject, letting the allocator hand out a
+        port that then fails at the next layer with ``Address already
+        in use``.
+        """
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 s.bind(("0.0.0.0", port))
                 return True
         except OSError:

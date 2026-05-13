@@ -385,7 +385,7 @@ def pytest_runtest_makereport(item, call):
        fixture closure.
 
     Once set, each flag persists for the rest of the xdist worker's
-    lifetime — we've not seen workers self-heal from either pattern.
+    lifetime — workers do not self-heal from either pattern.
     """
     outcome = yield
     report = outcome.get_result()
