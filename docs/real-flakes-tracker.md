@@ -72,17 +72,19 @@ A subset of #3a/3b instances on the subprocess provider trace to an ephemeral-po
 | **CI job examples** | • amd64-subprocess-2 on first post-merge `rust/staging` run: https://github.com/F1R3FLY-io/f1r3node/actions/runs/25815622799/job/75845033452 — port 42090 (within `PortAllocator`'s gw2 range of 42000-42500)<br>• **PR #518 amd64-subprocess-4** ([job 75846333227](https://github.com/F1R3FLY-io/f1r3node/actions/runs/25815988420/job/75846333227)) — `readonly` node, port 41024, `Failed to bind to 0.0.0.0:41024: Address already in use` at `servers_instances.rs:155`, surfaces as `test_bridge_admin::test_bridge_api_exploratory` setup ERROR (`Node rnode.test.15d1b231.readonly exited before reaching Running state`)<br>• **Post-PR-#518 rust/staging arm64-subprocess-3** ([job 75862590974](https://github.com/F1R3FLY-io/f1r3node/actions/runs/25820782609/job/75862590974)) — `readonly` node, port 41584, same exact `servers_instances.rs:155` bind failure. Surfaces on `test_validator_failure_halts_finalization` setup. Confirms #3c is unchanged by PR #518's scope (cadence change ≠ port-bind race; mitigation still pending = OCI sysctl). |
 | **Mechanism** | Linux's ephemeral port range (32768-60999) overlaps with the framework's PortAllocator range (41000-49000). The allocator's pre-allocation probe correctly checks "is this port bindable right now?" but doesn't hold the port. In the window between probe-and-actual-bind, an outbound TCP connection from some host process can be assigned the same port as its ephemeral port, blocking rnode's subsequent bind. |
 | **Why this surfaces only on subprocess** | In subprocess provider, rnode binds host ports directly (the PortAllocator's chosen ports). In docker provider, rnode binds container-internal hardcoded ports (40400-40405) and Docker handles host port mapping separately — Docker's port-publish handling is internally synchronized so the same race doesn't manifest at the rnode bind layer. |
-| **Mitigation** | Reserve the allocator's range via `ip_local_reserved_ports` sysctl on the OCI baked image (kernel-level reservation excludes the range from ephemeral assignment). Once-only host-level fix, no framework code change needed. |
+| **Mitigation (LANDED)** | `ip_local_reserved_ports = 41000-49000` sysctl reservation baked into the OCI runner image's cloud-init (system-integration `3eef508`) and the production runners now boot from the re-baked images (`7bc78a4`). The kernel excludes this range from ephemeral assignment, so no host process can transiently grab a port the allocator is about to hand out. Pending: confirm via next CI run that #3c-pattern failures have stopped. |
 | **Distinction from #8** | Both surfaces report "Address already in use" but at different layers. #8 is a *container-internal* bind on hardcoded port 40402 inside Docker bridge namespace, where only rnode runs — that's a suspected node-side race within rnode. This #3c is a *host-level* bind on a PortAllocator-managed port under subprocess provider, caused by ephemeral-port range overlap. **They are unrelated despite the matching error string.** |
 
 #### Cascading-shard-collapse (framework-side, mitigated)
 
 When 3a/3b/3c fires on the FIRST custom-shard test of an xdist worker, every subsequent custom-shard test on the same worker would otherwise inherit the broken state. **Mitigation has landed** via two cascade guards in `conftest.py`:
 
-- `pytest_runtest_makereport` + `_custom_shard_cascade_guard` autouse fixture: detect call-phase shard-bringup failures on `tests/custom/` tests, mark the worker degraded, fast-skip subsequent custom-shard tests.
+- `pytest_runtest_makereport` + `_custom_shard_cascade_guard` autouse fixture: detect call-phase shard-bringup failures on `tests/custom/` tests, mark the worker degraded, fast-skip subsequent custom-shard tests. Triggers on any of `"exited before reaching Running"` / `"did not reach Running"` / `"docker compose up failed"`.
 - `pytest_runtest_setup` hook: detect setup-phase shared_shard fixture failures, skip dependent tests before pytest re-raises the cached fixture exception.
 
 Net effect: a 5-test cascade now produces 1 ERROR + N SKIPs (each ~10ms) instead of N+1 ERRORs (each up to 450s).
+
+Separately, a related framework-side fix landed (system-integration `211b0ee`): each `Shard.create()` now uses a per-test compose project name (`test-{session}-{N}` instead of the shared `test-{session}`). This eliminates the prior class of failure where one test's teardown could leave docker compose's project state out of sync with the daemon — surfacing on the next test's `compose up` as `Container ... Recreate / No such container`. With per-test project isolation that class of failure is no longer reachable; the `"docker compose up failed"` trigger above is defense in depth.
 
 #### Common metadata
 
@@ -251,12 +253,11 @@ A failure is an **infra flake** (NOT tracked here — fix in the framework) if i
 
 ## Action backlog
 
-- [ ] File f1r3node issue for #3 (custom-shard node — validator or readonly — exits before Running). Couple with #7 if root cause is shared. The #3c sub-cause (port-bind race) is addressed separately via the OCI image sysctl item below.
+- [ ] File f1r3node issue for #3 (custom-shard node — validator or readonly — exits before Running). Couple with #7 if root cause is shared. #3c (port-bind race) is now mitigated at the OS layer (see #3c "Mitigation (LANDED)" above).
 - [ ] Confirm #4 is part of #474 family before opening separate issue
 - [ ] File f1r3node issue for #5 (drift-restart hangs on token-metadata mismatch)
 - [ ] File f1r3node issue for #7 (propose service returns `BugError (seqNum -1)`) — or couple with #3
 - [ ] File f1r3node issue for #8 (joiner fails to bind container-internal port 40402; race in rnode startup at `servers_instances.rs:245`)
-- [ ] **OCI image**: reserve `PortAllocator` range (41000-49000) via `ip_local_reserved_ports` sysctl in the baked image's cloud-init, so the kernel excludes that range from ephemeral assignment. Targets the #3c port-bind race directly and reduces #3 overall.
 - [ ] Investigate #9 (resolver-FINALIZED vs exploratory-state-visibility window in `test_wallets` balance poll). Cheapest mitigation: pin balance query to `block_hash=canonical_block_hash` in [`test_wallets.py`](../integration-tests/test/tests/shared/test_wallets.py).
 - [ ] Investigate readonly-only `ws://127.0.0.1:42291/ws/events` connect timeout observed on PR #518 amd64-subprocess-5 ([job 75853479679](https://github.com/F1R3FLY-io/f1r3node/actions/runs/25815988420/job/75853479679)). Boot (42273) and validator1 (42279) websockets connect cleanly in the same fixture; only readonly's 42291 refuses connection persistently for 300s. Framework's `wait_for_node_running` had already returned for readonly, so readonly didn't exit pre-Running — but websocket subsystem appears not to be listening. Not enough signal yet to classify as #3 family or as its own entry.
 - [ ] Add `pytest-rerunfailures --reruns 2` to the PR pytest invocation so flake-vs-deterministic is distinguishable on every run (recommended in `session-context-2026-05-12-ephemeral-oci-ci.md`)
