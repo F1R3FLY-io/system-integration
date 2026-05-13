@@ -5,6 +5,7 @@ All infrastructure logic lives in infra/ modules.
 """
 from __future__ import annotations
 
+import time
 import uuid
 
 import pytest
@@ -331,6 +332,95 @@ def _shared_shard_health_check(request):
             f"test is the FIRST failure in this worker's log — fix that "
             f"and this test will run again."
         )
+    yield
+
+
+# ── Custom-shard cascade guard ──────────────────────────────────────
+
+
+def _is_custom_shard_test(item) -> bool:
+    """Tests under ``tests/custom/`` each build their own multi-node shard.
+
+    They share the cascade pattern: one shard-bringup failure on the xdist
+    worker poisons subsequent shard creations on that worker (suspected
+    environmental causes — leaked ports, TIME_WAIT sockets, fd pressure).
+    The guard only fires for tests matching this directory.
+    """
+    return "tests/custom/" in str(item.fspath)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Detect custom-shard bring-up failures and mark this xdist worker
+    as degraded so subsequent custom-shard tests can fail-fast.
+
+    Trigger conditions:
+      * test is in ``tests/custom/`` (per ``_is_custom_shard_test``)
+      * test failed in the ``call`` phase (not setup/teardown)
+      * the failure mentions a node failing to reach Running state
+
+    Once set, the session-level flag persists for the rest of the
+    xdist worker's lifetime — we've not seen workers self-heal from
+    this kind of degradation in observed CI cascades.
+    """
+    outcome = yield
+    report = outcome.get_result()
+    if report.when != "call" or not report.failed:
+        return
+    if not _is_custom_shard_test(item):
+        return
+    longrepr = str(report.longrepr or "")
+    is_shard_bringup_failure = (
+        "exited before reaching Running" in longrepr
+        or "did not reach Running" in longrepr
+    )
+    if not is_shard_bringup_failure:
+        return
+    item.session._custom_shard_worker_degraded = True
+    item.session._custom_shard_degradation_at = time.time()
+    # Pull the assertion / exception line ("E   <Type>: <message>") for the
+    # cascade skip-message; fall back to the first longrepr line if the
+    # standard format isn't present.
+    error_line = ""
+    for line in longrepr.split("\n"):
+        stripped = line.lstrip()
+        if stripped.startswith("E   "):
+            error_line = stripped[4:].strip()
+            break
+    if not error_line:
+        error_line = longrepr.split("\n")[0]
+    item.session._custom_shard_degradation_reason = error_line[:200]
+
+
+@pytest.fixture(autouse=True)
+def _custom_shard_cascade_guard(request):
+    """Skip custom-shard tests after a prior shard-bring-up failure on
+    this xdist worker.
+
+    Works in tandem with the ``pytest_runtest_makereport`` hook: when a
+    prior test in ``tests/custom/`` failed because a node didn't reach
+    Running, the hook marks the worker degraded; this fixture sees the
+    flag on subsequent custom-shard tests and skips them fast (~10ms)
+    with a message pointing back to the original failure — instead of
+    each test independently spending its full bring-up timeout (up to
+    several minutes) failing the same way.
+    """
+    if not _is_custom_shard_test(request.node):
+        yield
+        return
+    session = request.node.session
+    if not getattr(session, "_custom_shard_worker_degraded", False):
+        yield
+        return
+    elapsed = time.time() - session._custom_shard_degradation_at
+    reason = session._custom_shard_degradation_reason
+    pytest.skip(
+        f"Skipping custom-shard test: a prior test in this xdist worker "
+        f"failed to bring up its shard {elapsed:.0f}s ago — {reason!r}. "
+        f"Worker environment is likely degraded (suspected leaked ports / "
+        f"TIME_WAIT sockets / fd pressure). Fix the FIRST custom-shard "
+        f"failure in this worker's log; subsequent tests will run again."
+    )
     yield
 
 
