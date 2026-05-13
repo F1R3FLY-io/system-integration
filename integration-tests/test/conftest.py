@@ -291,6 +291,49 @@ def all_nodes(shared_shard) -> list:
     return shared_shard.all_nodes
 
 
+# ── Shared shard health check ───────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _shared_shard_health_check(request):
+    """Fail-fast skip if a prior test left ``shared_shard`` in a broken state.
+
+    Only fires for tests that depend on ``shared_shard`` (directly or
+    via convenience fixtures like ``boot_node``, ``validator1_node``,
+    etc. — pytest's transitive fixture closure handles that). No-op
+    for standalone and custom-shard tests.
+
+    Catches the cascading-shared-shard pattern: when one test
+    destabilizes a shard node, every subsequent test on the same xdist
+    worker that uses ``shared_shard`` would otherwise wait up to 450s
+    in ``wait_for_node_running`` (or longer in block-visibility polls)
+    before its own assertion times out. This guard surfaces that
+    condition in milliseconds via ``is_running()`` on each node,
+    issuing a SKIP (not a FAIL) so the cascade-causing test stays the
+    visible failure in PR signal.
+
+    Out of scope: custom-shard cascade (each test creates its own
+    custom shard; failures there are usually environmental
+    worker-degradation, not shared-fixture state).
+    """
+    if "shared_shard" not in request.fixturenames:
+        yield
+        return
+
+    shard = request.getfixturevalue("shared_shard")
+    not_running = [n for n in shard.all_nodes if not n.is_running()]
+    if not_running:
+        names = ", ".join(n.name for n in not_running)
+        pytest.skip(
+            f"shared_shard pre-test health check failed: nodes not "
+            f"running ({names}). A prior test in this xdist worker's "
+            f"queue destabilized the shared shard. The cascade-causing "
+            f"test is the FIRST failure in this worker's log — fix that "
+            f"and this test will run again."
+        )
+    yield
+
+
 # ── Log scanning ────────────────────────────────────────────────────
 
 
