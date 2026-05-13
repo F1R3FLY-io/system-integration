@@ -349,25 +349,47 @@ def _is_custom_shard_test(item) -> bool:
     return "tests/custom/" in str(item.fspath)
 
 
+def _extract_error_line(longrepr: str) -> str:
+    """Pull the "E   <Type>: <message>" line out of a pytest longrepr.
+
+    Falls back to the first longrepr line if the standard format isn't
+    present. Truncated to 200 chars to keep skip messages readable.
+    """
+    for line in longrepr.split("\n"):
+        stripped = line.lstrip()
+        if stripped.startswith("E   "):
+            return stripped[4:].strip()[:200]
+    return longrepr.split("\n")[0][:200]
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    """Detect custom-shard bring-up failures and mark this xdist worker
-    as degraded so subsequent custom-shard tests can fail-fast.
+    """Detect shard bring-up failures and mark this xdist worker
+    appropriately so subsequent dependent tests can fail-fast.
 
-    Trigger conditions:
-      * test is in ``tests/custom/`` (per ``_is_custom_shard_test``)
-      * test failed in the ``call`` phase (not setup/teardown)
-      * the failure mentions a node failing to reach Running state
+    Two cascade patterns covered:
 
-    Once set, the session-level flag persists for the rest of the
-    xdist worker's lifetime — we've not seen workers self-heal from
-    this kind of degradation in observed CI cascades.
+    1. **Custom-shard worker degradation** — a test in ``tests/custom/``
+       creates its own multi-node shard, and the bring-up fails (node
+       exits before reaching Running). Subsequent custom-shard tests on
+       the same worker tend to fail the same way (environmental
+       degradation: leaked ports, TIME_WAIT sockets, fd pressure).
+       Trigger: ``call`` phase failure on a ``tests/custom/`` test.
+
+    2. **shared_shard initial-creation cascade** — the session-scoped
+       ``shared_shard`` fixture fails during setup (typically: boot
+       didn't reach Running). pytest caches the exception and re-raises
+       it for every dependent test, producing 20+ ERRORs at setup that
+       all trace to the same root cause. Trigger: ``setup`` phase
+       failure on any test that declares ``shared_shard`` in its
+       fixture closure.
+
+    Once set, each flag persists for the rest of the xdist worker's
+    lifetime — we've not seen workers self-heal from either pattern.
     """
     outcome = yield
     report = outcome.get_result()
-    if report.when != "call" or not report.failed:
-        return
-    if not _is_custom_shard_test(item):
+    if not report.failed:
         return
     longrepr = str(report.longrepr or "")
     is_shard_bringup_failure = (
@@ -376,20 +398,52 @@ def pytest_runtest_makereport(item, call):
     )
     if not is_shard_bringup_failure:
         return
-    item.session._custom_shard_worker_degraded = True
-    item.session._custom_shard_degradation_at = time.time()
-    # Pull the assertion / exception line ("E   <Type>: <message>") for the
-    # cascade skip-message; fall back to the first longrepr line if the
-    # standard format isn't present.
-    error_line = ""
-    for line in longrepr.split("\n"):
-        stripped = line.lstrip()
-        if stripped.startswith("E   "):
-            error_line = stripped[4:].strip()
-            break
-    if not error_line:
-        error_line = longrepr.split("\n")[0]
-    item.session._custom_shard_degradation_reason = error_line[:200]
+
+    error_line = _extract_error_line(longrepr)
+
+    # Custom-shard worker degradation (test body failure in tests/custom/)
+    if report.when == "call" and _is_custom_shard_test(item):
+        item.session._custom_shard_worker_degraded = True
+        item.session._custom_shard_degradation_at = time.time()
+        item.session._custom_shard_degradation_reason = error_line
+
+    # shared_shard initial-creation cascade (setup-phase failure of a
+    # shared_shard-dependent test = the fixture itself failed to come up)
+    if report.when == "setup" and "shared_shard" in item.fixturenames:
+        item.session._shared_shard_init_failed = True
+        item.session._shared_shard_init_failure_at = time.time()
+        item.session._shared_shard_init_failure_reason = error_line
+
+
+def pytest_runtest_setup(item):
+    """Pre-fixture-resolution guard: skip if shared_shard's initial
+    creation failed earlier in this xdist worker's session.
+
+    pytest caches a failed session-scoped fixture's exception and
+    re-raises it for every dependent test's setup phase. Without this
+    hook, each dependent test ERRORs with the same cached boot timeout
+    (300s × dozens of tests = many minutes wasted). With it, only the
+    first test errors (the actual cascade trigger); subsequent tests
+    skip in ~1ms with a pointer to the root cause.
+
+    Runs before any fixture resolution because it's a hook, not a
+    function-scope autouse fixture — those run AFTER session-scope
+    fixtures and would never get a chance when shared_shard's cached
+    exception is re-raised at setup.
+    """
+    if "shared_shard" not in item.fixturenames:
+        return
+    session = item.session
+    if not getattr(session, "_shared_shard_init_failed", False):
+        return
+    elapsed = time.time() - session._shared_shard_init_failure_at
+    reason = session._shared_shard_init_failure_reason
+    pytest.skip(
+        f"Skipping shared_shard test: shared_shard fixture failed to "
+        f"instantiate {elapsed:.0f}s ago in this xdist worker — {reason!r}. "
+        f"All subsequent shared_shard tests will skip until investigated. "
+        f"Check the FIRST shared_shard ERROR in this worker's log."
+    )
 
 
 @pytest.fixture(autouse=True)
