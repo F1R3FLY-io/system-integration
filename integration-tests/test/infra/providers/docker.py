@@ -51,13 +51,63 @@ def _compose(*args: str, compose_file: str, project_name: str,
     )
 
 
-def _ensure_no_container(name: str, timeout: float = 10.0) -> None:
+def _daemon_diagnostics() -> str:
+    """Capture a snapshot of docker daemon state for failure diagnostics.
+
+    Used by ``_ensure_*`` helpers when their inspect-poll times out — the
+    snapshot helps the next debugger understand WHY the daemon couldn't
+    propagate the state we asked for (under load? resource cap hit?
+    stale leftovers? wrong driver?). All probes are cheap (<100ms each)
+    and only run on failure.
+    """
+    parts: List[str] = []
+
+    nls = _docker(
+        "network", "ls",
+        "--format", "{{.Name}}\t{{.ID}}\t{{.Driver}}\t{{.Scope}}",
+        timeout=5,
+    )
+    parts.append(
+        f"docker network ls:\n{(nls.stdout or '(empty)').rstrip()}"
+    )
+
+    ps = _docker(
+        "ps", "-a",
+        "--format", "{{.Names}}\t{{.Status}}\t{{.ID}}",
+        timeout=5,
+    )
+    parts.append(
+        f"\ndocker ps -a:\n{(ps.stdout or '(empty)').rstrip()}"
+    )
+
+    info = _docker(
+        "info",
+        "--format",
+        "Containers: {{.Containers}} (running: {{.ContainersRunning}}, "
+        "paused: {{.ContainersPaused}}, stopped: {{.ContainersStopped}}) | "
+        "Server: {{.ServerVersion}} | Kernel: {{.KernelVersion}} | "
+        "OS: {{.OperatingSystem}}",
+        timeout=5,
+    )
+    parts.append(
+        f"\ndocker info: {(info.stdout or '(empty)').rstrip()}"
+    )
+
+    return "\n".join(parts)
+
+
+def _ensure_no_container(name: str, timeout: float = 30.0) -> None:
     """Force-remove a container by name and wait until the daemon agrees.
 
     Idempotent: no-op if no such container exists. After ``docker rm -f``
     returns, ``docker inspect`` is polled until it reports not-present.
     Eliminates the race where ``rm -f`` succeeds but the name is still
     claimed when a follow-up ``docker run --name`` references it.
+
+    Timeout default is 30s — under arm64 daemon load (especially early
+    in a fresh-VM CI run before caches warm) propagation can take
+    >10s. On timeout, a daemon-state snapshot is included in the error
+    so the failure is self-diagnostic.
     """
     _docker("rm", "-f", name)
     deadline = time.monotonic() + timeout
@@ -67,11 +117,12 @@ def _ensure_no_container(name: str, timeout: float = 10.0) -> None:
         time.sleep(0.1)
     raise RuntimeError(
         f"Container {name!r} still visible to docker daemon after rm -f "
-        f"and {timeout}s wait"
+        f"and {timeout}s wait.\n\n"
+        f"Daemon state at timeout:\n{_daemon_diagnostics()}"
     )
 
 
-def _ensure_network(name: str, timeout: float = 10.0) -> None:
+def _ensure_network(name: str, timeout: float = 30.0) -> None:
     """Ensure a docker network with ``name`` exists and is daemon-visible.
 
     Idempotent: creates if missing, accepts "already exists" silently.
@@ -79,6 +130,10 @@ def _ensure_network(name: str, timeout: float = 10.0) -> None:
     until consistently visible. Eliminates the race where ``network
     create`` reports success but a follow-up ``docker run --network``
     sees ``network not found``.
+
+    Timeout default is 30s — same reasoning as ``_ensure_no_container``:
+    arm64 daemon under load can take >10s to propagate. On timeout, a
+    daemon-state snapshot is included in the error.
     """
     create = _docker("network", "create", name)
     if create.returncode != 0 and "already exists" not in (create.stderr or ""):
@@ -92,7 +147,8 @@ def _ensure_network(name: str, timeout: float = 10.0) -> None:
         time.sleep(0.1)
     raise RuntimeError(
         f"Network {name!r} not visible to docker daemon after create "
-        f"and {timeout}s wait"
+        f"and {timeout}s wait.\n\n"
+        f"Daemon state at timeout:\n{_daemon_diagnostics()}"
     )
 
 
