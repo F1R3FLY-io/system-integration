@@ -125,8 +125,13 @@ def test_dag_correctness(shared_shard, node_conf, timeouts) -> None:
 
     # The LFB itself must be finalized on every node, not just V1. Catches
     # the case where a peer accepted the block at the protocol level but
-    # rejected it at validation time (e.g. InvalidBondsCache).
-    assert_block_finalized_on_all_nodes(all_nodes, lfb_hash)
+    # rejected it at validation time (e.g. InvalidBondsCache). Pass a
+    # finalization timeout so peers have a window to propagate the per-block
+    # isFinalized field (multi-parent indirect-finalization completes seconds
+    # after LFB advances).
+    assert_block_finalized_on_all_nodes(
+        all_nodes, lfb_hash, timeout=timeouts.finalization
+    )
 
     # Collect finalized block hashes by walking the parent chain from LFB
     finalized_hashes = []

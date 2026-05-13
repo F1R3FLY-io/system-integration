@@ -18,9 +18,8 @@ import logging
 import pytest
 from f1r3fly.vault import TransferResult
 
-from ...infra.assertions import assert_block_finalized_on_all_nodes
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import poll_until, wait_for_deploy_included, wait_for_finalized
+from ...infra.polling import poll_until, wait_for_deploy_finalized
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -28,20 +27,34 @@ pytestmark = pytest.mark.xdist_group("shared")
 def _transfer_and_read_result(
     node, from_addr, to_addr, amount, key, timeouts, all_nodes=None
 ) -> TransferResult:
-    """Submit a transfer, wait for finalization, and read the result.
+    """Submit a transfer, wait for the deploy to reach canonical state, and read the result.
 
-    When `all_nodes` is provided, also assert the transfer block finalized
-    on every node (catches the case where a peer rejected the block).
+    Sig-based finalization tracking via `deploy_finalization_status`: returns
+    when the deploy's signature has reached the Finalized canonical state,
+    regardless of which specific block ends up containing it. Handles the
+    multi-parent DAG case where the deploy's original block becomes a
+    non-main-parent sibling and the deploy effects reach canonical state via
+    merge / re-inclusion. The `latestBlockHash` from the resolver is the
+    canonical block to read the transfer result from.
+
+    When `all_nodes` is provided, every node is independently polled until
+    its resolver also reports the deploy as Finalized — a stronger guarantee
+    than asserting any single blockHash is finalized everywhere.
     """
     deploy_id = node.vault.transfer_ensure(from_addr, to_addr, amount, key)
 
-    block_info = wait_for_deploy_included(node, deploy_id, timeouts.deploy_inclusion)
+    status = wait_for_deploy_finalized(node, deploy_id, timeouts.finalization)
+    canonical_block_hash = (
+        status.latestBlockHash.hex() if status.latestBlockHash else None
+    )
 
-    wait_for_finalized(node, block_info.blockNumber, timeouts.finalization)
     if all_nodes is not None:
-        assert_block_finalized_on_all_nodes(all_nodes, block_info.blockHash)
+        for other in all_nodes:
+            if other.name == node.name:
+                continue
+            wait_for_deploy_finalized(other, deploy_id, timeouts.finalization)
 
-    return node.vault.read_transfer_result(deploy_id, block_hash=block_info.blockHash)
+    return node.vault.read_transfer_result(deploy_id, block_hash=canonical_block_hash)
 
 
 # ===========================================================================

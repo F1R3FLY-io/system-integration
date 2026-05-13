@@ -27,7 +27,7 @@ from f1r3fly.util import sign_deploy_data
 from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto
 
 from ...infra.keys import VALIDATOR1_ID
-from ...infra.polling import poll_until, wait_for_deploy_finalized, wait_for_deploy_included, wait_for_finalized
+from ...infra.polling import poll_until, wait_for_deploy_finalized, wait_for_deploy_included
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -57,9 +57,17 @@ def _shard_expectations(shard, node_conf):
     }
 
 
-def _deploy_and_wait(node, timeouts, count=1):
-    """Deploy `count` contracts and wait for inclusion + finalization.
-    Returns (deploy_ids, block_hashes).
+def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
+    """Deploy `count` contracts and wait for each deploy to reach canonical
+    state via sig-based finalization tracking. Returns (deploy_ids, block_hashes)
+    where each block_hash is the resolver's `latestBlockHash` — the canonical
+    block containing the deploy after multi-parent merge / re-inclusion.
+
+    When `all_nodes` is provided, each deploy is also polled on every peer
+    until that peer's resolver reports `DEPLOY_STATE_FINALIZED`. Use this
+    whenever the test iterates per-node assertions on the deploy (e.g.
+    `/deploy/<id>` returning `isFinalized=true`) — finalization can complete
+    on the submitting node a few seconds before peers in multi-parent DAGs.
     """
     deploy_ids = []
     for i in range(count):
@@ -72,15 +80,22 @@ def _deploy_and_wait(node, timeouts, count=1):
         deploy_ids.append(did)
 
     block_hashes = []
-    max_block_number = 0
-
     for did in deploy_ids:
-        info = wait_for_deploy_included(node, did, timeouts.deploy_inclusion)
-        block_hashes.append(info.blockHash)
-        if info.blockNumber > max_block_number:
-            max_block_number = info.blockNumber
+        status = wait_for_deploy_finalized(node, did, timeouts.finalization)
+        canonical = status.latestBlockHash.hex() if status.latestBlockHash else None
+        if canonical is None:
+            # Fallback: resolver finalized but didn't populate latestBlockHash.
+            # Read the inclusion record directly.
+            info = wait_for_deploy_included(node, did, timeouts.deploy_inclusion)
+            canonical = info.blockHash
+        block_hashes.append(canonical)
 
-    wait_for_finalized(node, max_block_number, timeouts.finalization)
+    if all_nodes is not None:
+        for did in deploy_ids:
+            for other in all_nodes:
+                if other.name == node.name:
+                    continue
+                wait_for_deploy_finalized(other, did, timeouts.finalization)
 
     return deploy_ids, block_hashes
 
@@ -301,7 +316,7 @@ def test_last_finalized_block(shared_shard, node_conf, timeouts) -> None:
     """HTTP /api/last-finalized-block returns consistent finalized block across all nodes."""
     expect = _shard_expectations(shared_shard, node_conf)
     v1 = shared_shard.node("validator1")
-    _deploy_and_wait(v1, timeouts)
+    _deploy_and_wait(v1, timeouts, all_nodes=shared_shard.all_nodes)
 
     lfb_data = {}
     for node in shared_shard.all_nodes:
@@ -359,7 +374,7 @@ def test_get_block(shared_shard, node_conf, timeouts) -> None:
     """HTTP /api/block/<hash> returns full block info consistent across all nodes."""
     expect = _shard_expectations(shared_shard, node_conf)
     v1 = shared_shard.node("validator1")
-    deploy_ids, block_hashes = _deploy_and_wait(v1, timeouts)
+    deploy_ids, block_hashes = _deploy_and_wait(v1, timeouts, all_nodes=shared_shard.all_nodes)
     block_hash = block_hashes[0]
     deploy_id = deploy_ids[0]
 
@@ -418,7 +433,7 @@ def test_get_blocks(shared_shard, node_conf, timeouts) -> None:
     """
     expect = _shard_expectations(shared_shard, node_conf)
     v1 = shared_shard.node("validator1")
-    _deploy_and_wait(v1, timeouts, count=3)
+    _deploy_and_wait(v1, timeouts, count=3, all_nodes=shared_shard.all_nodes)
 
     for node in shared_shard.all_nodes:
         blocks = node.api_get("/blocks/10")
@@ -453,7 +468,7 @@ def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
     expect = _shard_expectations(shared_shard, node_conf)
     v1 = shared_shard.node("validator1")
     v1_pubkey = VALIDATOR1_ID.private_key().get_public_key().to_hex()
-    deploy_ids, _ = _deploy_and_wait(v1, timeouts)
+    deploy_ids, _ = _deploy_and_wait(v1, timeouts, all_nodes=shared_shard.all_nodes)
     deploy_id = deploy_ids[0]
 
     details = {}
@@ -530,7 +545,7 @@ def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
 def test_deploy_summary_view(shared_shard, node_conf, timeouts) -> None:
     """HTTP /api/deploy/<id>?view=summary returns core fields only on all nodes."""
     v1 = shared_shard.node("validator1")
-    deploy_ids, _ = _deploy_and_wait(v1, timeouts)
+    deploy_ids, _ = _deploy_and_wait(v1, timeouts, all_nodes=shared_shard.all_nodes)
     deploy_id = deploy_ids[0]
 
     summary_responses = {}
