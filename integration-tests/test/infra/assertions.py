@@ -57,11 +57,49 @@ def assert_deploy_errored(
 
 # ── Shard assertions (test-specific, needs multiple nodes) ─────────────
 
-def assert_all_nodes_agree_on_block(nodes, block_hash: str) -> None:
-    """Assert every node can retrieve the block and has the same post-state."""
+
+def _get_block_with_retry(node, block_hash: str, timeout: float):
+    """Retrieve a block from one node, polling through transient lookup races.
+
+    A peer can have the block hash in its reception buffer but not yet
+    added to its DAG: ``get_block`` then raises "received but not added
+    yet" / "Failure to find block". The race is the same one documented
+    in :py:func:`wait_for_block_visible_on_all_nodes`; this helper
+    absorbs it locally so cross-node block assertions don't need a
+    separate sync-barrier call ahead of them.
+
+    Disagreement on a block that *all* nodes return is still the actual
+    property the caller asserts — it surfaces immediately. Only the
+    retrieval race is retried.
+    """
+    deadline = time.monotonic() + timeout
+    last_err: Optional[Exception] = None
+    while True:
+        try:
+            return node.get_block(block_hash)
+        except Exception as e:
+            last_err = e
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    f"{node.name} could not retrieve block "
+                    f"{block_hash[:16]} within {timeout}s: {last_err}"
+                ) from last_err
+            time.sleep(1.0)
+
+
+def assert_all_nodes_agree_on_block(
+    nodes, block_hash: str, timeout: float = 30.0
+) -> None:
+    """Assert every node can retrieve the block and has the same post-state.
+
+    Retrieval is polled per-node through transient "not added yet" races
+    via :py:func:`_get_block_with_retry`. Once every node returns the
+    block, post-states are compared — disagreement IS the property
+    failure this asserts and surfaces without further retry.
+    """
     post_states = {}
     for node in nodes:
-        block = node.get_block(block_hash)
+        block = _get_block_with_retry(node, block_hash, timeout)
         post_states[node.name] = block.blockInfo.postStateHash
     unique = set(post_states.values())
     assert len(unique) == 1, (
@@ -130,6 +168,7 @@ def assert_bonds_map_consistent_across_nodes(
     nodes,
     block_hash: str,
     expected_bonds: dict,
+    timeout: float = 30.0,
 ) -> None:
     """Assert every node's view of ``block_hash`` carries the same bonds map.
 
@@ -140,19 +179,27 @@ def assert_bonds_map_consistent_across_nodes(
     bond block validated on the proposer but the bonds map computed
     differently elsewhere).
 
+    Retrieval is polled per-node through transient "not added yet" races
+    via :py:func:`_get_block_with_retry`. Map divergence — the property
+    this asserts — surfaces immediately without further retry once every
+    node returns the block.
+
     Args:
         nodes: Iterable of Node wrappers to query.
         block_hash: Finalized block hash to check.
         expected_bonds: ``{public_hex: stake}`` the bonds map must match
             exactly on every node. Stake values must match — not just
             key membership.
+        timeout: Per-node retrieval budget in seconds.
 
     Raises:
-        AssertionError: with a per-node diff if any node disagrees.
+        AssertionError: with a per-node diff if any node disagrees, or
+        with a "could not retrieve block" message if any node fails to
+        return the block within ``timeout``.
     """
     per_node: dict = {}
     for node in nodes:
-        block = node.get_block(block_hash)
+        block = _get_block_with_retry(node, block_hash, timeout)
         per_node[node.name] = {
             b.validator: b.stake for b in block.blockInfo.bonds
         }
