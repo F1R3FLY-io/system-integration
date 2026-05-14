@@ -73,10 +73,13 @@ if [[ -z "$IMAGE_OCID" ]]; then
   fi
 fi
 
-# Generate a unique runner/instance name
+# Generate a unique runner/instance name. Repo slug is embedded so a glance at
+# the OCI instance list (or `gh api .../actions/runners`) shows which repo each
+# runner belongs to — both repos register into the same OCI compartment.
+REPO_SLUG="${GH_REPO##*/}"
 TS=$(date +%Y%m%d-%H%M%S)
 RAND=$(openssl rand -hex 3)
-RUNNER_NAME="ci-eph-$ARCH-$TS-$RAND"
+RUNNER_NAME="ci-eph-$REPO_SLUG-$ARCH-$TS-$RAND"
 
 # Mint a runner registration token via gh CLI (uses local gh auth, no PAT)
 REG_TOKEN=$(gh api -X POST "repos/$GH_REPO/actions/runners/registration-token" --jq '.token')
