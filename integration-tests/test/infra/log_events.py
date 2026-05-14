@@ -151,8 +151,17 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
     # 3 validators propose siblings touching the same shared channel.
     # Hard consensus bug — propose fails with BugError, shard wedges,
     # LFB freezes deterministically. See real-flakes-tracker #1.
+    #
+    # Two distinct error strings come from this same invariant — both
+    # check ``data.len() > 1`` against a Number channel at different
+    # points in the merge pipeline. Caught here in one entry because
+    # both indicate the same root cause:
+    #   - rholang_merging_logic.rs:225 "has N pre-state values; ..."
+    #   - runtime_manager.rs:1109     "Expected at most one value for
+    #     number channel ..., found N"
     "SingleValueInvariantViolated": re.compile(
-        r"has \d+ pre-state values; single-value invariant violated"
+        r"(has \d+ pre-state values; single-value invariant violated"
+        r"|Expected at most one value for number channel)"
     ),
 
     # ── Propose-path internal assertion ──
