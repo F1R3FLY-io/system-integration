@@ -110,10 +110,12 @@ def _ensure_no_container(name: str, timeout: float = 30.0) -> None:
     claimed when a follow-up ``docker run --name`` references it.
 
     Timeout default is 30s — under daemon load, propagation can take
-    >10s. On timeout, a daemon-state snapshot is included in the error
-    so the failure is self-diagnostic.
+    >10s. On timeout, the original ``rm -f`` output is included in the
+    error along with a daemon-state snapshot — so we can distinguish
+    "rm returned 0 but propagation stalled" from "rm itself errored
+    and we lost the cause."
     """
-    _docker("rm", "-f", name)
+    rm = _docker("rm", "-f", name)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if _docker("inspect", "--type", "container", name).returncode != 0:
@@ -121,7 +123,11 @@ def _ensure_no_container(name: str, timeout: float = 30.0) -> None:
         time.sleep(0.1)
     raise RuntimeError(
         f"Container {name!r} still visible to docker daemon after rm -f "
-        f"and {timeout}s wait.\n\n"
+        f"and {timeout}s wait.\n"
+        f"docker rm -f returned: "
+        f"returncode={rm.returncode}, "
+        f"stdout={rm.stdout.strip()!r}, "
+        f"stderr={rm.stderr.strip()!r}\n\n"
         f"Daemon state at timeout:\n{_daemon_diagnostics()}"
     )
 
@@ -136,13 +142,20 @@ def _ensure_network(name: str, timeout: float = 30.0) -> None:
     sees ``network not found``.
 
     Timeout default is 30s — same reasoning as ``_ensure_no_container``:
-    daemon under load can take >10s to propagate. On timeout, a
-    daemon-state snapshot is included in the error.
+    daemon under load can take >10s to propagate. On timeout, the
+    original create-step's output is included in the error along with
+    a daemon-state snapshot — under heavy concurrent load
+    ``docker network create`` has been observed returning 0 without
+    effect, and the inspect-poll alone can't distinguish that from a
+    plain propagation lag.
     """
     create = _docker("network", "create", name)
     if create.returncode != 0 and "already exists" not in (create.stderr or ""):
         raise RuntimeError(
-            f"docker network create {name!r} failed: {create.stderr.strip()}"
+            f"docker network create {name!r} failed "
+            f"(returncode={create.returncode}, "
+            f"stdout={create.stdout.strip()!r}, "
+            f"stderr={create.stderr.strip()!r})"
         )
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -151,7 +164,11 @@ def _ensure_network(name: str, timeout: float = 30.0) -> None:
         time.sleep(0.1)
     raise RuntimeError(
         f"Network {name!r} not visible to docker daemon after create "
-        f"and {timeout}s wait.\n\n"
+        f"and {timeout}s wait.\n"
+        f"docker network create returned: "
+        f"returncode={create.returncode}, "
+        f"stdout={create.stdout.strip()!r}, "
+        f"stderr={create.stderr.strip()!r}\n\n"
         f"Daemon state at timeout:\n{_daemon_diagnostics()}"
     )
 
