@@ -184,19 +184,42 @@ class SubprocessNodeHandle:
     def archive_log(self, dest_path: Path) -> None:
         """Copy the rnode stdout/stderr log file to ``dest_path``.
 
-        The log file lives under the session data root, which is
-        wiped at teardown. Copying out before that gives the artifact
-        upload a stable location to publish from. Exception-safe;
-        missing source becomes a no-op.
+        The log file lives under the session data root, which is wiped
+        at teardown. Copying out before that gives the artifact upload
+        a stable location to publish from.
+
+        Always produces a file at ``dest_path`` — when the source log
+        is missing or the copy raises, a diagnostic placeholder is
+        written instead. This matters because
+        ``actions/upload-artifact@v4`` silently drops empty
+        directories: a no-op archive becomes invisible in CI, leaving
+        no trace of whether the archive call ran. The placeholder
+        gives the next debugger something to grep for.
         """
         try:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             if self._log_path.exists():
                 shutil.copyfile(self._log_path, dest_path)
+                return
+            dest_path.write_text(
+                "archive_log: source log file did not exist at archive time\n"
+                f"  expected path: {self._log_path}\n"
+                f"  handle name:   {self._name}\n"
+                f"  pid:           {self._proc.pid}\n"
+                f"  poll():        {self._proc.poll()}\n"
+            )
         except Exception as e:
             logger.warning(
                 "SubprocessNodeHandle.archive_log: %s failed: %s", self._name, e
             )
+            try:
+                dest_path.write_text(
+                    f"archive_log: exception raised: {e!r}\n"
+                    f"  source path:   {self._log_path}\n"
+                    f"  handle name:   {self._name}\n"
+                )
+            except Exception:
+                pass
 
     # ── Process state ───────────────────────────────────────────────
 
@@ -747,6 +770,14 @@ class SubprocessProvider:
         # Stop the previous process; data dir on disk persists.
         if handle.is_running():
             handle.stop()
+        # Snapshot the prior handle's log BEFORE we discard it. The new
+        # handle shares the same log file (log_mode="a"), so its
+        # destroy_standalone archive would capture both runs — but only
+        # if that archive call actually runs. If the test path between
+        # here and destroy_standalone fails to archive (inner exception,
+        # killed worker), the prior node's history is lost. Archiving
+        # here makes the prior run independently recoverable.
+        archive_handles([handle], self._archive_dir)
         if handle in self._active_handles:
             self._active_handles.remove(handle)
 

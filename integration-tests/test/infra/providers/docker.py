@@ -314,8 +314,15 @@ class DockerNodeHandle:
 
         Runs ``docker logs <container>`` with output redirected to the
         destination file. Idempotent and exception-safe — a missing
-        container (e.g. already removed) results in an empty file
-        rather than a propagating error.
+        container (e.g. already removed) leaves ``docker logs``' own
+        stderr ("Error: No such container") in the file rather than
+        propagating.
+
+        Always produces a file at ``dest_path``: on a top-level
+        exception (mkdir failure, etc.) a diagnostic placeholder is
+        written. Matters because ``actions/upload-artifact@v4`` drops
+        empty directories, so a silent archive failure would leave no
+        trace in CI.
         """
         try:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -329,6 +336,13 @@ class DockerNodeHandle:
             logger.warning(
                 "DockerNodeHandle.archive_log: %s failed: %s", self._name, e
             )
+            try:
+                dest_path.write_text(
+                    f"archive_log: exception raised: {e!r}\n"
+                    f"  container name: {self._name}\n"
+                )
+            except Exception:
+                pass
 
     def is_running(self) -> bool:
         result = _docker("inspect", "-f", "{{.State.Status}}", self._name)
@@ -855,6 +869,13 @@ class DockerProvider:
         ports = handle.ports
 
         handle.stop()
+        # Snapshot the stopped container's logs before _ensure_no_container
+        # removes it. The new container reuses the same name, so its
+        # destroy_standalone archive would write to the same dest path —
+        # use a `.pre-recreate.log` suffix to keep both runs distinct.
+        handle.archive_log(
+            self._archive_dir / f"{container_name}.pre-recreate.log"
+        )
         _ensure_no_container(container_name)
         _ensure_network(network_name)
 
