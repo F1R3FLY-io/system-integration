@@ -34,6 +34,18 @@ _BOOTSTRAP_PRIVATE_KEY = (
     "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
 )
 
+# rnode hardcodes 40400-40405 for its listen sockets (transport / ext gRPC /
+# int gRPC / HTTP / discovery / admin). The Linux default ephemeral range
+# (32768-60999) overlaps with these — an outbound TCP from rnode at startup
+# (e.g. ApprovedBlockRequest to bootstrap) can be assigned 40400 as its
+# source port, which then blocks rnode's subsequent server bind with
+# EADDRINUSE at servers_instances.rs:155. Each container has its own
+# network namespace, so the host-level sysctl on the OCI runner doesn't
+# propagate — reserve the range per-container via --sysctl.
+_NODE_PORT_RESERVATION_ARGS: List[str] = [
+    "--sysctl", "net.ipv4.ip_local_reserved_ports=40400-40405",
+]
+
 
 def _docker(*args: str, check: bool = False, timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -795,6 +807,7 @@ class DockerProvider:
 
         run_args = [
             "run", "-d", "--rm=false", "--user", "root",
+            *_NODE_PORT_RESERVATION_ARGS,
             "--name", container_name,
             "--network", network_name,
             "--network-alias", container_name,
@@ -892,6 +905,7 @@ class DockerProvider:
 
         run_args = [
             "run", "-d", "--rm=false", "--user", "root",
+            *_NODE_PORT_RESERVATION_ARGS,
             "--name", container_name,
             "--network", network_name,
             "--network-alias", container_name,
@@ -1014,6 +1028,7 @@ class DockerProvider:
 
         run_args = [
             "run", "-d", "--rm=false", "--user", "root",
+            *_NODE_PORT_RESERVATION_ARGS,
             "--name", node_name,
             "--network", shard_network,
             "--network-alias", node_name,

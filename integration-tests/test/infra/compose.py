@@ -32,6 +32,16 @@ _BOOTSTRAP_PRIVATE_KEY_HEX = (
     "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
 )
 
+# rnode hardcodes 40400-40405 for its listen sockets. The Linux default
+# ephemeral range (32768-60999) overlaps, so an outbound TCP from rnode at
+# startup can be assigned one of those ports as its source — blocking
+# rnode's subsequent server bind with EADDRINUSE at
+# servers_instances.rs:155. Reserve the range inside each container's
+# network namespace via sysctl so the kernel never picks them as ephemeral.
+_NODE_PORT_RESERVATION_SYSCTLS: List[str] = [
+    "net.ipv4.ip_local_reserved_ports=40400-40405",
+]
+
 
 def generate_compose(
     config: ShardConfig,
@@ -98,6 +108,7 @@ def generate_compose(
         "restart": "no",
         "container_name": bootstrap_host,
         "networks": [network_name],
+        "sysctls": list(_NODE_PORT_RESERVATION_SYSCTLS),
         "command": boot_command,
         "ports": [
             f"{boot_ports.protocol}:40400",
@@ -155,6 +166,7 @@ def generate_compose(
             "container_name": host,
             "depends_on": ["boot"],
             "networks": [network_name],
+            "sysctls": list(_NODE_PORT_RESERVATION_SYSCTLS),
             "command": validator_command,
             "ports": [
                 f"{v_ports.protocol}:40400",
@@ -203,6 +215,7 @@ def generate_compose(
             "container_name": ro_host,
             "depends_on": ["boot"],
             "networks": [network_name],
+            "sysctls": list(_NODE_PORT_RESERVATION_SYSCTLS),
             "command": ro_command,
             "ports": [
                 f"{ro_ports.protocol}:40400",
