@@ -94,7 +94,8 @@ LABELS="self-hosted,linux,$LABEL_ARCH,f1r3fly-rust-ci-ephemeral,oracle-cloud"
 # Render cloud-init from template
 CLOUD_INIT_TMPL="$SCRIPT_DIR/cloud-init-runner.yml.tmpl"
 CLOUD_INIT_RENDERED=$(mktemp -t oci-cloud-init.XXXXXX.yml)
-trap 'rm -f "$CLOUD_INIT_RENDERED"' EXIT
+LAUNCH_ERR=$(mktemp -t oci-launch-err.XXXXXX)
+trap 'rm -f "$CLOUD_INIT_RENDERED" "$LAUNCH_ERR"' EXIT
 
 # sed-escape values that may contain &, /, or \
 esc() { printf '%s' "$1" | sed 's/[&/\]/\\&/g'; }
@@ -125,18 +126,43 @@ echo "  Memory:      ${MEM_GB} GB"
 echo "  Image:       $IMAGE_OCID"
 echo "  Labels:      $LABELS"
 
-INSTANCE_OCID=$(oci compute instance launch \
-  -c "$COMP" \
-  --availability-domain "$AD" \
-  --shape "$SHAPE" \
-  --shape-config "{\"ocpus\":$OCPUS,\"memoryInGBs\":$MEM_GB}" \
-  --image-id "$IMAGE_OCID" \
-  --subnet-id "$SUBNET_OCID" \
-  --display-name "$RUNNER_NAME" \
-  --assign-public-ip true \
-  --ssh-authorized-keys-file "$SSH_KEY_PUB_RESOLVED" \
-  --user-data-file "$CLOUD_INIT_RENDERED" \
-  --query 'data.id' --raw-output 2>&1 | tail -1)
+# Retry transient OCI errors (out-of-capacity, throttling, 5xx). Non-transient
+# failures (auth, bad image, missing subnet) exit immediately so a doomed
+# launch doesn't burn the runner registration token. Errors are captured to
+# $LAUNCH_ERR so the actual OCI message is surfaced — the previous form
+# (`2>&1 | tail -1`) swallowed everything but the last line.
+INSTANCE_OCID=""
+MAX_ATTEMPTS=3
+for attempt in $(seq 1 $MAX_ATTEMPTS); do
+  if INSTANCE_OCID=$(oci compute instance launch \
+      -c "$COMP" \
+      --availability-domain "$AD" \
+      --shape "$SHAPE" \
+      --shape-config "{\"ocpus\":$OCPUS,\"memoryInGBs\":$MEM_GB}" \
+      --image-id "$IMAGE_OCID" \
+      --subnet-id "$SUBNET_OCID" \
+      --display-name "$RUNNER_NAME" \
+      --assign-public-ip true \
+      --ssh-authorized-keys-file "$SSH_KEY_PUB_RESOLVED" \
+      --user-data-file "$CLOUD_INIT_RENDERED" \
+      --query 'data.id' --raw-output 2>"$LAUNCH_ERR"); then
+    break
+  fi
+
+  echo "  [$RUNNER_NAME] attempt $attempt/$MAX_ATTEMPTS failed:" >&2
+  sed 's/^/    /' "$LAUNCH_ERR" >&2
+
+  if (( attempt < MAX_ATTEMPTS )) \
+    && grep -qE 'Out of host capacity|InternalError|TooManyRequests|429|503|Throttle|connection reset|timed out' "$LAUNCH_ERR"; then
+    sleep_s=$(( attempt * 10 ))
+    echo "  [$RUNNER_NAME] transient OCI error; retrying in ${sleep_s}s" >&2
+    sleep "$sleep_s"
+    continue
+  fi
+
+  echo "  [$RUNNER_NAME] OCI launch failed permanently after $attempt attempt(s); giving up" >&2
+  exit 1
+done
 
 echo "  Instance:    $INSTANCE_OCID"
 echo
