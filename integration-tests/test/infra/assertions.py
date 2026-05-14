@@ -116,17 +116,32 @@ def assert_all_nodes_agree_on_block(
     )
 
 
-def assert_all_nodes_agree_on_lfb(nodes) -> str:
-    """Assert all nodes report the same LFB hash. Returns the common hash."""
-    lfb_info = {}
-    for node in nodes:
-        lfb = node.last_finalized_block().blockInfo
-        lfb_info[node.name] = (lfb.blockHash, lfb.blockNumber)
-    hashes = {h for h, _ in lfb_info.values()}
-    assert len(hashes) == 1, (
-        f"Nodes disagree on LFB: {lfb_info}"
-    )
-    return next(iter(hashes))
+def assert_all_nodes_agree_on_lfb(nodes, timeout: int = 0) -> str:
+    """Assert all nodes report the same LFB hash. Returns the common hash.
+
+    Default (timeout=0) is one-shot: a snapshot disagreement raises
+    immediately. Callers in scope of normal propagation lag — where one
+    validator's finalizer runs a beat ahead of the others — opt into
+    polling by passing a value from the ``timeouts`` fixture (typically
+    ``timeouts.finalization``). On opt-in, polls until all nodes return
+    the same LFB hash or the budget elapses. A persistent fork still
+    surfaces as a loud AssertionError with the per-node state, just
+    after the timeout instead of immediately.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        lfb_info: dict = {}
+        for node in nodes:
+            lfb = node.last_finalized_block().blockInfo
+            lfb_info[node.name] = (lfb.blockHash, lfb.blockNumber)
+        hashes = {h for h, _ in lfb_info.values()}
+        if len(hashes) == 1:
+            return next(iter(hashes))
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"Nodes disagree on LFB after {timeout}s: {lfb_info}"
+            )
+        time.sleep(2.0)
 
 
 def assert_contracts_consistent_across_nodes(

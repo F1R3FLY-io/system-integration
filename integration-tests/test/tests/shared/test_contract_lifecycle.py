@@ -619,12 +619,17 @@ def test_multi_block_state_evolution(
 
 # ── Phase 9: Final cross-node state verification ────────────────────
 
-def test_final_cross_node_state_agreement(shared_shard, deployed_contracts):
+def test_final_cross_node_state_agreement(shared_shard, deployed_contracts, timeouts):
     """All nodes agree on final LFB and all contract state."""
     ro = shared_shard.readonly
 
-    # All nodes agree on LFB
-    lfb_hash = assert_all_nodes_agree_on_lfb(shared_shard.all_nodes)
+    # All nodes agree on LFB. Opt into polling — normal propagation can
+    # leave one validator's finalizer a beat ahead of the others at the
+    # moment of the snapshot; timeouts.finalization gives the rest a
+    # window to catch up before the assertion fires.
+    lfb_hash = assert_all_nodes_agree_on_lfb(
+        shared_shard.all_nodes, timeout=timeouts.finalization,
+    )
     logging.info("All nodes agree on LFB: %s...", lfb_hash[:16])
 
     # Verify all nodes agree on LFB post-state
