@@ -100,13 +100,15 @@ def _stale_cleanup_for_provider(provider_choice: str) -> None:
 
 
 def pytest_sessionstart(session):
-    """Clean up stale resources from crashed sessions."""
-    choice = session.config.getoption("--provider", default="docker")
-    _stale_cleanup_for_provider(choice)
+    """Clean up stale resources from crashed sessions.
 
-
-def pytest_sessionfinish(session, exitstatus):
-    """Belt-and-suspenders cleanup."""
+    Runs only on the xdist controller (or in non-xdist runs). Workers
+    inherit a clean slate from this single sweep before any test starts
+    — running the scan in each worker would race with peers mid-test
+    and risk classifying their transiently-exited containers as stale.
+    """
+    if hasattr(session.config, "workerinput"):
+        return
     choice = session.config.getoption("--provider", default="docker")
     _stale_cleanup_for_provider(choice)
 
