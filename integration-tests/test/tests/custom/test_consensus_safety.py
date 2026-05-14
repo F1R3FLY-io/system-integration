@@ -635,15 +635,33 @@ def test_merge_determinism_asymmetric_divergence(provider, timeouts) -> None:
                 f"{node.name}: post-merge LFB FT={ft} should be >= 0.1"
             )
 
-        # Check LFB spread
-        final_lfbs = {n.name: _get_lfb_number(n) for n in all_nodes}
-        max_lfb = max(final_lfbs.values())
-        min_lfb = min(final_lfbs.values())
-        spread = max_lfb - min_lfb
+        # Poll LFB spread until convergence. V1 (60% stake) catching up
+        # finalizes a long ancestor chain on its local view via indirect
+        # finalization; V2/V3 need to receive V1's post-resume vote-bearing
+        # block before their finalizers can lift their LFBs to match. On
+        # slower CPUs (arm64-docker is ~3x slower per-thread) the message
+        # propagation can leave V1 several blocks ahead at the moment of
+        # the initial check. Poll instead of asserting a one-shot snapshot.
+        def _converged():
+            lfbs = {n.name: _get_lfb_number(n) for n in all_nodes}
+            return lfbs if max(lfbs.values()) - min(lfbs.values()) <= 3 else None
+
+        try:
+            final_lfbs = poll_until(
+                predicate=_converged,
+                timeout=timeouts.finalization,
+                interval=3.0,
+                description="LFB spread <= 3 after asymmetric merge",
+            )
+        except TimeoutError:
+            final_lfbs = {n.name: _get_lfb_number(n) for n in all_nodes}
+            spread = max(final_lfbs.values()) - min(final_lfbs.values())
+            raise AssertionError(
+                f"LFB spread {spread} exceeds 3 after asymmetric merge "
+                f"within {timeouts.finalization}s: {final_lfbs}"
+            )
+        spread = max(final_lfbs.values()) - min(final_lfbs.values())
         logging.info("Final LFBs: %s (spread: %d)", final_lfbs, spread)
-        assert spread <= 3, (
-            f"LFB spread {spread} exceeds 3 after asymmetric merge: {final_lfbs}"
-        )
 
         logging.info("Merge determinism asymmetric divergence test passed")
     finally:
