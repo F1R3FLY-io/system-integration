@@ -41,9 +41,9 @@ Each launched VM boots, registers with GitHub using a short-lived token, picks u
 
 ## Shape
 
-Both arches use **8 OCPU / 24 GB / boot from baked image**:
-- amd64: `VM.Standard.E5.Flex` (AMD EPYC)
-- arm64: `VM.Standard.A1.Flex` (Ampere Altra)
+Both arches use **16 OCPU / 32 GB / boot from baked image**:
+- amd64: `VM.Standard.E6.Flex` (AMD EPYC Turin, Zen 5)
+- arm64: `VM.Standard.A1.Flex` (Ampere Altra) — only Ampere shape available in `us-sanjose-1`; A2.Flex (newer AmpereOne) would require a region migration.
 
 ## File inventory
 
