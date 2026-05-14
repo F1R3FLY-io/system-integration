@@ -623,7 +623,13 @@ def test_merge_determinism_asymmetric_divergence(provider, timeouts) -> None:
                      lfb_hash[:16], v1_lfb.blockInfo.blockNumber)
 
         # Verify all nodes agree on post-state
-        assert_all_nodes_agree_on_block(all_nodes, lfb_hash)
+        # Opt into retrieval polling: after V1's asymmetric divergence and
+        # subsequent merge, the lfb_hash can race with a peer's gossip-vs-
+        # DAG-add window. Use timeouts.finalization so the budget scales
+        # with --timeout-scale on arm64.
+        assert_all_nodes_agree_on_block(
+            all_nodes, lfb_hash, timeout=timeouts.finalization,
+        )
         logging.info("Post-state agreement verified across all nodes")
 
         # Verify FT >= FTT on post-merge LFB

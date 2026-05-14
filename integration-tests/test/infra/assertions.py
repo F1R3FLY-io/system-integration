@@ -58,7 +58,7 @@ def assert_deploy_errored(
 # ── Shard assertions (test-specific, needs multiple nodes) ─────────────
 
 
-def _get_block_with_retry(node, block_hash: str, timeout: float):
+def _get_block_with_retry(node, block_hash: str, timeout: int):
     """Retrieve a block from one node, polling through transient lookup races.
 
     A peer can have the block hash in its reception buffer but not yet
@@ -71,6 +71,11 @@ def _get_block_with_retry(node, block_hash: str, timeout: float):
     Disagreement on a block that *all* nodes return is still the actual
     property the caller asserts — it surfaces immediately. Only the
     retrieval race is retried.
+
+    ``timeout=0`` (the default) gives one-shot behaviour: a transient
+    "not added yet" surfaces immediately as the property failure shape.
+    Callers that know the race is in scope opt into polling by passing a
+    value from the ``timeouts`` fixture (e.g. ``timeouts.finalization``).
     """
     deadline = time.monotonic() + timeout
     last_err: Optional[Exception] = None
@@ -88,14 +93,17 @@ def _get_block_with_retry(node, block_hash: str, timeout: float):
 
 
 def assert_all_nodes_agree_on_block(
-    nodes, block_hash: str, timeout: float = 30.0
+    nodes, block_hash: str, timeout: int = 0
 ) -> None:
     """Assert every node can retrieve the block and has the same post-state.
 
-    Retrieval is polled per-node through transient "not added yet" races
-    via :py:func:`_get_block_with_retry`. Once every node returns the
-    block, post-states are compared — disagreement IS the property
-    failure this asserts and surfaces without further retry.
+    Retrieval may be polled per-node through transient "not added yet"
+    races via :py:func:`_get_block_with_retry` — ``timeout=0`` (default)
+    is one-shot; callers in scope of the race opt into polling by passing
+    a value from the ``timeouts`` fixture (typically
+    ``timeouts.finalization``). Once every node returns the block,
+    post-states are compared — disagreement IS the property failure this
+    asserts and surfaces without further retry.
     """
     post_states = {}
     for node in nodes:
@@ -168,7 +176,7 @@ def assert_bonds_map_consistent_across_nodes(
     nodes,
     block_hash: str,
     expected_bonds: dict,
-    timeout: float = 30.0,
+    timeout: int = 0,
 ) -> None:
     """Assert every node's view of ``block_hash`` carries the same bonds map.
 
@@ -179,8 +187,10 @@ def assert_bonds_map_consistent_across_nodes(
     bond block validated on the proposer but the bonds map computed
     differently elsewhere).
 
-    Retrieval is polled per-node through transient "not added yet" races
-    via :py:func:`_get_block_with_retry`. Map divergence — the property
+    Retrieval may be polled per-node through transient "not added yet"
+    races via :py:func:`_get_block_with_retry` — ``timeout=0`` (default)
+    is one-shot; callers in scope of the race opt into polling by passing
+    a value from the ``timeouts`` fixture. Map divergence — the property
     this asserts — surfaces immediately without further retry once every
     node returns the block.
 
@@ -190,7 +200,7 @@ def assert_bonds_map_consistent_across_nodes(
         expected_bonds: ``{public_hex: stake}`` the bonds map must match
             exactly on every node. Stake values must match — not just
             key membership.
-        timeout: Per-node retrieval budget in seconds.
+        timeout: Per-node retrieval budget in seconds. ``0`` = one-shot.
 
     Raises:
         AssertionError: with a per-node diff if any node disagrees, or
