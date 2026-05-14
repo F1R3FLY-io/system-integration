@@ -287,3 +287,37 @@ def archive_handles(handles: Sequence[NodeHandle], archive_dir: Path) -> None:
             h.archive_log(archive_dir / f"{h.name}.log")
         except Exception as e:  # pragma: no cover — defensive
             logger.warning("archive_handles: %s failed: %s", h.name, e)
+
+
+def wait_for_handles_or_archive(
+    handles: Sequence[NodeHandle],
+    archive_dir: Path,
+    timeout: int,
+) -> None:
+    """Wait for each handle to reach Running, archiving logs on failure.
+
+    Providers call this from their spawn sites (``create_shard``,
+    ``create_standalone``, ``add_node``) BEFORE the handle is tracked
+    in ``_active_handles``. That ordering matters: if the wait raises,
+    the framework's normal teardown paths can't see the handle to
+    archive it, and the post-mortem rnode log is lost. Archive every
+    handle to ``archive_dir`` here before re-raising so each spawned
+    process's log survives an early startup failure.
+    """
+    # Local import to avoid circular dependency on infra.polling at
+    # module-load time. base.py is a protocol contract that polling
+    # transitively imports.
+    from ..polling import wait_for_node_running
+
+    try:
+        for h in handles:
+            wait_for_node_running(
+                get_logs=h.logs,
+                is_running=h.is_running,
+                node_name=h.name,
+                timeout=timeout,
+                status_url=f"http://{h.grpc_host}:{h.ports.http}/api/status",
+            )
+    except Exception:
+        archive_handles(handles, archive_dir)
+        raise

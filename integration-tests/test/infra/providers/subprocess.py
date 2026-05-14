@@ -37,11 +37,15 @@ from typing import List, Optional, Sequence
 from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_binary
 from ..genesis import generate_genesis
 from ..keys import BOOTSTRAP_NODE_ID
-from ..polling import wait_for_node_running
 from ..ports import PortAllocator
 from ..timeouts import TimeoutHierarchy
 from ..types import NodeRole, PortMapping, ValidatorIdentity
-from .base import RetiredLogSnapshot, archive_handles, archive_root_for
+from .base import (
+    RetiredLogSnapshot,
+    archive_handles,
+    archive_root_for,
+    wait_for_handles_or_archive,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +349,16 @@ class SubprocessProvider:
         return self._keep_running
 
     @property
+    def _archive_dir(self) -> Path:
+        """Root directory for per-session log archival.
+
+        Resolved once via :py:func:`archive_root_for`; tied to this
+        provider's session id. Per-shard / standalone / leftover paths
+        are formed by joining a subdir onto this.
+        """
+        return archive_root_for(self._paths.integration_tests, self._session_id)
+
+    @property
     def active_handles(self) -> List[SubprocessNodeHandle]:
         return list(self._active_handles)
 
@@ -563,14 +577,11 @@ class SubprocessProvider:
 
         # ── Wait for all to reach Running ──
         if wait_running:
-            for h in handles:
-                wait_for_node_running(
-                    get_logs=h.logs,
-                    is_running=h.is_running,
-                    node_name=h.name,
-                    timeout=self._timeouts.node_startup,
-                    status_url=f"http://{h.grpc_host}:{h.ports.http}/api/status",
-                )
+            wait_for_handles_or_archive(
+                handles,
+                self._archive_dir / f"shard{self._shard_counter}",
+                self._timeouts.node_startup,
+            )
 
         self._active_handles.extend(handles)
         return handles
@@ -614,9 +625,7 @@ class SubprocessProvider:
                 self._session_root,
             )
             return
-        archive_handles(handles, archive_root_for(
-            self._paths.integration_tests, self._session_id
-        ) / f"shard{self._shard_counter}")
+        archive_handles(handles, self._archive_dir / f"shard{self._shard_counter}")
         for h in handles:
             try:
                 h.remove()
@@ -705,12 +714,8 @@ class SubprocessProvider:
         )
 
         if wait_running:
-            wait_for_node_running(
-                get_logs=handle.logs,
-                is_running=handle.is_running,
-                node_name=handle.name,
-                timeout=self._timeouts.node_startup,
-                status_url=f"http://{handle.grpc_host}:{handle.ports.http}/api/status",
+            wait_for_handles_or_archive(
+                [handle], self._archive_dir, self._timeouts.node_startup,
             )
 
         self._active_handles.append(handle)
@@ -794,12 +799,8 @@ class SubprocessProvider:
         )
 
         if wait_running:
-            wait_for_node_running(
-                get_logs=new_handle.logs,
-                is_running=new_handle.is_running,
-                node_name=new_handle.name,
-                timeout=self._timeouts.node_startup,
-                status_url=f"http://{new_handle.grpc_host}:{new_handle.ports.http}/api/status",
+            wait_for_handles_or_archive(
+                [new_handle], self._archive_dir, self._timeouts.node_startup,
             )
 
         self._active_handles.append(new_handle)
@@ -885,9 +886,7 @@ class SubprocessProvider:
         if self._keep_running:
             logger.info("Standalone %s kept running (--keep-running)", handle.name)
             return
-        archive_handles([handle], archive_root_for(
-            self._paths.integration_tests, self._session_id
-        ))
+        archive_handles([handle], self._archive_dir)
         handle.remove()
 
     # ── Joiner / observer lifecycle ─────────────────────────────────
@@ -950,12 +949,8 @@ class SubprocessProvider:
         )
 
         if wait_running:
-            wait_for_node_running(
-                get_logs=handle.logs,
-                is_running=handle.is_running,
-                node_name=handle.name,
-                timeout=self._timeouts.node_startup,
-                status_url=f"http://{handle.grpc_host}:{handle.ports.http}/api/status",
+            wait_for_handles_or_archive(
+                [handle], self._archive_dir, self._timeouts.node_startup,
             )
 
         self._active_handles.append(handle)
@@ -978,9 +973,7 @@ class SubprocessProvider:
         if self._keep_running:
             logger.info("Joiner %s kept running (--keep-running)", handle.name)
             return
-        archive_handles([handle], archive_root_for(
-            self._paths.integration_tests, self._session_id
-        ))
+        archive_handles([handle], self._archive_dir)
         handle.remove()
 
     # ── Cleanup ─────────────────────────────────────────────────────
@@ -1000,11 +993,7 @@ class SubprocessProvider:
         # (e.g. tests that crashed before their finally clause ran). Archive
         # into a `leftover` subdir so it's clearly separate from the per-shard
         # archives written by the normal destroy path.
-        archive_handles(
-            list(self._active_handles),
-            archive_root_for(self._paths.integration_tests, self._session_id)
-            / "leftover",
-        )
+        archive_handles(list(self._active_handles), self._archive_dir / "leftover")
         # Stop all known handles first (graceful → escalate inside _stop_once).
         for h in list(self._active_handles):
             try:
