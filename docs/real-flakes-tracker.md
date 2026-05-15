@@ -148,6 +148,18 @@ Likely the same root cause as #1 (`test_shard_degradation`), surfacing in tighte
 | **New sub-pattern** | 4a-4d each had a SINGLE deploy or block fail to finalize. This is the first observation of MULTIPLE deploys timing out in the same test invocation — strongly suggests the whole shard's finalizer was bottlenecked during the window, not a single-deploy edge case. Could be a cascade effect, a propose-throughput bottleneck, or simply higher load than the test budget allows. |
 | **Specific characteristic** | Bridge-contract queries — `getTotalLocked`, `getNonce` × 2 — submitted close together against validators 1+2 of the shared shard. None finalize within 45s/15 attempts. The bridge contract is a real cross-validator workload, so this surfaces finalization under realistic application load. |
 
+#### 4e.1. `test_cross_validator_queries_real_deploy` — deploy finalizes but deployId channel is empty
+
+| | |
+|---|---|
+| **Test** | same as 4e |
+| **Symptom (exact)** | `AssertionError: Cross-validator query failures: ['bridge2 getNonce: Deploy 304402204a690db8eec8f67c returned empty par list from deployId channel', 'bridge2 getAddress: Deploy 304402204216ffb1ddaf371b returned empty par list from deployId channel']` |
+| **CI job example** | amd64-subprocess-4 (PR #520 attempt 1): https://github.com/F1R3FLY-io/f1r3node/actions/runs/25895410113/job/76108017691 — also triggered cascading failure in `test_final_cross_node_state_agreement` (`RuntimeError: Registry query rho:id:qf7thaeup9bbq4siw77d7awxqydoawt68y6a4hqfzgjrkmna1c96y6 -> getNonce(Nil) returned no results`) |
+| **Distinction from 4e** | In 4e the deploy never reaches `DEPLOY_STATE_FINALIZED`. Here the deploy DOES reach `DEPLOY_STATE_FINALIZED` (canonical-state inclusion confirmed by `deploy_finalization_status`) — but `get_data_at_deploy_id` at the canonical block returns `data.par == []`. The terminal `deployId!(result)` never fired. |
+| **Most likely mechanism** | The bridge contract's persistent `for (@method, @param, ret) = { ... }` continuation did not match the incoming `queryCh!("getNonce", Nil, *ret)`. For the for to not match, the continuation must be missing from state — i.e., the registration deploy's persistent-for install was dropped somewhere between deploy execution and state finalization. Plausibly related to the merge-engine state-loss family (#1 and #12) but on continuations rather than Number-channel values. |
+| **Note** | Forbidden-pattern scan on this node shows zero `SingleValueInvariantViolated`, zero `BugError`, zero `sanitize WARN`, zero `Unused COMM`. The state-loss is silent — no tripwire fires. Needs node-side `tracing::warn!` instrumentation at the consume-continuation install/drop boundaries to localise. |
+| **Action backlog** | Investigate after wedge fix (PR #520) lands and the simpler family-#1 surfaces are resolved. Possible action: add a forbidden-pattern that catches contract continuations being dropped (e.g., post-finalization scan that asserts every registered contract URI has a live continuation on the LFB state). |
+
 #### Combined hypothesis
 
 Same family as #1 (finalizer perf). The test deadlines here are tighter (45s vs 60-67s in `test_shard_degradation`), so they surface sooner. May also be propose-bottleneck driving Pending faster than finalization can drain.
