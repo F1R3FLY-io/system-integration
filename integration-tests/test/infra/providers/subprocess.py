@@ -639,6 +639,20 @@ class SubprocessProvider:
         return target_dir
 
     def destroy_shard(self, handles: Sequence[SubprocessNodeHandle]) -> None:
+        # Snapshot logs into the retired bucket before the handles are
+        # removed; the autouse forbidden-pattern scanner reads from this
+        # bucket plus `active_handles`, and the test's own `finally:
+        # shard.destroy()` runs ahead of the scanner. Symmetric to the
+        # per-handle snapshot in `remove_node` used by `add_joiner` /
+        # `add_observer`.
+        for h in handles:
+            try:
+                snapshot_text = h.logs()
+            except Exception:
+                snapshot_text = ""
+            self._retired_log_snapshots.append(
+                RetiredLogSnapshot(name=h.name, log_text=snapshot_text)
+            )
         if self._keep_running:
             logger.info(
                 "Subprocess shard for session %s kept running (--keep-running). "

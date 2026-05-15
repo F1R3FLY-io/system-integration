@@ -724,8 +724,23 @@ class DockerProvider:
         return handles
 
     def destroy_shard(self, handles: Sequence[DockerNodeHandle]) -> None:
-        """Destroy a shard — compose down with volumes."""
+        """Destroy a shard — compose down with volumes.
+
+        Snapshots each handle's log into the retired bucket before the
+        compose teardown so the autouse forbidden-pattern scanner sees
+        them — the scanner runs after the test's ``finally:
+        shard.destroy()`` returns and the live handles are gone by then.
+        Symmetric to the per-handle snapshot in ``remove_node`` used by
+        ``add_joiner`` / ``add_observer``.
+        """
         for h in handles:
+            try:
+                snapshot_text = h.logs()
+            except Exception:
+                snapshot_text = ""
+            self._retired_log_snapshots.append(
+                RetiredLogSnapshot(name=h.name, log_text=snapshot_text)
+            )
             if h in self._active_handles:
                 self._active_handles.remove(h)
         if self.keep_running:
