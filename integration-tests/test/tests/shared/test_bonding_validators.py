@@ -523,15 +523,10 @@ def test_bonding_validators(shared_shard, timeouts) -> None:
     # ── Phase C: fresh observer LFS-syncs against 5-bonded shard ──
     # Attaches a readonly node post-bond and asserts it reaches a
     # current LFB with the same 5-bond map v1 has. Production scenario
-    # for the forward-horizon rspace history sync.
-    # Disable reporting on this observer so the gRPC API server's
-    # transfer-enrichment path doesn't invoke RhoReporterCasper, which
-    # has a known divergence bug on LFS-synced READONLY observers (see
-    # docs/TODO.md §2.16). The reporter bug is unrelated to bonding
-    # correctness, and Phase C asserts on bonds + LFB drift only.
-    observer = shared_shard.attach_observer(
-        cli_options={"--api-enable-reporting": "false"},
-    )
+    # for the forward-horizon rspace history sync. Reporting is
+    # disabled globally for integration tests via conf/rust.conf to
+    # work around f1r3node#509.
+    observer = shared_shard.attach_observer()
 
     # Don't pin a target block hash from v1 at attach time — observer
     # and v1 finalize independently after observer reaches Running, and
