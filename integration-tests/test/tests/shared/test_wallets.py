@@ -16,7 +16,6 @@ submitted via validators since they are state-changing operations.
 import logging
 
 import pytest
-from f1r3fly.vault import TransferResult
 
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import poll_until, wait_for_deploy_finalized
@@ -26,7 +25,7 @@ pytestmark = pytest.mark.xdist_group("shared")
 
 def _transfer_and_read_result(
     node, from_addr, to_addr, amount, key, timeouts, all_nodes=None
-) -> TransferResult:
+):
     """Submit a transfer, wait for the deploy to reach canonical state, and read the result.
 
     Sig-based finalization tracking via `deploy_finalization_status`: returns
@@ -40,6 +39,11 @@ def _transfer_and_read_result(
     When `all_nodes` is provided, every node is independently polled until
     its resolver also reports the deploy as Finalized — a stronger guarantee
     than asserting any single blockHash is finalized everywhere.
+
+    Returns ``(TransferResult, canonical_block_hash)`` so callers can pin
+    downstream balance reads to the exact post-state of the transfer block
+    (avoids the resolver-FINALIZED vs state-anchor lag race on observer
+    nodes — see real-flakes-tracker #9).
     """
     deploy_id = node.vault.transfer_ensure(from_addr, to_addr, amount, key)
 
@@ -54,7 +58,8 @@ def _transfer_and_read_result(
                 continue
             wait_for_deploy_finalized(other, deploy_id, timeouts.finalization)
 
-    return node.vault.read_transfer_result(deploy_id, block_hash=canonical_block_hash)
+    result = node.vault.read_transfer_result(deploy_id, block_hash=canonical_block_hash)
+    return result, canonical_block_hash
 
 
 # ===========================================================================
@@ -86,29 +91,35 @@ def test_validator1_pay_validator2(shared_shard, timeouts) -> None:
 
     v2_balance_before = ro.vault.get_balance(v2_vault)
 
-    result = _transfer_and_read_result(
+    result, canonical_block_hash = _transfer_and_read_result(
         v1, v1_vault, v2_vault, transfer_amount, v1_key, timeouts,
         all_nodes=shared_shard.all_nodes,
     )
     assert result.success, f"Transfer failed: {result.reason}"
 
-    # Poll until balance reflects the transfer (query via readonly)
+    # Poll readonly for the balance AT the transfer's canonical block. Pinning
+    # avoids the resolver-FINALIZED vs state-anchor lag (tracker #9). Use ``>=``
+    # because V2 is a validator and can accrue small proposer-reward credits
+    # in blocks between the v2_balance_before read and the canonical block.
+    expected_minimum = v2_balance_before + transfer_amount
+
     def _balance_updated():
-        bal = ro.vault.get_balance(v2_vault)
-        return bal if bal == v2_balance_before + transfer_amount else None
+        bal = ro.vault.get_balance(v2_vault, block_hash=canonical_block_hash)
+        return bal if bal >= expected_minimum else None
 
     v2_balance_after = poll_until(
         predicate=_balance_updated,
         timeout=timeouts.finalization,
         interval=5.0,
-        description="V2 balance updated after transfer",
+        description="V2 balance reflects transfer at canonical block",
     )
 
-    assert v2_balance_after == v2_balance_before + transfer_amount
+    assert v2_balance_after >= expected_minimum
 
     logging.info(
-        "Transfer verified: V2 balance %d -> %d (+%d)",
-        v2_balance_before, v2_balance_after, transfer_amount,
+        "Transfer verified: V2 balance %d -> %d (+%d, expected >=+%d)",
+        v2_balance_before, v2_balance_after,
+        v2_balance_after - v2_balance_before, transfer_amount,
     )
 
 
@@ -129,28 +140,33 @@ def test_validator2_pay_validator3(shared_shard, timeouts) -> None:
 
     v3_balance_before = ro.vault.get_balance(v3_vault)
 
-    result = _transfer_and_read_result(
+    result, canonical_block_hash = _transfer_and_read_result(
         v2, v2_vault, v3_vault, transfer_amount, v2_key, timeouts,
         all_nodes=shared_shard.all_nodes,
     )
     assert result.success, f"Transfer failed: {result.reason}"
 
+    # Pin to canonical block + use ``>=`` — see test_validator1_pay_validator2
+    # for the rationale (#9 lag + validator proposer-reward income).
+    expected_minimum = v3_balance_before + transfer_amount
+
     def _balance_updated():
-        bal = ro.vault.get_balance(v3_vault)
-        return bal if bal == v3_balance_before + transfer_amount else None
+        bal = ro.vault.get_balance(v3_vault, block_hash=canonical_block_hash)
+        return bal if bal >= expected_minimum else None
 
     v3_balance_after = poll_until(
         predicate=_balance_updated,
         timeout=timeouts.finalization,
         interval=5.0,
-        description="V3 balance updated after transfer",
+        description="V3 balance reflects transfer at canonical block",
     )
 
-    assert v3_balance_after == v3_balance_before + transfer_amount
+    assert v3_balance_after >= expected_minimum
 
     logging.info(
-        "Transfer verified: V3 balance %d -> %d (+%d)",
-        v3_balance_before, v3_balance_after, transfer_amount,
+        "Transfer verified: V3 balance %d -> %d (+%d, expected >=+%d)",
+        v3_balance_before, v3_balance_after,
+        v3_balance_after - v3_balance_before, transfer_amount,
     )
 
 
@@ -164,7 +180,7 @@ def test_transfer_failed_with_invalid_key(shared_shard, timeouts) -> None:
     v2_vault = v2_key.get_public_key().get_vault_address()
     v3_vault = VALIDATOR3_ID.private_key().get_public_key().get_vault_address()
 
-    result = _transfer_and_read_result(
+    result, _ = _transfer_and_read_result(
         v3, v3_vault, v2_vault, 100, v2_key, timeouts,
         all_nodes=shared_shard.all_nodes,
     )
@@ -189,7 +205,7 @@ def test_transfer_failed_with_insufficient_funds(shared_shard, timeouts) -> None
     assert v1_balance > 0
     overdraw_amount = v1_balance + 1
 
-    result = _transfer_and_read_result(
+    result, _ = _transfer_and_read_result(
         v2, v1_vault, v2_vault, overdraw_amount, v1_key, timeouts,
         all_nodes=shared_shard.all_nodes,
     )
