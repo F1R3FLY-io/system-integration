@@ -701,19 +701,32 @@ def test_block_summary_view(shared_shard, timeouts) -> None:
 def test_block_list_full_view(shared_shard, timeouts) -> None:
     """GET /api/blocks/{depth}?view=full includes deploys."""
     v1 = shared_shard.node("validator1")
-    _deploy_and_wait(v1, timeouts)
+    _, deploy_block_hashes = _deploy_and_wait(v1, timeouts)
+    target_hash = deploy_block_hashes[0]
 
-    blocks = v1.api_get("/blocks/5?view=full")
+    # Query a depth wide enough to include the deploy's canonical block under
+    # production heartbeat cadence (empty blocks accumulate between the
+    # deploy's submission and finalization), then locate that exact block in
+    # the response and assert its deploys are present.
+    blocks = v1.api_get("/blocks/30?view=full")
     assert len(blocks) >= 2, f"expected >= 2 blocks, got {len(blocks)}"
 
-    has_deploys = False
-    for b in blocks:
-        assert "blockInfo" in b, "block missing blockInfo wrapper"
-        if "deploys" in b and b["deploys"]:
-            has_deploys = True
-
-    assert has_deploys, "full view should include deploys on at least one block"
-    logging.info("Block list full view: %d blocks, deploys included", len(blocks))
+    target = next(
+        (b for b in blocks if b.get("blockInfo", {}).get("blockHash") == target_hash),
+        None,
+    )
+    assert target is not None, (
+        f"deploy's canonical block {target_hash[:16]}... not in /blocks/30 "
+        f"response ({len(blocks)} blocks returned)"
+    )
+    assert target.get("deploys"), (
+        f"full view for block {target_hash[:16]}... should include deploys, "
+        f"got {target!r}"
+    )
+    logging.info(
+        "Block list full view: %d blocks, target block #%d includes deploys",
+        len(blocks), target["blockInfo"]["blockNumber"],
+    )
 
 
 def test_lfb_summary_view(shared_shard, timeouts) -> None:
