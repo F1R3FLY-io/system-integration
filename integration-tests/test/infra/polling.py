@@ -34,6 +34,9 @@ __all__ = [
     "deploy_with_fallback",
     "wait_for_block_visible",
     "wait_for_block_visible_on_all_nodes",
+    "lfb_number",
+    "wait_for_lfb_at_least",
+    "wait_for_sender_blocks_stable",
     "DeployError",
 ]
 
@@ -119,6 +122,72 @@ def wait_for_finalized(node, block_number: int, timeout: int) -> None:
     Node-aware wrapper around ``f1r3fly.polling.wait_for_finalized``.
     """
     _client_wait_for_finalized(node._external_client(), block_number, timeout)
+
+
+def lfb_number(node) -> int:
+    """Return ``node``'s LFB block number, or ``0`` if no LFB exists yet.
+
+    Useful during shard bring-up before the first finalization, where
+    ``last_finalized_block()`` raises. Tests that previously kept their
+    own ``_get_lfb_number`` wrapper should import this instead.
+    """
+    try:
+        return node.last_finalized_block().blockInfo.blockNumber
+    except Exception:
+        return 0
+
+
+def wait_for_lfb_at_least(
+    node, height: int, timeout: int, interval: float = 2.0,
+) -> int:
+    """Poll until ``node``'s LFB.blockNumber >= ``height``. Returns the
+    observed LFB number on success. Causal: exits the moment the
+    condition fires, not after a fixed wait.
+    """
+    return poll_until(
+        predicate=lambda: (
+            lfb_number(node) if lfb_number(node) >= height else None
+        ),
+        timeout=timeout,
+        interval=interval,
+        description=f"{node.name} LFB >= #{height}",
+    )
+
+
+def wait_for_sender_blocks_stable(
+    node, sender_hex: str, timeout: int,
+    interval: float = 1.0, depth: int = 20,
+) -> int:
+    """Poll ``node``'s view of the highest block proposed by ``sender_hex``
+    until two consecutive reads agree, and return that height.
+
+    Use after pausing/killing a validator: blocks the paused validator
+    already sent may still be in flight to ``node``'s RX queue. Once two
+    consecutive snapshots show the same max-height, ``node`` has drained
+    everything the sender contributed — a causal detection of "no more
+    blocks from this sender are coming," not a fixed wait. Returns ``0``
+    if the sender has no visible blocks within ``depth``.
+    """
+    deadline = time.time() + timeout
+
+    def _max_by_sender() -> int:
+        return max(
+            (b.blockNumber for b in node.get_blocks(depth=depth)
+             if b.sender == sender_hex),
+            default=0,
+        )
+
+    last = _max_by_sender()
+    while time.time() < deadline:
+        time.sleep(interval)
+        current = _max_by_sender()
+        if current == last:
+            return current
+        last = current
+    raise TimeoutError(
+        f"{node.name} view of sender {sender_hex[:16]}... did not stabilize "
+        f"within {timeout}s (last observed height: #{last})"
+    )
 
 
 def wait_for_deploy_finalized(

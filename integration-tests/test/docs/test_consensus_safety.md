@@ -22,9 +22,11 @@ Kill V3 (pause container), verify V1+V2 continue finalizing. With FTT=0.1, FT fo
 **Config:** FTT=0.67, bonds 100/100/100, heartbeat, readonly
 **Marker:** `@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")` — paused validator legitimately produces invalid-block log lines on resume.
 
-Kill V3, verify finalization STOPS. With FTT=0.67, FT for 2/3 = 0.33 which is NOT > 0.67. Observe 30 seconds of LFB stall on V1+V2. Restart V3, verify finalization resumes on all nodes.
+Pause V3, drain the finalization pipeline of any V3 votes already in V1's gossip, then deploy fresh blocks on V1+V2 and verify they do NOT finalize. With FTT=0.67, FT for 2/3 = 0.33 which is NOT > 0.67. Restart V3, verify finalization resumes on all nodes.
 
-**What it proves:** FTT=0.67 (production default) requires all 3 equal-stake validators. Losing one halts finalization — the safety margin is enforced.
+The drain is detected causally — not by sleeping. After `v3.pause()`, the test polls V1's view of V3's latest block until two consecutive snapshots agree (so any in-flight V3 block has landed), then waits for V1's LFB to advance past V3's last contribution. After that any future finalization would need a fresh V3 vote, which can't come. Only then does the test deploy V1+V2 blocks and assert no advancement for 30s.
+
+**What it proves:** FTT=0.67 (production default) requires all 3 equal-stake validators. Once V3 is dead and the pre-pause pipeline has drained, new V1+V2-only blocks cannot finalize — the safety margin is enforced.
 
 ### test_ftt_boundary_strict_greater_than
 
@@ -53,7 +55,7 @@ Pause V1 (heaviest validator, 60 stake) for 30 seconds. V2+V3 produce independen
 ## Key assertions
 
 - **Recovery (FTT=0.1):** V1+V2 LFB advances by 3+ with V3 dead; FT >= 0.1; all nodes converge after restart
-- **Halt (FTT=0.67):** LFB does NOT advance for 30s with V3 dead; resumes after restart
+- **Halt (FTT=0.67):** after V3 is paused and the in-flight finalization pipeline has drained past V3's last contribution, new V1+V2 blocks do NOT advance LFB for 30s; resumes after V3 restart
 - **Boundary (FTT=0.5):** LFB does NOT advance for 30s (FT=0.5 is not > 0.5); resumes after restart
 - **Epoch:** LFB reaches target past epoch boundary; all nodes within 3 of target
 - **Merge:** `assert_all_nodes_agree_on_block` on LFB; FT >= 0.1; spread <= 3
@@ -63,7 +65,7 @@ Pause V1 (heaviest validator, 60 stake) for 30 seconds. V2+V3 produce independen
 - Per-test `Shard.create()` / `shard.destroy()` with custom configs
 - `shard.add_joiner()` for epoch transition test
 - `Node.pause()` / `Node.unpause()` for validator failure simulation
-- `_poll_lfb_advances` / `_poll_lfb_stalls` helpers for finalization checks
+- `wait_for_lfb_at_least` / `wait_for_sender_blocks_stable` / `lfb_number` ([`infra/polling.py`](../infra/polling.py)) for causal LFB-based waits; `_poll_lfb_stalls` (file-local) for the steady-state no-advancement assertion
 - `assert_all_nodes_agree_on_block()` for post-state agreement
 - `wait_for_block_visible()` / `wait_for_deploy_included()` for synchronization
 - `check_node_logs_after_test` autouse fixture for fatal-log detection (panics + `FATAL_PATTERNS`; see [ARCHITECTURE.md § 7](ARCHITECTURE.md#7-log-scanning))

@@ -16,32 +16,17 @@ import pytest
 from ...infra.assertions import assert_all_nodes_agree_on_block
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID, VALIDATOR4_ID
-from ...infra.polling import poll_until, try_find_deploy, wait_for_block_visible
+from ...infra.polling import (
+    lfb_number,
+    poll_until,
+    try_find_deploy,
+    wait_for_block_visible,
+    wait_for_lfb_at_least,
+    wait_for_sender_blocks_stable,
+)
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
-
-
-def _get_lfb_number(node) -> int:
-    try:
-        return node.last_finalized_block().blockInfo.blockNumber
-    except Exception:
-        return 0
-
-
-def _poll_lfb_advances(node, baseline, target_advance, timeout):
-    """Poll until node's LFB advances by at least target_advance from baseline."""
-    target = baseline + target_advance
-    return poll_until(
-        predicate=lambda: (
-            _get_lfb_number(node)
-            if _get_lfb_number(node) >= target
-            else None
-        ),
-        timeout=timeout,
-        interval=5.0,
-        description=f"{node.name} LFB >= #{target}",
-    )
 
 
 def _poll_lfb_stalls(nodes, duration, interval=5.0):
@@ -50,12 +35,12 @@ def _poll_lfb_stalls(nodes, duration, interval=5.0):
     Returns True if LFB was stable (no advancement). Raises AssertionError
     if any node's LFB advances during the observation window.
     """
-    initial_lfbs = {n.name: _get_lfb_number(n) for n in nodes}
+    initial_lfbs = {n.name: lfb_number(n) for n in nodes}
     deadline = time.time() + duration
     while time.time() < deadline:
         time.sleep(interval)
         for node in nodes:
-            current = _get_lfb_number(node)
+            current = lfb_number(node)
             if current > initial_lfbs[node.name]:
                 raise AssertionError(
                     f"{node.name} LFB advanced from #{initial_lfbs[node.name]} "
@@ -101,14 +86,14 @@ def test_validator_failure_recovery(provider, timeouts) -> None:
         v3.deploy_string('@"pre-kill-v3"!(3)', VALIDATOR3_ID.private_key())
 
         # Wait for initial finalization
-        baseline_lfb = _get_lfb_number(v1)
+        baseline_lfb = lfb_number(v1)
         if baseline_lfb == 0:
             poll_until(
-                predicate=lambda: _get_lfb_number(v1) if _get_lfb_number(v1) > 0 else None,
+                predicate=lambda: lfb_number(v1) if lfb_number(v1) > 0 else None,
                 timeout=timeouts.finalization, interval=5.0,
                 description="initial LFB > 0",
             )
-            baseline_lfb = _get_lfb_number(v1)
+            baseline_lfb = lfb_number(v1)
 
         logging.info("Baseline LFB: #%d", baseline_lfb)
 
@@ -122,10 +107,10 @@ def test_validator_failure_recovery(provider, timeouts) -> None:
 
         # V1 and V2 should still finalize (FT=0.33 > 0.1)
         logging.info("Verifying V1+V2 continue finalizing without V3...")
-        _poll_lfb_advances(v1, baseline_lfb, 3, timeouts.finalization * 3)
-        _poll_lfb_advances(v2, baseline_lfb, 3, timeouts.finalization * 3)
+        wait_for_lfb_at_least(v1, baseline_lfb + 3, timeouts.finalization * 3)
+        wait_for_lfb_at_least(v2, baseline_lfb + 3, timeouts.finalization * 3)
 
-        post_kill_lfb = _get_lfb_number(v1)
+        post_kill_lfb = lfb_number(v1)
         logging.info("V1 LFB after V3 kill: #%d (advanced %d blocks)",
                      post_kill_lfb, post_kill_lfb - baseline_lfb)
 
@@ -147,11 +132,11 @@ def test_validator_failure_recovery(provider, timeouts) -> None:
         v3.deploy_string('@"post-restart-v3"!(300)', VALIDATOR3_ID.private_key())
 
         # All nodes should converge and advance LFB
-        post_restart_baseline = _get_lfb_number(v1)
+        post_restart_baseline = lfb_number(v1)
         for node in all_nodes:
-            _poll_lfb_advances(node, post_restart_baseline, 3, timeouts.finalization * 3)
+            wait_for_lfb_at_least(node, post_restart_baseline + 3, timeouts.finalization * 3)
 
-        final_lfbs = {n.name: _get_lfb_number(n) for n in all_nodes}
+        final_lfbs = {n.name: lfb_number(n) for n in all_nodes}
         logging.info("Final LFBs after V3 restart: %s", final_lfbs)
 
         # All nodes should be close
@@ -207,34 +192,49 @@ def test_validator_failure_halts_finalization(provider, timeouts) -> None:
         v2.deploy_string('@"pre-halt-v2"!(2)', VALIDATOR2_ID.private_key())
         v3.deploy_string('@"pre-halt-v3"!(3)', VALIDATOR3_ID.private_key())
 
-        baseline_lfb = _get_lfb_number(v1)
+        baseline_lfb = lfb_number(v1)
         if baseline_lfb == 0:
             poll_until(
-                predicate=lambda: _get_lfb_number(v1) if _get_lfb_number(v1) > 0 else None,
+                predicate=lambda: lfb_number(v1) if lfb_number(v1) > 0 else None,
                 timeout=timeouts.finalization, interval=5.0,
                 description="initial LFB > 0",
             )
-            baseline_lfb = _get_lfb_number(v1)
+            baseline_lfb = lfb_number(v1)
 
         # Ensure LFB advances with all 3 alive
-        _poll_lfb_advances(v1, baseline_lfb, 3, timeouts.finalization * 3)
-        pre_kill_lfb = _get_lfb_number(v1)
-        logging.info("Pre-kill LFB: #%d (FTT=0.67, all 3 validators finalizing)", pre_kill_lfb)
+        wait_for_lfb_at_least(v1, baseline_lfb + 3, timeouts.finalization * 3)
+        logging.info("Pre-kill LFB: #%d (FTT=0.67, all 3 validators finalizing)",
+                     lfb_number(v1))
 
         # ── Kill V3 ──
         logging.info("Pausing V3 to simulate validator failure...")
         v3.pause()
 
-        # Deploy on V1+V2 to generate blocks
+        # Drain in-flight finalization. V3's votes cast before pause are
+        # already in V1/V2's gossip; blocks at >=FTT support continue
+        # finalizing until V1's LFB advances past V3's last contribution.
+        # Detect drain causally: (1) wait for V1's view of V3's max block
+        # to stop moving (no more V3 blocks in flight), then (2) wait for
+        # V1's LFB to surpass that height. Any later finalization needs a
+        # fresh V3 vote which can't come — V3 is paused.
+        v3_last_height = wait_for_sender_blocks_stable(
+            v1, VALIDATOR3_ID.public_hex, timeout=timeouts.finalization,
+        )
+        logging.info("V3 last contribution to V1's view: block #%d", v3_last_height)
+        wait_for_lfb_at_least(v1, v3_last_height + 1, timeouts.finalization)
+        post_kill_lfb = lfb_number(v1)
+        logging.info("V1 LFB advanced to #%d past V3's last block — drain complete",
+                     post_kill_lfb)
+
+        # Deploy on V1+V2 to force NEW block proposals. Built post-drain,
+        # these can only collect V1+V2 votes (FT=0.33 < FTT=0.67) — must
+        # NOT finalize.
         v1.deploy_string('@"post-halt-v1"!(10)', VALIDATOR1_ID.private_key())
         v2.deploy_string('@"post-halt-v2"!(20)', VALIDATOR2_ID.private_key())
 
-        # Finalization should STOP — FT=0.33 is NOT > 0.67
+        # Steady-state assertion: no finalization within 30s.
         logging.info("Verifying finalization halts with only V1+V2 (FT=0.33 < 0.67)...")
         _poll_lfb_stalls([v1, v2], duration=30, interval=5.0)
-        post_kill_lfb = _get_lfb_number(v1)
-        logging.info("V1 LFB after 30s stall: #%d (unchanged from #%d)",
-                     post_kill_lfb, pre_kill_lfb)
 
         # ── Restart V3 ──
         logging.info("Unpausing V3...")
@@ -248,9 +248,9 @@ def test_validator_failure_halts_finalization(provider, timeouts) -> None:
         # Finalization should resume
         logging.info("Verifying finalization resumes after V3 restart...")
         for node in all_nodes:
-            _poll_lfb_advances(node, post_kill_lfb, 3, timeouts.finalization * 3)
+            wait_for_lfb_at_least(node, post_kill_lfb + 3, timeouts.finalization * 3)
 
-        final_lfbs = {n.name: _get_lfb_number(n) for n in all_nodes}
+        final_lfbs = {n.name: lfb_number(n) for n in all_nodes}
         logging.info("Final LFBs after V3 restart: %s", final_lfbs)
 
         logging.info("Validator failure halts finalization test passed (FTT=0.67)")
@@ -302,17 +302,17 @@ def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
         v2.deploy_string('@"pre-boundary-v2"!(2)', VALIDATOR2_ID.private_key())
         v3.deploy_string('@"pre-boundary-v3"!(3)', VALIDATOR3_ID.private_key())
 
-        baseline_lfb = _get_lfb_number(v1)
+        baseline_lfb = lfb_number(v1)
         if baseline_lfb == 0:
             poll_until(
-                predicate=lambda: _get_lfb_number(v1) if _get_lfb_number(v1) > 0 else None,
+                predicate=lambda: lfb_number(v1) if lfb_number(v1) > 0 else None,
                 timeout=timeouts.finalization, interval=5.0,
                 description="initial LFB > 0",
             )
-            baseline_lfb = _get_lfb_number(v1)
+            baseline_lfb = lfb_number(v1)
 
-        _poll_lfb_advances(v1, baseline_lfb, 3, timeouts.finalization * 3)
-        pre_kill_lfb = _get_lfb_number(v1)
+        wait_for_lfb_at_least(v1, baseline_lfb + 3, timeouts.finalization * 3)
+        pre_kill_lfb = lfb_number(v1)
         logging.info("Pre-kill LFB: #%d (FTT=0.5, all 3 finalizing)", pre_kill_lfb)
 
         # ── Kill V3 (50 stake) ──
@@ -378,7 +378,7 @@ def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
                         )
             time.sleep(2.0)
         logging.info("Post-pause blocks remained non-finalized for 30s as expected")
-        post_kill_lfb = _get_lfb_number(v1)
+        post_kill_lfb = lfb_number(v1)
         logging.info(
             "V1 LFB after observation: #%d (pre-kill was #%d) — any LFB "
             "advance came from V3's pre-pause in-flight votes finalizing "
@@ -396,9 +396,9 @@ def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
 
         logging.info("Verifying finalization resumes after V3 restart...")
         for node in all_nodes:
-            _poll_lfb_advances(node, post_kill_lfb, 3, timeouts.finalization * 3)
+            wait_for_lfb_at_least(node, post_kill_lfb + 3, timeouts.finalization * 3)
 
-        final_lfbs = {n.name: _get_lfb_number(n) for n in all_nodes}
+        final_lfbs = {n.name: lfb_number(n) for n in all_nodes}
         logging.info("Final LFBs after V3 restart: %s", final_lfbs)
 
         logging.info("FTT boundary strict > test passed (FT=0.5 halts at FTT=0.5)")
@@ -458,14 +458,14 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
         v2.deploy_string('@"pre-epoch-v2"!(2)', VALIDATOR2_ID.private_key())
 
         # Wait for initial finalization
-        baseline_lfb = _get_lfb_number(v1)
+        baseline_lfb = lfb_number(v1)
         if baseline_lfb == 0:
             poll_until(
-                predicate=lambda: _get_lfb_number(v1) if _get_lfb_number(v1) > 0 else None,
+                predicate=lambda: lfb_number(v1) if lfb_number(v1) > 0 else None,
                 timeout=timeouts.finalization, interval=5.0,
                 description="initial LFB > 0",
             )
-            baseline_lfb = _get_lfb_number(v1)
+            baseline_lfb = lfb_number(v1)
         logging.info("Baseline LFB: #%d", baseline_lfb)
 
         # Bond the joiner via PoS contract (deploy on V1)
@@ -502,7 +502,7 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
             logging.info("Joiner synced to block #%d", bond_block.blockNumber)
 
             # Record LFB before epoch transition
-            pre_epoch_lfb = _get_lfb_number(v1)
+            pre_epoch_lfb = lfb_number(v1)
             logging.info("Pre-epoch LFB: #%d", pre_epoch_lfb)
 
             # Wait for chain to advance well past at least one epoch boundary
@@ -510,8 +510,8 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
             target_lfb = max(pre_epoch_lfb + 8, 12)
             logging.info("Waiting for LFB >= #%d (past epoch boundary)...", target_lfb)
 
-            _poll_lfb_advances(v1, 0, target_lfb, timeouts.finalization * 5)
-            post_epoch_lfb = _get_lfb_number(v1)
+            wait_for_lfb_at_least(v1, target_lfb, timeouts.finalization * 5)
+            post_epoch_lfb = lfb_number(v1)
             logging.info("Post-epoch LFB: #%d", post_epoch_lfb)
 
             # Verify finalization continued throughout (no stall)
@@ -521,7 +521,7 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
 
             # Verify V2 and readonly also advanced
             for node in all_nodes:
-                node_lfb = _get_lfb_number(node)
+                node_lfb = lfb_number(node)
                 assert node_lfb >= target_lfb - 3, (
                     f"{node.name} LFB #{node_lfb} too far behind target #{target_lfb}"
                 )
@@ -590,14 +590,14 @@ def test_merge_determinism_asymmetric_divergence(provider, timeouts) -> None:
         v3.deploy_string('@"pre-diverge-v3"!(3)', VALIDATOR3_ID.private_key())
 
         # Wait for initial finalization
-        baseline_lfb = _get_lfb_number(v1)
+        baseline_lfb = lfb_number(v1)
         if baseline_lfb == 0:
             poll_until(
-                predicate=lambda: _get_lfb_number(v1) if _get_lfb_number(v1) > 0 else None,
+                predicate=lambda: lfb_number(v1) if lfb_number(v1) > 0 else None,
                 timeout=timeouts.finalization, interval=5.0,
                 description="initial LFB > 0",
             )
-            baseline_lfb = _get_lfb_number(v1)
+            baseline_lfb = lfb_number(v1)
         logging.info("Baseline LFB: #%d", baseline_lfb)
 
         # ── Pause V1 (heaviest, 60 stake) ──
@@ -614,7 +614,7 @@ def test_merge_determinism_asymmetric_divergence(provider, timeouts) -> None:
 
         # Wait for all nodes to advance LFB
         for node in all_nodes:
-            _poll_lfb_advances(node, baseline_lfb, 3, timeouts.finalization * 3)
+            wait_for_lfb_at_least(node, baseline_lfb + 3, timeouts.finalization * 3)
 
         # Get a recent block that all validators should agree on
         v1_lfb = v1.last_finalized_block()
@@ -649,7 +649,7 @@ def test_merge_determinism_asymmetric_divergence(provider, timeouts) -> None:
         # propagation can leave V1 several blocks ahead at the moment of
         # the initial check. Poll instead of asserting a one-shot snapshot.
         def _converged():
-            lfbs = {n.name: _get_lfb_number(n) for n in all_nodes}
+            lfbs = {n.name: lfb_number(n) for n in all_nodes}
             return lfbs if max(lfbs.values()) - min(lfbs.values()) <= 3 else None
 
         try:
@@ -660,7 +660,7 @@ def test_merge_determinism_asymmetric_divergence(provider, timeouts) -> None:
                 description="LFB spread <= 3 after asymmetric merge",
             )
         except TimeoutError:
-            final_lfbs = {n.name: _get_lfb_number(n) for n in all_nodes}
+            final_lfbs = {n.name: lfb_number(n) for n in all_nodes}
             spread = max(final_lfbs.values()) - min(final_lfbs.values())
             raise AssertionError(
                 f"LFB spread {spread} exceeds 3 after asymmetric merge "
