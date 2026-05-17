@@ -36,7 +36,7 @@ __all__ = [
     "wait_for_block_visible_on_all_nodes",
     "lfb_number",
     "wait_for_lfb_at_least",
-    "wait_for_sender_blocks_stable",
+    "wait_for_lfb_stable",
     "DeployError",
 ]
 
@@ -154,39 +154,29 @@ def wait_for_lfb_at_least(
     )
 
 
-def wait_for_sender_blocks_stable(
-    node, sender_hex: str, timeout: int,
-    interval: float = 1.0, depth: int = 20,
+def wait_for_lfb_stable(
+    node, timeout: int, interval: float = 5.0,
 ) -> int:
-    """Poll ``node``'s view of the highest block proposed by ``sender_hex``
-    until two consecutive reads agree, and return that height.
+    """Poll ``node``'s LFB until two consecutive reads agree and return
+    the stable height. Causal detector for "finalization pipeline has
+    drained" — exits as soon as the LFB has not changed for one full
+    ``interval``.
 
-    Use after pausing/killing a validator: blocks the paused validator
-    already sent may still be in flight to ``node``'s RX queue. Once two
-    consecutive snapshots show the same max-height, ``node`` has drained
-    everything the sender contributed — a causal detection of "no more
-    blocks from this sender are coming," not a fixed wait. Returns ``0``
-    if the sender has no visible blocks within ``depth``.
+    Use after a perturbation (validator pause/kill, network partition)
+    where existing in-flight finalization should be allowed to settle
+    before asserting on the steady-state behavior.
     """
     deadline = time.time() + timeout
-
-    def _max_by_sender() -> int:
-        return max(
-            (b.blockNumber for b in node.get_blocks(depth=depth)
-             if b.sender == sender_hex),
-            default=0,
-        )
-
-    last = _max_by_sender()
+    last = lfb_number(node)
     while time.time() < deadline:
         time.sleep(interval)
-        current = _max_by_sender()
+        current = lfb_number(node)
         if current == last:
             return current
         last = current
     raise TimeoutError(
-        f"{node.name} view of sender {sender_hex[:16]}... did not stabilize "
-        f"within {timeout}s (last observed height: #{last})"
+        f"{node.name} LFB did not stabilize within {timeout}s "
+        f"(last observed: #{last})"
     )
 
 

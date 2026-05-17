@@ -24,7 +24,7 @@ Kill V3 (pause container), verify V1+V2 continue finalizing. With FTT=0.1, FT fo
 
 Pause V3, drain the finalization pipeline of any V3 votes already in V1's gossip, then deploy fresh blocks on V1+V2 and verify they do NOT finalize. With FTT=0.67, FT for 2/3 = 0.33 which is NOT > 0.67. Restart V3, verify finalization resumes on all nodes.
 
-The drain is detected causally — not by sleeping. After `v3.pause()`, the test polls V1's view of V3's latest block until two consecutive snapshots agree (so any in-flight V3 block has landed), then waits for V1's LFB to advance past V3's last contribution. After that any future finalization would need a fresh V3 vote, which can't come. Only then does the test deploy V1+V2 blocks and assert no advancement for 30s.
+The drain is detected causally — not by sleeping. After `v3.pause()`, `wait_for_lfb_stable` polls V1's LFB until two consecutive reads agree, signaling that the finalization pipeline has consumed everything V3 contributed pre-pause. The LFB settles short of V3's last block (which needed another validator's vote to finalize, and V1+V2 alone are 0.667 — not > 0.67). Only then does the test deploy V1+V2 blocks and assert no advancement for 30s.
 
 **What it proves:** FTT=0.67 (production default) requires all 3 equal-stake validators. Once V3 is dead and the pre-pause pipeline has drained, new V1+V2-only blocks cannot finalize — the safety margin is enforced.
 
@@ -65,7 +65,7 @@ Pause V1 (heaviest validator, 60 stake) for 30 seconds. V2+V3 produce independen
 - Per-test `Shard.create()` / `shard.destroy()` with custom configs
 - `shard.add_joiner()` for epoch transition test
 - `Node.pause()` / `Node.unpause()` for validator failure simulation
-- `wait_for_lfb_at_least` / `wait_for_sender_blocks_stable` / `lfb_number` ([`infra/polling.py`](../infra/polling.py)) for causal LFB-based waits; `_poll_lfb_stalls` (file-local) for the steady-state no-advancement assertion
+- `wait_for_lfb_at_least` / `wait_for_lfb_stable` / `lfb_number` ([`infra/polling.py`](../infra/polling.py)) for causal LFB-based waits; `_poll_lfb_stalls` (file-local) for the steady-state no-advancement assertion
 - `assert_all_nodes_agree_on_block()` for post-state agreement
 - `wait_for_block_visible()` / `wait_for_deploy_included()` for synchronization
 - `check_node_logs_after_test` autouse fixture for fatal-log detection (panics + `FATAL_PATTERNS`; see [ARCHITECTURE.md § 7](ARCHITECTURE.md#7-log-scanning))

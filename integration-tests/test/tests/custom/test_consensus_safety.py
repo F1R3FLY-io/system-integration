@@ -22,7 +22,7 @@ from ...infra.polling import (
     try_find_deploy,
     wait_for_block_visible,
     wait_for_lfb_at_least,
-    wait_for_sender_blocks_stable,
+    wait_for_lfb_stable,
 )
 from ...infra.shard import Shard
 
@@ -211,20 +211,15 @@ def test_validator_failure_halts_finalization(provider, timeouts) -> None:
         v3.pause()
 
         # Drain in-flight finalization. V3's votes cast before pause are
-        # already in V1/V2's gossip; blocks at >=FTT support continue
-        # finalizing until V1's LFB advances past V3's last contribution.
-        # Detect drain causally: (1) wait for V1's view of V3's max block
-        # to stop moving (no more V3 blocks in flight), then (2) wait for
-        # V1's LFB to surpass that height. Any later finalization needs a
-        # fresh V3 vote which can't come — V3 is paused.
-        v3_last_height = wait_for_sender_blocks_stable(
-            v1, VALIDATOR3_ID.public_hex, timeout=timeouts.finalization,
-        )
-        logging.info("V3 last contribution to V1's view: block #%d", v3_last_height)
-        wait_for_lfb_at_least(v1, v3_last_height + 1, timeouts.finalization)
-        post_kill_lfb = lfb_number(v1)
-        logging.info("V1 LFB advanced to #%d past V3's last block — drain complete",
-                     post_kill_lfb)
+        # already in V1/V2's gossip; blocks V3 endorsed continue finalizing
+        # until the pipeline has consumed them. wait_for_lfb_stable polls
+        # V1's LFB until two consecutive reads agree — causal "drain done"
+        # signal that fires the instant LFB stops advancing, wherever it
+        # lands. V1's LFB tops out short of V3's last block: that last
+        # block needs another validator's later vote to finalize, and
+        # FTT=0.67 means V1+V2 alone (0.667) cannot provide it.
+        post_kill_lfb = wait_for_lfb_stable(v1, timeout=timeouts.finalization)
+        logging.info("V1 LFB settled at #%d — drain complete", post_kill_lfb)
 
         # Deploy on V1+V2 to force NEW block proposals. Built post-drain,
         # these can only collect V1+V2 votes (FT=0.33 < FTT=0.67) — must
