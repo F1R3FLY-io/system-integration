@@ -89,37 +89,42 @@ def test_validator1_pay_validator2(shared_shard, timeouts) -> None:
     assert v1_balance_v1 > 0
     logging.info("V1 balance: readonly=%d, V1 deploy=%d", v1_balance_ro, v1_balance_v1)
 
-    v2_balance_before = ro.vault.get_balance(v2_vault)
-
     result, canonical_block_hash = _transfer_and_read_result(
         v1, v1_vault, v2_vault, transfer_amount, v1_key, timeouts,
         all_nodes=shared_shard.all_nodes,
     )
     assert result.success, f"Transfer failed: {result.reason}"
 
-    # Poll readonly for the balance AT the transfer's canonical block. Pinning
-    # avoids the resolver-FINALIZED vs state-anchor lag (tracker #9). Use ``>=``
-    # because V2 is a validator and can accrue small proposer-reward credits
-    # in blocks between the v2_balance_before read and the canonical block.
-    expected_minimum = v2_balance_before + transfer_amount
+    # Verify the transfer by comparing V2's balance immediately before and
+    # after the canonical transfer block, both anchored to the same lineage.
+    # Without anchoring, an unanchored "balance before" read uses readonly's
+    # current LFB which can sit on a sibling branch with different proposer
+    # rewards than the canonical block — the cross-branch delta produces
+    # spurious off-by-N noise that masks (or fakes) the real transfer effect.
+    # Use ``>=`` because V2 can also propose the canonical block and earn a
+    # proposer reward in the same block, which adds to the transfer delta.
+    canonical_block = ro.get_block(canonical_block_hash)
+    canonical_parent = canonical_block.blockInfo.parentsHashList[0]
+    v2_pre = ro.vault.get_balance(v2_vault, block_hash=canonical_parent)
+    expected_minimum = v2_pre + transfer_amount
 
     def _balance_updated():
         bal = ro.vault.get_balance(v2_vault, block_hash=canonical_block_hash)
         return bal if bal >= expected_minimum else None
 
-    v2_balance_after = poll_until(
+    v2_post = poll_until(
         predicate=_balance_updated,
         timeout=timeouts.finalization,
         interval=5.0,
         description="V2 balance reflects transfer at canonical block",
     )
 
-    assert v2_balance_after >= expected_minimum
+    assert v2_post >= expected_minimum
 
     logging.info(
-        "Transfer verified: V2 balance %d -> %d (+%d, expected >=+%d)",
-        v2_balance_before, v2_balance_after,
-        v2_balance_after - v2_balance_before, transfer_amount,
+        "Transfer verified: V2 balance %d -> %d across canonical block "
+        "(+%d, expected >=+%d)",
+        v2_pre, v2_post, v2_post - v2_pre, transfer_amount,
     )
 
 
@@ -135,10 +140,8 @@ def test_validator2_pay_validator3(shared_shard, timeouts) -> None:
     v3_vault = VALIDATOR3_ID.private_key().get_public_key().get_vault_address()
     transfer_amount = 10_000_000
 
-    v2_balance_before = ro.vault.get_balance(v2_vault)
-    assert v2_balance_before > 0
-
-    v3_balance_before = ro.vault.get_balance(v3_vault)
+    # V2 balance sanity check (any anchor — just confirms vault exists)
+    assert ro.vault.get_balance(v2_vault) > 0
 
     result, canonical_block_hash = _transfer_and_read_result(
         v2, v2_vault, v3_vault, transfer_amount, v2_key, timeouts,
@@ -146,27 +149,31 @@ def test_validator2_pay_validator3(shared_shard, timeouts) -> None:
     )
     assert result.success, f"Transfer failed: {result.reason}"
 
-    # Pin to canonical block + use ``>=`` — see test_validator1_pay_validator2
-    # for the rationale (#9 lag + validator proposer-reward income).
-    expected_minimum = v3_balance_before + transfer_amount
+    # Anchor both balance reads to the canonical block's lineage so the delta
+    # captures only the transfer block's effect. See
+    # test_validator1_pay_validator2 for the rationale (cross-branch noise).
+    canonical_block = ro.get_block(canonical_block_hash)
+    canonical_parent = canonical_block.blockInfo.parentsHashList[0]
+    v3_pre = ro.vault.get_balance(v3_vault, block_hash=canonical_parent)
+    expected_minimum = v3_pre + transfer_amount
 
     def _balance_updated():
         bal = ro.vault.get_balance(v3_vault, block_hash=canonical_block_hash)
         return bal if bal >= expected_minimum else None
 
-    v3_balance_after = poll_until(
+    v3_post = poll_until(
         predicate=_balance_updated,
         timeout=timeouts.finalization,
         interval=5.0,
         description="V3 balance reflects transfer at canonical block",
     )
 
-    assert v3_balance_after >= expected_minimum
+    assert v3_post >= expected_minimum
 
     logging.info(
-        "Transfer verified: V3 balance %d -> %d (+%d, expected >=+%d)",
-        v3_balance_before, v3_balance_after,
-        v3_balance_after - v3_balance_before, transfer_amount,
+        "Transfer verified: V3 balance %d -> %d across canonical block "
+        "(+%d, expected >=+%d)",
+        v3_pre, v3_post, v3_post - v3_pre, transfer_amount,
     )
 
 
