@@ -318,9 +318,31 @@ def test_last_finalized_block(shared_shard, node_conf, timeouts) -> None:
     v1 = shared_shard.node("validator1")
     _deploy_and_wait(v1, timeouts, all_nodes=shared_shard.all_nodes)
 
+    # Poll until all nodes' HTTP /last-finalized-block returns the same hash.
+    # Observers (boot, readonly) lag validators in LFB-pointer updates by a
+    # few seconds — validators have direct access to their own finalization
+    # votes; observers must receive enough votes via gossip and re-run the
+    # finalization decision locally. A one-shot snapshot can land in that
+    # observer-lag window and see a 2-vs-3 hash split; polling resolves it
+    # within a few seconds.
+    def _snapshot_when_agreed():
+        snap = {n.name: n.api_get("/last-finalized-block") for n in shared_shard.all_nodes}
+        hashes = {n: s["blockInfo"]["blockHash"] for n, s in snap.items()}
+        if len(set(hashes.values())) == 1:
+            return snap
+        return None
+
+    lfb_data_full = poll_until(
+        _snapshot_when_agreed,
+        timeout=timeouts.finalization,
+        interval=2.0,
+        description="HTTP /last-finalized-block hash agreement across all nodes",
+    )
+
+    # Per-node validations on the agreed snapshot.
     lfb_data = {}
     for node in shared_shard.all_nodes:
-        lfb = node.api_get("/last-finalized-block")
+        lfb = lfb_data_full[node.name]
         assert "blockInfo" in lfb, f"{node.name}: missing blockInfo"
         assert "deploys" in lfb, f"{node.name}: missing deploys"
 
@@ -350,14 +372,8 @@ def test_last_finalized_block(shared_shard, node_conf, timeouts) -> None:
         lfb_data[node.name] = info
         logging.info("%s: LFB #%d, FT=%s", node.name, info["blockNumber"], info["faultTolerance"])
 
-    # All nodes should agree on LFB
-    lfb_hashes = {n: d["blockHash"] for n, d in lfb_data.items()}
-    assert len(set(lfb_hashes.values())) == 1, (
-        f"Nodes disagree on LFB hash: {lfb_hashes}"
-    )
-
     # Cross-check: HTTP FT matches gRPC FT for the same block
-    lfb_hash = list(lfb_hashes.values())[0]
+    lfb_hash = lfb_data[shared_shard.all_nodes[0].name]["blockHash"]
     for node in shared_shard.all_nodes:
         grpc_block = node.get_block(lfb_hash)
         grpc_ft = float(grpc_block.blockInfo.faultTolerance)
