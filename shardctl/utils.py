@@ -84,11 +84,17 @@ def clone_services(service_repos: Dict[str, Dict], services_dir: Path, force: bo
 
             # Extract URL and branch
             repo_url = (
-                repo_config.get("url", repo_config)
-                if isinstance(repo_config, dict)
-                else repo_config
+                repo_config.get("url") if isinstance(repo_config, dict) else repo_config
             )
             branch = repo_config.get("branch") if isinstance(repo_config, dict) else None
+
+            # Some entries in services.yml have no `url` (e.g. monitoring — a
+            # compose-only service that lives in this repo). Nothing to clone.
+            if not repo_url:
+                console.print(
+                    f"[dim]Skipping {service_name}: no repository URL configured[/dim]"
+                )
+                continue
 
             # Check if service already exists
             if service_path.exists():
