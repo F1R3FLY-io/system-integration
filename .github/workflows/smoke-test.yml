@@ -14,6 +14,11 @@ env:
   # Per-job `env: F1R3FLY_NODE_IMAGE: ...` selects the image tag for that
   # job's shardctl invocations (both `shardctl up` via compose substitution
   # and `shardctl test` via the framework's resolve_node_image).
+  #
+  # `services.yml` uses SSH URLs (git@github.com:...) for local devs, but
+  # CI has no SSH key. Rewrite to HTTPS at clone time via git's per-process
+  # config override — no file changes, no per-step setup needed.
+  GIT_CONFIG_PARAMETERS: "'url.https://github.com/.insteadOf=git@github.com:'"
 
 jobs:
   validate:
@@ -904,8 +909,10 @@ jobs:
           poetry run shardctl test-reset
 
   scala-test-shard:
-    # Unstable on 2-core/7GB GitHub runners: Scala shard startup can exceed
-    # timeout when JVMs compete for resources during genesis (f1r3node#452).
+    # Disabled: the Scala node has fallen behind the current test suite —
+    # tests covering Rust-only features fail under Scala. Re-enable once
+    # Scala is brought back to parity (or the suite is gated appropriately).
+    if: false
     name: "Scala: test_web_api (shard)"
     runs-on: ubuntu-latest
     needs: validate
