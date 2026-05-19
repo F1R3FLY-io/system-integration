@@ -2,7 +2,7 @@
 
 ## Purpose
 
-**Negative-control / forward-regression** for [docs/TODO.md §2.15](../../../../docs/TODO.md). Originally designed to deterministically reproduce the bug observed in v19 of `test_bonding_validators` (joiner silently dropped from bonds when self-proposing first epoch-boundary block). After 6 variants — linear, concurrent multi-parent, V4 lagging, continuous bg proposers, multi-iteration scan covering 4 epoch boundaries — the bug **does not reproduce** under deterministic manual propose control.
+**Negative-control / forward-regression** for the bug observed in v19 of `test_bonding_validators` (joiner silently dropped from bonds when self-proposing first epoch-boundary block). After 6 variants — linear, concurrent multi-parent, V4 lagging, continuous bg proposers, multi-iteration scan covering 4 epoch boundaries — the bug **does not reproduce** under deterministic manual propose control.
 
 The test is preserved as:
 1. **Negative control** — proves the simple architectural shape (joiner produces first epoch-boundary block + multi-parent merges + bg chaos) is **not sufficient** to trigger §2.15. The bug needs something more — most likely the heartbeat-driven actor-message timing race that manual propose can't replicate.
@@ -85,10 +85,8 @@ The test does **NOT** opt out of any forbidden patterns by default. §2.15 is a 
 
 ## Related
 
-- [docs/TODO.md §2.15](../../../../docs/TODO.md) — bug entry with full mechanism + repro path
-- [test_bonding_validators](test_bonding_validators.md) — heartbeat-driven test that exposes §2.15 ~33% of the time as a flake
+- [test_bonding_validators](test_bonding_validators.md) — heartbeat-driven test that exposes the bug ~33% of the time as a flake
 - [PoS.rhox](../../../services/f1r3node-rust/casper/src/main/resources/PoS.rhox) — `closeBlock` (line 559) and `pickActiveValidators` (line 790)
-- [project_bonding_bug.md memory](../../../.claude/...) — V5 second-bond `InvalidBondsCache` (different surface, same bug family)
 
 ## Notes for future maintenance
 

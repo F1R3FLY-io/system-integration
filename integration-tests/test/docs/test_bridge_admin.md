@@ -77,5 +77,4 @@ Queries use `deploy_and_read()` (real deploy — creates blocks, exercises cross
 ## Related
 
 - [bridge-v2.rho](../../resources/bridge-v2.rho) -- the bridge contract
-- [bridge.rho](../../resources/bridge.rho) -- the original bridge contract (v1, with admin API)
 - f1r3node-rust PR #468 -- Blake2b512Random count_view bug fix (resolved bridge admin issue)
