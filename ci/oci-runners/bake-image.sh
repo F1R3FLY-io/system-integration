@@ -57,6 +57,11 @@ GOLDEN_NAME="ci-runner-golden-$ARCH-$TS"
 IMAGE_NAME="ci-runner-image-$ARCH-$TS"
 
 SSH_KEY_PUB_RESOLVED="${SSH_KEY_PUB/#\~/$HOME}"
+# Resolve relative paths against the script's own directory so the script
+# can be invoked from any cwd (e.g. the repo root in CI / agent workflows).
+if [[ "$SSH_KEY_PUB_RESOLVED" != /* ]]; then
+  SSH_KEY_PUB_RESOLVED="$SCRIPT_DIR/$SSH_KEY_PUB_RESOLVED"
+fi
 
 echo "=== [1/6] Launching golden instance $GOLDEN_NAME ==="
 INSTANCE_OCID=$(oci compute instance launch \
