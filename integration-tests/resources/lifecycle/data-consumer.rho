@@ -1,0 +1,18 @@
+// Data consumer contract for contract-to-contract interaction test.
+// Looks up a provider contract by URI, calls getData, returns the result.
+// The provider URI is injected via @provider_uri@ substitution.
+new
+  deployId(`rho:system:deployId`),
+  lookup(`rho:registry:lookup`),
+  ch
+in {
+  lookup!(`@provider_uri@`, *ch) |
+  for (provider <- ch) {
+    new ret in {
+      provider!("getData", *ret) |
+      for (@result <- ret) {
+        deployId!(result)
+      }
+    }
+  }
+}

@@ -1,74 +1,179 @@
 # Docker Compose Structure
 
-This repository uses a modular compose file structure. Each service has its own compose file in the `compose/` directory and is managed by `shardctl`.
+Canonical reference for the production compose files in `compose/`. Each file is a single, mutually-exclusive topology (or a service stack). All are managed by `shardctl up`; integration tests bypass these and generate compose YAML dynamically (see [integration-tests/test/docs/ARCHITECTURE.md](integration-tests/test/docs/ARCHITECTURE.md)).
 
-## Files
+---
 
-### compose/f1r3node.yml (F1R3node Scala Shard)
-**Purpose:** Core blockchain infrastructure (Scala, multi-node)
-**Services:** boot, validator1-3, readonly (F1R3FLY blockchain nodes)
-**Creates:** `f1r3fly` network
+## File inventory
 
-### compose/f1r3node-rust.yml (F1R3node Rust Shard)
-**Purpose:** Core blockchain infrastructure (Rust, multi-node)
-**Services:** boot, validator1-3, readonly
+### F1R3node (blockchain)
 
-### compose/f1r3sky.yml (AT Protocol Stack)
-**Purpose:** AT Protocol social media services
-**Services:**
-- postgres, redis (infrastructure)
-- bsky, pds, bsync, ozone (AT Protocol services)
-- f1r3sky (frontend web app)
+| File | Topology | Validators | Image default |
+|---|---|---|---|
+| `compose/f1r3node.yml` | Scala shard | bootstrap + 3 + readonly | `f1r3flyindustries/f1r3fly-scala-node:latest` |
+| `compose/f1r3node-rust.yml` | Rust shard | bootstrap + 3 + readonly | `f1r3flyindustries/f1r3fly-rust:latest` |
+| `compose/f1r3node-standalone.yml` | Scala standalone | 1 (single-node, no peers) | scala-node:latest |
+| `compose/f1r3node-rust-standalone.yml` | Rust standalone | 1 | rust-node:latest |
+| `compose/f1r3node-shard-light.yml` | Scala light shard | bootstrap + 2 (~7.5 GB RAM) | scala-node:latest |
+| `compose/f1r3node-observer.yml` | Scala read-only observer | (joins existing shard) | scala-node:latest |
+| `compose/f1r3node-rust-observer.yml` | Rust read-only observer | (joins existing shard) | rust-node:latest |
+| `compose/f1r3node-validator4.yml` | Scala 4th validator | (joins existing shard) | scala-node:latest |
+| `compose/f1r3node-rust-validator4.yml` | Rust 4th validator | (joins existing shard) | rust-node:latest |
 
-**Requires:** `f1r3fly` network (external)
-**Volumes:** postgres_data, redis_data, pds_blocks, pds_tmp, pds_data
+### Service stacks
 
-### compose/embers.yml (Embers Stack)
-**Purpose:** Blockchain API bridge and UI
-**Services:**
-- embers (Rust API bridging f1r3sky to f1r3node)
-- embers-frontend (React 19 web UI)
+| File | Purpose | Notes |
+|---|---|---|
+| `compose/embers.yml` | Embers API + frontend | Requires the `f1r3fly` network (external) |
+| `compose/f1r3sky.yml` | AT Protocol services (postgres, redis, bsky, pds, bsync, ozone, f1r3sky) | Requires the `f1r3fly` network (external) |
+| `compose/monitoring.yml` | Prometheus + Grafana + cAdvisor | See [Monitoring stack](#monitoring-stack) |
 
-**Requires:** `f1r3fly` network (external)
+---
 
-### compose/monitoring.yml (Monitoring Stack)
-**Purpose:** Metrics and dashboards
-**Services:** prometheus, grafana
+## Image selection
 
-### Other node configurations
-| File | Description |
-|------|-------------|
-| `compose/f1r3node-standalone.yml` | Single Scala node |
-| `compose/f1r3node-rust-standalone.yml` | Single Rust node |
-| `compose/f1r3node-observer.yml` | Scala observer node |
-| `compose/f1r3node-rust-observer.yml` | Rust observer node |
-| `compose/f1r3node-validator4.yml` | 4th Scala validator |
-| `compose/f1r3node-rust-validator4.yml` | 4th Rust validator |
+Every compose file's `image:` line uses the same env var:
+
+```yaml
+image: ${F1R3FLY_NODE_IMAGE:-<file's-own-default>}
+```
+
+When `F1R3FLY_NODE_IMAGE` is unset, each file falls back to its own default — Rust files get the Rust default, Scala files get the Scala default. To override:
+
+```bash
+F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust:dev poetry run shardctl up f1r3node-rust
+F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-scala-node:v1.2.3 poetry run shardctl up f1r3node
+```
+
+`F1R3FLY_NODE_IMAGE` is the **same env var** the integration-test framework reads (via `infra/config.py:resolve_node_image`). One variable, one mental model across `shardctl up` and `shardctl test`.
+
+---
+
+## Project naming and volumes
+
+Each compose file declares an explicit top-level `name:` so Docker Compose uses a deterministic project name (independent of the parent directory):
+
+| File | `name:` | Volume prefix |
+|---|---|---|
+| `f1r3node.yml` | `f1r3fly-scala` | `f1r3fly-scala_*-data` |
+| `f1r3node-rust.yml` | `f1r3fly-rust` | `f1r3fly-rust_*-data` |
+| `f1r3node-standalone.yml` | `f1r3fly-scala-standalone` | `f1r3fly-scala-standalone_*-data` |
+| `f1r3node-rust-standalone.yml` | `f1r3fly-rust-standalone` | `f1r3fly-rust-standalone_*-data` |
+| `f1r3node-shard-light.yml` | `f1r3fly-scala-light` | `f1r3fly-scala-light_*-data` |
+| `f1r3node-observer.yml` | `f1r3fly-scala-observer` | `f1r3fly-scala-observer_*-data` |
+| `f1r3node-rust-observer.yml` | `f1r3fly-rust-observer` | `f1r3fly-rust-observer_*-data` |
+| `f1r3node-validator4.yml` | `f1r3fly-scala-validator4` | `f1r3fly-scala-validator4_*-data` |
+| `f1r3node-rust-validator4.yml` | `f1r3fly-rust-validator4` | `f1r3fly-rust-validator4_*-data` |
+
+Cleanup convention: `shardctl reset` (and `shardctl reset --force`) prefix-scan for `f1r3fly-*` volumes and the `f1r3fly` network. Disjoint from integration-test prefixes (`f1r3fly-test-*` networks, `test-*` volumes).
+
+---
+
+## Network
+
+A single shared bridge network named `f1r3fly`, declared explicitly in every node compose file:
+
+```yaml
+networks:
+  f1r3fly:
+    name: f1r3fly
+    driver: bridge
+```
+
+Service stacks (embers, f1r3sky) attach to the same network as `external: true`, allowing them to reach the running node by container name (`rnode.bootstrap`, `rnode.validator1`, etc.).
+
+---
+
+## Container names
+
+Container names are set by env-var substitution from `.env.node` in the repo root. Defaults are stable across files:
+
+| Env var | Default | Set by |
+|---|---|---|
+| `BOOTSTRAP_HOST` | `rnode.bootstrap` | shard files |
+| `VALIDATOR1_HOST` | `rnode.validator1` | shard files |
+| `VALIDATOR2_HOST` | `rnode.validator2` | shard files |
+| `VALIDATOR3_HOST` | `rnode.validator3` | shard files |
+| `VALIDATOR4_HOST` | `rnode.validator4` | validator4 file |
+| `READONLY_HOST` | `rnode.readonly` | shard + observer files |
+| `STANDALONE_HOST` | `rnode.standalone` | standalone files |
+
+Override the env vars in `.env.node` to run multiple parallel topologies (rare; integration tests achieve this differently — see [integration-tests/test/docs/ARCHITECTURE.md](integration-tests/test/docs/ARCHITECTURE.md)).
+
+---
+
+## Port map
+
+Each node uses six internal ports (40400-40405). The host port mapping varies by topology to allow some scenarios to coexist:
+
+| Internal | Role | Bootstrap | Validator1 | Validator2 | Validator3 | Readonly |
+|---|---|---|---|---|---|---|
+| 40400 | Protocol | 40400 | 40410 | 40420 | 40430 | 40450 |
+| 40401 | gRPC ext | 40401 | 40411 | 40421 | 40431 | 40451 |
+| 40402 | gRPC int | 40402 | 40412 | 40422 | 40432 | 40452 |
+| 40403 | HTTP | 40403 | 40413 | 40423 | 40433 | 40453 |
+| 40404 | Discovery | 40404 | 40414 | 40424 | 40434 | 40454 |
+| 40405 | Admin | 40405 | 40415 | 40425 | 40435 | 40455 |
+
+Standalone uses 40400-40405 directly. Validator4 uses 40440-40445.
+
+---
+
+## Monitoring stack
+
+`compose/monitoring.yml` brings up Prometheus, Grafana, and cAdvisor on the same `f1r3fly` network. Start it after a node compose file is already up.
+
+```bash
+poetry run shardctl up f1r3node-rust    # Start a shard first
+poetry run shardctl up monitoring       # Then attach monitoring
+poetry run shardctl down monitoring     # Stop monitoring (shard stays running)
+```
+
+| Component | URL | Notes |
+|---|---|---|
+| Prometheus | http://localhost:9090 | Metric collection, recording rules, target health |
+| Grafana | http://localhost:3000 | Dashboards (admin/admin) |
+| cAdvisor | http://localhost:8080 | Container CPU / memory / IO |
+
+Prometheus uses DNS-based service discovery on the Docker network — only nodes that are actually running get scraped (no false DOWN targets when running light shard or standalone).
+
+**Auto-provisioned dashboards:**
+- *F1R3FLY Node* — block finalization, validator status, consensus metrics
+- *Block Transfer* — block download/validation timing, transport metrics
+
+Config files: `monitoring/prometheus.yml`, `monitoring/prometheus-rules.yml`, `monitoring/grafana/provisioning/`.
+
+---
 
 ## Usage
 
 ```bash
-# Start everything (via shardctl, uses startup_order from services.yml)
+# Start a single topology (most common)
+poetry run shardctl up f1r3node-rust       # Rust shard
+poetry run shardctl up f1r3node            # Scala shard
+poetry run shardctl up f1r3node-standalone # Single Scala node
+poetry run shardctl up f1r3node-rust-standalone  # Single Rust node
+
+# Service stacks (require a running shard for the f1r3fly network)
+poetry run shardctl up embers
+poetry run shardctl up f1r3sky
+poetry run shardctl up monitoring
+
+# Multiple at once (separate compose projects, independent lifecycles)
+poetry run shardctl up f1r3node-rust embers monitoring
+
+# All services in startup_order from services.yml
 poetry run shardctl up
 
-# Start specific services
-poetry run shardctl up f1r3node           # Scala shard (default)
-poetry run shardctl up f1r3node-rust      # Rust shard
-poetry run shardctl up f1r3node-standalone # Single Scala node
-poetry run shardctl up embers             # Embers API + frontend
-poetry run shardctl up f1r3sky            # AT Protocol services
-poetry run shardctl up monitoring         # Prometheus + Grafana
+# Native services (run foreground via shardctl using services.yml run_command)
+poetry run shardctl up f1r3drive
 
-# Native services (run foreground directly via shardctl using services.yml run_command)
-poetry run shardctl up f1r3drive          # F1r3Drive FUSE application
-
-# Multiple services
-poetry run shardctl up f1r3node embers
-
-# Stop services
-poetry run shardctl down                  # Stop all (reverse order)
-poetry run shardctl down f1r3node         # Stop specific service
+# Stop
+poetry run shardctl down                # Stop all
+poetry run shardctl down f1r3node-rust  # Stop one
+poetry run shardctl reset -y            # Stop all + wipe blockchain data volumes
 ```
 
-## Network
-All services communicate via the `f1r3fly` bridge network, created by the f1r3node compose file.
+For the full CLI reference, see [docs/cli-reference.md](docs/cli-reference.md).
+
+For node configuration (HOCON files, env files), see [docs/configuration.md](docs/configuration.md).
