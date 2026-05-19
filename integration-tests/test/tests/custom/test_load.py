@@ -48,10 +48,10 @@ pytestmark = pytest.mark.xdist_group("custom")
 # ---------------------------------------------------------------------------
 
 PHASES = [
-    {"name": "low",    "rate": 1,  "duration": 30, "workers": 1},
-    {"name": "medium", "rate": 5,  "duration": 20, "workers": 3},
-    {"name": "high",   "rate": 10, "duration": 15, "workers": 3},
-    {"name": "burst",  "rate": 0,  "duration": 0,  "workers": 3, "burst_count": 32},
+    {"name": "low", "rate": 1, "duration": 30, "workers": 1},
+    {"name": "medium", "rate": 5, "duration": 20, "workers": 3},
+    {"name": "high", "rate": 10, "duration": 15, "workers": 3},
+    {"name": "burst", "rate": 0, "duration": 0, "workers": 3, "burst_count": 32},
 ]
 
 VABN_REFRESH_INTERVAL = 30
@@ -97,8 +97,7 @@ def _run_phase(nodes, tracker, phase, start_index):
     burst_count = phase.get("burst_count", 0)
 
     node_list = [
-        (nodes[v_name], identity.private_key())
-        for identity, v_name in VALIDATORS_AND_KEYS
+        (nodes[v_name], identity.private_key()) for identity, v_name in VALIDATORS_AND_KEYS
     ]
 
     vabn = max(0, node_list[0][0].get_current_block_number() - 1)
@@ -208,7 +207,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
         # baseline run): the higher propose cadence + frontier-chase
         # combination raises the sibling-block rate, which breaks any
         # realistic test that follows a specific blockHash through
-        # finalization (test_wallets, test_web_api). See TODO §2.15.
+        # finalization (test_wallets, test_web_api).
         global_cli_options={
             "--heartbeat-self-propose-cooldown": "3seconds",
             "--heartbeat-advanced-frontier-chase-max-lag": "20",
@@ -235,7 +234,8 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
             logging.info("Waiting for initial LFB advancement...")
             poll_until(
                 predicate=lambda: _get_lfb_number(v1) if _get_lfb_number(v1) > 0 else None,
-                timeout=timeouts.finalization, interval=5.0,
+                timeout=timeouts.finalization,
+                interval=5.0,
                 description="initial LFB > 0",
             )
             baseline_lfb = _get_lfb_number(v1)
@@ -260,14 +260,15 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
 
                 tracker.clear()
                 lfb_start = _get_lfb_number(v1)
-                metrics_before_by_v = {
-                    name: scrape_metrics(node) for name, node in nodes.items()
-                }
+                metrics_before_by_v = {name: scrape_metrics(node) for name, node in nodes.items()}
                 metrics_before = metrics_before_by_v["validator1"]
                 phase_time_start = time.time()
 
                 deploy_count, errors, submission_duration = _run_phase(
-                    nodes, tracker, phase, deploy_index,
+                    nodes,
+                    tracker,
+                    phase,
+                    deploy_index,
                 )
                 deploy_index += deploy_count + len(errors)
                 total_failures += len(errors)
@@ -278,7 +279,8 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
 
                 logging.info(
                     "  Submitted %d deploys in %.1fs (%.1f/sec), %d errors",
-                    deploy_count, submission_duration,
+                    deploy_count,
+                    submission_duration,
                     deploy_count / max(submission_duration, 0.001),
                     len(errors),
                 )
@@ -286,9 +288,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                 tracker.wait_for_finalization(timeout=finalization_timeout)
 
                 lfb_end = _get_lfb_number(v1)
-                metrics_after_by_v = {
-                    name: scrape_metrics(node) for name, node in nodes.items()
-                }
+                metrics_after_by_v = {name: scrape_metrics(node) for name, node in nodes.items()}
                 metrics_after = metrics_after_by_v["validator1"]
                 node_metrics = compute_metric_deltas(metrics_before, metrics_after)
                 node_metrics_by_validator = {
@@ -299,8 +299,12 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                 phase_total = phase_time_end - phase_time_start
 
                 results = tracker.get_results()
-                inclusion_times = [r.inclusion_time for r in results if r.inclusion_time is not None]
-                finalization_times = [r.finalization_time for r in results if r.finalization_time is not None]
+                inclusion_times = [
+                    r.inclusion_time for r in results if r.inclusion_time is not None
+                ]
+                finalization_times = [
+                    r.finalization_time for r in results if r.finalization_time is not None
+                ]
                 unfinalized = sum(1 for r in results if r.finalization_time is None)
                 total_unfinalized += unfinalized
 
@@ -316,10 +320,15 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                     deploys_submitted=deploy_count,
                     deploy_failures=len(errors),
                     effective_rate=effective_rate,
-                    inclusion_p50=inc_p50, inclusion_p95=inc_p95, inclusion_p99=inc_p99,
-                    finalization_p50=fin_p50, finalization_p95=fin_p95, finalization_p99=fin_p99,
+                    inclusion_p50=inc_p50,
+                    inclusion_p95=inc_p95,
+                    inclusion_p99=inc_p99,
+                    finalization_p50=fin_p50,
+                    finalization_p95=fin_p95,
+                    finalization_p99=fin_p99,
                     unfinalized=unfinalized,
-                    lfb_start=lfb_start, lfb_end=lfb_end,
+                    lfb_start=lfb_start,
+                    lfb_end=lfb_end,
                     lfb_rate_per_min=lfb_rate,
                     phase_duration=phase_total,
                     node_metrics=node_metrics,
@@ -330,8 +339,15 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                 logging.info(
                     "  Phase %s: inclusion p50=%.1fs p95=%.1fs, finalization p50=%.1fs p95=%.1fs, "
                     "LFB #%d->#%d (%.1f blk/min), unfinalized=%d",
-                    phase_name, inc_p50, inc_p95, fin_p50, fin_p95,
-                    lfb_start, lfb_end, lfb_rate, unfinalized,
+                    phase_name,
+                    inc_p50,
+                    inc_p95,
+                    fin_p50,
+                    fin_p95,
+                    lfb_start,
+                    lfb_end,
+                    lfb_rate,
+                    unfinalized,
                 )
                 for v_name, m in node_metrics_by_validator.items():
                     if m:
@@ -346,11 +362,18 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
             if report.node_metrics_by_validator:
                 for v_name, m in report.node_metrics_by_validator.items():
                     if m:
-                        logging.info("Node metrics for phase '%s' (%s):\n%s",
-                                     report.name, v_name, format_node_metrics(m))
+                        logging.info(
+                            "Node metrics for phase '%s' (%s):\n%s",
+                            report.name,
+                            v_name,
+                            format_node_metrics(m),
+                        )
             elif report.node_metrics:
-                logging.info("Node metrics for phase '%s':\n%s",
-                             report.name, format_node_metrics(report.node_metrics))
+                logging.info(
+                    "Node metrics for phase '%s':\n%s",
+                    report.name,
+                    format_node_metrics(report.node_metrics),
+                )
 
         # Verify readonly LFB tracked validators
         ro = shard.readonly
@@ -359,9 +382,9 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
             v1_lfb = _get_lfb_number(v1)
             lfb_gap = v1_lfb - ro_lfb
             logging.info("Readonly LFB: #%d (V1: #%d, gap: %d)", ro_lfb, v1_lfb, lfb_gap)
-            assert lfb_gap <= 5, (
-                f"Readonly LFB #{ro_lfb} is {lfb_gap} blocks behind V1 #{v1_lfb} after load test"
-            )
+            assert (
+                lfb_gap <= 5
+            ), f"Readonly LFB #{ro_lfb} is {lfb_gap} blocks behind V1 #{v1_lfb} after load test"
 
         # Hard assertions. Set LOAD_TEST_TELEMETRY_ONLY=1 to skip the
         # finalization gate when collecting metrics across capacity limits.
@@ -370,12 +393,13 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
             logging.warning(
                 "LOAD_TEST_TELEMETRY_ONLY set — skipping finalization gate "
                 "(%d deploy(s) not finalized within %ds)",
-                total_unfinalized, finalization_timeout,
+                total_unfinalized,
+                finalization_timeout,
             )
         else:
-            assert total_unfinalized == 0, (
-                f"{total_unfinalized} deploy(s) not finalized within {finalization_timeout}s"
-            )
+            assert (
+                total_unfinalized == 0
+            ), f"{total_unfinalized} deploy(s) not finalized within {finalization_timeout}s"
         for node in shard.all_nodes:
             assert node.is_running(), f"{node.name} is not running after load test"
     finally:

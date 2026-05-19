@@ -52,7 +52,6 @@ conftest.py) so the bond deploys can pay phlo + stake.
 
 import logging
 import threading
-import time
 from typing import List, Optional
 
 import pytest
@@ -96,11 +95,11 @@ _EPOCH_LENGTH = 4
 #      to sync 100+ ancestor rspace roots which exceeds even the
 #      bumped node_startup budget.
 # 2.0s per producer ≈ 1.5 deploys/sec total. Higher intensity than
-# the conservative 5.0s default — needed to reliably trigger §2.15
-# (joiner produces epoch-boundary block under heartbeat-driven
-# multi-parent merge concurrency). Bg load only runs during Phase A
-# sub-phases 1-5 (~30s window), so total deploy count stays bounded
-# (~45 deploys) — doesn't trigger §2.13's sustained-load divergence.
+# the conservative 5.0s default — needed to reliably trigger the
+# joiner-bond-drop case (joiner produces epoch-boundary block under
+# heartbeat-driven multi-parent merge concurrency). Bg load only runs
+# during Phase A sub-phases 1-5 (~30s window), so total deploy count
+# stays bounded (~45 deploys).
 _BG_LOAD_INTERVAL = 2.0
 _BG_LOAD_PHLO_LIMIT = 100_000_000
 
@@ -115,9 +114,7 @@ class _BackgroundLoad:
     concurrently throughout bonding, deepening the horizon the
     joiner must sync.
 
-    Self-contained on the test (not promoted to a shared fixture);
-    the broader ``active_traffic`` fixture in TODO §3.2 is a separate
-    workstream.
+    Self-contained on the test (not promoted to a shared fixture).
     """
 
     def __init__(
@@ -127,9 +124,7 @@ class _BackgroundLoad:
         interval: float = _BG_LOAD_INTERVAL,
     ) -> None:
         if len(producers) != len(identities):
-            raise ValueError(
-                "producers and identities must be same length"
-            )
+            raise ValueError("producers and identities must be same length")
         self._producers = producers
         self._identities = identities
         self._interval = interval
@@ -142,7 +137,9 @@ class _BackgroundLoad:
         if self._thread is not None:
             raise RuntimeError("BackgroundLoad already started")
         self._thread = threading.Thread(
-            target=self._run, daemon=True, name="bonding-bg-load",
+            target=self._run,
+            daemon=True,
+            name="bonding-bg-load",
         )
         self._thread.start()
 
@@ -153,7 +150,8 @@ class _BackgroundLoad:
         self._thread.join(timeout=join_timeout)
         logging.info(
             "Background load stopped: %d deploys sent, %d errors",
-            self._counter, self._errors,
+            self._counter,
+            self._errors,
         )
         self._thread = None
 
@@ -176,7 +174,9 @@ class _BackgroundLoad:
                 self._errors += 1
                 logging.warning(
                     "Background load deploy %d failed on %s: %s",
-                    self._counter, node.name, e,
+                    self._counter,
+                    node.name,
+                    e,
                 )
             self._counter += 1
             self._stop.wait(self._interval)
@@ -192,7 +192,7 @@ def _bond_lifecycle(
 ) -> None:
     """Run the full bonding lifecycle for one joiner.
 
-    Phases (per docs/bonding-bug-layer2-design.md §4 Test 1):
+    Phases:
       1. Pre-bond state — confirm joiner not in current bonds map.
       2. Joiner cannot propose pre-bond.
       3. Bond deploy on `proposer_node` signed by `joiner_identity`.
@@ -220,8 +220,7 @@ def _bond_lifecycle(
     current_lfb = v1.last_finalized_block()
     bonds_pre = {b.validator: b.stake for b in current_lfb.blockInfo.bonds}
     assert joiner_identity.public_hex not in bonds_pre, (
-        f"Joiner {joiner_identity.name} already in bonds pre-bond: "
-        f"{sorted(bonds_pre)}"
+        f"Joiner {joiner_identity.name} already in bonds pre-bond: " f"{sorted(bonds_pre)}"
     )
     logging.info(
         "Pre-bond LFB #%d: %d bonded validators, joiner %s not present",
@@ -237,7 +236,8 @@ def _bond_lifecycle(
     # rspace roots — both legitimately expand the per-attach window
     # well past the 10s default.
     wait_for_block_visible(
-        joiner, current_lfb.blockInfo.blockHash,
+        joiner,
+        current_lfb.blockInfo.blockHash,
         timeout=timeouts.finalization * 3,
     )
 
@@ -250,8 +250,7 @@ def _bond_lifecycle(
     )
     with pytest.raises(F1r3flyClientException):
         joiner.propose()
-    logging.info("Joiner %s correctly rejected on propose pre-bond",
-                 joiner_identity.name)
+    logging.info("Joiner %s correctly rejected on propose pre-bond", joiner_identity.name)
 
     # ── Phase 3: bond deploy ─────────────────────────────────────
     bond_deploy_id = proposer_node.deploy_rho_file(
@@ -268,25 +267,28 @@ def _bond_lifecycle(
     # has been idle wrt new deploys; first heartbeat round may not fire
     # for several seconds.
     bond_block = wait_for_deploy_included(
-        proposer_node, bond_deploy_id, timeouts.deploy_inclusion * 3,
+        proposer_node,
+        bond_deploy_id,
+        timeouts.deploy_inclusion * 3,
     )
     bond_block_hash = bond_block.blockHash
     bond_block_number = bond_block.blockNumber
     logging.info(
         "Bond deploy %s landed in block #%d (%s)",
-        bond_deploy_id[:24], bond_block_number, bond_block_hash[:16],
+        bond_deploy_id[:24],
+        bond_block_number,
+        bond_block_hash[:16],
     )
 
     # ── Phase 4: bond block finalizes cross-node ─────────────────
     wait_for_finalized(proposer_node, bond_block_number, timeouts.finalization * 3)
     assert_block_finalized_on_all_nodes(
-        [v1, v2, v3, joiner, ro], bond_block_hash,
+        [v1, v2, v3, joiner, ro],
+        bond_block_hash,
         timeout=timeouts.finalization * 3,
     )
     bond_block_info = proposer_node.get_block(bond_block_hash)
-    bonds_post = {
-        b.validator: b.stake for b in bond_block_info.blockInfo.bonds
-    }
+    bonds_post = {b.validator: b.stake for b in bond_block_info.blockInfo.bonds}
     assert bonds_post.get(joiner_identity.public_hex) == _BOND_AMOUNT, (
         f"Bond block {bond_block_hash[:16]} bonds map missing or wrong "
         f"stake for {joiner_identity.name}: {bonds_post}"
@@ -300,11 +302,14 @@ def _bond_lifecycle(
     # block, not just the proposer.
     expected_bonds_map = {**bonds_pre, joiner_identity.public_hex: _BOND_AMOUNT}
     assert_bonds_map_consistent_across_nodes(
-        [v1, v2, v3, joiner, ro], bond_block_hash, expected_bonds_map,
+        [v1, v2, v3, joiner, ro],
+        bond_block_hash,
+        expected_bonds_map,
     )
     logging.info(
         "Bond block #%d finalized on all nodes; bonds map consistent (%d entries)",
-        bond_block_number, len(bonds_post),
+        bond_block_number,
+        len(bonds_post),
     )
 
     # ── Phase 5: epoch boundary ──────────────────────────────────
@@ -342,10 +347,7 @@ def _bond_lifecycle(
 
     def _joiner_proposed():
         for blk in joiner.get_blocks(50):
-            if (
-                blk.sender == joiner_identity.public_hex
-                and blk.blockNumber > bond_block_number
-            ):
+            if blk.sender == joiner_identity.public_hex and blk.blockNumber > bond_block_number:
                 return blk
         return None
 
@@ -360,7 +362,8 @@ def _bond_lifecycle(
     # Widen the budget vs. base finalization (3×) to absorb load.
     wait_for_finalized(joiner, joiner_block.blockNumber, timeouts.finalization * 5)
     assert_block_finalized_on_all_nodes(
-        [v1, v2, v3, joiner, ro], joiner_block.blockHash,
+        [v1, v2, v3, joiner, ro],
+        joiner_block.blockHash,
         timeout=timeouts.finalization * 5,
     )
     logging.info(
@@ -384,10 +387,7 @@ def _bond_lifecycle(
                 continue
             if blk.sender != VALIDATOR1_ID.public_hex:
                 continue
-            if any(
-                j.validator == joiner_identity.public_hex
-                for j in blk.justifications
-            ):
+            if any(j.validator == joiner_identity.public_hex for j in blk.justifications):
                 return blk
         return None
 
@@ -399,7 +399,8 @@ def _bond_lifecycle(
     )
     wait_for_finalized(v1, v1_post_block.blockNumber, timeouts.finalization * 5)
     assert_block_finalized_on_all_nodes(
-        [v1, v2, v3, joiner, ro], v1_post_block.blockHash,
+        [v1, v2, v3, joiner, ro],
+        v1_post_block.blockHash,
         timeout=timeouts.finalization * 5,
     )
     logging.info(
@@ -423,15 +424,19 @@ def _bond_lifecycle(
             phlo_price=1,
         )
         block = wait_for_deploy_included(
-            node, deploy_id, timeouts.deploy_inclusion * 5,
+            node,
+            deploy_id,
+            timeouts.deploy_inclusion * 5,
         )
         wait_for_finalized(node, block.blockNumber, timeouts.finalization * 5)
         wait_for_block_visible_on_all_nodes(
-            [v1, v2, v3, joiner, ro], block.blockHash,
+            [v1, v2, v3, joiner, ro],
+            block.blockHash,
             timeout=timeouts.finalization * 5,
         )
         assert_block_finalized_on_all_nodes(
-            [v1, v2, v3, joiner, ro], block.blockHash,
+            [v1, v2, v3, joiner, ro],
+            block.blockHash,
             timeout=timeouts.finalization * 5,
         )
 
@@ -493,10 +498,7 @@ def test_bonding_validators(shared_shard, timeouts) -> None:
         )
 
         # Sanity: confirm V4 is in the on-chain bonds map before Phase B.
-        bonds = {
-            b.validator: b.stake
-            for b in v1.last_finalized_block().blockInfo.bonds
-        }
+        bonds = {b.validator: b.stake for b in v1.last_finalized_block().blockInfo.bonds}
         assert VALIDATOR4_ID.public_hex in bonds, (
             f"Phase B precondition failed: expected V4 bonded after Phase A; "
             f"current bonds: {sorted(bonds)}"
@@ -537,18 +539,18 @@ def test_bonding_validators(shared_shard, timeouts) -> None:
     # at steady state. Wait for observer to catch up to a reasonable
     # window of v1, then use observer's current LFB block for the
     # cross-node consistency check.
-    _LFB_DRIFT_TOLERANCE = 10
+    lfb_drift_tolerance = 10
 
     def _observer_caught_up():
         v1_n = v1.last_finalized_block().blockInfo.blockNumber
         obs_n = observer.last_finalized_block().blockInfo.blockNumber
-        return abs(v1_n - obs_n) <= _LFB_DRIFT_TOLERANCE
+        return abs(v1_n - obs_n) <= lfb_drift_tolerance
 
     poll_until(
         _observer_caught_up,
         timeout=timeouts.finalization * 4,
         interval=3.0,
-        description=f"observer LFB within {_LFB_DRIFT_TOLERANCE} blocks of v1 LFB",
+        description=f"observer LFB within {lfb_drift_tolerance} blocks of v1 LFB",
     )
 
     observer_lfb = observer.last_finalized_block().blockInfo
@@ -562,13 +564,19 @@ def test_bonding_validators(shared_shard, timeouts) -> None:
     # v1 must have observer's LFB block too — asserts cross-node block
     # propagation (not just LFB advancement) for the post-bonded shape.
     wait_for_block_visible(
-        v1, observer_lfb.blockHash, timeout=timeouts.finalization * 2,
+        v1,
+        observer_lfb.blockHash,
+        timeout=timeouts.finalization * 2,
     )
     assert_block_finalized_on_all_nodes(
-        [v1, observer], observer_lfb.blockHash, timeout=timeouts.finalization * 3,
+        [v1, observer],
+        observer_lfb.blockHash,
+        timeout=timeouts.finalization * 3,
     )
     assert_bonds_map_consistent_across_nodes(
-        [v1, observer], observer_lfb.blockHash, expected_bonds_5,
+        [v1, observer],
+        observer_lfb.blockHash,
+        expected_bonds_5,
     )
 
     # Observer must keep up after sync — drift can spike transiently
@@ -579,15 +587,14 @@ def test_bonding_validators(shared_shard, timeouts) -> None:
     def _drift_within_tolerance():
         o = observer.last_finalized_block().blockInfo.blockNumber
         v = v1.last_finalized_block().blockInfo.blockNumber
-        return abs(v - o) <= _LFB_DRIFT_TOLERANCE
+        return abs(v - o) <= lfb_drift_tolerance
 
     poll_until(
         _drift_within_tolerance,
         timeout=timeouts.finalization * 3,
         interval=3.0,
         description=(
-            f"observer LFB drift converges to within "
-            f"{_LFB_DRIFT_TOLERANCE} blocks of v1"
+            f"observer LFB drift converges to within " f"{lfb_drift_tolerance} blocks of v1"
         ),
     )
 
@@ -596,5 +603,8 @@ def test_bonding_validators(shared_shard, timeouts) -> None:
 
     logging.info(
         "Phase C: observer %s LFS-synced; LFB #%d (v1 #%d, drift %d block(s))",
-        observer.name, observer_now, v1_now, v1_now - observer_now,
+        observer.name,
+        observer_now,
+        v1_now,
+        v1_now - observer_now,
     )

@@ -71,7 +71,7 @@ def test_deploy_insufficient_phlo_errored(shared_shard, timeouts) -> None:
     v1 = shared_shard.node("validator1")
 
     deploy_id = v1.deploy_string(
-        '@1!(1)',
+        "@1!(1)",
         VALIDATOR1_ID.private_key(),
         phlo_limit=10,
         phlo_price=1,
@@ -82,7 +82,8 @@ def test_deploy_insufficient_phlo_errored(shared_shard, timeouts) -> None:
     block_hash = light_block.blockHash
     logging.info(
         "Deploy found in block %s (blockNumber=%d)",
-        block_hash[:16], light_block.blockNumber,
+        block_hash[:16],
+        light_block.blockNumber,
     )
 
     block_info = v1.get_block(block_hash)
@@ -129,13 +130,15 @@ def test_deploy_lookup_consistent_across_validators(shared_shard, timeouts) -> N
         block_hashes[node.name] = block.blockHash
         logging.info(
             "Deploy %s found in block %s on %s",
-            deploy_id[:24], block.blockHash[:16], node.name,
+            deploy_id[:24],
+            block.blockHash[:16],
+            node.name,
         )
 
     unique_hashes = set(block_hashes.values())
-    assert len(unique_hashes) == 1, (
-        f"Deploy {deploy_id[:24]}... resolved to different blocks: {block_hashes}"
-    )
+    assert (
+        len(unique_hashes) == 1
+    ), f"Deploy {deploy_id[:24]}... resolved to different blocks: {block_hashes}"
 
     logging.info("Deploy lookup consistent across %d nodes", len(all_nodes))
 
@@ -161,17 +164,17 @@ def test_exploratory_deploy_invalid_syntax_returns_error(shared_shard) -> None:
     # Reserved keyword 'contract' used as variable name
     with pytest.raises(F1r3flyClientException, match="(?i)pars|syntax|error"):
         ro.exploratory_deploy(
-            'new ret, lookup(`rho:registry:lookup`), ch in {'
-            '  lookup!(`rho:system:pos`, *ch) |'
+            "new ret, lookup(`rho:registry:lookup`), ch in {"
+            "  lookup!(`rho:system:pos`, *ch) |"
             '  for (contract <- ch) { contract!("all", *ret) }'
-            '}',
+            "}",
             "",
         )
 
     logging.info("Reserved keyword 'contract' as variable correctly rejected")
 
     # Valid exploratory deploy still works after errors
-    result = ro.exploratory_deploy('new ret in { ret!(42) }', "")
+    result = ro.exploratory_deploy("new ret in { ret!(42) }", "")
     assert len(result) == 1, f"Valid exploratory deploy should return 1 par, got {len(result)}"
 
     logging.info("Valid exploratory deploy succeeds after error rejections")

@@ -109,7 +109,9 @@ class _BackgroundLoad:
         if self._thread is not None:
             raise RuntimeError("BackgroundLoad already started")
         self._thread = threading.Thread(
-            target=self._run, daemon=True, name="obs-lfs-bg-load",
+            target=self._run,
+            daemon=True,
+            name="obs-lfs-bg-load",
         )
         self._thread.start()
 
@@ -120,7 +122,8 @@ class _BackgroundLoad:
         self._thread.join(timeout=join_timeout)
         logging.info(
             "Background load stopped: %d deploys sent, %d errors",
-            self._counter, self._errors,
+            self._counter,
+            self._errors,
         )
         self._thread = None
 
@@ -144,7 +147,9 @@ class _BackgroundLoad:
                 self._errors += 1
                 logging.warning(
                     "Background load deploy %d failed on %s: %s",
-                    self._counter, node.name, e,
+                    self._counter,
+                    node.name,
+                    e,
                 )
             self._counter += 1
             self._stop.wait(self._interval)
@@ -207,14 +212,13 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
         predicate=lambda: get_blocks_if_enough(v1, _MIN_PRE_ATTACH_DEPTH),
         timeout=timeouts.finalization * 4,
         interval=3.0,
-        description=(
-            f"v1 accumulates ≥ {_MIN_PRE_ATTACH_DEPTH} blocks pre-attach"
-        ),
+        description=(f"v1 accumulates ≥ {_MIN_PRE_ATTACH_DEPTH} blocks pre-attach"),
     )
     pre_attach_lfb_n = v1.last_finalized_block().blockInfo.blockNumber
     logging.info(
         "Pre-attach: v1 LFB at #%d, %d+ blocks in DAG",
-        pre_attach_lfb_n, _MIN_PRE_ATTACH_DEPTH,
+        pre_attach_lfb_n,
+        _MIN_PRE_ATTACH_DEPTH,
     )
 
     # ── 2. Background load drives DAG forward during attach ───────────
@@ -229,7 +233,8 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
         with shared_shard.add_observer() as observer:
             logging.info(
                 "Observer %s attached during bg load (~%d deploys so far)",
-                observer.name, bg.deploy_count,
+                observer.name,
+                bg.deploy_count,
             )
 
             # ── 4. Wait for observer to catch up ──────────────────────
@@ -242,10 +247,7 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
                 _observer_caught_up,
                 timeout=timeouts.finalization * 6,
                 interval=3.0,
-                description=(
-                    f"observer LFB within {_LFB_DRIFT_TOLERANCE} blocks "
-                    f"of v1 LFB"
-                ),
+                description=(f"observer LFB within {_LFB_DRIFT_TOLERANCE} blocks " f"of v1 LFB"),
             )
 
             # Let load continue briefly so observer has to ingest via
@@ -277,9 +279,7 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
 
             # ── 6. Robust cross-node assertions ───────────────────────
             observer_lfb = observer.last_finalized_block().blockInfo
-            observer_bonds = {
-                b.validator: b.stake for b in observer_lfb.bonds
-            }
+            observer_bonds = {b.validator: b.stake for b in observer_lfb.bonds}
             assert len(observer_bonds) == len(validators), (
                 f"Observer LFB #{observer_lfb.blockNumber} bonds map has "
                 f"{len(observer_bonds)} entries, expected {len(validators)}: "
@@ -294,11 +294,13 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
             # v1 must hold observer's LFB block too — covers cross-node
             # block propagation, not just LFB advancement.
             wait_for_block_visible(
-                v1, observer_lfb.blockHash,
+                v1,
+                observer_lfb.blockHash,
                 timeout=timeouts.finalization * 2,
             )
             assert_block_finalized_on_all_nodes(
-                [v1, observer], observer_lfb.blockHash,
+                [v1, observer],
+                observer_lfb.blockHash,
                 timeout=timeouts.finalization * 3,
             )
             assert_bonds_map_consistent_across_nodes(
@@ -313,7 +315,9 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
             # storage/replay divergence that wouldn't surface from
             # tip-only checks.
             ancestor_chain = _walk_finalized_chain(
-                observer, observer_lfb.blockHash, max_blocks=10,
+                observer,
+                observer_lfb.blockHash,
+                max_blocks=10,
             )
             assert len(ancestor_chain) >= 5, (
                 f"Observer ancestor chain only {len(ancestor_chain)} "
@@ -321,7 +325,8 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
             )
             poll_until(
                 predicate=lambda: all_blocks_visible(
-                    [v1, v2, v3, observer], ancestor_chain,
+                    [v1, v2, v3, observer],
+                    ancestor_chain,
                 ),
                 timeout=timeouts.finalization * 2,
                 interval=3.0,
@@ -332,7 +337,8 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
             )
             for block_hash in ancestor_chain:
                 assert_all_nodes_agree_on_block(
-                    [v1, v2, v3, observer], block_hash,
+                    [v1, v2, v3, observer],
+                    block_hash,
                 )
 
             # Multi-parent existence check: the test only exercises the
@@ -343,9 +349,7 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
             # would loudly fail rather than silently turn into a thinner
             # test.
             recent_blocks = v1.get_blocks(_MIN_PRE_ATTACH_DEPTH * 2)
-            multi_parent_count = sum(
-                1 for b in recent_blocks if len(b.parentsHashList) > 1
-            )
+            multi_parent_count = sum(1 for b in recent_blocks if len(b.parentsHashList) > 1)
             assert multi_parent_count > 0, (
                 f"No multi-parent blocks in last {len(recent_blocks)} "
                 f"blocks — observer didn't exercise pre-state inclusion "
@@ -360,11 +364,11 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
                 observer.name,
                 observer_lfb.blockNumber,
                 v1.last_finalized_block().blockInfo.blockNumber,
-                v1.last_finalized_block().blockInfo.blockNumber
-                - observer_lfb.blockNumber,
+                v1.last_finalized_block().blockInfo.blockNumber - observer_lfb.blockNumber,
                 len(observer_bonds),
                 len(ancestor_chain),
-                multi_parent_count, len(recent_blocks),
+                multi_parent_count,
+                len(recent_blocks),
             )
     finally:
         bg.stop()

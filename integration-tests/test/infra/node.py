@@ -13,8 +13,8 @@ import logging
 from typing import Dict, Optional
 
 from f1r3fly.client import F1r3flyClient
-from f1r3fly.crypto import PrivateKey
 from f1r3fly.const import DEFAULT_PHLO_LIMIT, DEFAULT_PHLO_PRICE
+from f1r3fly.crypto import PrivateKey
 from f1r3fly.vault import VaultAPI
 
 from .types import NodeRole, PortMapping, ValidatorIdentity
@@ -103,6 +103,7 @@ class Node:
     def http_get(self, path: str, timeout: int = 60):
         """GET /{path} (no /api prefix) and return the response object."""
         import requests
+
         url = f"{self.http_url}{path}"
         resp = requests.get(url, timeout=timeout)
         resp.raise_for_status()
@@ -111,6 +112,7 @@ class Node:
     def api_get(self, path: str, timeout: int = 60) -> dict:
         """GET /api/{path} and return the JSON response."""
         import requests
+
         url = f"{self.http_url}/api{path}"
         resp = requests.get(url, timeout=timeout)
         resp.raise_for_status()
@@ -119,6 +121,7 @@ class Node:
     def api_post(self, path: str, json_data=None, timeout: int = 60):
         """POST to /api/{path} and return the response object."""
         import requests
+
         url = f"{self.http_url}/api{path}"
         resp = requests.post(url, json=json_data, timeout=timeout)
         resp.raise_for_status()
@@ -231,6 +234,7 @@ class Node:
         Returns the deploy ID (signature hex).
         """
         import os
+
         resolved_path = rho_file_path
         if not os.path.isabs(rho_file_path) and not os.path.exists(rho_file_path):
             # integration-tests/test/infra/node.py → integration-tests/
@@ -247,7 +251,8 @@ class Node:
                 code = code.replace(key, value)
 
         return self.deploy_string(
-            code, private_key,
+            code,
+            private_key,
             phlo_limit=phlo_limit,
             phlo_price=phlo_price,
             valid_after_block_no=valid_after_block_no,
@@ -271,10 +276,15 @@ class Node:
         Read-only — no block created, no phlo consumed. Returns Par results.
         """
         from f1r3fly.contracts import registry_lookup
+
         return registry_lookup(self._external_client(), uri, block_hash)
 
     def registry_query(
-        self, uri: str, method: str, param="Nil", block_hash: str = "",
+        self,
+        uri: str,
+        method: str,
+        param="Nil",
+        block_hash: str = "",
     ) -> list:
         """Query a registry-registered contract via exploratory deploy.
 
@@ -285,6 +295,7 @@ class Node:
         ``(@method, ret)``.
         """
         from f1r3fly.contracts import registry_query
+
         return registry_query(self._external_client(), uri, method, param, block_hash)
 
     # ── Query operations ──
@@ -333,6 +344,7 @@ class Node:
     def preview_private_names(self, timestamp: int, name_qty: int = 1):
         """Preview unforgeable names for a deployer key + timestamp."""
         from f1r3fly.crypto import PublicKey
+
         pub_key = PublicKey.from_hex(self._identity.public_hex)
         return self._external_client().previewPrivateNames(pub_key, timestamp, name_qty)
 

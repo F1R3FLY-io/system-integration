@@ -47,17 +47,13 @@ def _store_data(node, key, random_data, timeouts):
     )
     block_info = wait_for_deploy_included(node, store_deploy_id, timeouts.deploy_inclusion)
     data = node.get_deploy_data(store_deploy_id, block_hash=block_info.blockHash)
-    assert data is not None, (
-        f"Deploy {store_deploy_id[:24]} returned None from get_deploy_data"
-    )
+    assert data is not None, f"Deploy {store_deploy_id[:24]} returned None from get_deploy_data"
     assert len(data.par) == 1, (
         f"Deploy {store_deploy_id[:24]} should write exactly 1 value to deployId, "
         f"got {len(data.par)}"
     )
     uri = par_as_uri(data.par[0])
-    assert uri.startswith("rho:id:"), (
-        f"Registry URI should start with 'rho:id:', got '{uri}'"
-    )
+    assert uri.startswith("rho:id:"), f"Registry URI should start with 'rho:id:', got '{uri}'"
     return uri, store_deploy_id, block_info.blockNumber
 
 
@@ -92,8 +88,8 @@ def test_data_is_stored_and_served_by_node(shared_shard, timeouts) -> None:
     status = wait_for_deploy_finalized(ro, store_deploy_id, timeouts.finalization)
     # Poll every node's per-block isFinalized — readonly seeing canonical-state
     # finalization doesn't guarantee validator peers have updated their per-block
-    # isFinalized field yet (a few seconds of lag in multi-validator scenarios,
-    # see assertions.py docstring + TODO §2.1).
+    # isFinalized field yet (a few seconds of lag in multi-validator scenarios;
+    # see assertions.py docstring).
     assert_block_finalized_on_all_nodes(
         shared_shard.all_nodes,
         status.latestBlockHash.hex(),
@@ -102,9 +98,9 @@ def test_data_is_stored_and_served_by_node(shared_shard, timeouts) -> None:
 
     read_data = _read_data(ro, uri)
 
-    assert read_data == random_data, (
-        f"Read data '{read_data}' should match stored data '{random_data}'"
-    )
+    assert (
+        read_data == random_data
+    ), f"Read data '{read_data}' should match stored data '{random_data}'"
     logging.info("Store on V1, read on readonly verified: '%s'", random_data)
 
 
@@ -128,8 +124,9 @@ def test_data_stored_on_one_validator_readable_on_readonly(shared_shard, timeout
         random_data = _random_string(20)
 
         uri, store_deploy_id, store_block_number = _store_data(node, key, random_data, timeouts)
-        logging.info("Stored '%s' at %s on %s (block #%d)",
-                     random_data, uri, node.name, store_block_number)
+        logging.info(
+            "Stored '%s' at %s on %s (block #%d)", random_data, uri, node.name, store_block_number
+        )
 
         status = wait_for_deploy_finalized(ro, store_deploy_id, timeouts.finalization)
         assert_block_finalized_on_all_nodes(

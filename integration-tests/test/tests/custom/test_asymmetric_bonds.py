@@ -79,20 +79,18 @@ def test_genesis_asymmetric_bonds(asymmetric_shard, node_conf) -> None:
     genesis_info = genesis_block.blockInfo
 
     # shardId from config
-    assert genesis_info.shardId == node_conf.shard_id, (
-        f"Genesis shardId '{genesis_info.shardId}' != config '{node_conf.shard_id}'"
-    )
+    assert (
+        genesis_info.shardId == node_conf.shard_id
+    ), f"Genesis shardId '{genesis_info.shardId}' != config '{node_conf.shard_id}'"
 
     # Bonds match asymmetric config
     expected_bonds = {identity.public_hex: stake for identity, stake in _ASYMMETRIC_BONDS}
     actual_bonds = {b.validator: b.stake for b in genesis_info.bonds}
-    assert len(actual_bonds) == len(expected_bonds), (
-        f"Genesis has {len(actual_bonds)} bonds, expected {len(expected_bonds)}"
-    )
+    assert len(actual_bonds) == len(
+        expected_bonds
+    ), f"Genesis has {len(actual_bonds)} bonds, expected {len(expected_bonds)}"
     for pubkey, expected_stake in expected_bonds.items():
-        assert pubkey in actual_bonds, (
-            f"Validator {pubkey[:24]}... not found in genesis bonds"
-        )
+        assert pubkey in actual_bonds, f"Validator {pubkey[:24]}... not found in genesis bonds"
         assert actual_bonds[pubkey] == expected_stake, (
             f"Validator {pubkey[:24]}... has stake {actual_bonds[pubkey]}, "
             f"expected {expected_stake}"
@@ -194,7 +192,9 @@ def test_finalization_asymmetric_bonds(asymmetric_shard, timeouts) -> None:
         info = wait_for_lfb_with_ft(node, target, _FTT, timeout=timeout, interval=5.0)
         logging.info(
             "%s: LFB #%d, FT=%.2f",
-            node.name, info.blockNumber, float(info.faultTolerance),
+            node.name,
+            info.blockNumber,
+            float(info.faultTolerance),
         )
 
     logging.info("Finalization verified on all %d nodes (FT >= %.2f)", len(all_nodes), _FTT)
@@ -244,5 +244,6 @@ def test_cross_validator_state_agreement_asymmetric(asymmetric_shard, timeouts) 
     logging.info(
         "Cross-node state agreement verified for %d blocks across %d nodes "
         "(including readonly) with asymmetric bonds",
-        len(block_hashes), len(all_nodes),
+        len(block_hashes),
+        len(all_nodes),
     )

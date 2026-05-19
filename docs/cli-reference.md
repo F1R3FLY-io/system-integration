@@ -67,10 +67,15 @@ shardctl logs [SERVICES...]       View logs
 shardctl pull [SERVICES...]       Pull service images
 shardctl build [SERVICES...]      Build services from services.yml
   --no-cache                      Build without cache
-shardctl build-service [SERVICE]  Build one service's Docker image
-  --docker-only                   Skip native build, Docker only
-  --sync                          Sync branch from services.yml first
-  --list                          List available services
+  --no-docker                     Skip Docker build (source only)
+  --docker-only                   Skip source build (Docker only)
+  --profile, -p PROFILE           Compose profile (dev/prod)
+shardctl build-service [SERVICE]  Build one service from services.yml
+  --no-docker                     Skip Docker build (source only)
+  --docker-only                   Skip source build (Docker only)
+  --sync, -s                      Sync branch from services.yml first
+  --list, -l                      List services with build configurations
+  --include-disabled              Include services with enabled: false
 ```
 
 For image selection (`F1R3FLY_NODE_IMAGE`), see [../COMPOSE_STRUCTURE.md#image-selection](../COMPOSE_STRUCTURE.md#image-selection).

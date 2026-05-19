@@ -98,9 +98,9 @@ jobs:
       - name: Verify poetry.lock matches pyproject.toml
         run: poetry check --lock
       - name: Ruff (lint)
-        run: poetry run ruff check shardctl/
+        run: poetry run ruff check shardctl/ integration-tests/
       - name: Black (format check)
-        run: poetry run black --check shardctl/
+        run: poetry run black --check shardctl/ integration-tests/
 
   link-check:
     name: Markdown links
@@ -775,7 +775,7 @@ jobs:
           pip install poetry
           poetry install --with integration
       - name: Clone f1r3node-rust (defaults.conf for NodeConf)
-        run: git clone --depth 1 --branch rust/dev https://github.com/F1R3FLY-io/f1r3node.git services/f1r3node-rust
+        run: poetry run shardctl clone f1r3node-rust
       - run: poetry run shardctl pull f1r3node-rust
       - name: Run test
         # --monitor enables Docker resource sampling — embedded in report.json
@@ -825,7 +825,7 @@ jobs:
           pip install poetry
           poetry install --with integration
       - name: Clone f1r3node-rust (defaults.conf for NodeConf)
-        run: git clone --depth 1 --branch rust/dev https://github.com/F1R3FLY-io/f1r3node.git services/f1r3node-rust
+        run: poetry run shardctl clone f1r3node-rust
       - run: poetry run shardctl pull f1r3node-rust-standalone
       - name: Run test
         run: poetry run shardctl test --rust "test_heartbeat_creates_blocks_when_idle and not shard" ${{ env.PYTEST_TIMEOUT_ARGS }}
@@ -872,7 +872,7 @@ jobs:
           pip install poetry
           poetry install --with integration
       - name: Clone f1r3node-rust (defaults.conf for NodeConf)
-        run: git clone --depth 1 --branch rust/dev https://github.com/F1R3FLY-io/f1r3node.git services/f1r3node-rust
+        run: poetry run shardctl clone f1r3node-rust
       - run: poetry run shardctl pull f1r3node-rust
       - name: Run test
         run: poetry run shardctl test --rust test_synchrony_constraint ${{ env.PYTEST_TIMEOUT_ARGS }}
@@ -921,7 +921,7 @@ jobs:
           pip install poetry
           poetry install --with integration
       - name: Clone f1r3node-rust (defaults.conf for NodeConf)
-        run: git clone --depth 1 --branch rust/dev https://github.com/F1R3FLY-io/f1r3node.git services/f1r3node-rust
+        run: poetry run shardctl clone f1r3node-rust
       - run: poetry run shardctl pull f1r3node
       - name: Run test
         continue-on-error: true
@@ -969,7 +969,7 @@ jobs:
           pip install poetry
           poetry install --with integration
       - name: Clone f1r3node-rust (defaults.conf for NodeConf)
-        run: git clone --depth 1 --branch rust/dev https://github.com/F1R3FLY-io/f1r3node.git services/f1r3node-rust
+        run: poetry run shardctl clone f1r3node-rust
       - run: poetry run shardctl pull f1r3node-standalone
       - name: Run test
         run: poetry run shardctl test --scala "test_heartbeat_creates_blocks_when_idle and not shard" ${{ env.PYTEST_TIMEOUT_ARGS }}
@@ -1019,7 +1019,7 @@ jobs:
           pip install poetry
           poetry install --with integration
       - name: Clone f1r3node-rust (defaults.conf for NodeConf)
-        run: git clone --depth 1 --branch rust/dev https://github.com/F1R3FLY-io/f1r3node.git services/f1r3node-rust
+        run: poetry run shardctl clone f1r3node-rust
       - run: poetry run shardctl pull f1r3node
       - name: Run test
         continue-on-error: true
@@ -1072,7 +1072,7 @@ jobs:
           pip install poetry
           poetry install --with integration
       - name: Clone f1r3node-rust (defaults.conf for NodeConf)
-        run: git clone --depth 1 --branch rust/dev https://github.com/F1R3FLY-io/f1r3node.git services/f1r3node-rust
+        run: poetry run shardctl clone f1r3node-rust
       - run: poetry run shardctl pull f1r3node-rust
       - name: First run — keep-running, capture session_id
         id: keep_running

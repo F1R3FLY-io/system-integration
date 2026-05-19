@@ -16,21 +16,19 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 import yaml
 
 from .cleanup import DockerCleanupRegistry
 from .config import ResourcePaths, ShardConfig
 from .keys import BOOTSTRAP_NODE_ID
-from .types import PortMapping, ValidatorIdentity
+from .types import PortMapping
 
 logger = logging.getLogger(__name__)
 
 # The bootstrap private key is always the same (matches certs/bootstrap/)
-_BOOTSTRAP_PRIVATE_KEY_HEX = (
-    "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
-)
+_BOOTSTRAP_PRIVATE_KEY_HEX = "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
 
 # rnode hardcodes 40400-40405 for its listen sockets. The Linux default
 # ephemeral range (32768-60999) overlaps, so an outbound TCP from rnode at
@@ -70,8 +68,7 @@ def generate_compose(
 
     bootstrap_host = container_name("boot")
     bootstrap_url = (
-        f"rnode://{BOOTSTRAP_NODE_ID}@{bootstrap_host}"
-        f"?protocol=40400&discovery=40404"
+        f"rnode://{BOOTSTRAP_NODE_ID}@{bootstrap_host}" f"?protocol=40400&discovery=40404"
     )
 
     def _extra_cli(node_key: str) -> List[str]:
@@ -256,9 +253,7 @@ def generate_compose(
         },
     }
 
-    fd, compose_path = tempfile.mkstemp(
-        prefix=f"test-{session_id}-shard-", suffix=".yml"
-    )
+    fd, compose_path = tempfile.mkstemp(prefix=f"test-{session_id}-shard-", suffix=".yml")
     with os.fdopen(fd, "w") as f:
         yaml.dump(compose, f, default_flow_style=False, sort_keys=False)
 

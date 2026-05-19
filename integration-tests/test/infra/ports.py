@@ -35,8 +35,7 @@ class PortAllocator:
     coordination.
     """
 
-    def __init__(self, base: int = _BASE, ceiling: int = _CEILING,
-                 worker_id: str = "") -> None:
+    def __init__(self, base: int = _BASE, ceiling: int = _CEILING, worker_id: str = "") -> None:
         self._lock = threading.Lock()
         if worker_id and worker_id.startswith("gw"):
             worker_num = int(worker_id[2:])
@@ -59,14 +58,14 @@ class PortAllocator:
                 base = self._next
                 self._next += _BLOCK_SIZE
                 busy = next(
-                    (p for p in range(base, base + _BLOCK_SIZE)
-                     if not self._is_port_free(p)),
+                    (p for p in range(base, base + _BLOCK_SIZE) if not self._is_port_free(p)),
                     None,
                 )
                 if busy is None:
                     return PortMapping.from_base(base)
-                logger.debug("Block %d-%d skipped: port %d in use",
-                             base, base + _BLOCK_SIZE - 1, busy)
+                logger.debug(
+                    "Block %d-%d skipped: port %d in use", base, base + _BLOCK_SIZE - 1, busy
+                )
             raise RuntimeError(
                 f"test port range exhausted ({_BASE}-{self._ceiling}). "
                 f"Too many concurrent nodes or leftover TIME_WAIT sockets."
@@ -106,9 +105,7 @@ class PortAllocator:
         raise TimeoutError(f"Port {port} still in use after {timeout}s")
 
     @staticmethod
-    def wait_for_port_listening(
-        host: str, port: int, timeout: float = 120.0
-    ) -> None:
+    def wait_for_port_listening(host: str, port: int, timeout: float = 120.0) -> None:
         """Block until a TCP connection to ``host:port`` succeeds."""
         deadline = time.time() + timeout
         while time.time() < deadline:

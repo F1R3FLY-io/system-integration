@@ -13,7 +13,7 @@ import logging
 
 import pytest
 
-from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID
+from ...infra.keys import VALIDATOR1_ID
 from ...infra.polling import wait_for_deploy_finalized
 
 pytestmark = pytest.mark.xdist_group("shared")
@@ -38,10 +38,7 @@ def test_validators_endpoint(shared_shard, node_conf) -> None:
     """GET /api/validators returns correct validator set on readonly."""
     ro = shared_shard.readonly
     expected_pubkeys = _validator_pubkeys(shared_shard)
-    expected_stakes = {
-        identity.public_hex: stake
-        for identity, stake in shared_shard.config.bonds
-    }
+    expected_stakes = {identity.public_hex: stake for identity, stake in shared_shard.config.bonds}
 
     result = ro.api_get("/validators")
 
@@ -51,30 +48,31 @@ def test_validators_endpoint(shared_shard, node_conf) -> None:
     assert "blockHash" in result, "missing blockHash field"
 
     validators = result["validators"]
-    assert len(validators) == len(expected_pubkeys), (
-        f"expected {len(expected_pubkeys)} validators, got {len(validators)}"
-    )
+    assert len(validators) == len(
+        expected_pubkeys
+    ), f"expected {len(expected_pubkeys)} validators, got {len(validators)}"
 
     actual_pubkeys = {v["publicKey"] for v in validators}
-    assert actual_pubkeys == expected_pubkeys, (
-        f"validator pubkey mismatch: {actual_pubkeys ^ expected_pubkeys}"
-    )
+    assert (
+        actual_pubkeys == expected_pubkeys
+    ), f"validator pubkey mismatch: {actual_pubkeys ^ expected_pubkeys}"
 
     for v in validators:
-        assert v["stake"] == expected_stakes[v["publicKey"]], (
-            f"stake mismatch for {v['publicKey'][:24]}"
-        )
+        assert (
+            v["stake"] == expected_stakes[v["publicKey"]]
+        ), f"stake mismatch for {v['publicKey'][:24]}"
 
     expected_total = sum(expected_stakes.values())
-    assert result["totalStake"] == expected_total, (
-        f"totalStake {result['totalStake']} != expected {expected_total}"
-    )
+    assert (
+        result["totalStake"] == expected_total
+    ), f"totalStake {result['totalStake']} != expected {expected_total}"
     assert isinstance(result["blockNumber"], int) and result["blockNumber"] >= 0
     assert isinstance(result["blockHash"], str) and len(result["blockHash"]) > 0
 
     logging.info(
         "Validators endpoint: %d validators, totalStake=%d",
-        len(validators), result["totalStake"],
+        len(validators),
+        result["totalStake"],
     )
 
 
@@ -119,24 +117,25 @@ def test_epoch_all_nodes(shared_shard, node_conf) -> None:
     for node in shared_shard.all_nodes:
         result = node.api_get("/epoch")
 
-        assert isinstance(result["currentEpoch"], int) and result["currentEpoch"] >= 0, (
-            f"{node.name}: currentEpoch should be >= 0"
-        )
-        assert isinstance(result["epochLength"], int) and result["epochLength"] > 0, (
-            f"{node.name}: epochLength should be > 0"
-        )
-        assert isinstance(result["quarantineLength"], int) and result["quarantineLength"] >= 0, (
-            f"{node.name}: quarantineLength should be >= 0"
-        )
-        assert isinstance(result["blocksUntilNextEpoch"], int) and result["blocksUntilNextEpoch"] > 0, (
-            f"{node.name}: blocksUntilNextEpoch should be > 0"
-        )
-        assert isinstance(result["lastFinalizedBlockNumber"], int) and result["lastFinalizedBlockNumber"] >= 0, (
-            f"{node.name}: lastFinalizedBlockNumber should be >= 0"
-        )
-        assert isinstance(result["blockHash"], str) and len(result["blockHash"]) > 0, (
-            f"{node.name}: blockHash should be non-empty"
-        )
+        assert (
+            isinstance(result["currentEpoch"], int) and result["currentEpoch"] >= 0
+        ), f"{node.name}: currentEpoch should be >= 0"
+        assert (
+            isinstance(result["epochLength"], int) and result["epochLength"] > 0
+        ), f"{node.name}: epochLength should be > 0"
+        assert (
+            isinstance(result["quarantineLength"], int) and result["quarantineLength"] >= 0
+        ), f"{node.name}: quarantineLength should be >= 0"
+        assert (
+            isinstance(result["blocksUntilNextEpoch"], int) and result["blocksUntilNextEpoch"] > 0
+        ), f"{node.name}: blocksUntilNextEpoch should be > 0"
+        assert (
+            isinstance(result["lastFinalizedBlockNumber"], int)
+            and result["lastFinalizedBlockNumber"] >= 0
+        ), f"{node.name}: lastFinalizedBlockNumber should be >= 0"
+        assert (
+            isinstance(result["blockHash"], str) and len(result["blockHash"]) > 0
+        ), f"{node.name}: blockHash should be non-empty"
 
         # Derived field check
         expected_epoch = result["lastFinalizedBlockNumber"] // result["epochLength"]
@@ -147,9 +146,7 @@ def test_epoch_all_nodes(shared_shard, node_conf) -> None:
 
     # Cross-node: epochLength should be identical
     epoch_lengths = {n.name: n.api_get("/epoch")["epochLength"] for n in shared_shard.all_nodes}
-    assert len(set(epoch_lengths.values())) == 1, (
-        f"Nodes disagree on epochLength: {epoch_lengths}"
-    )
+    assert len(set(epoch_lengths.values())) == 1, f"Nodes disagree on epochLength: {epoch_lengths}"
 
     logging.info("Epoch endpoint verified on %d nodes", len(shared_shard.all_nodes))
 
@@ -171,9 +168,7 @@ def test_epoch_rewards(shared_shard) -> None:
     reward_data = rewards["ExprMap"]["data"]
 
     for pubkey in expected_pubkeys:
-        assert pubkey in reward_data, (
-            f"validator {pubkey[:24]} missing from rewards map"
-        )
+        assert pubkey in reward_data, f"validator {pubkey[:24]} missing from rewards map"
 
     logging.info("Epoch rewards: %d validators in reward map", len(reward_data))
 
@@ -190,9 +185,9 @@ def test_estimate_cost(shared_shard) -> None:
     resp = ro.api_post("/estimate-cost", {"term": "new ret in { ret!(42) }"})
     result = resp.json()
 
-    assert isinstance(result["cost"], int) and result["cost"] > 0, (
-        f"cost should be positive int, got {result.get('cost')}"
-    )
+    assert (
+        isinstance(result["cost"], int) and result["cost"] > 0
+    ), f"cost should be positive int, got {result.get('cost')}"
     assert isinstance(result["blockNumber"], int) and result["blockNumber"] >= 0
     assert isinstance(result["blockHash"], str) and len(result["blockHash"]) > 0
 
@@ -208,9 +203,9 @@ def test_estimate_cost_invalid_syntax(shared_shard) -> None:
     resp = requests.post(url, json={"term": "invalid {{{{ rholang"}, timeout=60)
 
     # Should return an error (non-200 or error in body)
-    assert resp.status_code != 200 or "error" in resp.text.lower(), (
-        f"Expected error for invalid syntax, got {resp.status_code}: {resp.text[:100]}"
-    )
+    assert (
+        resp.status_code != 200 or "error" in resp.text.lower()
+    ), f"Expected error for invalid syntax, got {resp.status_code}: {resp.text[:100]}"
 
     logging.info("Invalid syntax correctly rejected by estimate-cost")
 
@@ -227,20 +222,16 @@ def test_bond_status_bonded(shared_shard) -> None:
     for node in shared_shard.all_nodes:
         result = node.api_get(f"/bond-status/{pubkey}")
 
-        assert result["publicKey"] == pubkey, (
-            f"{node.name}: publicKey mismatch"
-        )
-        assert result["isBonded"] is True, (
-            f"{node.name}: genesis validator should be bonded"
-        )
+        assert result["publicKey"] == pubkey, f"{node.name}: publicKey mismatch"
+        assert result["isBonded"] is True, f"{node.name}: genesis validator should be bonded"
 
         # Cross-check with gRPC
         grpc_bonded = node.grpc_bond_status(pubkey)
-        assert grpc_bonded is True, (
-            f"{node.name}: gRPC bond_status disagrees with HTTP"
-        )
+        assert grpc_bonded is True, f"{node.name}: gRPC bond_status disagrees with HTTP"
 
-    logging.info("Bond status (bonded) verified on %d nodes, HTTP + gRPC", len(shared_shard.all_nodes))
+    logging.info(
+        "Bond status (bonded) verified on %d nodes, HTTP + gRPC", len(shared_shard.all_nodes)
+    )
 
 
 def test_bond_status_unknown(shared_shard) -> None:
@@ -251,14 +242,10 @@ def test_bond_status_unknown(shared_shard) -> None:
         result = node.api_get(f"/bond-status/{fake_key}")
 
         assert result["publicKey"] == fake_key
-        assert result["isBonded"] is False, (
-            f"{node.name}: unknown key should not be bonded"
-        )
+        assert result["isBonded"] is False, f"{node.name}: unknown key should not be bonded"
 
         grpc_bonded = node.grpc_bond_status(fake_key)
-        assert grpc_bonded is False, (
-            f"{node.name}: gRPC agrees unknown is not bonded"
-        )
+        assert grpc_bonded is False, f"{node.name}: gRPC agrees unknown is not bonded"
 
     logging.info("Bond status (unknown) verified on %d nodes", len(shared_shard.all_nodes))
 
@@ -277,9 +264,9 @@ def test_balance_endpoint(shared_shard) -> None:
     result = ro.api_get(f"/balance/{v1_address}")
 
     assert result["address"] == v1_address
-    assert isinstance(result["balance"], int) and result["balance"] >= 0, (
-        f"balance should be non-negative int, got {result.get('balance')}"
-    )
+    assert (
+        isinstance(result["balance"], int) and result["balance"] >= 0
+    ), f"balance should be non-negative int, got {result.get('balance')}"
     assert isinstance(result["blockNumber"], int) and result["blockNumber"] >= 0
     assert isinstance(result["blockHash"], str) and len(result["blockHash"]) > 0
 
@@ -346,9 +333,7 @@ def test_query_with_block_hash(shared_shard, timeouts) -> None:
 
     # Validators endpoint with explicit block hash
     result = ro.api_get(f"/validators?block_hash={block_hash}")
-    assert result["blockHash"] == block_hash, (
-        f"Expected blockHash to match query param"
-    )
+    assert result["blockHash"] == block_hash, "Expected blockHash to match query param"
     assert len(result["validators"]) > 0
 
     # Epoch endpoint with explicit block hash

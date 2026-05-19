@@ -8,32 +8,20 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-# Re-export Par extraction from pyf1r3fly
-from f1r3fly.par import (
-    par_as_string,
-    par_as_int,
-    par_as_bool,
-    par_as_tuple,
-    par_as_list,
-    par_as_map,
-    par_as_uri,
-    par_value,
-)
-
 # Re-export deploy checking from pyf1r3fly
 from f1r3fly.deploy import (
     DeployError,
-    find_deploy_in_block,
-    check_deploy_not_errored,
-    check_deploy_succeeded,
     check_deploy_errored,
+    check_deploy_succeeded,
 )
 
+# Re-export Par extraction from pyf1r3fly
 
 # ── Test assertion wrappers ────────────────────────────────────────────
 #
 # These wrap the pyf1r3fly check_* functions with pytest-style assert
 # messages. Tests can use either style depending on preference.
+
 
 def assert_deploy_succeeded(block_info, deploy_id: str) -> None:
     """Assert the deploy is in the block, not errored, and has cost > 0."""
@@ -92,9 +80,7 @@ def _get_block_with_retry(node, block_hash: str, timeout: int):
             time.sleep(1.0)
 
 
-def assert_all_nodes_agree_on_block(
-    nodes, block_hash: str, timeout: int = 0
-) -> None:
+def assert_all_nodes_agree_on_block(nodes, block_hash: str, timeout: int = 0) -> None:
     """Assert every node can retrieve the block and has the same post-state.
 
     Retrieval may be polled per-node through transient "not added yet"
@@ -111,8 +97,7 @@ def assert_all_nodes_agree_on_block(
         post_states[node.name] = block.blockInfo.postStateHash
     unique = set(post_states.values())
     assert len(unique) == 1, (
-        f"Nodes disagree on post-state for block {block_hash[:16]}. "
-        f"States: {post_states}"
+        f"Nodes disagree on post-state for block {block_hash[:16]}. " f"States: {post_states}"
     )
 
 
@@ -138,9 +123,7 @@ def assert_all_nodes_agree_on_lfb(nodes, timeout: int = 0) -> str:
         if len(hashes) == 1:
             return next(iter(hashes))
         if time.monotonic() >= deadline:
-            raise AssertionError(
-                f"Nodes disagree on LFB after {timeout}s: {lfb_info}"
-            )
+            raise AssertionError(f"Nodes disagree on LFB after {timeout}s: {lfb_info}")
         time.sleep(2.0)
 
 
@@ -173,12 +156,8 @@ def assert_contracts_consistent_across_nodes(
         elif len(entry) == 4:
             name, uri, method, param = entry
         else:
-            raise ValueError(
-                f"contract_queries entry must be 3- or 4-tuple, got {entry!r}"
-            )
-        pars = readonly_node.registry_query(
-            uri, method, param=param, block_hash=block_hash
-        )
+            raise ValueError(f"contract_queries entry must be 3- or 4-tuple, got {entry!r}")
+        pars = readonly_node.registry_query(uri, method, param=param, block_hash=block_hash)
         assert pars, (
             f"Contract {name} query {method} returned no results "
             f"on {readonly_node.name} at block {block_hash[:16]}"
@@ -225,12 +204,8 @@ def assert_bonds_map_consistent_across_nodes(
     per_node: dict = {}
     for node in nodes:
         block = _get_block_with_retry(node, block_hash, timeout)
-        per_node[node.name] = {
-            b.validator: b.stake for b in block.blockInfo.bonds
-        }
-    mismatches = {
-        name: bonds for name, bonds in per_node.items() if bonds != expected_bonds
-    }
+        per_node[node.name] = {b.validator: b.stake for b in block.blockInfo.bonds}
+    mismatches = {name: bonds for name, bonds in per_node.items() if bonds != expected_bonds}
     assert not mismatches, (
         f"Bonds map divergence at block {block_hash[:16]}... "
         f"expected {expected_bonds}; mismatches: {mismatches}"
@@ -258,7 +233,7 @@ def assert_block_finalized_on_all_nodes(
     for finalization first via `wait_for_finalized` or `poll_until`. Set
     ``timeout > 0`` to opt into polling for the per-block ``isFinalized``
     field, which can lag the LFB advance by a few seconds in high-contention
-    multi-validator scenarios (see TODO §2.1).
+    multi-validator scenarios.
     """
     from f1r3fly.client import F1r3flyClientException
 

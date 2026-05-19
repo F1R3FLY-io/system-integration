@@ -115,7 +115,8 @@ def test_network_recovers_from_validator_pause(shared_shard, node_conf, timeouts
 
     # All nodes (including readonly) must advance LFB
     _poll_lfb_all_nodes(
-        all_nodes, baseline_lfb + 3,
+        all_nodes,
+        baseline_lfb + 3,
         timeout=timeouts.finalization * 3,
     )
 
@@ -125,7 +126,9 @@ def test_network_recovers_from_validator_pause(shared_shard, node_conf, timeouts
         ft = float(lfb.blockInfo.faultTolerance)
         logging.info(
             "%s: LFB #%d, FT=%.2f",
-            node.name, lfb.blockInfo.blockNumber, ft,
+            node.name,
+            lfb.blockInfo.blockNumber,
+            ft,
         )
         assert ft >= node_conf.ftt, (
             f"{node.name}: post-recovery LFB #{lfb.blockInfo.blockNumber} "
@@ -154,8 +157,11 @@ def test_network_converges_after_slow_deploy(shared_shard, node_conf, timeouts) 
     if baseline_lfb == 0:
         logging.info("Waiting for initial LFB advancement...")
         poll_until(
-            predicate=lambda: _get_lfb_number(validators[0]) if _get_lfb_number(validators[0]) > 0 else None,
-            timeout=timeouts.finalization, interval=5.0,
+            predicate=lambda: _get_lfb_number(validators[0])
+            if _get_lfb_number(validators[0]) > 0
+            else None,
+            timeout=timeouts.finalization,
+            interval=5.0,
             description="initial LFB > 0",
         )
         baseline_lfb = _get_lfb_number(validators[0])
@@ -164,10 +170,12 @@ def test_network_converges_after_slow_deploy(shared_shard, node_conf, timeouts) 
 
     # Deploy on V2 and V3 to create active state alongside the slow deploy
     validators[1].deploy_string(
-        '@"pre-slow-v2"!(1)', VALIDATOR2_ID.private_key(),
+        '@"pre-slow-v2"!(1)',
+        VALIDATOR2_ID.private_key(),
     )
     validators[2].deploy_string(
-        '@"pre-slow-v3"!(1)', VALIDATOR3_ID.private_key(),
+        '@"pre-slow-v3"!(1)',
+        VALIDATOR3_ID.private_key(),
     )
 
     # Submit the slow deploy on V1
@@ -193,11 +201,13 @@ def test_network_converges_after_slow_deploy(shared_shard, node_conf, timeouts) 
     target_lfb = deploy_block + 3
     logging.info(
         "Waiting for LFB to advance past deploy block #%d (target=#%d) on all nodes...",
-        deploy_block, target_lfb,
+        deploy_block,
+        target_lfb,
     )
 
     _poll_lfb_all_nodes(
-        all_nodes, target_lfb,
+        all_nodes,
+        target_lfb,
         timeout=timeouts.finalization * 3,
     )
 
@@ -209,8 +219,7 @@ def test_network_converges_after_slow_deploy(shared_shard, node_conf, timeouts) 
     min_lfb = min(final_lfbs.values())
     spread = max_lfb - min_lfb
     assert spread <= 2, (
-        f"LFB spread across nodes is {spread} (max allowed: 2). "
-        f"Values: {final_lfbs}"
+        f"LFB spread across nodes is {spread} (max allowed: 2). " f"Values: {final_lfbs}"
     )
 
     # Verify FT >= FTT on post-recovery LFB
@@ -222,8 +231,11 @@ def test_network_converges_after_slow_deploy(shared_shard, node_conf, timeouts) 
             f"has FT={ft}, expected >= FTT={node_conf.ftt}"
         )
 
-    logging.info("Network recovered after slow deploy (LFB spread: %d, FT >= FTT=%.2f)",
-                 spread, node_conf.ftt)
+    logging.info(
+        "Network recovered after slow deploy (LFB spread: %d, FT >= FTT=%.2f)",
+        spread,
+        node_conf.ftt,
+    )
 
 
 def test_ft_convergence(shared_shard, node_conf, timeouts) -> None:
@@ -261,19 +273,17 @@ def test_ft_convergence(shared_shard, node_conf, timeouts) -> None:
     target_hash = parents[0] if parents else lfb_hash
     target_number = shared_shard.validators[0].get_block(target_hash).blockInfo.blockNumber
 
-    logging.info("Tracking FT convergence for block #%d (%s...)",
-                 target_number, target_hash[:16])
+    logging.info("Tracking FT convergence for block #%d (%s...)", target_number, target_hash[:16])
 
     # Verify FT >= FTT and isFinalized on reference node
     ref_block = shared_shard.validators[0].get_block(target_hash)
     ft_ref = float(ref_block.blockInfo.faultTolerance)
     assert ft_ref >= ftt, (
-        f"Block #{target_number} has FT={ft_ref} on reference node, "
-        f"expected >= FTT={ftt}"
+        f"Block #{target_number} has FT={ft_ref} on reference node, " f"expected >= FTT={ftt}"
     )
-    assert ref_block.blockInfo.isFinalized is True, (
-        f"Block #{target_number} should have isFinalized=True on reference node"
-    )
+    assert (
+        ref_block.blockInfo.isFinalized is True
+    ), f"Block #{target_number} should have isFinalized=True on reference node"
     logging.info("Reference node FT=%.4f (>= FTT=%.2f)", ft_ref, ftt)
 
     # Poll until all nodes report FT = 1.0 for the target block
@@ -294,20 +304,19 @@ def test_ft_convergence(shared_shard, node_conf, timeouts) -> None:
         interval=5.0,
         description=f"all nodes converge to FT=1.0 for block #{target_number}",
     )
-    logging.info("All nodes converged to FT=1.0: %s",
-                 {k: f"{v:.4f}" for k, v in ft_values.items()})
+    logging.info("All nodes converged to FT=1.0: %s", {k: f"{v:.4f}" for k, v in ft_values.items()})
 
     # Stability check: query again and verify FT is still 1.0
     for node in all_nodes:
         block = node.get_block(target_hash)
         ft = float(block.blockInfo.faultTolerance)
         assert abs(ft - 1.0) < 0.01, (
-            f"FT for block #{target_number} decreased on {node.name}: "
-            f"was 1.0, now {ft}"
+            f"FT for block #{target_number} decreased on {node.name}: " f"was 1.0, now {ft}"
         )
 
-    logging.info("FT stability verified: block #%d is FT=1.0 on all %d nodes",
-                 target_number, len(all_nodes))
+    logging.info(
+        "FT stability verified: block #%d is FT=1.0 on all %d nodes", target_number, len(all_nodes)
+    )
 
 
 def _lfb_past_genesis(node):

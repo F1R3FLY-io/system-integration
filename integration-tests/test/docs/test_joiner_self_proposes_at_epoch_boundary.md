@@ -5,10 +5,10 @@
 **Negative-control / forward-regression** for the bug observed in v19 of `test_bonding_validators` (joiner silently dropped from bonds when self-proposing first epoch-boundary block). After 6 variants — linear, concurrent multi-parent, V4 lagging, continuous bg proposers, multi-iteration scan covering 4 epoch boundaries — the bug **does not reproduce** under deterministic manual propose control.
 
 The test is preserved as:
-1. **Negative control** — proves the simple architectural shape (joiner produces first epoch-boundary block + multi-parent merges + bg chaos) is **not sufficient** to trigger §2.15. The bug needs something more — most likely the heartbeat-driven actor-message timing race that manual propose can't replicate.
-2. **Forward regression** — when §2.15 is fixed at the node level, this test continues to pass, confirming the deterministic shape stays correct.
+1. **Negative control** — proves the simple architectural shape (joiner produces first epoch-boundary block + multi-parent merges + bg chaos) is **not sufficient** to trigger the bug. The bug needs something more — most likely the heartbeat-driven actor-message timing race that manual propose can't replicate.
+2. **Forward regression** — when the bug is fixed at the node level, this test continues to pass, confirming the deterministic shape stays correct.
 
-For the actual flake repro of §2.15, run `test_bonding_validators` (heartbeat=True + bg load) under subprocess provider — it surfaces the bug intermittently (~33% rate). See TODO §2.15 for the conditions ruled in/out.
+For the actual flake repro, run `test_bonding_validators` (heartbeat=True + bg load) under subprocess provider — it surfaces the bug intermittently (~33% rate).
 
 ## Setup
 
@@ -40,12 +40,12 @@ Single test, single phase. Block-by-block sequence:
 | 5 | V1 | filler deploy + propose | post-activation: V4 active starting here |
 | 6 | V2 | filler deploy + propose | V4 still active |
 | 7 | V3 | filler deploy + propose | V4 still active |
-| **8** | **V4** | **filler deploy + propose** | **§2.15 TRIGGER: V4's first block IS the next epoch boundary after activation. closeBlock at #8 reads V4's local snapshot of allBondsTHM and per the §2.15 hypothesis silently drops V4.** |
+| **8** | **V4** | **filler deploy + propose** | **the bond-drop bug TRIGGER: V4's first block IS the next epoch boundary after activation. closeBlock at #8 reads V4's local snapshot of allBondsTHM and per the the bond-drop bug hypothesis silently drops V4.** |
 | 9 | V4 | filler deploy + propose | liveness check — does V4 still propose post-#8? |
 
 ### Why V4 must NOT propose during #5-#7
 
-If V4 propose-rotates with V1/V2/V3 and produces, say, #6 (a non-epoch-boundary block), V4's local state catches up and the §2.15 trigger no longer fires at #8. The flake nature of the bug in `test_bonding_validators` is exactly this — it depends on whether V4 happens to produce the epoch-boundary block as its first block.
+If V4 propose-rotates with V1/V2/V3 and produces, say, #6 (a non-epoch-boundary block), V4's local state catches up and the the bond-drop bug trigger no longer fires at #8. The flake nature of the bug in `test_bonding_validators` is exactly this — it depends on whether V4 happens to produce the epoch-boundary block as its first block.
 
 ### Block-numbering invariant
 
@@ -66,13 +66,13 @@ Manual propose with heartbeat off advances by exactly +1 per call. Each call is 
 | #4 | bonds map = {V1, V2, V3, V4}, cross-node consistent |
 | #7 | V4 in bonds (mid-epoch, V4 must remain bonded leading into next boundary) |
 | #8 | sender == V4, blockNumber == 8 (epoch boundary) |
-| #8 | **V4 still in bonds map** ← the §2.15 check; currently fails |
+| #8 | **V4 still in bonds map** ← the the bond-drop bug check; currently fails |
 | #8 | bonds map cross-node consistent at {V1, V2, V3, V4} |
 | #9 | V4 still proposing (liveness) |
 
 ## Forbidden-pattern coverage
 
-The test does **NOT** opt out of any forbidden patterns by default. §2.15 is a **silent** bug — no `RecordingInvalidBlock`, no `InvalidBondsCache`, no `KvStoreError`, no FATAL signals. If observation later shows additional patterns firing, add the marker.
+The test does **NOT** opt out of any forbidden patterns by default. the bond-drop bug is a **silent** bug — no `RecordingInvalidBlock`, no `InvalidBondsCache`, no `KvStoreError`, no FATAL signals. If observation later shows additional patterns firing, add the marker.
 
 ## Infrastructure used
 
@@ -90,5 +90,5 @@ The test does **NOT** opt out of any forbidden patterns by default. §2.15 is a 
 
 ## Notes for future maintenance
 
-- If V4's `propose()` at step #8 raises `F1r3flyClientException`, that's an **earlier** §2.15 manifestation (V4 thinks it's not active locally before even reaching closeBlock). The test treats this as a fail with a clear message rather than catching it.
-- The `xfail(strict=True)` marker means a passing run is itself a signal — when this test passes, §2.15 is fixed. Don't silently flip to `xfail(strict=False)` if the test starts passing intermittently; that would mask noise where deterministic signal is the whole point.
+- If V4's `propose()` at step #8 raises `F1r3flyClientException`, that's an **earlier** the bond-drop bug manifestation (V4 thinks it's not active locally before even reaching closeBlock). The test treats this as a fail with a clear message rather than catching it.
+- The `xfail(strict=True)` marker means a passing run is itself a signal — when this test passes, the bond-drop bug is fixed. Don't silently flip to `xfail(strict=False)` if the test starts passing intermittently; that would mask noise where deterministic signal is the whole point.

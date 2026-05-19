@@ -216,7 +216,8 @@ class Config:
 
         Reads the startup_order from services.yml. Each entry is a service name
         (e.g. 'f1r3node') or a yml filename (e.g. 'f1r3node.yml'), resolved to
-        compose/<name>.yml.
+        compose/<name>.yml. Entries whose corresponding repository entry has
+        ``enabled: false`` are skipped.
 
         If not defined, falls back to f1r3node as the default.
 
@@ -229,10 +230,14 @@ class Config:
             with open(services_config_file, "r") as f:
                 services_config = yaml.safe_load(f)
                 startup_order = services_config.get("startup_order", [])
+                repos = services_config.get("repositories", {})
 
                 if startup_order:
                     compose_files = []
                     for entry in startup_order:
+                        repo_config = repos.get(entry, {})
+                        if isinstance(repo_config, dict) and not repo_config.get("enabled", True):
+                            continue
                         filepath = self.resolve_compose_file(entry)
                         if filepath.exists():
                             compose_files.append(filepath)

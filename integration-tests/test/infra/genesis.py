@@ -10,11 +10,9 @@ import logging
 import os
 import shutil
 import tempfile
-from typing import List, Optional, Tuple
 
 from .cleanup import DockerCleanupRegistry
 from .config import ResourcePaths, ShardConfig
-from .types import ValidatorIdentity
 
 logger = logging.getLogger(__name__)
 

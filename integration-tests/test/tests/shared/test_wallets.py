@@ -23,9 +23,7 @@ from ...infra.polling import poll_until, wait_for_deploy_finalized
 pytestmark = pytest.mark.xdist_group("shared")
 
 
-def _transfer_and_read_result(
-    node, from_addr, to_addr, amount, key, timeouts, all_nodes=None
-):
+def _transfer_and_read_result(node, from_addr, to_addr, amount, key, timeouts, all_nodes=None):
     """Submit a transfer, wait for the deploy to reach canonical state, and read the result.
 
     Sig-based finalization tracking via `deploy_finalization_status`: returns
@@ -48,9 +46,7 @@ def _transfer_and_read_result(
     deploy_id = node.vault.transfer_ensure(from_addr, to_addr, amount, key)
 
     status = wait_for_deploy_finalized(node, deploy_id, timeouts.finalization)
-    canonical_block_hash = (
-        status.latestBlockHash.hex() if status.latestBlockHash else None
-    )
+    canonical_block_hash = status.latestBlockHash.hex() if status.latestBlockHash else None
 
     if all_nodes is not None:
         for other in all_nodes:
@@ -84,13 +80,21 @@ def test_validator1_pay_validator2(shared_shard, timeouts) -> None:
     assert v1_balance_ro > 0
 
     v1_balance_v1 = v1.vault.deploy_get_balance(
-        v1_vault, v1_key, timeouts.deploy_inclusion, timeouts.finalization,
+        v1_vault,
+        v1_key,
+        timeouts.deploy_inclusion,
+        timeouts.finalization,
     )
     assert v1_balance_v1 > 0
     logging.info("V1 balance: readonly=%d, V1 deploy=%d", v1_balance_ro, v1_balance_v1)
 
     result, canonical_block_hash = _transfer_and_read_result(
-        v1, v1_vault, v2_vault, transfer_amount, v1_key, timeouts,
+        v1,
+        v1_vault,
+        v2_vault,
+        transfer_amount,
+        v1_key,
+        timeouts,
         all_nodes=shared_shard.all_nodes,
     )
     assert result.success, f"Transfer failed: {result.reason}"
@@ -108,14 +112,16 @@ def test_validator1_pay_validator2(shared_shard, timeouts) -> None:
     v2_post = ro.vault.get_balance(v2_vault, block_hash=canonical_block_hash)
 
     assert v2_post > v2_pre, (
-        f"V2 balance did not increase across canonical block: "
-        f"{v2_pre} -> {v2_post}"
+        f"V2 balance did not increase across canonical block: " f"{v2_pre} -> {v2_post}"
     )
 
     logging.info(
         "Transfer applied: V2 balance %d -> %d across canonical block "
         "(delta +%d, transfer amount +%d)",
-        v2_pre, v2_post, v2_post - v2_pre, transfer_amount,
+        v2_pre,
+        v2_post,
+        v2_post - v2_pre,
+        transfer_amount,
     )
 
 
@@ -135,7 +141,12 @@ def test_validator2_pay_validator3(shared_shard, timeouts) -> None:
     assert ro.vault.get_balance(v2_vault) > 0
 
     result, canonical_block_hash = _transfer_and_read_result(
-        v2, v2_vault, v3_vault, transfer_amount, v2_key, timeouts,
+        v2,
+        v2_vault,
+        v3_vault,
+        transfer_amount,
+        v2_key,
+        timeouts,
         all_nodes=shared_shard.all_nodes,
     )
     assert result.success, f"Transfer failed: {result.reason}"
@@ -150,14 +161,16 @@ def test_validator2_pay_validator3(shared_shard, timeouts) -> None:
     v3_post = ro.vault.get_balance(v3_vault, block_hash=canonical_block_hash)
 
     assert v3_post > v3_pre, (
-        f"V3 balance did not increase across canonical block: "
-        f"{v3_pre} -> {v3_post}"
+        f"V3 balance did not increase across canonical block: " f"{v3_pre} -> {v3_post}"
     )
 
     logging.info(
         "Transfer applied: V3 balance %d -> %d across canonical block "
         "(delta +%d, transfer amount +%d)",
-        v3_pre, v3_post, v3_post - v3_pre, transfer_amount,
+        v3_pre,
+        v3_post,
+        v3_post - v3_pre,
+        transfer_amount,
     )
 
 
@@ -172,13 +185,16 @@ def test_transfer_failed_with_invalid_key(shared_shard, timeouts) -> None:
     v3_vault = VALIDATOR3_ID.private_key().get_public_key().get_vault_address()
 
     result, _ = _transfer_and_read_result(
-        v3, v3_vault, v2_vault, 100, v2_key, timeouts,
+        v3,
+        v3_vault,
+        v2_vault,
+        100,
+        v2_key,
+        timeouts,
         all_nodes=shared_shard.all_nodes,
     )
     assert not result.success, "Transfer should have failed with Invalid AuthKey"
-    assert result.reason == "Invalid AuthKey", (
-        f"Expected 'Invalid AuthKey', got '{result.reason}'"
-    )
+    assert result.reason == "Invalid AuthKey", f"Expected 'Invalid AuthKey', got '{result.reason}'"
 
 
 def test_transfer_failed_with_insufficient_funds(shared_shard, timeouts) -> None:
@@ -197,13 +213,18 @@ def test_transfer_failed_with_insufficient_funds(shared_shard, timeouts) -> None
     overdraw_amount = v1_balance + 1
 
     result, _ = _transfer_and_read_result(
-        v2, v1_vault, v2_vault, overdraw_amount, v1_key, timeouts,
+        v2,
+        v1_vault,
+        v2_vault,
+        overdraw_amount,
+        v1_key,
+        timeouts,
         all_nodes=shared_shard.all_nodes,
     )
     assert not result.success, "Transfer should have failed with Insufficient funds"
-    assert result.reason == "Insufficient funds", (
-        f"Expected 'Insufficient funds', got '{result.reason}'"
-    )
+    assert (
+        result.reason == "Insufficient funds"
+    ), f"Expected 'Insufficient funds', got '{result.reason}'"
 
 
 def test_block_api_returns_transfer_info(shared_shard, timeouts) -> None:
@@ -224,7 +245,10 @@ def test_block_api_returns_transfer_info(shared_shard, timeouts) -> None:
 
     # Transfer via VaultAPI
     deploy_id = v1.vault.transfer_ensure(
-        v1_vault, v2_vault, transfer_amount, v1_key,
+        v1_vault,
+        v2_vault,
+        transfer_amount,
+        v1_key,
     )
 
     # Find the block containing the transfer deploy
@@ -244,6 +268,7 @@ def test_block_api_returns_transfer_info(shared_shard, timeouts) -> None:
 
     # Verify transfer info on readonly (block report API is readonly-only on Rust node)
     for node in [ro]:
+
         def _has_transfers(n=node):
             try:
                 info = n.api_get(f"/block/{block_hash}")
@@ -264,9 +289,7 @@ def test_block_api_returns_transfer_info(shared_shard, timeouts) -> None:
 
         # Structural check
         for deploy in block_info["deploys"]:
-            assert "transfers" in deploy, (
-                f"{node.name}: each deploy should have a transfers field"
-            )
+            assert "transfers" in deploy, f"{node.name}: each deploy should have a transfers field"
 
         # Find the deploy with actual transfers
         deploy_with_transfers = None
@@ -275,26 +298,18 @@ def test_block_api_returns_transfer_info(shared_shard, timeouts) -> None:
                 deploy_with_transfers = deploy
                 break
 
-        assert deploy_with_transfers is not None, (
-            f"{node.name}: block should contain a deploy with transfer records"
-        )
+        assert (
+            deploy_with_transfers is not None
+        ), f"{node.name}: block should contain a deploy with transfer records"
 
         # Verify transfer content
         transfer = deploy_with_transfers["transfers"][0]
-        assert transfer["fromAddr"] == v1_vault, (
-            f"{node.name}: fromAddr mismatch"
-        )
-        assert transfer["toAddr"] == v2_vault, (
-            f"{node.name}: toAddr mismatch"
-        )
-        assert transfer["amount"] == transfer_amount, (
-            f"{node.name}: amount mismatch"
-        )
-        assert transfer["success"] is True, (
-            f"{node.name}: transfer not marked successful"
-        )
-        assert transfer["failReason"] == "", (
-            f"{node.name}: expected empty failReason, got '{transfer['failReason']}'"
-        )
+        assert transfer["fromAddr"] == v1_vault, f"{node.name}: fromAddr mismatch"
+        assert transfer["toAddr"] == v2_vault, f"{node.name}: toAddr mismatch"
+        assert transfer["amount"] == transfer_amount, f"{node.name}: amount mismatch"
+        assert transfer["success"] is True, f"{node.name}: transfer not marked successful"
+        assert (
+            transfer["failReason"] == ""
+        ), f"{node.name}: expected empty failReason, got '{transfer['failReason']}'"
 
     logging.info("Block API transfer info verified on readonly for block %s", block_hash[:16])

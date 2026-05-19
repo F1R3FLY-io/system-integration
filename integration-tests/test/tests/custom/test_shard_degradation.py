@@ -42,9 +42,7 @@ from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
 
-FINALIZER_TIMEOUT_PATTERN = re.compile(
-    r"Finalizer run exceeded timeout|finalizer-run exceeded"
-)
+FINALIZER_TIMEOUT_PATTERN = re.compile(r"Finalizer run exceeded timeout|finalizer-run exceeded")
 
 # ---------------------------------------------------------------------------
 # Thresholds
@@ -75,8 +73,9 @@ VALIDATORS_AND_KEYS = [
 # Rholang contracts (non-trivial, exercises different Rholang features)
 # ---------------------------------------------------------------------------
 
+
 def _registry_contract(i):
-    return f'''
+    return f"""
 new register(`rho:registry:insertArbitrary`), rl(`rho:registry:lookup`),
     stdout(`rho:io:stdout`), uriCh, valueCh in {{
   register!(bundle+{{*valueCh}}, *uriCh) |
@@ -89,10 +88,11 @@ new register(`rho:registry:insertArbitrary`), rl(`rho:registry:lookup`),
     }}
   }}
 }}
-'''
+"""
+
 
 def _map_contract(i):
-    return f'''
+    return f"""
 new mapCh, stdout(`rho:io:stdout`) in {{
   mapCh!({{}}) |
   for (@m <- mapCh) {{
@@ -105,10 +105,11 @@ new mapCh, stdout(`rho:io:stdout`) in {{
     }}
   }}
 }}
-'''
+"""
+
 
 def _channel_join_contract(i):
-    return f'''
+    return f"""
 new ch1, ch2, ch3, stdout(`rho:io:stdout`) in {{
   ch1!({i}) | ch2!({i + 1}) | ch3!({i + 2}) |
   for (@a <- ch1; @b <- ch2; @c <- ch3) {{
@@ -121,10 +122,11 @@ new ch1, ch2, ch3, stdout(`rho:io:stdout`) in {{
     }}
   }}
 }}
-'''
+"""
+
 
 def _nested_contract(i):
-    return f'''
+    return f"""
 new outer, stdout(`rho:io:stdout`) in {{
   new inner1, inner2 in {{
     inner1!({{"id": {i}, "type": "alpha"}}) |
@@ -142,10 +144,11 @@ new outer, stdout(`rho:io:stdout`) in {{
     stdout!(("outer-received", sum))
   }}
 }}
-'''
+"""
+
 
 def _recursive_contract(i, depth=50):
-    return f'''
+    return f"""
 new loop, stdout(`rho:io:stdout`) in {{
   contract loop(@n, @acc) = {{
     if (n <= 0) {{
@@ -156,10 +159,11 @@ new loop, stdout(`rho:io:stdout`) in {{
   }} |
   loop!({depth}, 0)
 }}
-'''
+"""
+
 
 def _set_operations_contract(i):
-    return f'''
+    return f"""
 new stdout(`rho:io:stdout`) in {{
   new setCh in {{
     setCh!(Set({i}, {i+1}, {i+2}, {i+3}, {i+4})) |
@@ -176,7 +180,8 @@ new stdout(`rho:io:stdout`) in {{
     }}
   }}
 }}
-'''
+"""
+
 
 CONTRACT_FACTORIES = [
     _registry_contract,
@@ -193,6 +198,7 @@ BRIDGE_CONTRACT = "resources/bridge-v2.rho"
 # ---------------------------------------------------------------------------
 # Measurement helpers
 # ---------------------------------------------------------------------------
+
 
 def _count_finalizer_timeouts(nodes):
     counts = {}
@@ -256,6 +262,7 @@ def _check_deploy_lifecycle(node, deploy_id, inclusion_timeout, finalization_tim
 # Test
 # ---------------------------------------------------------------------------
 
+
 def test_shard_degradation(provider, timeouts) -> None:
     """Deploy 150 non-trivial contracts and assert production-readiness."""
     config = ShardConfig(
@@ -273,8 +280,7 @@ def test_shard_degradation(provider, timeouts) -> None:
         v1 = shard.node("validator1")
 
         validator_keys = [
-            (shard.node(v_name), identity.private_key())
-            for identity, v_name in VALIDATORS_AND_KEYS
+            (shard.node(v_name), identity.private_key()) for identity, v_name in VALIDATORS_AND_KEYS
         ]
 
         # Derive timeouts from framework config
@@ -291,8 +297,11 @@ def test_shard_degradation(provider, timeouts) -> None:
         logging.info("=" * 70)
         logging.info("Deploying %d contracts in batches of %d", TOTAL_DEPLOYS, BATCH_SIZE)
         logging.info("Baseline LFBs: %s", baseline_lfbs)
-        logging.info("Inclusion timeout: %ds, Finalization timeout: %ds",
-                     deploy_inclusion_timeout, deploy_finalization_timeout)
+        logging.info(
+            "Inclusion timeout: %ds, Finalization timeout: %ds",
+            deploy_inclusion_timeout,
+            deploy_finalization_timeout,
+        )
         logging.info("-" * 70)
 
         deploy_records: List[Tuple[str, float, str, str]] = []
@@ -324,25 +333,37 @@ def test_shard_degradation(provider, timeouts) -> None:
                 try:
                     if contract_type == "bridge":
                         deploy_id = node.deploy_rho_file(
-                            BRIDGE_CONTRACT, key, phlo_limit=phlo, phlo_price=PHLO_PRICE,
+                            BRIDGE_CONTRACT,
+                            key,
+                            phlo_limit=phlo,
+                            phlo_price=PHLO_PRICE,
                         )
                     else:
                         factory = CONTRACT_FACTORIES[deploy_index % len(CONTRACT_FACTORIES)]
                         contract_type = factory.__name__.replace("_contract", "")
                         deploy_id = node.deploy_string(
-                            factory(deploy_index), key, phlo_limit=phlo, phlo_price=PHLO_PRICE,
+                            factory(deploy_index),
+                            key,
+                            phlo_limit=phlo,
+                            phlo_price=PHLO_PRICE,
                         )
                     deploy_records.append((deploy_id, time.time(), contract_type, node.name))
                     logging.info(
                         "  [%d/%d] Deployed %s via %s (id=%s)",
-                        deploy_index + 1, TOTAL_DEPLOYS,
-                        contract_type, node.name, deploy_id[:16],
+                        deploy_index + 1,
+                        TOTAL_DEPLOYS,
+                        contract_type,
+                        node.name,
+                        deploy_id[:16],
                     )
                 except Exception as e:
                     deploy_failures.append((deploy_index, node.name, str(e)))
                     logging.warning(
                         "  [%d/%d] Deploy FAILED via %s: %s",
-                        deploy_index + 1, TOTAL_DEPLOYS, node.name, e,
+                        deploy_index + 1,
+                        TOTAL_DEPLOYS,
+                        node.name,
+                        e,
                     )
 
                 time.sleep(DEPLOY_PAUSE_SECS)
@@ -399,34 +420,63 @@ def test_shard_degradation(provider, timeouts) -> None:
             logging.info(
                 "BATCH %d | deploys=%d | elapsed=%.0fs | LFB=#%d (+%d) | "
                 "rate=%.1f blk/min | timeouts=%d | desync=%d | api=%dms | stalls=%d",
-                batch_report["batch"], batch_report["deploys_sent"],
-                batch_report["total_elapsed_s"], batch_report["v1_lfb"],
-                batch_report["lfb_advance"], batch_report["lfb_rate_per_min"],
-                batch_report["finalizer_timeouts"], batch_report["validator_desync"],
-                batch_report["api_latency_ms"], batch_report["consecutive_stalls"],
+                batch_report["batch"],
+                batch_report["deploys_sent"],
+                batch_report["total_elapsed_s"],
+                batch_report["v1_lfb"],
+                batch_report["lfb_advance"],
+                batch_report["lfb_rate_per_min"],
+                batch_report["finalizer_timeouts"],
+                batch_report["validator_desync"],
+                batch_report["api_latency_ms"],
+                batch_report["consecutive_stalls"],
             )
 
         # Deploy lifecycle checks (sampled)
         lifecycle_results = []
-        for idx, (deploy_id, deploy_time, contract_type, validator_name) in enumerate(deploy_records):
+        for idx, (deploy_id, deploy_time, contract_type, validator_name) in enumerate(
+            deploy_records
+        ):
             if idx not in inclusion_indices:
                 continue
-            logging.info("Checking lifecycle for deploy #%d (%s via %s)...",
-                         idx + 1, contract_type, validator_name)
+            logging.info(
+                "Checking lifecycle for deploy #%d (%s via %s)...",
+                idx + 1,
+                contract_type,
+                validator_name,
+            )
             inclusion_time, block_number, finalization_time = _check_deploy_lifecycle(
-                v1, deploy_id,
-                deploy_inclusion_timeout, deploy_finalization_timeout,
+                v1,
+                deploy_id,
+                deploy_inclusion_timeout,
+                deploy_finalization_timeout,
             )
             if inclusion_time is not None and finalization_time is not None:
-                logging.info("  Included in %.1fs (block #%d), finalized in %.1fs",
-                             inclusion_time, block_number, finalization_time)
+                logging.info(
+                    "  Included in %.1fs (block #%d), finalized in %.1fs",
+                    inclusion_time,
+                    block_number,
+                    finalization_time,
+                )
             elif inclusion_time is not None:
-                logging.warning("  Included in %.1fs (block #%d), NOT finalized within %ds",
-                                inclusion_time, block_number, deploy_finalization_timeout)
+                logging.warning(
+                    "  Included in %.1fs (block #%d), NOT finalized within %ds",
+                    inclusion_time,
+                    block_number,
+                    deploy_finalization_timeout,
+                )
             else:
                 logging.warning("  NOT included within %ds", deploy_inclusion_timeout)
-            lifecycle_results.append((idx, deploy_id[:16], contract_type, block_number,
-                                      inclusion_time, finalization_time))
+            lifecycle_results.append(
+                (
+                    idx,
+                    deploy_id[:16],
+                    contract_type,
+                    block_number,
+                    inclusion_time,
+                    finalization_time,
+                )
+            )
 
         # Prometheus metrics delta
         metrics_after = scrape_metrics(v1)
@@ -436,7 +486,8 @@ def test_shard_degradation(provider, timeouts) -> None:
         final_lfbs = _get_lfb_numbers(all_nodes)
         final_timeouts_count = _count_finalizer_timeouts(all_nodes)
         total_final_timeouts = sum(
-            final_timeouts_count[n] - baseline_timeouts_count.get(n, 0) for n in final_timeouts_count
+            final_timeouts_count[n] - baseline_timeouts_count.get(n, 0)
+            for n in final_timeouts_count
         )
         final_rate = batch_reports[-1]["lfb_rate_per_min"] if batch_reports else 0
 
@@ -444,29 +495,58 @@ def test_shard_degradation(provider, timeouts) -> None:
         logging.info("=" * 70)
         logging.info("RESULTS")
         logging.info("=" * 70)
-        logging.info("%-6s %-8s %-8s %-12s %-10s %-8s %-8s %-8s %-8s",
-                     "Batch", "Deploys", "Time", "LFB", "Rate", "Timeout", "Desync", "API ms", "Stalls")
+        logging.info(
+            "%-6s %-8s %-8s %-12s %-10s %-8s %-8s %-8s %-8s",
+            "Batch",
+            "Deploys",
+            "Time",
+            "LFB",
+            "Rate",
+            "Timeout",
+            "Desync",
+            "API ms",
+            "Stalls",
+        )
         logging.info("-" * 78)
         for r in batch_reports:
             logging.info(
                 "%-6d %-8d %-8.0f %-12s %-10.1f %-8d %-8d %-8d %-8d",
-                r["batch"], r["deploys_sent"], r["total_elapsed_s"],
+                r["batch"],
+                r["deploys_sent"],
+                r["total_elapsed_s"],
                 f"#{r['v1_lfb']}(+{r['lfb_advance']})",
-                r["lfb_rate_per_min"], r["finalizer_timeouts"],
-                r["validator_desync"], r["api_latency_ms"], r["consecutive_stalls"],
+                r["lfb_rate_per_min"],
+                r["finalizer_timeouts"],
+                r["validator_desync"],
+                r["api_latency_ms"],
+                r["consecutive_stalls"],
             )
 
         logging.info("")
         logging.info("Deploy lifecycle (sampled %d deploys):", len(lifecycle_results))
-        logging.info("  %-6s %-16s %-12s %-8s %-12s %-12s",
-                     "#", "Deploy ID", "Type", "Block", "Included", "Finalized")
+        logging.info(
+            "  %-6s %-16s %-12s %-8s %-12s %-12s",
+            "#",
+            "Deploy ID",
+            "Type",
+            "Block",
+            "Included",
+            "Finalized",
+        )
         logging.info("  " + "-" * 66)
         for idx, did, ctype, bnum, itime, ftime in lifecycle_results:
             inc_str = f"{itime:.1f}s" if itime is not None else "TIMEOUT"
             fin_str = f"{ftime:.1f}s" if ftime is not None else "TIMEOUT"
             blk_str = f"#{bnum}" if bnum is not None else "-"
-            logging.info("  %-6d %-16s %-12s %-8s %-12s %-12s",
-                         idx + 1, did, ctype, blk_str, inc_str, fin_str)
+            logging.info(
+                "  %-6d %-16s %-12s %-8s %-12s %-12s",
+                idx + 1,
+                did,
+                ctype,
+                blk_str,
+                inc_str,
+                fin_str,
+            )
 
         logging.info("")
         logging.info("Final LFBs: %s", final_lfbs)
@@ -500,7 +580,9 @@ def test_shard_degradation(provider, timeouts) -> None:
                 )
 
         if max_desync_seen > MAX_DESYNC_BLOCKS:
-            failures.append(f"Validator desync: {max_desync_seen} blocks (max allowed: {MAX_DESYNC_BLOCKS})")
+            failures.append(
+                f"Validator desync: {max_desync_seen} blocks (max allowed: {MAX_DESYNC_BLOCKS})"
+            )
 
         if max_consecutive_stalls >= MAX_STALL_BATCHES:
             failures.append(
@@ -516,7 +598,9 @@ def test_shard_degradation(provider, timeouts) -> None:
                 f"not included within {deploy_inclusion_timeout}s: {', '.join(details)}"
             )
 
-        included_but_not_finalized = [r for r in lifecycle_results if r[4] is not None and r[5] is None]
+        included_but_not_finalized = [
+            r for r in lifecycle_results if r[4] is not None and r[5] is None
+        ]
         if included_but_not_finalized:
             details = [f"#{r[0]+1} ({r[2]}, block #{r[3]})" for r in included_but_not_finalized]
             failures.append(

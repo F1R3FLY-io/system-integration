@@ -108,12 +108,12 @@ Each node uses six internal ports (40400-40405). The host port mapping varies by
 
 | Internal | Role | Bootstrap | Validator1 | Validator2 | Validator3 | Readonly |
 |---|---|---|---|---|---|---|
-| 40400 | Protocol | 40400 | 40410 | 40420 | 40430 | (n/a) |
+| 40400 | Protocol | 40400 | 40410 | 40420 | 40430 | 40450 |
 | 40401 | gRPC ext | 40401 | 40411 | 40421 | 40431 | 40451 |
 | 40402 | gRPC int | 40402 | 40412 | 40422 | 40432 | 40452 |
 | 40403 | HTTP | 40403 | 40413 | 40423 | 40433 | 40453 |
-| 40404 | Discovery | 40404 | 40414 | 40424 | 40434 | (n/a) |
-| 40405 | Admin | 40405 | 40415 | 40425 | 40435 | (n/a) |
+| 40404 | Discovery | 40404 | 40414 | 40424 | 40434 | 40454 |
+| 40405 | Admin | 40405 | 40415 | 40425 | 40435 | 40455 |
 
 Standalone uses 40400-40405 directly. Validator4 uses 40440-40445.
 

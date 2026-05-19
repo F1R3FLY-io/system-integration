@@ -31,6 +31,7 @@ class RetiredLogSnapshot:
     managers) don't escape the scanner when their handles are removed
     from ``active_handles`` at context exit.
     """
+
     name: str
     log_text: str
 

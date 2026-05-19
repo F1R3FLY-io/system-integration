@@ -13,6 +13,7 @@ from .types import NodeRole, ValidatorIdentity
 
 _DEFAULT_IMAGE = "f1r3flyindustries/f1r3fly-rust:latest"
 
+
 # Cached conf values — parsed once on first access
 def resolve_node_image() -> str:
     """Resolve the node Docker image from the ``F1R3FLY_NODE_IMAGE`` env var.
@@ -60,12 +61,22 @@ def resolve_node_defaults_conf(repo_root: str) -> str:
 
     candidates = [
         os.path.join(
-            repo_root, "services", "f1r3node-rust", "node", "src",
-            "main", "resources", "defaults.conf",
+            repo_root,
+            "services",
+            "f1r3node-rust",
+            "node",
+            "src",
+            "main",
+            "resources",
+            "defaults.conf",
         ),
         os.path.join(
-            os.path.dirname(repo_root), "node", "src", "main",
-            "resources", "defaults.conf",
+            os.path.dirname(repo_root),
+            "node",
+            "src",
+            "main",
+            "resources",
+            "defaults.conf",
         ),
     ]
     for path in candidates:
@@ -131,9 +142,7 @@ class ShardConfig:
     heartbeat: bool = True
     include_readonly: bool = False
     global_cli_options: Dict[str, str] = dataclasses.field(default_factory=dict)
-    per_node_cli_options: Dict[str, Dict[str, str]] = dataclasses.field(
-        default_factory=dict
-    )
+    per_node_cli_options: Dict[str, Dict[str, str]] = dataclasses.field(default_factory=dict)
     extra_wallets: Optional[List[Tuple[str, int]]] = None
     image: Optional[str] = None
 
@@ -183,12 +192,8 @@ class ResourcePaths:
             standalone_conf=os.path.join(repo_root, "conf", "standalone-dev.conf"),
             genesis_bonds=os.path.join(integration_tests, "genesis", "bonds.txt"),
             genesis_wallets=os.path.join(integration_tests, "genesis", "wallets.txt"),
-            standalone_bonds=os.path.join(
-                integration_tests, "genesis", "standalone-bonds.txt"
-            ),
-            standalone_wallets=os.path.join(
-                integration_tests, "genesis", "standalone-wallets.txt"
-            ),
+            standalone_bonds=os.path.join(integration_tests, "genesis", "standalone-bonds.txt"),
+            standalone_wallets=os.path.join(integration_tests, "genesis", "standalone-wallets.txt"),
             certs_dir=os.path.join(integration_tests, "certs"),
             repo_root=repo_root,
             integration_tests=integration_tests,
@@ -203,9 +208,7 @@ class ResourcePaths:
                         f"Test resource directory '{field.name}' not found at {path}"
                     )
             elif not os.path.isfile(path):
-                raise FileNotFoundError(
-                    f"Test resource file '{field.name}' not found at {path}"
-                )
+                raise FileNotFoundError(f"Test resource file '{field.name}' not found at {path}")
 
         return paths
 

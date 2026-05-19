@@ -6,7 +6,7 @@ Three layers of documentation:
 - **This file** — running tests
 - [test/docs/ARCHITECTURE.md](test/docs/ARCHITECTURE.md) — framework internals (fixtures, Provider protocol, cleanup, ports, timeouts)
 - [test/docs/WRITING_TESTS.md](test/docs/WRITING_TESTS.md) — how to add a test
-- [test/docs/INDEX.md](test/docs/INDEX.md) — catalog of all 22 test files
+- [test/docs/INDEX.md](test/docs/INDEX.md) — catalog of all 25 test files
 
 ---
 
@@ -50,7 +50,7 @@ poetry run pytest
 poetry run pytest
 
 # By directory
-poetry run pytest integration-tests/test/tests/shared/       # 60 tests, one shard
+poetry run pytest integration-tests/test/tests/shared/       # 69 tests, one shard
 poetry run pytest integration-tests/test/tests/custom/        # 20 tests, one shard per test
 poetry run pytest integration-tests/test/tests/standalone/    # 14 tests, standalone nodes
 

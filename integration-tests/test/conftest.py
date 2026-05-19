@@ -5,12 +5,11 @@ All infrastructure logic lives in infra/ modules.
 """
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 
 import pytest
-
-import logging
 
 from .infra.cleanup import DockerCleanupRegistry
 from .infra.config import NodeConf, ResourcePaths, ShardConfig, TimeoutConfig
@@ -21,47 +20,60 @@ from .infra.providers.docker import DockerProvider
 from .infra.shard import Shard
 from .infra.timeouts import TimeoutHierarchy
 
-
 # ── Hooks ────────────────────────────────────────────────────────────
 
 
 def pytest_addoption(parser):
     group = parser.getgroup("f1r3fly", "F1R3FLY test framework options")
     group.addoption(
-        "--startup-timeout", type=int, default=None,
+        "--startup-timeout",
+        type=int,
+        default=None,
         help="Override max seconds for a node to reach Running state. "
-             "Default comes from TimeoutConfig.node_startup (currently 300s) "
-             "— the dataclass is the single source of truth.",
+        "Default comes from TimeoutConfig.node_startup (currently 300s) "
+        "— the dataclass is the single source of truth.",
     )
     group.addoption(
-        "--timeout-scale", type=float, default=None,
+        "--timeout-scale",
+        type=float,
+        default=None,
         help="Override timeout scale multiplier. Default comes from "
-             "TimeoutConfig.scale (currently 1.0). Use 1.5 on slow CI runners.",
+        "TimeoutConfig.scale (currently 1.0). Use 1.5 on slow CI runners.",
     )
     group.addoption(
-        "--skip-setup", action="store_true", default=False,
+        "--skip-setup",
+        action="store_true",
+        default=False,
         help="Skip shard creation (assume already running). Requires --session-id.",
     )
     group.addoption(
-        "--session-id", action="store", default=None,
+        "--session-id",
+        action="store",
+        default=None,
         help="Session ID of an existing shard to adopt "
-             "(for --skip-setup; printed by --keep-running runs)",
+        "(for --skip-setup; printed by --keep-running runs)",
     )
     group.addoption(
-        "--keep-running", action="store_true", default=False,
+        "--keep-running",
+        action="store_true",
+        default=False,
         help="Don't tear down shard after tests",
     )
     group.addoption(
-        "--monitor", action="store_true", default=False,
+        "--monitor",
+        action="store_true",
+        default=False,
         help="Enable resource monitoring (logs peak memory/CPU per container)",
     )
     group.addoption(
-        "--provider", action="store", default="docker",
+        "--provider",
+        action="store",
+        default="docker",
         choices=["docker", "subprocess"],
         help="Infrastructure backend: 'docker' (default) spawns nodes as "
-             "containers; 'subprocess' spawns the locally-built node binary "
-             "directly on the host (set F1R3FLY_NODE_BINARY or build "
-             "services/f1r3node-rust first).",
+        "containers; 'subprocess' spawns the locally-built node binary "
+        "directly on the host (set F1R3FLY_NODE_BINARY or build "
+        "services/f1r3node-rust first).",
     )
 
 
@@ -93,6 +105,7 @@ def _stale_cleanup_for_provider(provider_choice: str) -> None:
         DockerCleanupRegistry.cleanup_stale_sessions()
     elif provider_choice == "subprocess":
         from .infra.providers.subprocess import SubprocessProvider
+
         SubprocessProvider.cleanup_stale_sessions()
     else:
         # Unknown provider — silently skip rather than crash session start.
@@ -176,7 +189,8 @@ def provider(request, port_allocator, session_id, timeouts, resource_paths):
         logging.warning(
             "Session %s started with --keep-running. "
             "To reuse this shard: `pytest --skip-setup --session-id %s`",
-            session_id, session_id,
+            session_id,
+            session_id,
         )
 
     if choice == "docker":
@@ -189,6 +203,7 @@ def provider(request, port_allocator, session_id, timeouts, resource_paths):
         )
     elif choice == "subprocess":
         from .infra.providers.subprocess import SubprocessProvider
+
         prov = SubprocessProvider(
             port_allocator=port_allocator,
             session_id=session_id,
@@ -224,6 +239,7 @@ def shared_shard(request, provider, timeouts) -> Shard:
     from a previous ``--keep-running`` run instead of creating a fresh one.
     """
     from .infra.keys import VALIDATOR4_ID, VALIDATOR5_ID
+
     joiner_balance = 50_000_000_000_000_000
     extra_wallets = [
         (
@@ -509,7 +525,7 @@ def check_node_logs_after_test(request, provider):
     """
     yield
 
-    from .infra.log_events import scan_for_forbidden, format_errors
+    from .infra.log_events import format_errors, scan_for_forbidden
 
     # Collect opt-out keys from this test's markers.
     allowed = frozenset()
@@ -530,9 +546,7 @@ def check_node_logs_after_test(request, provider):
     # node's log content before its handle is removed; without this
     # path, panics on transient nodes silently escape the scanner.
     for snapshot in getattr(provider, "retired_log_snapshots", []):
-        forbidden.extend(
-            scan_for_forbidden(snapshot.log_text, snapshot.name, allowed)
-        )
+        forbidden.extend(scan_for_forbidden(snapshot.log_text, snapshot.name, allowed))
     if hasattr(provider, "clear_retired_log_snapshots"):
         provider.clear_retired_log_snapshots()
 

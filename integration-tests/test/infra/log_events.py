@@ -21,7 +21,6 @@ import re
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, Generator, List, Optional
 
-
 # ── Structured event queries ───────────────────────────────────────────
 
 
@@ -61,7 +60,8 @@ def find_event(logs: str, **fields: object) -> Optional[dict]:
 def find_events(logs: str, **fields: object) -> List[dict]:
     """Return all matching JSON log events."""
     return [
-        event for event in iter_json_events(logs)
+        event
+        for event in iter_json_events(logs)
         if all(event.get(k) == v for k, v in fields.items())
     ]
 
@@ -72,6 +72,7 @@ def find_events(logs: str, **fields: object) -> List[dict]:
 @dataclass
 class LogError:
     """A single forbidden-pattern log entry from a node."""
+
     node: str
     level: str
     message: str
@@ -92,35 +93,24 @@ class LogError:
 # the tests that legitimately need to opt out.
 FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
     # ── Always-deny by default; opt-outs rare ──
-
     # Panic in the node process. No legitimate test should produce this.
     "Panic": re.compile(r"panicked at"),
-
     # Generic "FATAL" keyword from tracing layer.
     "FatalKeyword": re.compile(r"\bFATAL\b"),
-
     # System contract or replay engine flagged a structural bug.
     "BugFound": re.compile(r"BUG FOUND"),
-
     # RootRepository state divergence (replay/play mismatch on rspace
     # roots). Catches the post-state hash divergence that surfaces when
     # rspace mutations don't replay deterministically.
-    "RootRepositoryDivergence": re.compile(
-        r"validateAndSetCurrentRoot FAILED.*not in roots store"
-    ),
-
+    "RootRepositoryDivergence": re.compile(r"validateAndSetCurrentRoot FAILED.*not in roots store"),
     # Self-validation of a self-created block failed structurally — the
     # proposer built a block its own validator can't verify.
     "SelfCreatedBlockStructuralError": re.compile(
         r"Self-created block validation failed with structural error"
     ),
-
     # Replay rig divergence — a consume that succeeded during play
     # failed during replay.
-    "ConsumeFailedReplayDivergence": re.compile(
-        r"SystemRuntimeError\(ConsumeFailed\)"
-    ),
-
+    "ConsumeFailedReplayDivergence": re.compile(r"SystemRuntimeError\(ConsumeFailed\)"),
     # KvStore-level failure. Catches parent-child races on
     # mergeable-channels entries AND the broader "DAG storage is missing
     # hash" case (which is also keyed below as DAGStorageMissingHash —
@@ -128,21 +118,16 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
     # Opt-outs:
     #   tests/shared/test_bonding_validators.py::test_bonding_validators
     #     (paired with DAGStorageMissingHash; sibling gap to the rspace
-    #     forward-horizon work, see docs/TODO.md §2.14)
+    #     forward-horizon work)
     "KvStoreError": re.compile(r"KvStoreError|KvStore error"),
-
     # RSpace requested a root not in the local history store.
     "UnknownRootError": re.compile(r"UnknownRootError"),
-
     # Tripwire: BlockException reached validate_with_effects despite the
     # dependency-gate fix.
     "UnexpectedBlockException": re.compile(r"UNEXPECTED.*BlockException"),
-
     # ── Bond-block bonds_cache mismatch — proposer ↔ replay divergence ──
-
     "InvalidBondsCache": re.compile(r"InvalidBondsCache"),
     "BondsCacheMismatch": re.compile(r"do not match block's bond cache"),
-
     # ── DagMerger single-value invariant on Number channels ──
     # An RSpace single-write Number channel (counter / balance) ended up
     # with multiple pre-state values when the proposer tried to merge
@@ -163,7 +148,6 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
         r"(has \d+ pre-state values; single-value invariant violated"
         r"|Expected at most one value for number channel)"
     ),
-
     # ── Propose-path internal assertion ──
     # rnode's propose path raised an internal "this should never happen"
     # error tagged with the offending sequence number. Always indicates
@@ -174,20 +158,16 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
     # SingleValueInvariantViolated so each surface stays attributable
     # even when only one of the two messages reaches the captured tail.
     "ProposeBugError": re.compile(r"BugError \(seqNum -?\d+\)"),
-
     # ── Bug classes with known opt-outs ──
-
     # Any block recorded as invalid. Opt-outs:
     #   tests/custom/test_consensus_safety.py::test_validator_failure_recovery
     #   tests/custom/test_consensus_safety.py::test_validator_failure_halts_finalization
     "RecordingInvalidBlock": re.compile(r"Recording invalid block"),
-
     # DAG storage missing a referenced hash. Opt-outs:
     #   tests/shared/test_convergence.py::test_network_recovers_from_validator_pause
     #   tests/shared/test_bonding_validators.py::test_bonding_validators
     #     (Phase C exercises a fresh observer against a multi-bond shard;
-    #     see docs/TODO.md §2.14 — sibling gap to this session's rspace
-    #     forward-horizon fix; node-side fix not yet started)
+    #     sibling gap to the rspace forward-horizon fix; node-side fix not yet started)
     "DAGStorageMissingHash": re.compile(r"DAG storage is missing hash"),
 }
 

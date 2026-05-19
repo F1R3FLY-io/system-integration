@@ -29,18 +29,14 @@ def test_heartbeat_creates_blocks_when_idle_shard(shared_shard, timeouts) -> Non
     # All validators should log heartbeat startup
     for node in validators:
         logs = node.logs()
-        assert "Heartbeat: Starting with random initial delay" in logs, (
-            f"{node.name} should log heartbeat startup message"
-        )
+        assert (
+            "Heartbeat: Starting with random initial delay" in logs
+        ), f"{node.name} should log heartbeat startup message"
 
-    initial_block_numbers = [
-        max(b.blockNumber for b in v.get_blocks(5)) for v in validators
-    ]
+    initial_block_numbers = [max(b.blockNumber for b in v.get_blocks(5)) for v in validators]
 
     def _all_advanced():
-        current = [
-            max(b.blockNumber for b in v.get_blocks(5)) for v in validators
-        ]
+        current = [max(b.blockNumber for b in v.get_blocks(5)) for v in validators]
         if all(current[i] >= initial_block_numbers[i] + 2 for i in range(len(validators))):
             return current
         return None

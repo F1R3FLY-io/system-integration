@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import dataclasses
 import enum
-from typing import Dict, FrozenSet, List, Optional, Tuple
 
 
 class NodeRole(enum.Enum):
@@ -25,12 +24,12 @@ class PortMapping:
     they are mapped to unique ranges by the provider.
     """
 
-    protocol: int       # 40400 inside container
-    grpc_ext: int       # 40401
-    grpc_int: int       # 40402
-    http: int           # 40403
-    discovery: int      # 40404
-    admin: int          # 40405
+    protocol: int  # 40400 inside container
+    grpc_ext: int  # 40401
+    grpc_int: int  # 40402
+    http: int  # 40403
+    discovery: int  # 40404
+    admin: int  # 40405
 
     @classmethod
     def from_base(cls, base: int) -> "PortMapping":
@@ -59,4 +58,5 @@ class ValidatorIdentity:
     def private_key(self):
         """Lazily construct a pyf1r3fly PrivateKey (avoids import at module level)."""
         from f1r3fly.crypto import PrivateKey
+
         return PrivateKey.from_hex(self.private_hex)

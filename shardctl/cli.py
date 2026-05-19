@@ -1154,7 +1154,7 @@ def test_cmd(
         None,
         "--image",
         "-i",
-        help="Docker image for test shard nodes (default: f1r3flyindustries/f1r3fly-scala-node)",
+        help="Docker image for test shard nodes (default: f1r3flyindustries/f1r3fly-rust)",
     ),
     scala: bool = typer.Option(False, "--scala", help="Use Scala node image"),
     rust: bool = typer.Option(False, "--rust", help="Use Rust node image"),
@@ -1189,10 +1189,10 @@ def test_cmd(
     Use --skip-setup to run tests against an already-running shard (no start, no teardown).
     Use --keep-running to start shard normally but leave it running after tests (for debugging).
 
-    Image priority: F1R3FLY_NODE_IMAGE env > --image flag > --rust/--scala flag > default.
+    Image priority: F1R3FLY_NODE_IMAGE env > --image flag > --rust/--scala flag > default (Rust).
 
     Examples:
-        poetry run shardctl test                              # Run all tests (Scala default)
+        poetry run shardctl test                              # Run all tests (Rust default)
         poetry run shardctl test test_wallets                 # Run wallet tests only
         poetry run shardctl test --scala                      # Use Scala node image
         poetry run shardctl test --rust                       # Use Rust node image
@@ -1211,16 +1211,16 @@ def test_cmd(
         raise typer.Exit(1)
 
     # Resolve the node image.
-    # Priority: F1R3FLY_NODE_IMAGE env var > --image flag > --rust/--scala flag > Scala default.
+    # Priority: F1R3FLY_NODE_IMAGE env var > --image flag > --rust/--scala flag > Rust default.
     env_image = os.environ.get("F1R3FLY_NODE_IMAGE")
     if env_image:
         docker_image = env_image
     elif image:
         docker_image = image
-    elif rust:
-        docker_image = "f1r3flyindustries/f1r3fly-rust:latest"
-    else:
+    elif scala:
         docker_image = "f1r3flyindustries/f1r3fly-scala-node:latest"
+    else:
+        docker_image = "f1r3flyindustries/f1r3fly-rust:latest"
 
     console.print("[bold blue]Running integration tests[/bold blue]")
     console.print(f"  Image: [cyan]{docker_image}[/cyan]")

@@ -16,12 +16,15 @@ import threading
 from dataclasses import dataclass
 from typing import Dict
 
+from .providers.docker import _parse_mem
+
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class NodeStats:
     """Accumulated stats for one container."""
+
     name: str
     peak_memory_mb: float = 0
     peak_cpu_percent: float = 0
@@ -45,9 +48,6 @@ class NodeStats:
     @property
     def avg_cpu_percent(self) -> float:
         return self.total_cpu_percent / self.samples if self.samples else 0
-
-
-from .providers.docker import _parse_mem
 
 
 class ResourceMonitor:
@@ -85,11 +85,17 @@ class ResourceMonitor:
         try:
             result = subprocess.run(
                 [
-                    "docker", "stats", "--no-stream", "--format",
+                    "docker",
+                    "stats",
+                    "--no-stream",
+                    "--format",
                     "{{.Name}}|{{.MemUsage}}|{{.CPUPerc}}",
-                    "--filter", "name=rnode.test.",
+                    "--filter",
+                    "name=rnode.test.",
                 ],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
         except Exception:
             return
@@ -99,10 +105,15 @@ class ResourceMonitor:
             try:
                 result = subprocess.run(
                     [
-                        "docker", "stats", "--no-stream", "--format",
+                        "docker",
+                        "stats",
+                        "--no-stream",
+                        "--format",
                         "{{.Name}}|{{.MemUsage}}|{{.CPUPerc}}",
                     ],
-                    capture_output=True, text=True, timeout=15,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
                 )
             except Exception:
                 return

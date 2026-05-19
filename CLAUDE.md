@@ -50,15 +50,17 @@ poetry run shardctl down
 ```
 .
 ├── services/                    # Service repos (git-ignored)
-│   ├── f1r3node/               # F1R3FLY blockchain node (Scala + Rust)
-│   ├── embers/                 # Embers API (Rust)
-│   ├── embers-frontend/        # Embers UI (React 19)
-│   ├── f1r3sky-backend/        # AT Protocol backend (Node.js)
-│   └── rust-client/            # Rust CLI client
+│   ├── f1r3node/               # F1R3FLY blockchain node (Scala)
+│   ├── f1r3node-rust/          # F1R3FLY blockchain node (Rust)
+│   ├── rust-client/            # Rust CLI client
+│   ├── f1r3drive/              # F1r3Drive FUSE app (Java)
+│   ├── embers/                 # Embers API (Rust, opt-in)
+│   ├── embers-frontend/        # Embers UI (React 19, opt-in)
+│   └── f1r3sky-backend/        # AT Protocol backend (Node.js, opt-in)
 ├── shardctl/                   # CLI tool package
 ├── compose/                    # Docker Compose files (one per service)
-│   ├── f1r3node.yml            # Scala shard (default)
-│   ├── f1r3node-rust.yml       # Rust shard
+│   ├── f1r3node.yml            # Scala shard
+│   ├── f1r3node-rust.yml       # Rust shard (default)
 │   ├── embers.yml              # Embers API + frontend
 │   ├── f1r3sky.yml             # F1R3Sky AT Protocol services
 │   └── monitoring.yml          # Prometheus + Grafana
@@ -71,8 +73,7 @@ poetry run shardctl down
 │   ├── development.md          # Development workflow + advanced usage
 │   ├── slashing-mechanism.md   # Slashing summary
 │   ├── slashing-test-plan.md   # Slashing test rewrite plan
-│   ├── f1r3drive-guide.md      # F1R3Drive FUSE app
-│   └── TODO.md                 # Bugs, roadmap, deferred work
+│   └── f1r3drive-guide.md      # F1R3Drive FUSE app
 ├── COMPOSE_STRUCTURE.md        # Canonical compose reference
 ├── services.yml                # Service repository URLs and branches
 ├── .env.node                   # Node container hostnames + validator keys
@@ -83,23 +84,32 @@ poetry run shardctl down
 
 ## Service Repositories
 
-Services are defined in `services.yml` with their git URLs and branches:
-- **f1r3node**: Blockchain node (main + rust-dev branches)
-- **embers**: Blockchain API bridge (main branch)
-- **embers-frontend**: Web UI for embers (main branch)
-- **f1r3sky-backend**: AT Protocol services (main branch)
-- **rust-client**: CLI tool for blockchain interaction (main branch)
+Services are defined in `services.yml` with their git URLs and branches.
+Default-enabled (cloned by `shardctl clone`):
+- **f1r3node**: Scala blockchain node (`dev` branch)
+- **f1r3node-rust**: Rust blockchain node (`staging` branch)
+- **rust-client**: CLI tool for blockchain interaction (`dev` branch)
+- **f1r3drive**: F1r3Drive FUSE app (`dev` branch)
+
+Opt-in (`enabled: false`; clone with `--include-disabled` or by name):
+- **embers**: Blockchain API bridge (`main` branch)
+- **embers-frontend**: Web UI for embers (`main` branch)
+- **f1r3sky-backend**: AT Protocol services (`main` branch)
+- **f1r3sky**: F1R3Sky frontend (`main` branch)
 
 ## Important Notes
 
 1. **Never commit service directories** - they're independent git repos
 2. **Use `shardctl clone`** to set up service repositories with the correct branches
 3. **Each compose file is independent** - start only what you need:
-   - `compose/f1r3node.yml` - F1R3node Scala shard (default)
-   - `compose/f1r3node-rust.yml` - F1R3node Rust shard
+   - `compose/f1r3node.yml` - F1R3node Scala shard
+   - `compose/f1r3node-rust.yml` - F1R3node Rust shard (default)
+   - `compose/f1r3node-shard-light.yml` - Lightweight 2-validator Scala shard (~7.5 GB RAM)
    - `compose/embers.yml` - Embers API and frontend
    - `compose/f1r3sky.yml` - F1R3Sky AT Protocol services
    - `compose/monitoring.yml` - Prometheus + Grafana
+
+   See [COMPOSE_STRUCTURE.md](COMPOSE_STRUCTURE.md) for the full list (standalone, observer, validator4 variants).
 4. **Services communicate via Docker network** - `f1r3fly` network
 5. **Always use shardctl commands** - Don't run builds manually (cargo, sbt, etc.). Use:
    - `poetry run shardctl build-service <service>` for full builds (source + Docker)

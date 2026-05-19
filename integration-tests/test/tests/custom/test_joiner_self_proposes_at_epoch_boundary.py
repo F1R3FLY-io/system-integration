@@ -1,14 +1,14 @@
 """
-Joiner Self-Proposes at Epoch Boundary — Negative-Control Test for docs/TODO.md §2.15
+Joiner Self-Proposes at Epoch Boundary — Negative-Control Test
 
-This test was designed to deterministically reproduce the bug observed in
+This test was designed to deterministically reproduce a bug observed in
 v19 of the enhanced bonding test (test_bonding_validators), where a
 freshly-bonded joiner silently disappeared from the bonds map after
 producing an epoch-boundary block. After 6 variants none reproduced the
 bug. The test now serves as a NEGATIVE CONTROL: it proves the simple
 architectural shape (joiner produces first epoch-boundary block, with
 multi-parent merges + bg-proposer chaos in V1/V2/V3) is INSUFFICIENT
-to trigger §2.15.
+to trigger the bug.
 
 Variants attempted (all PASSED, V4 stayed bonded):
   1. Linear single-parent propose: V1, V2, V3, V4 propose in strict
@@ -22,20 +22,19 @@ Variants attempted (all PASSED, V4 stayed bonded):
      4 of which on epoch boundaries (#16, #20, #24, #28). Bug never
      fires on any of them.
 
-Conclusion: §2.15 needs heartbeat-driven concurrency dynamics (the
+Conclusion: the bug needs heartbeat-driven concurrency dynamics (the
 actor-message timing race specific to heartbeat-check / propose
 pipeline) that manual propose can't replicate. The test now serves
 two purposes:
 
-1. Forward-regression: when §2.15 is fixed, this test continues to
+1. Forward-regression: when the bug is fixed, this test continues to
    pass — confirming the deterministic shape stays correct.
-2. Documentation: anyone investigating §2.15 can reference this file
+2. Documentation: anyone investigating the bug can reference this file
    to see what's been ruled out as the cause.
 
-For the actual ~33% flake repro of §2.15, run
-test_bonding_validators (heartbeat=True + bg load) under subprocess
-provider — it surfaces the bug intermittently. See docs/TODO.md
-§2.15 for the full mechanism hypothesis and ruled-out conditions.
+For the actual ~33% flake repro, run test_bonding_validators
+(heartbeat=True + bg load) under subprocess provider — it surfaces
+the bug intermittently.
 """
 
 import logging
@@ -93,7 +92,7 @@ class _BgProposers:
 
     Mimics the actor-message timing race that heartbeat-driven proposing
     creates in production (and that v19 of test_bonding_validators
-    exhibited when §2.15 fired). Linear or burst-style concurrent
+    exhibited when the bug fired). Linear or burst-style concurrent
     proposes haven't been sufficient to reproduce; continuous high-rate
     propose churn during V4's pre-#8 window is the next thing to try.
 
@@ -114,8 +113,10 @@ class _BgProposers:
     def start(self) -> None:
         for i, (node, ident) in enumerate(zip(self._producers, self._identities)):
             t = threading.Thread(
-                target=self._loop, args=(i, node, ident),
-                daemon=True, name=f"bg-prop-{i}",
+                target=self._loop,
+                args=(i, node, ident),
+                daemon=True,
+                name=f"bg-prop-{i}",
             )
             t.start()
             self._threads.append(t)
@@ -126,7 +127,9 @@ class _BgProposers:
             t.join(timeout=join_timeout)
         logging.info(
             "BgProposers stopped: %d deploys, %d proposes, %d errors",
-            self._counter, self._proposes, self._errors,
+            self._counter,
+            self._proposes,
+            self._errors,
         )
 
     def _loop(self, idx: int, node, identity) -> None:
@@ -158,9 +161,8 @@ def _concurrent_proposes(
 
     Used to inject the multi-parent merge dynamics that heartbeat-driven
     proposing creates organically and that linear single-parent manual
-    propose eliminates. §2.15 needs this concurrency to fire (per v19
-    of test_bonding_validators surfacing the bug only under bg load +
-    heartbeat).
+    propose eliminates. The bug needs this concurrency to fire (per v19
+    of test_bonding_validators surfacing it only under bg load + heartbeat).
     """
     results: List[str] = [None] * len(callers)  # type: ignore
     errors: List[Exception] = [None] * len(callers)  # type: ignore
@@ -179,7 +181,9 @@ def _concurrent_proposes(
 
     threads = [
         threading.Thread(
-            target=_run, args=(i, n, ident, lbl), name=f"propose-{lbl}",
+            target=_run,
+            args=(i, n, ident, lbl),
+            name=f"propose-{lbl}",
         )
         for i, (n, ident, lbl) in enumerate(callers)
     ]
@@ -191,14 +195,12 @@ def _concurrent_proposes(
     for i, err in enumerate(errors):
         if err is not None:
             label = callers[i][2]
-            raise RuntimeError(
-                f"Concurrent propose for {label} failed: {err}"
-            ) from err
+            raise RuntimeError(f"Concurrent propose for {label} failed: {err}") from err
     return results  # type: ignore
 
 
 def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
-    """Negative-control for docs/TODO.md §2.15.
+    """Negative-control for the joiner-bond-drop bug.
 
     With manual propose (heartbeat disabled), bg proposers on V1/V2/V3
     creating multi-parent merges, and V4 cycling through 12 sequential
@@ -206,11 +208,10 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
     throughout. Six variants of this test (linear, multi-parent
     concurrent, V4 lagging, bg proposers, multi-iteration scan) all
     PASS. The simple architectural shape — joiner produces first
-    epoch-boundary block — is insufficient to trigger §2.15.
+    epoch-boundary block — is insufficient to trigger the bug.
 
-    See module docstring for full variant matrix. See docs/TODO.md
-    §2.15 for what conditions ARE needed (heartbeat-driven
-    concurrency in the v19 trace).
+    See module docstring for full variant matrix and what conditions
+    ARE needed (heartbeat-driven concurrency in the v19 trace).
     """
     extra_wallets = [
         (
@@ -224,8 +225,8 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
             (VALIDATOR2_ID, _BOND_AMOUNT),
             (VALIDATOR3_ID, _BOND_AMOUNT),
         ],
-        ftt=-1,                       # instant finalization
-        heartbeat=False,              # manual propose only
+        ftt=-1,  # instant finalization
+        heartbeat=False,  # manual propose only
         include_readonly=True,
         extra_wallets=extra_wallets,
         global_cli_options={
@@ -273,8 +274,7 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
         for n in (v1, v2, joiner, ro):
             wait_for_block_visible(n, b3, t)
         assert _expect(v1, b3).blockNumber == 3, (
-            f"Block-numbering invariant broken: expected #3, got "
-            f"#{_expect(v1, b3).blockNumber}"
+            f"Block-numbering invariant broken: expected #3, got " f"#{_expect(v1, b3).blockNumber}"
         )
 
         # ── Block #4: V1 proposes bond.rho — bond block AT epoch boundary ──
@@ -290,20 +290,20 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
             wait_for_block_visible(n, b4, t)
         b4_info = _expect(v1, b4)
         assert b4_info.blockNumber == 4, (
-            f"Bond block expected at #4 (epoch boundary), got "
-            f"#{b4_info.blockNumber}"
+            f"Bond block expected at #4 (epoch boundary), got " f"#{b4_info.blockNumber}"
         )
         assert b4_info.blockNumber % _EPOCH_LENGTH == 0
         # closeBlock at #4 activates V4 — bond block's bonds map includes V4.
         assert_bonds_map_consistent_across_nodes(all_nodes, b4, bonds_4)
         logging.info(
             "Bond block #4 (%s): bonds=%s — V4 successfully bonded + activated",
-            b4[:16], sorted(_bonds_set(b4_info)),
+            b4[:16],
+            sorted(_bonds_set(b4_info)),
         )
 
         # ── Blocks #5+: continuous bg proposers create chaotic chain advance ──
         # Linear AND concurrent-burst-style proposing does NOT reproduce
-        # §2.15. The hypothesis is that the bug needs the actor-message
+        # the bug. The hypothesis is that the bug needs the actor-message
         # timing race that continuous heartbeat-driven proposing creates.
         # Inject this by running 3 daemon threads on V1/V2/V3 that
         # continuously deploy + propose at high rate, advancing the chain
@@ -354,7 +354,7 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
         # After bg proposers, the chain is at some non-deterministic
         # height. V4's first manual propose lands at max+1. Subsequent
         # proposes advance by 1 each (V4 is the only producer now).
-        # Heights mod 4 == 0 are epoch boundaries — the §2.15 trigger.
+        # Heights mod 4 == 0 are epoch boundaries — the bug trigger.
         # Run V4 through enough blocks to catch at least 2 epoch
         # boundaries (so we have multiple chances to fire the bug).
         v4_blocks: List[Tuple[int, str, set]] = []  # (blockNumber, hash, bonds_set)
@@ -370,21 +370,16 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
             except F1r3flyClientException as e:
                 pytest.fail(
                     f"V4 failed to propose iteration {i}: {e}. "
-                    f"This is also a §2.15-class manifestation (V4 thinks "
+                    f"This is also a bond-drop manifestation (V4 thinks "
                     f"it's not active locally)."
                 )
             for n in (v1, v2, v3, ro):
                 wait_for_block_visible(n, vb, t)
             vb_info = _expect(v1, vb)
             assert vb_info.sender == v4_pub
-            v4_blocks.append(
-                (vb_info.blockNumber, vb, _bonds_set(vb_info))
-            )
+            v4_blocks.append((vb_info.blockNumber, vb, _bonds_set(vb_info)))
 
-        epoch_blocks = [
-            (n, h, bonds) for n, h, bonds in v4_blocks
-            if n % _EPOCH_LENGTH == 0
-        ]
+        epoch_blocks = [(n, h, bonds) for n, h, bonds in v4_blocks if n % _EPOCH_LENGTH == 0]
         logging.info(
             "V4 produced %d blocks: heights %s; %d on epoch boundaries: %s",
             len(v4_blocks),
@@ -400,25 +395,29 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
             f"phase to land V4 closer to a boundary."
         )
 
-        # The §2.15 check: V4 must remain in bonds at every epoch
+        # The bond-drop check: V4 must remain in bonds at every epoch
         # boundary block V4 produced. This is the bug from v19.
         for height, vb_hash, bonds in epoch_blocks:
             assert v4_pub in bonds, (
-                f"§2.15: V4 dropped from bonds when self-proposing "
+                f"V4 dropped from bonds when self-proposing "
                 f"epoch-boundary block #{height} ({vb_hash[:16]}). "
                 f"Bonds: {sorted(bonds)}"
             )
             # Cross-node consistency on each epoch-boundary block.
             assert_bonds_map_consistent_across_nodes(
-                all_nodes, vb_hash, bonds_4,
+                all_nodes,
+                vb_hash,
+                bonds_4,
             )
 
         # Liveness check: V4 still proposing at the very last block.
         last_n, last_hash, _ = v4_blocks[-1]
         logging.info(
-            "V4 still proposing at #%d (last); §2.15 not triggered across "
+            "V4 still proposing at #%d (last); bond-drop not triggered across "
             "%d V4 blocks (%d at epoch boundaries)",
-            last_n, len(v4_blocks), len(epoch_blocks),
+            last_n,
+            len(v4_blocks),
+            len(epoch_blocks),
         )
     finally:
         shard.destroy()

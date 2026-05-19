@@ -157,7 +157,7 @@ def scrape_metrics(node) -> Dict[str, float]:
                 for suffix in ("_sum", "_count"):
                     key = metric + suffix
                     if line.startswith(key + "{") or line.startswith(key + " "):
-                        match = re.search(r'\s+([\d.eE+-]+)$', line)
+                        match = re.search(r"\s+([\d.eE+-]+)$", line)
                         if match:
                             val = float(match.group(1))
                             result[key] = result.get(key, 0) + val
@@ -167,7 +167,8 @@ def scrape_metrics(node) -> Dict[str, float]:
 
 
 def compute_metric_deltas(
-    before: Dict[str, float], after: Dict[str, float],
+    before: Dict[str, float],
+    after: Dict[str, float],
 ) -> Dict[str, float]:
     """Compute per-block average times from histogram deltas.
 
@@ -252,9 +253,13 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
     if merge_count > 0 or replay_count > 0:
         lines.append("  Checkpoint breakdown (avg per block):")
         if merge_count > 0:
-            lines.append(f"    parents_post_state (merge): {merge_avg*1000:.0f}ms ({int(merge_count)} blocks)")
+            lines.append(
+                f"    parents_post_state (merge): {merge_avg*1000:.0f}ms ({int(merge_count)} blocks)"
+            )
         if replay_count > 0:
-            lines.append(f"    replay_block (execution): {replay_avg*1000:.0f}ms ({int(replay_count)} blocks)")
+            lines.append(
+                f"    replay_block (execution): {replay_avg*1000:.0f}ms ({int(replay_count)} blocks)"
+            )
     # DAG merge breakdown
     dag_metrics = [
         ("dag_merge_total", "dag_merge_total_time"),
@@ -394,9 +399,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
         "compute_parents_post_state_fallback_merge_scope_too_large_fired.count", 0
     )
     if fallback_fired > 0:
-        lines.append(
-            f"  merge_scope_too_large fallback fired {int(fallback_fired)}×"
-        )
+        lines.append(f"  merge_scope_too_large fallback fired {int(fallback_fired)}×")
     # DAG insert
     dag_insert_count = metrics.get("dag_insert_time.count", 0)
     if dag_insert_count > 0:
@@ -448,6 +451,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
 @dataclasses.dataclass
 class PhaseReport:
     """Summary report for a single load test phase."""
+
     name: str
     deploys_submitted: int
     deploy_failures: int
@@ -475,6 +479,7 @@ class PhaseReport:
 @dataclasses.dataclass
 class DeployRecord:
     """A single deploy submission record."""
+
     deploy_id: str
     submit_time: float
     validator_name: str
@@ -485,6 +490,7 @@ class DeployRecord:
 @dataclasses.dataclass
 class DeployResult:
     """A deploy with its measured inclusion and finalization times."""
+
     record: DeployRecord
     inclusion_time: Optional[float] = None
     block_number: Optional[int] = None
@@ -589,12 +595,14 @@ class LifecycleTracker:
                 block_number = inc[0] if inc else None
                 fin_time = self._finalization.get(deploy_id)
                 finalization_time = (fin_time - record.submit_time) if fin_time else None
-                results.append(DeployResult(
-                    record=record,
-                    inclusion_time=inclusion_time,
-                    block_number=block_number,
-                    finalization_time=finalization_time,
-                ))
+                results.append(
+                    DeployResult(
+                        record=record,
+                        inclusion_time=inclusion_time,
+                        block_number=block_number,
+                        finalization_time=finalization_time,
+                    )
+                )
         return results
 
     def clear(self):

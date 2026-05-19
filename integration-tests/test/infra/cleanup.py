@@ -22,7 +22,7 @@ import logging
 import os
 import shutil
 import subprocess
-from typing import List, Optional, Set
+from typing import Set
 
 logger = logging.getLogger(__name__)
 
@@ -106,14 +106,17 @@ class DockerCleanupRegistry:
 
         if self.keep_running:
             total = (
-                len(self._containers) + len(self._networks) +
-                len(self._volumes) + len(self._tempdirs)
+                len(self._containers)
+                + len(self._networks)
+                + len(self._volumes)
+                + len(self._tempdirs)
             )
             if total:
                 logger.info(
                     "DockerCleanupRegistry: --keep-running, skipping cleanup of "
                     "%d resources for session %s",
-                    total, self.session_id,
+                    total,
+                    self.session_id,
                 )
             return
 
@@ -172,9 +175,7 @@ class DockerCleanupRegistry:
         """
         stale_sessions = cls._find_stale_session_ids()
         for sid in stale_sessions:
-            logger.warning(
-                "Cleaning stale test session: %s (no running containers)", sid
-            )
+            logger.warning("Cleaning stale test session: %s (no running containers)", sid)
             cls._scan_and_remove_session(sid)
 
         # Also clean any orphaned resources that don't match a known session
@@ -186,9 +187,12 @@ class DockerCleanupRegistry:
     def _find_stale_session_ids(cls) -> Set[str]:
         """Return session IDs that have exited/dead containers but no running ones."""
         result = _docker(
-            "ps", "-a",
-            "--filter", f"name={_CONTAINER_PREFIX}",
-            "--format", "{{.Names}}|{{.Status}}",
+            "ps",
+            "-a",
+            "--filter",
+            f"name={_CONTAINER_PREFIX}",
+            "--format",
+            "{{.Names}}|{{.Status}}",
         )
         if result.returncode != 0 or not result.stdout.strip():
             return set()
@@ -218,7 +222,10 @@ class DockerCleanupRegistry:
 
         # Containers
         result = _docker(
-            "ps", "-aq", "--filter", f"name={prefix}",
+            "ps",
+            "-aq",
+            "--filter",
+            f"name={prefix}",
         )
         if result.returncode == 0 and result.stdout.strip():
             for cid in result.stdout.strip().splitlines():
@@ -231,7 +238,12 @@ class DockerCleanupRegistry:
         # Volumes
         vol_prefix = f"{_VOLUME_PREFIX}{session_id}-"
         result = _docker(
-            "volume", "ls", "--filter", f"name={vol_prefix}", "--format", "{{.Name}}",
+            "volume",
+            "ls",
+            "--filter",
+            f"name={vol_prefix}",
+            "--format",
+            "{{.Name}}",
         )
         if result.returncode == 0 and result.stdout.strip():
             for vol in result.stdout.strip().splitlines():
@@ -251,7 +263,10 @@ class DockerCleanupRegistry:
         """
         # Containers (force-remove also stops running ones)
         result = _docker(
-            "ps", "-aq", "--filter", f"name={_CONTAINER_PREFIX}",
+            "ps",
+            "-aq",
+            "--filter",
+            f"name={_CONTAINER_PREFIX}",
         )
         if result.returncode == 0 and result.stdout.strip():
             for cid in result.stdout.strip().splitlines():
@@ -259,7 +274,12 @@ class DockerCleanupRegistry:
 
         # Networks (now safe — attached containers gone)
         result = _docker(
-            "network", "ls", "--filter", f"name={_NETWORK_PREFIX}", "--format", "{{.Name}}",
+            "network",
+            "ls",
+            "--filter",
+            f"name={_NETWORK_PREFIX}",
+            "--format",
+            "{{.Name}}",
         )
         if result.returncode == 0 and result.stdout.strip():
             for net in result.stdout.strip().splitlines():
@@ -267,7 +287,12 @@ class DockerCleanupRegistry:
 
         # Volumes (now safe — using containers gone)
         result = _docker(
-            "volume", "ls", "--filter", f"name={_VOLUME_PREFIX}", "--format", "{{.Name}}",
+            "volume",
+            "ls",
+            "--filter",
+            f"name={_VOLUME_PREFIX}",
+            "--format",
+            "{{.Name}}",
         )
         if result.returncode == 0 and result.stdout.strip():
             for vol in result.stdout.strip().splitlines():
@@ -290,22 +315,21 @@ class DockerCleanupRegistry:
         for this session exist. Other sessions are not touched.
         """
         import re
-        container_re = re.compile(
-            rf"^{re.escape(_CONTAINER_PREFIX)}{re.escape(session_id)}\."
-        )
+
+        container_re = re.compile(rf"^{re.escape(_CONTAINER_PREFIX)}{re.escape(session_id)}\.")
         network_re = re.compile(
-            rf"^{re.escape(_NETWORK_PREFIX)}{re.escape(session_id)}"
-            r"(-standalone\d+)?$"
+            rf"^{re.escape(_NETWORK_PREFIX)}{re.escape(session_id)}" r"(-standalone\d+)?$"
         )
-        volume_re = re.compile(
-            rf"^{re.escape(_VOLUME_PREFIX)}{re.escape(session_id)}_"
-        )
+        volume_re = re.compile(rf"^{re.escape(_VOLUME_PREFIX)}{re.escape(session_id)}_")
 
         # Containers — force-remove also stops running ones.
         result = _docker(
-            "ps", "-a",
-            "--filter", f"name={_CONTAINER_PREFIX}{session_id}.",
-            "--format", "{{.Names}}",
+            "ps",
+            "-a",
+            "--filter",
+            f"name={_CONTAINER_PREFIX}{session_id}.",
+            "--format",
+            "{{.Names}}",
         )
         if result.returncode == 0 and result.stdout.strip():
             for name in result.stdout.strip().splitlines():
@@ -314,9 +338,12 @@ class DockerCleanupRegistry:
 
         # Networks (now safe — attached containers gone).
         result = _docker(
-            "network", "ls",
-            "--filter", f"name={_NETWORK_PREFIX}{session_id}",
-            "--format", "{{.Name}}",
+            "network",
+            "ls",
+            "--filter",
+            f"name={_NETWORK_PREFIX}{session_id}",
+            "--format",
+            "{{.Name}}",
         )
         if result.returncode == 0 and result.stdout.strip():
             for net in result.stdout.strip().splitlines():
@@ -325,9 +352,12 @@ class DockerCleanupRegistry:
 
         # Volumes (now safe — using containers gone).
         result = _docker(
-            "volume", "ls",
-            "--filter", f"name={_VOLUME_PREFIX}{session_id}_",
-            "--format", "{{.Name}}",
+            "volume",
+            "ls",
+            "--filter",
+            f"name={_VOLUME_PREFIX}{session_id}_",
+            "--format",
+            "{{.Name}}",
         )
         if result.returncode == 0 and result.stdout.strip():
             for vol in result.stdout.strip().splitlines():
@@ -339,7 +369,12 @@ class DockerCleanupRegistry:
         """Remove any test-prefixed resources not associated with running sessions."""
         # Orphaned volumes
         result = _docker(
-            "volume", "ls", "--filter", f"name={_VOLUME_PREFIX}", "--format", "{{.Name}}",
+            "volume",
+            "ls",
+            "--filter",
+            f"name={_VOLUME_PREFIX}",
+            "--format",
+            "{{.Name}}",
         )
         if result.returncode == 0 and result.stdout.strip():
             for vol in result.stdout.strip().splitlines():
@@ -347,7 +382,12 @@ class DockerCleanupRegistry:
 
         # Orphaned networks
         result = _docker(
-            "network", "ls", "--filter", f"name={_NETWORK_PREFIX}", "--format", "{{.Name}}",
+            "network",
+            "ls",
+            "--filter",
+            f"name={_NETWORK_PREFIX}",
+            "--format",
+            "{{.Name}}",
         )
         if result.returncode == 0 and result.stdout.strip():
             for net in result.stdout.strip().splitlines():

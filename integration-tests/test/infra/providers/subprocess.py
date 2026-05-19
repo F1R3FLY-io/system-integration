@@ -35,7 +35,6 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_binary
-from ..genesis import generate_genesis
 from ..keys import BOOTSTRAP_NODE_ID
 from ..ports import PortAllocator
 from ..timeouts import TimeoutHierarchy
@@ -53,9 +52,7 @@ logger = logging.getLogger(__name__)
 # integration-tests/certs/bootstrap/, which the bootstrap node uses for TLS
 # so its NODE_ID is deterministic and validators can address the bootstrap
 # URL without an introspection round-trip).
-_BOOTSTRAP_PRIVATE_KEY = (
-    "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
-)
+_BOOTSTRAP_PRIVATE_KEY = "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
 
 # Per-session subprocess data lives under the integration-tests directory
 # in a hidden folder. Repo-local makes inspection easy; .gitignore should
@@ -209,9 +206,7 @@ class SubprocessNodeHandle:
                 f"  poll():        {self._proc.poll()}\n"
             )
         except Exception as e:
-            logger.warning(
-                "SubprocessNodeHandle.archive_log: %s failed: %s", self._name, e
-            )
+            logger.warning("SubprocessNodeHandle.archive_log: %s failed: %s", self._name, e)
             try:
                 dest_path.write_text(
                     f"archive_log: exception raised: {e!r}\n"
@@ -278,7 +273,8 @@ class SubprocessNodeHandle:
             except subprocess.TimeoutExpired:
                 logger.warning(
                     "Subprocess %s (pid=%d) survived SIGKILL; ignoring",
-                    self._name, self._proc.pid,
+                    self._name,
+                    self._proc.pid,
                 )
         finally:
             try:
@@ -302,7 +298,9 @@ class SubprocessNodeHandle:
         try:
             result = subprocess.run(
                 ["ps", "-p", str(self._proc.pid), "-o", "rss=,%cpu="],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             line = (result.stdout or "").strip()
             if not line:
@@ -438,21 +436,33 @@ class SubprocessProvider:
         log_path = self._session_root / f"{role_key}.log"
 
         cmd: List[str] = [
-            str(self._binary), "run",
-            "--config-file", self._paths.rust_conf,
-            "--data-dir", str(data_dir),
-            "--host", "127.0.0.1",
-            "--protocol-port", str(ports.protocol),
-            "--api-port-grpc-external", str(ports.grpc_ext),
-            "--api-port-grpc-internal", str(ports.grpc_int),
-            "--api-port-http", str(ports.http),
-            "--api-port-admin-http", str(ports.admin),
-            "--discovery-port", str(ports.discovery),
+            str(self._binary),
+            "run",
+            "--config-file",
+            self._paths.rust_conf,
+            "--data-dir",
+            str(data_dir),
+            "--host",
+            "127.0.0.1",
+            "--protocol-port",
+            str(ports.protocol),
+            "--api-port-grpc-external",
+            str(ports.grpc_ext),
+            "--api-port-grpc-internal",
+            str(ports.grpc_int),
+            "--api-port-http",
+            str(ports.http),
+            "--api-port-admin-http",
+            str(ports.admin),
+            "--discovery-port",
+            str(ports.discovery),
         ]
         if cert_subdir is not None:
             cmd += [
-                "--tls-key-path", str(Path(self._paths.certs_dir) / cert_subdir / "node.key.pem"),
-                "--tls-certificate-path", str(Path(self._paths.certs_dir) / cert_subdir / "node.certificate.pem"),
+                "--tls-key-path",
+                str(Path(self._paths.certs_dir) / cert_subdir / "node.key.pem"),
+                "--tls-certificate-path",
+                str(Path(self._paths.certs_dir) / cert_subdir / "node.certificate.pem"),
             ]
         cmd += cli_args
 
@@ -486,7 +496,9 @@ class SubprocessProvider:
 
     # ── Shard lifecycle ─────────────────────────────────────────────
 
-    def create_shard(self, config: ShardConfig, wait_running: bool = True) -> List[SubprocessNodeHandle]:
+    def create_shard(
+        self, config: ShardConfig, wait_running: bool = True
+    ) -> List[SubprocessNodeHandle]:
         """Create a full shard via host processes.
 
         Generates genesis files, allocates ports per role, spawns boot first
@@ -509,9 +521,7 @@ class SubprocessProvider:
         # cleanup via session_root). Fall back to writing inline.
         genesis_dir = self._write_genesis(config, tmp_genesis_dir)
 
-        roles: List[str] = ["boot"] + [
-            f"validator{i + 1}" for i in range(len(config.bonds))
-        ]
+        roles: List[str] = ["boot"] + [f"validator{i + 1}" for i in range(len(config.bonds))]
         if config.include_readonly:
             roles.append("readonly")
 
@@ -570,14 +580,16 @@ class SubprocessProvider:
                 v_cli.append("--heartbeat-disabled")
             v_cli += _extra_cli(role_key)
 
-            handles.append(self._spawn(
-                role_key=role_key,
-                role=NodeRole.VALIDATOR,
-                ports=port_map[role_key],
-                cli_args=v_cli,
-                cert_subdir=cert_subdir,
-                identity=identity,
-            ))
+            handles.append(
+                self._spawn(
+                    role_key=role_key,
+                    role=NodeRole.VALIDATOR,
+                    ports=port_map[role_key],
+                    cli_args=v_cli,
+                    cert_subdir=cert_subdir,
+                    identity=identity,
+                )
+            )
 
         # ── Readonly observer (optional) ──
         if config.include_readonly:
@@ -590,13 +602,15 @@ class SubprocessProvider:
                 f"--wallets-file={genesis_dir}/wallets.txt",
             ]
             ro_cli += _extra_cli("readonly")
-            handles.append(self._spawn(
-                role_key="readonly",
-                role=NodeRole.READONLY,
-                ports=port_map["readonly"],
-                cli_args=ro_cli,
-                cert_subdir=None,  # readonly auto-generates its own cert
-            ))
+            handles.append(
+                self._spawn(
+                    role_key="readonly",
+                    role=NodeRole.READONLY,
+                    ports=port_map["readonly"],
+                    cli_args=ro_cli,
+                    cert_subdir=None,  # readonly auto-generates its own cert
+                )
+            )
 
         # ── Wait for all to reach Running ──
         if wait_running:
@@ -726,9 +740,7 @@ class SubprocessProvider:
         #   default → standalone-dev.conf (small validator set, instant finalization)
         #   use_shard_conf=True → rust.conf (shard config; required when joiners
         #     will connect)
-        config_file = (
-            self._paths.rust_conf if use_shard_conf else self._paths.standalone_conf
-        )
+        config_file = self._paths.rust_conf if use_shard_conf else self._paths.standalone_conf
 
         # TLS cert selection: when joiners will connect (use_shard_conf=True),
         # mount the prebaked bootstrap cert so its SAN contains
@@ -752,7 +764,9 @@ class SubprocessProvider:
 
         if wait_running:
             wait_for_handles_or_archive(
-                [handle], self._archive_dir, self._timeouts.node_startup,
+                [handle],
+                self._archive_dir,
+                self._timeouts.node_startup,
             )
 
         self._active_handles.append(handle)
@@ -817,9 +831,7 @@ class SubprocessProvider:
             ]
         cli.extend(extra_cli)
 
-        config_file = (
-            self._paths.rust_conf if use_shard_conf else self._paths.standalone_conf
-        )
+        config_file = self._paths.rust_conf if use_shard_conf else self._paths.standalone_conf
 
         # See create_standalone: shard-conf standalones must use the
         # prebaked bootstrap cert so joiners can validate its SAN.
@@ -845,7 +857,9 @@ class SubprocessProvider:
 
         if wait_running:
             wait_for_handles_or_archive(
-                [new_handle], self._archive_dir, self._timeouts.node_startup,
+                [new_handle],
+                self._archive_dir,
+                self._timeouts.node_startup,
             )
 
         self._active_handles.append(new_handle)
@@ -883,21 +897,33 @@ class SubprocessProvider:
         log_path = self._session_root / f"{subdir}.log"
 
         cmd: List[str] = [
-            str(self._binary), "run",
-            "--config-file", config_file,
-            "--data-dir", str(data_dir),
-            "--host", "127.0.0.1",
-            "--protocol-port", str(ports.protocol),
-            "--api-port-grpc-external", str(ports.grpc_ext),
-            "--api-port-grpc-internal", str(ports.grpc_int),
-            "--api-port-http", str(ports.http),
-            "--api-port-admin-http", str(ports.admin),
-            "--discovery-port", str(ports.discovery),
+            str(self._binary),
+            "run",
+            "--config-file",
+            config_file,
+            "--data-dir",
+            str(data_dir),
+            "--host",
+            "127.0.0.1",
+            "--protocol-port",
+            str(ports.protocol),
+            "--api-port-grpc-external",
+            str(ports.grpc_ext),
+            "--api-port-grpc-internal",
+            str(ports.grpc_int),
+            "--api-port-http",
+            str(ports.http),
+            "--api-port-admin-http",
+            str(ports.admin),
+            "--discovery-port",
+            str(ports.discovery),
         ]
         if cert_subdir is not None:
             cmd += [
-                "--tls-key-path", str(Path(self._paths.certs_dir) / cert_subdir / "node.key.pem"),
-                "--tls-certificate-path", str(Path(self._paths.certs_dir) / cert_subdir / "node.certificate.pem"),
+                "--tls-key-path",
+                str(Path(self._paths.certs_dir) / cert_subdir / "node.key.pem"),
+                "--tls-certificate-path",
+                str(Path(self._paths.certs_dir) / cert_subdir / "node.certificate.pem"),
             ]
         cmd += cli_args
 
@@ -907,7 +933,10 @@ class SubprocessProvider:
 
         log_fh = open(log_path, log_mode)
         proc = subprocess.Popen(
-            cmd, stdout=log_fh, stderr=subprocess.STDOUT, env=env,
+            cmd,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            env=env,
             start_new_session=True,
         )
 
@@ -963,9 +992,7 @@ class SubprocessProvider:
             self._observer_counter = getattr(self, "_observer_counter", 0) + 1
             role_key = f"observer{self._observer_counter}"
         else:
-            raise ValueError(
-                f"add_node only supports JOINER or READONLY, got {role}"
-            )
+            raise ValueError(f"add_node only supports JOINER or READONLY, got {role}")
 
         ports = self._ports.allocate()
         bootstrap_url = self._bootstrap_url(bootstrap_handle)
@@ -995,7 +1022,9 @@ class SubprocessProvider:
 
         if wait_running:
             wait_for_handles_or_archive(
-                [handle], self._archive_dir, self._timeouts.node_startup,
+                [handle],
+                self._archive_dir,
+                self._timeouts.node_startup,
             )
 
         self._active_handles.append(handle)
@@ -1031,7 +1060,9 @@ class SubprocessProvider:
             logger.info(
                 "SubprocessProvider: --keep-running, skipping cleanup of "
                 "%d handles for session %s (data at %s)",
-                len(self._active_handles), self._session_id, self._session_root,
+                len(self._active_handles),
+                self._session_id,
+                self._session_root,
             )
             return
         # Safety net for handles that bypassed destroy_shard/destroy_standalone
@@ -1050,7 +1081,8 @@ class SubprocessProvider:
         # (e.g. handles that crashed before we registered them).
         shutil.rmtree(self._session_root, ignore_errors=True)
         logger.info(
-            "SubprocessProvider: cleaned up session %s", self._session_id,
+            "SubprocessProvider: cleaned up session %s",
+            self._session_id,
         )
 
     @classmethod
@@ -1067,7 +1099,9 @@ class SubprocessProvider:
         try:
             result = subprocess.run(
                 ["pgrep", "-f", _DATA_DIR_SCAN_TOKEN],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             pids = [int(p) for p in (result.stdout or "").split() if p.strip().isdigit()]
         except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -1115,7 +1149,9 @@ class SubprocessProvider:
         try:
             result = subprocess.run(
                 ["pgrep", "-f", pattern],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             pids = [int(p) for p in (result.stdout or "").split() if p.strip().isdigit()]
         except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -1172,7 +1208,8 @@ class SubprocessProvider:
                 continue
             shutil.rmtree(session_dir, ignore_errors=True)
             logger.info(
-                "cleanup_stale_sessions: reaped dead session %s", session_dir.name,
+                "cleanup_stale_sessions: reaped dead session %s",
+                session_dir.name,
             )
 
     @staticmethod
@@ -1181,7 +1218,9 @@ class SubprocessProvider:
         try:
             result = subprocess.run(
                 ["pgrep", "-f", str(session_dir)],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
@@ -1200,8 +1239,7 @@ class SubprocessProvider:
         session_dir = self._session_data_root(self._paths, session_id)
         if not session_dir.is_dir():
             raise ValueError(
-                f"No subprocess session data at {session_dir} "
-                f"for session_id={session_id!r}"
+                f"No subprocess session data at {session_dir} " f"for session_id={session_id!r}"
             )
 
         # Each subdir corresponds to a role (boot, validator1, …, readonly).
@@ -1217,7 +1255,8 @@ class SubprocessProvider:
             pid = _find_pid_for_data_dir(role_dir)
             if pid is None:
                 logger.warning(
-                    "adopt_session: no running process for %s; skipping", role_dir,
+                    "adopt_session: no running process for %s; skipping",
+                    role_dir,
                 )
                 continue
             # We don't have the original Popen, ports, or identity. Build a
@@ -1253,7 +1292,9 @@ class SubprocessProvider:
         self._active_handles = list(handles)
         logger.info(
             "Adopted subprocess shard for session %s: %d nodes (%s)",
-            session_id, len(handles), ", ".join(h.role_key for h in handles),
+            session_id,
+            len(handles),
+            ", ".join(h.role_key for h in handles),
         )
         return handles
 
@@ -1266,7 +1307,7 @@ def _role_sort_key(name: str) -> tuple:
         return (0, 0)
     if name.startswith("validator"):
         try:
-            return (1, int(name[len("validator"):]))
+            return (1, int(name[len("validator") :]))
         except ValueError:
             return (1, 0)
     if name == "readonly":
@@ -1296,7 +1337,9 @@ def _find_pid_for_data_dir(data_dir: Path) -> Optional[int]:
     try:
         result = subprocess.run(
             ["pgrep", "-f", str(data_dir)],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
@@ -1318,7 +1361,9 @@ def _ports_from_cmdline(pid: int) -> Optional[PortMapping]:
     try:
         result = subprocess.run(
             ["ps", "-p", str(pid), "-o", "args="],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
@@ -1411,8 +1456,7 @@ class _AdoptedHandle(SubprocessNodeHandle):
 
     def restart(self) -> None:
         raise NotImplementedError(
-            "restart() unsupported for adopted handles. "
-            "Run a fresh `shardctl test` invocation."
+            "restart() unsupported for adopted handles. " "Run a fresh `shardctl test` invocation."
         )
 
     def _stop_once(self) -> None:

@@ -41,17 +41,13 @@ def test_successful_genesis_ceremony(shared_shard, node_conf) -> None:
             if b.blockNumber == 0:
                 genesis = b
                 break
-        assert genesis is not None, (
-            f"{node.name}: could not find block #0 in get_blocks(100)"
-        )
+        assert genesis is not None, f"{node.name}: could not find block #0 in get_blocks(100)"
         genesis_hashes[node.name] = genesis.blockHash
         log.info("%s: genesis hash = %s", node.name, genesis.blockHash[:16])
 
     # All nodes must agree on the full genesis block hash
     unique_hashes = set(genesis_hashes.values())
-    assert len(unique_hashes) == 1, (
-        f"Nodes disagree on genesis block hash: {genesis_hashes}"
-    )
+    assert len(unique_hashes) == 1, f"Nodes disagree on genesis block hash: {genesis_hashes}"
 
     # Fetch full genesis block for detailed checks
     genesis_hash = unique_hashes.pop()
@@ -60,8 +56,7 @@ def test_successful_genesis_ceremony(shared_shard, node_conf) -> None:
 
     # Genesis block has no parents
     assert len(genesis_info.parentsHashList) == 0, (
-        f"Genesis block should have no parents, got: "
-        f"{list(genesis_info.parentsHashList)}"
+        f"Genesis block should have no parents, got: " f"{list(genesis_info.parentsHashList)}"
     )
 
     # shardId matches node config
@@ -80,9 +75,7 @@ def test_successful_genesis_ceremony(shared_shard, node_conf) -> None:
     )
 
     for pubkey, expected_stake in expected_bonds.items():
-        assert pubkey in actual_bonds, (
-            f"Validator {pubkey[:24]}... not found in genesis bonds"
-        )
+        assert pubkey in actual_bonds, f"Validator {pubkey[:24]}... not found in genesis bonds"
         assert actual_bonds[pubkey] == expected_stake, (
             f"Validator {pubkey[:24]}... has stake {actual_bonds[pubkey]}, "
             f"expected {expected_stake} from shard config"
@@ -90,5 +83,8 @@ def test_successful_genesis_ceremony(shared_shard, node_conf) -> None:
 
     logging.info(
         "Genesis ceremony verified: %d nodes, hash %s, shardId=%s, %d bonds",
-        len(all_nodes), genesis_hash[:16], node_conf.shard_id, len(actual_bonds),
+        len(all_nodes),
+        genesis_hash[:16],
+        node_conf.shard_id,
+        len(actual_bonds),
     )

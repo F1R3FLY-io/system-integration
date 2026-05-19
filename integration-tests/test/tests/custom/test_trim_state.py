@@ -47,7 +47,7 @@ _CONTRACTS = [
     '@"trim-test-c"!(3)',
     'new ch in { ch!(42) | for(@v <- ch) { @"result"!(v) } }',
     '@"trim-test-d"!(4)',
-    'new x in { x!(100) }',
+    "new x in { x!(100) }",
     '@"trim-test-e"!(5)',
     '@"trim-test-f"!(6)',
     '@"trim-test-g"!(7)',
@@ -75,8 +75,10 @@ def test_trim_state(provider, timeouts) -> None:
         latest_block_hash = None
         for i, contract in enumerate(_CONTRACTS):
             v1.deploy_string(
-                contract, VALIDATOR1_ID.private_key(),
-                phlo_limit=100_000_000, phlo_price=1,
+                contract,
+                VALIDATOR1_ID.private_key(),
+                phlo_limit=100_000_000,
+                phlo_price=1,
             )
             latest_block_hash = v1.propose()
             logging.info("Block %d: %s", i + 1, latest_block_hash[:16])
@@ -86,9 +88,7 @@ def test_trim_state(provider, timeouts) -> None:
         v1_lfb = v1.last_finalized_block()
         v1_lfb_number = v1_lfb.blockInfo.blockNumber
         logging.info("V1 LFB after phase 1: block #%d", v1_lfb_number)
-        assert v1_lfb_number > 0, (
-            f"Expected LFB > 0 with FTT=-1, got #{v1_lfb_number}"
-        )
+        assert v1_lfb_number > 0, f"Expected LFB > 0 with FTT=-1, got #{v1_lfb_number}"
 
         # ── Phase 2: Add joiner and verify it syncs from LFS ──
         logging.info("Phase 2: Adding joiner (V2) to the shard")
@@ -101,7 +101,8 @@ def test_trim_state(provider, timeouts) -> None:
         ) as joiner:
             # Joiner should sync from LFS and see the latest block
             wait_for_block_visible(
-                joiner, latest_block_hash,
+                joiner,
+                latest_block_hash,
                 timeout=timeouts.node_startup * 3,
             )
             logging.info("Joiner sees latest block %s", latest_block_hash[:16])
@@ -121,12 +122,14 @@ def test_trim_state(provider, timeouts) -> None:
                 v1.deploy_string(
                     f'@"post-join-{i}"!({i})',
                     VALIDATOR1_ID.private_key(),
-                    phlo_limit=100_000_000, phlo_price=1,
+                    phlo_limit=100_000_000,
+                    phlo_price=1,
                 )
                 block_hash = v1.propose()
                 logging.info("Post-join block %d: %s", i + 1, block_hash[:16])
                 wait_for_block_visible(
-                    joiner, block_hash,
+                    joiner,
+                    block_hash,
                     timeout=timeouts.deploy_inclusion,
                 )
 
@@ -143,7 +146,8 @@ def test_trim_state(provider, timeouts) -> None:
             joiner_final_lfb = joiner.last_finalized_block().blockInfo.blockNumber
             logging.info(
                 "Final LFBs: V1=#%d, joiner=#%d",
-                v1_final_lfb, joiner_final_lfb,
+                v1_final_lfb,
+                joiner_final_lfb,
             )
             assert joiner_final_lfb >= v1_final_lfb - 2, (
                 f"Joiner final LFB #{joiner_final_lfb} too far behind "
@@ -156,8 +160,7 @@ def test_trim_state(provider, timeouts) -> None:
             v1_state = latest_v1_block.postStateHash
             joiner_state = joiner_view.blockInfo.postStateHash
             assert v1_state == joiner_state, (
-                f"Post-state mismatch: V1={v1_state[:16]}... "
-                f"joiner={joiner_state[:16]}..."
+                f"Post-state mismatch: V1={v1_state[:16]}... " f"joiner={joiner_state[:16]}..."
             )
             logging.info("Post-state agreement confirmed: %s", v1_state[:16])
 

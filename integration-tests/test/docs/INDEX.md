@@ -41,7 +41,7 @@ Each test builds its own `ShardConfig` and calls `provider.create_shard(...)`. U
 | 5 | [test_consensus_safety](test_consensus_safety.md) | Consensus safety under validator failure, FTT boundaries, epochs |
 | 1 | [test_load](test_load.md) | Deploy throughput + finalization latency benchmark |
 | 1 | [test_shard_degradation](test_shard_degradation.md) | Production-readiness gate: 150 deploys, sustained load |
-| 1 | [test_joiner_self_proposes_at_epoch_boundary](test_joiner_self_proposes_at_epoch_boundary.md) | Negative-control for §2.15: deterministic single-node propose does NOT reproduce the bonding-drift bug; rules out architectural-shape-alone hypothesis |
+| 1 | [test_joiner_self_proposes_at_epoch_boundary](test_joiner_self_proposes_at_epoch_boundary.md) | Negative-control for the joiner-bond-drop bug: deterministic single-node propose does NOT reproduce it; rules out architectural-shape-alone hypothesis |
 | 1 | [test_synchrony_constraint](test_synchrony_constraint.md) | Per-validator synchrony constraint threshold enforcement |
 | 1 | [test_trim_state](test_trim_state.md) | Joiner syncs from Last Finalized State instead of replaying genesis |
 | 6 | [test_websocket](test_websocket.md) | `/ws/events` block, genesis, transfer, lifecycle events + startup replay |
@@ -61,12 +61,6 @@ Each test spins up a single node with no peers. Used for heartbeat timing, stand
 | 7 | [test_token_metadata](test_token_metadata.md) | Native token metadata standalone: joiner mismatch, round-trip, restart drift, multi-shard, genesis blocking (validation rejections moved to Rust unit tests) |
 
 **Total: 10 tests across 3 files.**
-
----
-
-## Deferred / unimplemented
-
-Items known but not covered by the framework today. See [deferred-test-coverage.md](deferred-test-coverage.md) for the full list and rationale.
 
 ---
 

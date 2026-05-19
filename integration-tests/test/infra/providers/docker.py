@@ -30,9 +30,7 @@ from .base import (
 logger = logging.getLogger(__name__)
 
 # Bootstrap private key — same across all shards (matches shipped certs)
-_BOOTSTRAP_PRIVATE_KEY = (
-    "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
-)
+_BOOTSTRAP_PRIVATE_KEY = "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
 
 # rnode hardcodes 40400-40405 for its listen sockets (transport / ext gRPC /
 # int gRPC / HTTP / discovery / admin). The Linux default ephemeral range
@@ -43,7 +41,8 @@ _BOOTSTRAP_PRIVATE_KEY = (
 # network namespace, so the host-level sysctl on the OCI runner doesn't
 # propagate — reserve the range per-container via --sysctl.
 _NODE_PORT_RESERVATION_ARGS: List[str] = [
-    "--sysctl", "net.ipv4.ip_local_reserved_ports=40400-40405",
+    "--sysctl",
+    "net.ipv4.ip_local_reserved_ports=40400-40405",
 ]
 
 
@@ -57,8 +56,9 @@ def _docker(*args: str, check: bool = False, timeout: int = 120) -> subprocess.C
     )
 
 
-def _compose(*args: str, compose_file: str, project_name: str,
-             check: bool = False) -> subprocess.CompletedProcess:
+def _compose(
+    *args: str, compose_file: str, project_name: str, check: bool = False
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["docker", "compose", "-p", project_name, "-f", compose_file, *args],
         capture_output=True,
@@ -80,22 +80,22 @@ def _daemon_diagnostics() -> str:
     parts: List[str] = []
 
     nls = _docker(
-        "network", "ls",
-        "--format", "{{.Name}}\t{{.ID}}\t{{.Driver}}\t{{.Scope}}",
+        "network",
+        "ls",
+        "--format",
+        "{{.Name}}\t{{.ID}}\t{{.Driver}}\t{{.Scope}}",
         timeout=5,
     )
-    parts.append(
-        f"docker network ls:\n{(nls.stdout or '(empty)').rstrip()}"
-    )
+    parts.append(f"docker network ls:\n{(nls.stdout or '(empty)').rstrip()}")
 
     ps = _docker(
-        "ps", "-a",
-        "--format", "{{.Names}}\t{{.Status}}\t{{.ID}}",
+        "ps",
+        "-a",
+        "--format",
+        "{{.Names}}\t{{.Status}}\t{{.ID}}",
         timeout=5,
     )
-    parts.append(
-        f"\ndocker ps -a:\n{(ps.stdout or '(empty)').rstrip()}"
-    )
+    parts.append(f"\ndocker ps -a:\n{(ps.stdout or '(empty)').rstrip()}")
 
     info = _docker(
         "info",
@@ -106,9 +106,7 @@ def _daemon_diagnostics() -> str:
         "OS: {{.OperatingSystem}}",
         timeout=5,
     )
-    parts.append(
-        f"\ndocker info: {(info.stdout or '(empty)').rstrip()}"
-    )
+    parts.append(f"\ndocker info: {(info.stdout or '(empty)').rstrip()}")
 
     return "\n".join(parts)
 
@@ -185,9 +183,7 @@ def _ensure_network(name: str, timeout: float = 30.0) -> None:
     )
 
 
-def _docker_run(
-    run_args: List[str], settle: float = 1.0
-) -> subprocess.CompletedProcess:
+def _docker_run(run_args: List[str], settle: float = 1.0) -> subprocess.CompletedProcess:
     """Run ``docker run`` with a single retry that repairs daemon state.
 
     Callers should set up preconditions via ``_ensure_no_container`` /
@@ -233,9 +229,7 @@ def _docker_run(
     except (ValueError, IndexError):
         pass
 
-    network_missing = (
-        "network" in first_err_lc and "not found" in first_err_lc
-    )
+    network_missing = "network" in first_err_lc and "not found" in first_err_lc
 
     time.sleep(settle)
     if container_name is not None:
@@ -341,17 +335,16 @@ class DockerNodeHandle:
             with dest_path.open("w") as f:
                 subprocess.run(
                     ["docker", "logs", self._name],
-                    stdout=f, stderr=subprocess.STDOUT,
-                    check=False, timeout=30,
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                    timeout=30,
                 )
         except Exception as e:
-            logger.warning(
-                "DockerNodeHandle.archive_log: %s failed: %s", self._name, e
-            )
+            logger.warning("DockerNodeHandle.archive_log: %s failed: %s", self._name, e)
             try:
                 dest_path.write_text(
-                    f"archive_log: exception raised: {e!r}\n"
-                    f"  container name: {self._name}\n"
+                    f"archive_log: exception raised: {e!r}\n" f"  container name: {self._name}\n"
                 )
             except Exception:
                 pass
@@ -373,9 +366,7 @@ class DockerNodeHandle:
 
     def exit_code(self) -> Optional[int]:
         """Return the container's exit code, or None if still running."""
-        result = _docker(
-            "inspect", "-f", "{{.State.ExitCode}}|{{.State.Status}}", self._name
-        )
+        result = _docker("inspect", "-f", "{{.State.ExitCode}}|{{.State.Status}}", self._name)
         if result.returncode != 0:
             return None
         parts = (result.stdout or "").strip().split("|")
@@ -412,7 +403,9 @@ class DockerNodeHandle:
     def resource_usage(self) -> dict:
         """Return current memory and CPU usage from docker stats."""
         result = _docker(
-            "stats", "--no-stream", "--format",
+            "stats",
+            "--no-stream",
+            "--format",
             "{{.MemUsage}}|{{.CPUPerc}}|{{.MemPerc}}",
             self._name,
         )
@@ -480,9 +473,7 @@ class DockerNodeHandle:
         elif role_suffix.startswith("joiner"):
             role = NodeRole.JOINER
         else:
-            raise ValueError(
-                f"unrecognized role suffix {role_suffix!r} in {container_name!r}"
-            )
+            raise ValueError(f"unrecognized role suffix {role_suffix!r} in {container_name!r}")
 
         # Port mapping: inspect each internal port
         ports = _inspect_port_mapping(container_name)
@@ -525,7 +516,9 @@ def _inspect_port_mapping(container_name: str) -> PortMapping:
                 f"internal port {iport} — was it started by this framework?"
             )
         # Format: "0.0.0.0:41234"  (may include IPv6 line; take IPv4)
-        ipv4 = next((l for l in line if ":" in l and not l.startswith("[")), line[0])
+        ipv4 = next(
+            (entry for entry in line if ":" in entry and not entry.startswith("[")), line[0]
+        )
         host_ports[iport] = int(ipv4.rsplit(":", 1)[1])
     return PortMapping(
         protocol=host_ports[40400],
@@ -606,7 +599,9 @@ class DockerProvider:
 
     # ── Shard lifecycle ─────────────────────────────────────────────
 
-    def create_shard(self, config: ShardConfig, wait_running: bool = True) -> List[DockerNodeHandle]:
+    def create_shard(
+        self, config: ShardConfig, wait_running: bool = True
+    ) -> List[DockerNodeHandle]:
         """Create a full shard via docker compose.
 
         Generates genesis, compose file, runs ``docker compose up -d``.
@@ -655,8 +650,7 @@ class DockerProvider:
 
             stderr = result.stderr or ""
             transient_network_race = (
-                "failed to set up container networking" in stderr
-                and "not found" in stderr
+                "failed to set up container networking" in stderr and "not found" in stderr
             )
             if not transient_network_race or attempt == max_attempts:
                 logger.error("docker compose up failed: %s", stderr)
@@ -665,13 +659,18 @@ class DockerProvider:
             logger.warning(
                 "docker compose up hit transient network race (attempt %d/%d), "
                 "tearing down and retrying",
-                attempt, max_attempts,
+                attempt,
+                max_attempts,
             )
             _compose(
-                "down", "--volumes", "--remove-orphans",
-                compose_file=compose_path, project_name=project_name,
+                "down",
+                "--volumes",
+                "--remove-orphans",
+                compose_file=compose_path,
+                project_name=project_name,
             )
             import time
+
             time.sleep(2)
 
         # Build handles
@@ -686,21 +685,25 @@ class DockerProvider:
 
         for idx, (identity, _) in enumerate(config.bonds):
             role_name = f"validator{idx + 1}"
-            handles.append(DockerNodeHandle(
-                name=f"rnode.test.{self._session_id}.{role_name}",
-                ports=port_map[role_name],
-                network=f"f1r3fly-test-{self._session_id}",
-                role=NodeRole.VALIDATOR,
-                identity=identity,
-            ))
+            handles.append(
+                DockerNodeHandle(
+                    name=f"rnode.test.{self._session_id}.{role_name}",
+                    ports=port_map[role_name],
+                    network=f"f1r3fly-test-{self._session_id}",
+                    role=NodeRole.VALIDATOR,
+                    identity=identity,
+                )
+            )
 
         if config.include_readonly:
-            handles.append(DockerNodeHandle(
-                name=f"rnode.test.{self._session_id}.readonly",
-                ports=port_map["readonly"],
-                network=f"f1r3fly-test-{self._session_id}",
-                role=NodeRole.READONLY,
-            ))
+            handles.append(
+                DockerNodeHandle(
+                    name=f"rnode.test.{self._session_id}.readonly",
+                    ports=port_map["readonly"],
+                    network=f"f1r3fly-test-{self._session_id}",
+                    role=NodeRole.READONLY,
+                )
+            )
 
         # Wait for all nodes to reach Running state
         if wait_running:
@@ -754,8 +757,11 @@ class DockerProvider:
         if shard_key in compose_files:
             compose_path, project_name, genesis_dir = compose_files.pop(shard_key)
             _compose(
-                "down", "--volumes", "--remove-orphans",
-                compose_file=compose_path, project_name=project_name,
+                "down",
+                "--volumes",
+                "--remove-orphans",
+                compose_file=compose_path,
+                project_name=project_name,
             )
         else:
             for handle in handles:
@@ -821,39 +827,63 @@ class DockerProvider:
             bonds_path = self._paths.standalone_bonds
 
         run_args = [
-            "run", "-d", "--rm=false", "--user", "root",
+            "run",
+            "-d",
+            "--rm=false",
+            "--user",
+            "root",
             *_NODE_PORT_RESERVATION_ARGS,
-            "--name", container_name,
-            "--network", network_name,
-            "--network-alias", container_name,
-            "-v", volume_arg,
-            "-v", f"{conf_path}:/var/lib/rnode/rnode.conf:ro",
-            "-v", f"{wallets_path}:/var/lib/rnode/genesis/wallets.txt:ro",
-            "-v", f"{bonds_path}:/var/lib/rnode/genesis/bonds.txt:ro",
+            "--name",
+            container_name,
+            "--network",
+            network_name,
+            "--network-alias",
+            container_name,
+            "-v",
+            volume_arg,
+            "-v",
+            f"{conf_path}:/var/lib/rnode/rnode.conf:ro",
+            "-v",
+            f"{wallets_path}:/var/lib/rnode/genesis/wallets.txt:ro",
+            "-v",
+            f"{bonds_path}:/var/lib/rnode/genesis/bonds.txt:ro",
         ]
 
         # Mount bootstrap TLS certs when using shard conf so joiners can
         # connect using the known BOOTSTRAP_NODE_ID
         if use_shard_conf:
-            run_args.extend([
-                "-v", f"{self._paths.certs_dir}/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
-                "-v", f"{self._paths.certs_dir}/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro",
-            ])
+            run_args.extend(
+                [
+                    "-v",
+                    f"{self._paths.certs_dir}/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
+                    "-v",
+                    f"{self._paths.certs_dir}/bootstrap/node.key.pem:/var/lib/rnode/node.key.pem:ro",
+                ]
+            )
 
-        run_args.extend([
-            "-p", f"{ports.protocol}:40400",
-            "-p", f"{ports.grpc_ext}:40401",
-            "-p", f"{ports.grpc_int}:40402",
-            "-p", f"{ports.http}:40403",
-            "-p", f"{ports.discovery}:40404",
-            "-p", f"{ports.admin}:40405",
-            image,
-            "run", "-s",
-            f"--host={container_name}",
-            f"--validator-private-key={_BOOTSTRAP_PRIVATE_KEY}",
-            "--allow-private-addresses",
-            *extra_cli,
-        ])
+        run_args.extend(
+            [
+                "-p",
+                f"{ports.protocol}:40400",
+                "-p",
+                f"{ports.grpc_ext}:40401",
+                "-p",
+                f"{ports.grpc_int}:40402",
+                "-p",
+                f"{ports.http}:40403",
+                "-p",
+                f"{ports.discovery}:40404",
+                "-p",
+                f"{ports.admin}:40405",
+                image,
+                "run",
+                "-s",
+                f"--host={container_name}",
+                f"--validator-private-key={_BOOTSTRAP_PRIVATE_KEY}",
+                "--allow-private-addresses",
+                *extra_cli,
+            ]
+        )
 
         _ensure_no_container(container_name)
         result = _docker_run(run_args)
@@ -872,7 +902,9 @@ class DockerProvider:
 
         if wait_running:
             wait_for_handles_or_archive(
-                [handle], self._archive_dir, self._timeouts.node_startup,
+                [handle],
+                self._archive_dir,
+                self._timeouts.node_startup,
             )
 
         self._active_handles.append(handle)
@@ -901,9 +933,7 @@ class DockerProvider:
         # removes it. The new container reuses the same name, so its
         # destroy_standalone archive would write to the same dest path —
         # use a `.pre-recreate.log` suffix to keep both runs distinct.
-        handle.archive_log(
-            self._archive_dir / f"{container_name}.pre-recreate.log"
-        )
+        handle.archive_log(self._archive_dir / f"{container_name}.pre-recreate.log")
         _ensure_no_container(container_name)
         _ensure_network(network_name)
 
@@ -919,23 +949,41 @@ class DockerProvider:
         volume_arg = f"{volume_name}:/var/lib/rnode" if volume_name else "/var/lib/rnode"
 
         run_args = [
-            "run", "-d", "--rm=false", "--user", "root",
+            "run",
+            "-d",
+            "--rm=false",
+            "--user",
+            "root",
             *_NODE_PORT_RESERVATION_ARGS,
-            "--name", container_name,
-            "--network", network_name,
-            "--network-alias", container_name,
-            "-v", volume_arg,
-            "-v", f"{self._paths.standalone_conf}:/var/lib/rnode/rnode.conf:ro",
-            "-v", f"{self._paths.standalone_wallets}:/var/lib/rnode/genesis/wallets.txt:ro",
-            "-v", f"{self._paths.standalone_bonds}:/var/lib/rnode/genesis/bonds.txt:ro",
-            "-p", f"{ports.protocol}:40400",
-            "-p", f"{ports.grpc_ext}:40401",
-            "-p", f"{ports.grpc_int}:40402",
-            "-p", f"{ports.http}:40403",
-            "-p", f"{ports.discovery}:40404",
-            "-p", f"{ports.admin}:40405",
+            "--name",
+            container_name,
+            "--network",
+            network_name,
+            "--network-alias",
+            container_name,
+            "-v",
+            volume_arg,
+            "-v",
+            f"{self._paths.standalone_conf}:/var/lib/rnode/rnode.conf:ro",
+            "-v",
+            f"{self._paths.standalone_wallets}:/var/lib/rnode/genesis/wallets.txt:ro",
+            "-v",
+            f"{self._paths.standalone_bonds}:/var/lib/rnode/genesis/bonds.txt:ro",
+            "-p",
+            f"{ports.protocol}:40400",
+            "-p",
+            f"{ports.grpc_ext}:40401",
+            "-p",
+            f"{ports.grpc_int}:40402",
+            "-p",
+            f"{ports.http}:40403",
+            "-p",
+            f"{ports.discovery}:40404",
+            "-p",
+            f"{ports.admin}:40405",
             image,
-            "run", "-s",
+            "run",
+            "-s",
             f"--host={container_name}",
             f"--validator-private-key={_BOOTSTRAP_PRIVATE_KEY}",
             "--allow-private-addresses",
@@ -956,7 +1004,9 @@ class DockerProvider:
 
         if wait_running:
             wait_for_handles_or_archive(
-                [new_handle], self._archive_dir, self._timeouts.node_startup,
+                [new_handle],
+                self._archive_dir,
+                self._timeouts.node_startup,
             )
 
         return new_handle
@@ -1004,9 +1054,7 @@ class DockerProvider:
             self._observer_counter = getattr(self, "_observer_counter", 0) + 1
             role_key = f"observer{self._observer_counter}"
         else:
-            raise ValueError(
-                f"add_node only supports JOINER or READONLY, got {role}"
-            )
+            raise ValueError(f"add_node only supports JOINER or READONLY, got {role}")
 
         ports = self._ports.allocate()
         identity = node_config.identity
@@ -1035,26 +1083,43 @@ class DockerProvider:
         if role == NodeRole.READONLY:
             cmd.append("--heartbeat-disabled")
         if identity:
-            cmd.extend([
-                f"--validator-public-key={identity.public_hex}",
-                f"--validator-private-key={identity.private_hex}",
-            ])
+            cmd.extend(
+                [
+                    f"--validator-public-key={identity.public_hex}",
+                    f"--validator-private-key={identity.private_hex}",
+                ]
+            )
         cmd.extend(extra_cli)
 
         run_args = [
-            "run", "-d", "--rm=false", "--user", "root",
+            "run",
+            "-d",
+            "--rm=false",
+            "--user",
+            "root",
             *_NODE_PORT_RESERVATION_ARGS,
-            "--name", node_name,
-            "--network", shard_network,
-            "--network-alias", node_name,
-            "-v", f"{volume_name}:/var/lib/rnode",
-            "-v", f"{self._paths.rust_conf}:/var/lib/rnode/rnode.conf:ro",
-            "-p", f"{ports.protocol}:40400",
-            "-p", f"{ports.grpc_ext}:40401",
-            "-p", f"{ports.grpc_int}:40402",
-            "-p", f"{ports.http}:40403",
-            "-p", f"{ports.discovery}:40404",
-            "-p", f"{ports.admin}:40405",
+            "--name",
+            node_name,
+            "--network",
+            shard_network,
+            "--network-alias",
+            node_name,
+            "-v",
+            f"{volume_name}:/var/lib/rnode",
+            "-v",
+            f"{self._paths.rust_conf}:/var/lib/rnode/rnode.conf:ro",
+            "-p",
+            f"{ports.protocol}:40400",
+            "-p",
+            f"{ports.grpc_ext}:40401",
+            "-p",
+            f"{ports.grpc_int}:40402",
+            "-p",
+            f"{ports.http}:40403",
+            "-p",
+            f"{ports.discovery}:40404",
+            "-p",
+            f"{ports.admin}:40405",
             image,
             *cmd,
         ]
@@ -1081,7 +1146,9 @@ class DockerProvider:
 
         if wait_running:
             wait_for_handles_or_archive(
-                [handle], self._archive_dir, self._timeouts.node_startup,
+                [handle],
+                self._archive_dir,
+                self._timeouts.node_startup,
             )
 
         self._active_handles.append(handle)
@@ -1142,9 +1209,7 @@ class DockerProvider:
         """
         prefix = f"rnode.test.{session_id}."
         # Only adopt running containers — stopped ones can't serve requests.
-        result = _docker(
-            "ps", "--filter", f"name={prefix}", "--format", "{{.Names}}"
-        )
+        result = _docker("ps", "--filter", f"name={prefix}", "--format", "{{.Names}}")
         if result.returncode != 0:
             raise RuntimeError(
                 f"docker ps failed while adopting session {session_id!r}: "
@@ -1164,7 +1229,7 @@ class DockerProvider:
                 return (0, 0)
             if suffix.startswith("validator"):
                 try:
-                    return (1, int(suffix[len("validator"):]))
+                    return (1, int(suffix[len("validator") :]))
                 except ValueError:
                     return (1, 0)
             if suffix == "readonly":

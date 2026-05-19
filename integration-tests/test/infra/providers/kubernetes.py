@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from ..config import NodeConfig, ShardConfig
-from ..types import PortMapping, NodeRole
+from ..types import PortMapping
 
 
 class K8sNodeHandle:
@@ -51,9 +51,7 @@ class K8sNodeHandle:
         return self._namespace
 
     def logs(self, tail: Optional[int] = None) -> str:
-        raise NotImplementedError(
-            "Implement via `kubectl logs <pod> -n <ns> [--tail N]`."
-        )
+        raise NotImplementedError("Implement via `kubectl logs <pod> -n <ns> [--tail N]`.")
 
     def archive_log(self, dest_path: Path) -> None:
         raise NotImplementedError(
@@ -82,8 +80,7 @@ class K8sNodeHandle:
 
     def unpause(self) -> None:
         raise NotImplementedError(
-            "Reverse of pause() — remove the NetworkPolicy, or scale the "
-            "controller back up."
+            "Reverse of pause() — remove the NetworkPolicy, or scale the " "controller back up."
         )
 
     def exit_code(self) -> Optional[int]:
@@ -144,9 +141,7 @@ class K8sProvider:
 
     @property
     def keep_running(self) -> bool:
-        raise NotImplementedError(
-            "Mirror DockerProvider.keep_running (from the cleanup registry)."
-        )
+        raise NotImplementedError("Mirror DockerProvider.keep_running (from the cleanup registry).")
 
     @property
     def active_handles(self) -> list:
@@ -188,9 +183,7 @@ class K8sProvider:
         )
 
     def destroy_standalone(self, handle):
-        raise NotImplementedError(
-            "Implement via `kubectl delete namespace <handle.namespace>`."
-        )
+        raise NotImplementedError("Implement via `kubectl delete namespace <handle.namespace>`.")
 
     def cleanup_all(self) -> None:
         raise NotImplementedError(

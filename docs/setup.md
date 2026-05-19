@@ -18,7 +18,14 @@ When you want everything (blockchain + Embers API + F1R3Sky AT Protocol stack + 
 poetry run shardctl clone
 ```
 
-Clones every enabled service from `services.yml`: f1r3node (Scala), f1r3node-rust (Rust), rust-client, f1r3sky-backend, embers. Each becomes an independent git repo under `services/` (git-ignored from this parent repo).
+Clones every enabled service from `services.yml`. By default that's f1r3node (Scala), f1r3node-rust (Rust), rust-client, and f1r3drive. Each becomes an independent git repo under `services/` (git-ignored from this parent repo).
+
+Service-stack repos (embers, embers-frontend, f1r3sky-backend, f1r3sky) are `enabled: false` in `services.yml` and won't clone with the default command. To include them, pass `--include-disabled` or name them explicitly:
+
+```bash
+poetry run shardctl clone --include-disabled              # All services
+poetry run shardctl clone embers embers-frontend          # Just these two
+```
 
 ### 2. Build Docker images
 
@@ -60,7 +67,7 @@ For just a node shard (no service stack), see [../README.md#quick-start](../READ
 
 Per-service toolchains required only when building a service from source. If you're using pre-built Docker images, skip these entirely.
 
-Note: f1r3node (Scala) and f1r3node-rust are the **same repository** ([F1R3FLY-io/f1r3node](https://github.com/F1R3FLY-io/f1r3node)) on different branches. See `services.yml` for branch mappings.
+Note: f1r3node (Scala) and f1r3node-rust are **separate repositories**: [F1R3FLY-io/f1r3node](https://github.com/F1R3FLY-io/f1r3node) (`dev` branch) and [F1R3FLY-io/f1r3node-rust](https://github.com/F1R3FLY-io/f1r3node-rust) (`staging` branch). See `services.yml` for the current branch mappings.
 
 ### Python 3.10 (pyenv)
 

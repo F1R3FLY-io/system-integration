@@ -102,7 +102,7 @@ The framework polls until V1 produces a block whose justification set includes t
 
 ### Sub-phase 8: Post-bond network liveness
 
-For each of V1, V2, V3, joiner: deploy a `liveness-{validator}` term, wait for inclusion, wait for finalization, then `wait_for_block_visible_on_all_nodes` (rides out the gRPC `received but not added yet` window — see TODO §2.9), then `assert_block_finalized_on_all_nodes` on all 5 nodes. Confirms the network is fully healthy after the joiner integrates.
+For each of V1, V2, V3, joiner: deploy a `liveness-{validator}` term, wait for inclusion, wait for finalization, then `wait_for_block_visible_on_all_nodes` (rides out the gRPC `received but not added yet` window), then `assert_block_finalized_on_all_nodes` on all 5 nodes. Confirms the network is fully healthy after the joiner integrates.
 
 ## What the tests prove
 

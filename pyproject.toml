@@ -68,7 +68,14 @@ target-version = ["py310"]
 [tool.ruff]
 line-length = 100
 select = ["E", "F", "I", "N", "W"]
-ignore = []
+# N999 (Invalid module name) fires on every file under integration-tests/
+# because the directory has a hyphen. Renaming the directory would churn
+# 50+ external references; the lint complaint is unactionable in practice.
+ignore = ["N999"]
 
 [tool.ruff.per-file-ignores]
 "__init__.py" = ["F401"]
+# Tests legitimately carry long deploy/error strings and table-shaped
+# data layouts; keep shardctl/ strict at 100 but allow integration-tests
+# to exceed for readability where wrapping would hurt.
+"integration-tests/**/*.py" = ["E501"]

@@ -29,10 +29,10 @@ class Shard:
 
     def __init__(
         self,
-        provider,       # Provider (duck-typed)
+        provider,  # Provider (duck-typed)
         handles: list,  # List[NodeHandle]
-        config,         # ShardConfig
-        timeouts,       # TimeoutHierarchy
+        config,  # ShardConfig
+        timeouts,  # TimeoutHierarchy
         genesis_dir: Optional[str] = None,
         adopted: bool = False,
     ) -> None:
@@ -107,10 +107,7 @@ class Shard:
 
     @property
     def validators(self) -> List[Node]:
-        return [
-            n for key, n in sorted(self._nodes.items())
-            if n.role == NodeRole.VALIDATOR
-        ]
+        return [n for key, n in sorted(self._nodes.items()) if n.role == NodeRole.VALIDATOR]
 
     @property
     def readonly(self) -> Optional[Node]:
@@ -124,9 +121,7 @@ class Shard:
         """Access node by role key: 'boot', 'validator1', 'validator2', etc."""
         if name not in self._nodes:
             available = list(self._nodes.keys())
-            raise KeyError(
-                f"Node '{name}' not found in shard. Available: {available}"
-            )
+            raise KeyError(f"Node '{name}' not found in shard. Available: {available}")
         return self._nodes[name]
 
     @property
@@ -211,9 +206,7 @@ class Shard:
         from .config import NodeConfig
 
         if identity.name in self._nodes:
-            raise ValueError(
-                f"Cannot attach joiner '{identity.name}': name already in use"
-            )
+            raise ValueError(f"Cannot attach joiner '{identity.name}': name already in use")
 
         node_config = NodeConfig(
             role=NodeRole.JOINER,
@@ -309,9 +302,7 @@ class Shard:
         # Provider names the observer ``observer{n}``; recover from handle.
         observer_key = handle.name.split(".")[-1]
         if observer_key in self._nodes:
-            raise ValueError(
-                f"Provider returned duplicate observer name: {observer_key}"
-            )
+            raise ValueError(f"Provider returned duplicate observer name: {observer_key}")
         observer = Node(handle=handle, role=NodeRole.READONLY, identity=None)
         self._handles.append(handle)
         self._nodes[observer_key] = observer

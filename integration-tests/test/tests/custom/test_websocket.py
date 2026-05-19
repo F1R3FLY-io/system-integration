@@ -33,7 +33,6 @@ import time
 from typing import List
 
 import pytest
-
 from f1r3fly.websocket import (
     BLOCK_LIFECYCLE_EVENTS,
     EXPECTED_BOOT_EVENTS,
@@ -56,6 +55,7 @@ pytestmark = pytest.mark.xdist_group("custom")
 
 
 # ── Module-scoped fixture ──
+
 
 class WsShardResult:
     def __init__(self):
@@ -113,19 +113,25 @@ def ws_shard(provider, timeouts):
         # handles the startup delay automatically.
         logging.info("Connecting WebSocket to boot at %s (pre-Running)...", boot.ws_url)
         boot_ws, boot_ws_thread = connect_ws(
-            boot.ws_url, result.boot_events, result.boot_errors,
+            boot.ws_url,
+            result.boot_events,
+            result.boot_errors,
             timeout=timeouts.node_startup,
         )
 
         logging.info("Connecting WebSocket to validator1 at %s (pre-Running)...", v1.ws_url)
         v1_ws, v1_ws_thread = connect_ws(
-            v1.ws_url, result.v1_events, result.v1_errors,
+            v1.ws_url,
+            result.v1_events,
+            result.v1_errors,
             timeout=timeouts.node_startup,
         )
 
         logging.info("Connecting WebSocket to readonly at %s (pre-Running)...", ro.ws_url)
         ro_ws, ro_ws_thread = connect_ws(
-            ro.ws_url, result.ro_events, result.ro_errors,
+            ro.ws_url,
+            result.ro_events,
+            result.ro_errors,
             timeout=timeouts.node_startup,
         )
 
@@ -168,6 +174,7 @@ def ws_shard(provider, timeouts):
 
 
 # ── Tests ──
+
 
 def test_block_events(ws_shard: WsShardResult) -> None:
     """All 3 block lifecycle events are received with correct structure."""
@@ -293,9 +300,9 @@ def test_startup_events_readonly(ws_shard: WsShardResult) -> None:
     )
 
     # block-created should NOT be in readonly events
-    assert "block-created" not in seen, (
-        "Readonly should not receive block-created events (it doesn't propose)"
-    )
+    assert (
+        "block-created" not in seen
+    ), "Readonly should not receive block-created events (it doesn't propose)"
 
     for event in events:
         event_type = event.get("event")
@@ -365,34 +372,37 @@ def test_deploy_appears_in_block_event(ws_shard: WsShardResult, provider, timeou
 
     logging.info(
         "Deploy %s found in %s event (block %s)",
-        deploy_id[:24], found_event_type, found_block_hash[:16],
+        deploy_id[:24],
+        found_event_type,
+        found_block_hash[:16],
     )
 
     # Verify deploy fields
-    assert found_deploy_info["id"] == deploy_id, (
-        f"Deploy ID mismatch: {found_deploy_info['id'][:24]} != {deploy_id[:24]}"
-    )
-    assert isinstance(found_deploy_info["cost"], int) and found_deploy_info["cost"] >= 0, (
-        f"Deploy cost should be non-negative int, got {found_deploy_info.get('cost')}"
-    )
+    assert (
+        found_deploy_info["id"] == deploy_id
+    ), f"Deploy ID mismatch: {found_deploy_info['id'][:24]} != {deploy_id[:24]}"
+    assert (
+        isinstance(found_deploy_info["cost"], int) and found_deploy_info["cost"] >= 0
+    ), f"Deploy cost should be non-negative int, got {found_deploy_info.get('cost')}"
     assert found_deploy_info["deployer"] == v1_pubkey, (
         f"Deploy deployer '{found_deploy_info.get('deployer', '')[:24]}' != "
         f"expected '{v1_pubkey[:24]}'"
     )
-    assert found_deploy_info["errored"] is False, (
-        f"Deploy should not be errored, got errored={found_deploy_info.get('errored')}"
-    )
+    assert (
+        found_deploy_info["errored"] is False
+    ), f"Deploy should not be errored, got errored={found_deploy_info.get('errored')}"
 
     # Transfers should be omitted on block-created/block-added events
     # (transfer extraction hasn't happened yet)
     if found_event_type in ("block-created", "block-added"):
-        assert "transfers" not in found_deploy_info, (
-            f"Deploy in {found_event_type} should not have transfers field"
-        )
+        assert (
+            "transfers" not in found_deploy_info
+        ), f"Deploy in {found_event_type} should not have transfers field"
 
     logging.info(
         "Deploy fields verified: cost=%d, deployer=%s, errored=%s",
-        found_deploy_info["cost"], found_deploy_info["deployer"][:16],
+        found_deploy_info["cost"],
+        found_deploy_info["deployer"][:16],
         found_deploy_info["errored"],
     )
 
@@ -420,12 +430,17 @@ def test_transfers_available_event(ws_shard: WsShardResult, provider, timeouts) 
 
     # Submit a transfer deploy
     deploy_id = v1.vault.transfer_ensure(
-        v1_vault, v2_vault, 1_000_000, v1_key,
+        v1_vault,
+        v2_vault,
+        1_000_000,
+        v1_key,
     )
     logging.info("Transfer deploy submitted: %s", deploy_id[:24])
 
     block_info = wait_for_deploy_included(v1, deploy_id, timeouts.deploy_inclusion)
-    logging.info("Transfer included in block #%d (%s)", block_info.blockNumber, block_info.blockHash[:16])
+    logging.info(
+        "Transfer included in block #%d (%s)", block_info.blockNumber, block_info.blockHash[:16]
+    )
 
     # Wait for transfers-available event on readonly
     deadline = time.time() + timeouts.finalization * 2
@@ -450,9 +465,9 @@ def test_transfers_available_event(ws_shard: WsShardResult, provider, timeouts) 
     payload = found_event["payload"]
     assert payload["block-hash"] == block_info.blockHash
     assert isinstance(payload["block-number"], int) and payload["block-number"] >= 0
-    assert isinstance(payload["deploys"], list) and len(payload["deploys"]) > 0, (
-        f"transfers-available should have at least 1 deploy with transfers"
-    )
+    assert (
+        isinstance(payload["deploys"], list) and len(payload["deploys"]) > 0
+    ), "transfers-available should have at least 1 deploy with transfers"
 
     # Verify deploy transfer structure
     for deploy_transfers in payload["deploys"]:
@@ -462,6 +477,7 @@ def test_transfers_available_event(ws_shard: WsShardResult, provider, timeouts) 
 
     logging.info(
         "transfers-available event verified: block %s, %d deploys with transfers",
-        payload["block-hash"][:16], len(payload["deploys"]),
+        payload["block-hash"][:16],
+        len(payload["deploys"]),
     )
     v1.close()

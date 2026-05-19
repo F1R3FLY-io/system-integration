@@ -85,9 +85,13 @@ def _deploy_bridge(shared_shard, timeouts):
 
     logging.info("Deploying bridge-v2.rho on V1...")
     deploy_pars, _, block_number = deploy_and_read(
-        validators[0], "", VALIDATOR1_ID.private_key(),
-        find_timeout, lfb_timeout,
-        rho_file=BRIDGE_CONTRACT, phlo_limit=500_000_000,
+        validators[0],
+        "",
+        VALIDATOR1_ID.private_key(),
+        find_timeout,
+        lfb_timeout,
+        rho_file=BRIDGE_CONTRACT,
+        phlo_limit=500_000_000,
     )
 
     target = block_number + 1
@@ -146,8 +150,11 @@ def test_bridge_api_real_deploy(shared_shard, timeouts) -> None:
 
     logging.info("Querying getNonce on V1 (real deploy)...")
     nonce_pars, _, _ = deploy_and_read(
-        validators[0], _make_query_rho(query_uri, "getNonce"),
-        VALIDATOR1_ID.private_key(), find_timeout, lfb_timeout,
+        validators[0],
+        _make_query_rho(query_uri, "getNonce"),
+        VALIDATOR1_ID.private_key(),
+        find_timeout,
+        lfb_timeout,
         phlo_limit=500_000_000,
     )
     nonce = par_as_int(nonce_pars[0])
@@ -156,8 +163,11 @@ def test_bridge_api_real_deploy(shared_shard, timeouts) -> None:
 
     logging.info("Querying getTotalLocked on V2 (real deploy)...")
     locked_pars, _, _ = deploy_and_read(
-        validators[1], _make_query_rho(query_uri, "getTotalLocked"),
-        VALIDATOR2_ID.private_key(), find_timeout, lfb_timeout,
+        validators[1],
+        _make_query_rho(query_uri, "getTotalLocked"),
+        VALIDATOR2_ID.private_key(),
+        find_timeout,
+        lfb_timeout,
         phlo_limit=500_000_000,
     )
     total_locked = par_as_int(locked_pars[0])
@@ -166,8 +176,11 @@ def test_bridge_api_real_deploy(shared_shard, timeouts) -> None:
 
     logging.info("Querying getAddress on V3 (real deploy)...")
     addr_pars, _, _ = deploy_and_read(
-        validators[2], _make_query_rho(query_uri, "getAddress"),
-        VALIDATOR3_ID.private_key(), find_timeout, lfb_timeout,
+        validators[2],
+        _make_query_rho(query_uri, "getAddress"),
+        VALIDATOR3_ID.private_key(),
+        find_timeout,
+        lfb_timeout,
         phlo_limit=500_000_000,
     )
     address = par_as_string(addr_pars[0])

@@ -57,13 +57,16 @@ BASELINE_DECIMALS = 8
 def group_b_baseline(provider, timeouts):
     """A single baseline standalone shared by every Group B test."""
     config = _standalone_config(
-        BASELINE_NAME, BASELINE_SYMBOL, BASELINE_DECIMALS,
+        BASELINE_NAME,
+        BASELINE_SYMBOL,
+        BASELINE_DECIMALS,
         extra_options={"--required-signatures": "0"},
     )
     handle = provider.create_standalone(config, use_shard_conf=True)
     node = Node(handle=handle, role=NodeRole.STANDALONE)
-    logging.info("Group B baseline created: %s/%s/%d",
-                 BASELINE_NAME, BASELINE_SYMBOL, BASELINE_DECIMALS)
+    logging.info(
+        "Group B baseline created: %s/%s/%d", BASELINE_NAME, BASELINE_SYMBOL, BASELINE_DECIMALS
+    )
     yield handle, node
     node.close()
     provider.destroy_standalone(handle)
@@ -107,27 +110,23 @@ def test_joiner_mismatch_fails_startup(
             f"Expected native_token_metadata_mismatch event. "
             f"Exit code={joiner_handle.exit_code()}. Log events:\n"
             + "\n".join(
-                repr(e) for e in iter_json_events(joiner_node.logs())
+                repr(e)
+                for e in iter_json_events(joiner_node.logs())
                 if "native_token" in (e.get("event") or "")
             )
         )
-        mismatched = set(
-            f for f in (event.get("mismatched_fields") or "").split(",") if f
-        )
-        assert expected_field in mismatched, (
-            f"Expected {expected_field!r} in mismatched_fields, got {mismatched!r}"
-        )
-        logging.info("Joiner mismatch detected: override=%s, mismatched=%s",
-                     override, mismatched)
+        mismatched = set(f for f in (event.get("mismatched_fields") or "").split(",") if f)
+        assert (
+            expected_field in mismatched
+        ), f"Expected {expected_field!r} in mismatched_fields, got {mismatched!r}"
+        logging.info("Joiner mismatch detected: override=%s, mismatched=%s", override, mismatched)
     finally:
         joiner_node.close()
         provider.remove_node(joiner_handle)
 
 
 @pytest.mark.xdist_group("token_metadata_b")
-def test_joiner_mismatch_all_three_fields(
-    provider, timeouts, group_b_baseline
-) -> None:
+def test_joiner_mismatch_all_three_fields(provider, timeouts, group_b_baseline) -> None:
     """A joiner disagreeing on all three fields has all three reported."""
     baseline_handle, _ = group_b_baseline
 
@@ -144,9 +143,7 @@ def test_joiner_mismatch_all_three_fields(
         joiner_handle.wait_for_exit(timeout=timeouts.command)
         event = find_event(joiner_node.logs(), event="native_token_metadata_mismatch")
         assert event is not None, "Expected native_token_metadata_mismatch event"
-        mismatched = set(
-            f for f in (event.get("mismatched_fields") or "").split(",") if f
-        )
+        mismatched = set(f for f in (event.get("mismatched_fields") or "").split(",") if f)
         assert mismatched == {
             "native-token-name",
             "native-token-symbol",
@@ -159,9 +156,7 @@ def test_joiner_mismatch_all_three_fields(
 
 
 @pytest.mark.xdist_group("token_metadata_b")
-def test_joiner_matching_config_succeeds(
-    provider, timeouts, group_b_baseline
-) -> None:
+def test_joiner_matching_config_succeeds(provider, timeouts, group_b_baseline) -> None:
     """Sanity check: a joiner whose config matches baseline reaches Running.
 
     The success property is "the joiner started successfully against the
@@ -186,18 +181,21 @@ def test_joiner_matching_config_succeeds(
         # An additional API-level sanity check confirms the joiner is
         # actually serving requests.
         api_status = fetch_api_status_token(joiner_node.http_url)
-        assert api_status.name == BASELINE_NAME, (
-            f"Joiner API reports name={api_status.name!r}, expected {BASELINE_NAME!r}"
+        assert (
+            api_status.name == BASELINE_NAME
+        ), f"Joiner API reports name={api_status.name!r}, expected {BASELINE_NAME!r}"
+        assert (
+            api_status.symbol == BASELINE_SYMBOL
+        ), f"Joiner API reports symbol={api_status.symbol!r}, expected {BASELINE_SYMBOL!r}"
+        assert (
+            api_status.decimals == BASELINE_DECIMALS
+        ), f"Joiner API reports decimals={api_status.decimals}, expected {BASELINE_DECIMALS}"
+        logging.info(
+            "Matching joiner reached Running and serves correct token " "metadata: %s/%s/%d",
+            BASELINE_NAME,
+            BASELINE_SYMBOL,
+            BASELINE_DECIMALS,
         )
-        assert api_status.symbol == BASELINE_SYMBOL, (
-            f"Joiner API reports symbol={api_status.symbol!r}, expected {BASELINE_SYMBOL!r}"
-        )
-        assert api_status.decimals == BASELINE_DECIMALS, (
-            f"Joiner API reports decimals={api_status.decimals}, expected {BASELINE_DECIMALS}"
-        )
-        logging.info("Matching joiner reached Running and serves correct token "
-                     "metadata: %s/%s/%d",
-                     BASELINE_NAME, BASELINE_SYMBOL, BASELINE_DECIMALS)
     finally:
         joiner_node.close()
         provider.remove_node(joiner_handle)
@@ -219,28 +217,24 @@ def test_special_characters_in_token_name_round_trip(provider, timeouts) -> None
     node = Node(handle=handle, role=NodeRole.STANDALONE)
     try:
         api_status = fetch_api_status_token(node.http_url)
-        assert api_status.name == weird_name, (
-            f"API name '{api_status.name}' != '{weird_name}'"
-        )
-        assert api_status.symbol == weird_symbol, (
-            f"API symbol '{api_status.symbol}' != '{weird_symbol}'"
-        )
-        assert api_status.decimals == 4, (
-            f"API decimals {api_status.decimals} != 4"
-        )
+        assert api_status.name == weird_name, f"API name '{api_status.name}' != '{weird_name}'"
+        assert (
+            api_status.symbol == weird_symbol
+        ), f"API symbol '{api_status.symbol}' != '{weird_symbol}'"
+        assert api_status.decimals == 4, f"API decimals {api_status.decimals} != 4"
 
         on_chain = query_token_metadata_all(node.grpc_host, node.external_grpc_port)
-        assert on_chain.name == weird_name, (
-            f"On-chain name '{on_chain.name}' != '{weird_name}'"
+        assert on_chain.name == weird_name, f"On-chain name '{on_chain.name}' != '{weird_name}'"
+        assert (
+            on_chain.symbol == weird_symbol
+        ), f"On-chain symbol '{on_chain.symbol}' != '{weird_symbol}'"
+        assert on_chain.decimals == 4, f"On-chain decimals {on_chain.decimals} != 4"
+        logging.info(
+            "Special chars round-trip verified: name=%s symbol=%s decimals=%d",
+            weird_name,
+            weird_symbol,
+            4,
         )
-        assert on_chain.symbol == weird_symbol, (
-            f"On-chain symbol '{on_chain.symbol}' != '{weird_symbol}'"
-        )
-        assert on_chain.decimals == 4, (
-            f"On-chain decimals {on_chain.decimals} != 4"
-        )
-        logging.info("Special chars round-trip verified: name=%s symbol=%s decimals=%d",
-                     weird_name, weird_symbol, 4)
     finally:
         node.close()
         provider.destroy_standalone(handle)
@@ -251,9 +245,7 @@ def test_special_characters_in_token_name_round_trip(provider, timeouts) -> None
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def test_restart_with_changed_token_config_fails_verification(
-    provider, timeouts
-) -> None:
+def test_restart_with_changed_token_config_fails_verification(provider, timeouts) -> None:
     """Restarting with a different --native-token-name against an existing
     data volume must not corrupt the on-chain state.
 
@@ -277,7 +269,8 @@ def test_restart_with_changed_token_config_fails_verification(
     volume_name = f"test-{provider.session_id}-drift-test"
     initial_config = _standalone_config("INITIAL", "INI", 4)
     initial_handle = provider.create_standalone(
-        initial_config, volume_name=volume_name,
+        initial_config,
+        volume_name=volume_name,
     )
     initial_node = Node(handle=initial_handle, role=NodeRole.STANDALONE)
     recovered_handle = None
@@ -286,7 +279,8 @@ def test_restart_with_changed_token_config_fails_verification(
         baseline = fetch_api_status_token(initial_node.http_url)
         assert baseline.name == "INITIAL"
         on_chain = query_token_metadata_all(
-            initial_node.grpc_host, initial_node.external_grpc_port,
+            initial_node.grpc_host,
+            initial_node.external_grpc_port,
         )
         assert on_chain.name == "INITIAL"
         logging.info("Phase 1: initial node committed INITIAL/INI/4 on-chain")
@@ -294,7 +288,9 @@ def test_restart_with_changed_token_config_fails_verification(
         # Phase 2 — drift restart must abort
         drift_config = _standalone_config("DIFFERENT", "DIF", 4)
         drift_handle = provider.recreate_standalone(
-            initial_handle, drift_config, wait_running=False,
+            initial_handle,
+            drift_config,
+            wait_running=False,
         )
         # recreate_standalone replaced initial_handle's container; the old
         # handle is dead and the new container is at drift_handle.
@@ -327,12 +323,14 @@ def test_restart_with_changed_token_config_fails_verification(
 
         # Phase 3 — restart with ORIGINAL config; on-chain must be intact
         recovered_handle = provider.create_standalone(
-            initial_config, volume_name=volume_name,
+            initial_config,
+            volume_name=volume_name,
         )
         recovered_node = Node(handle=recovered_handle, role=NodeRole.STANDALONE)
         try:
             recovered_on_chain = query_token_metadata_all(
-                recovered_node.grpc_host, recovered_node.external_grpc_port,
+                recovered_node.grpc_host,
+                recovered_node.external_grpc_port,
             )
             assert recovered_on_chain.name == "INITIAL", (
                 f"Volume corruption: after the failed drift restart, the "
@@ -367,9 +365,7 @@ def test_restart_with_changed_token_config_fails_verification(
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def test_two_shards_with_different_tokens_dont_interfere(
-    provider, timeouts
-) -> None:
+def test_two_shards_with_different_tokens_dont_interfere(provider, timeouts) -> None:
     """Two concurrent standalones with different tokens each report
     their own values correctly via API and on-chain queries."""
     alpha_config = _standalone_config("ALPHA_TOKEN", "ALPHA", 6)
@@ -393,10 +389,12 @@ def test_two_shards_with_different_tokens_dont_interfere(
             assert beta_status.decimals == 9
 
             alpha_on_chain = query_token_metadata_all(
-                alpha_node.grpc_host, alpha_node.external_grpc_port,
+                alpha_node.grpc_host,
+                alpha_node.external_grpc_port,
             )
             beta_on_chain = query_token_metadata_all(
-                beta_node.grpc_host, beta_node.external_grpc_port,
+                beta_node.grpc_host,
+                beta_node.external_grpc_port,
             )
             assert alpha_on_chain.name == "ALPHA_TOKEN"
             assert alpha_on_chain.symbol == "ALPHA"
@@ -408,8 +406,12 @@ def test_two_shards_with_different_tokens_dont_interfere(
 
             logging.info(
                 "Multi-shard isolation verified: alpha=%s/%s/%d, beta=%s/%s/%d",
-                alpha_on_chain.name, alpha_on_chain.symbol, alpha_on_chain.decimals,
-                beta_on_chain.name, beta_on_chain.symbol, beta_on_chain.decimals,
+                alpha_on_chain.name,
+                alpha_on_chain.symbol,
+                alpha_on_chain.decimals,
+                beta_on_chain.name,
+                beta_on_chain.symbol,
+                beta_on_chain.decimals,
             )
         finally:
             beta_node.close()
@@ -424,9 +426,7 @@ def test_two_shards_with_different_tokens_dont_interfere(
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def test_genesis_validator_with_wrong_token_blocks_ceremony(
-    provider, timeouts
-) -> None:
+def test_genesis_validator_with_wrong_token_blocks_ceremony(provider, timeouts) -> None:
     """Two genesis validators with mismatched tokens refuse to sign,
     stalling the ceremony so no node reaches Running."""
     import requests
@@ -463,8 +463,7 @@ def test_genesis_validator_with_wrong_token_blocks_ceremony(
                 pass
             crashed = [h for h in handles if h.exit_code() is not None]
             if crashed:
-                logging.info("Nodes crashed during ceremony: %s",
-                             [h.name for h in crashed])
+                logging.info("Nodes crashed during ceremony: %s", [h.name for h in crashed])
                 break
             time.sleep(5)
 
@@ -474,8 +473,14 @@ def test_genesis_validator_with_wrong_token_blocks_ceremony(
         )
 
         rejection_signals = [
-            "Mismatch", "mismatch", "does not match", "candidate",
-            "Rejecting", "not valid", "Invalid", "invalid",
+            "Mismatch",
+            "mismatch",
+            "does not match",
+            "candidate",
+            "Rejecting",
+            "not valid",
+            "Invalid",
+            "invalid",
         ]
         any_rejection = False
         for handle in handles[2:4]:

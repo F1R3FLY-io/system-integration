@@ -68,8 +68,7 @@ def test_dag_correctness(shared_shard, node_conf, timeouts) -> None:
         )
         block_hashes.append(block.blockHash)
 
-    logging.info("All 3 deploys included in blocks: %s",
-                 [bh[:16] for bh in block_hashes])
+    logging.info("All 3 deploys included in blocks: %s", [bh[:16] for bh in block_hashes])
 
     # ── Wait for DAG depth on all nodes ────────────────────────────
     for node in all_nodes:
@@ -110,7 +109,8 @@ def test_dag_correctness(shared_shard, node_conf, timeouts) -> None:
 
     logging.info(
         "Post-state agreement verified for %d deploy blocks across %d nodes",
-        len(block_hashes), len(all_nodes),
+        len(block_hashes),
+        len(all_nodes),
     )
 
     # ── 4. Cross-node FT agreement on finalized blocks ─────────────
@@ -120,8 +120,9 @@ def test_dag_correctness(shared_shard, node_conf, timeouts) -> None:
     lfb = validators[0].last_finalized_block()
     lfb_hash = lfb.blockInfo.blockHash
     lfb_number = lfb.blockInfo.blockNumber
-    logging.info("LFB at block #%d (FTT=%.2f) -- verifying FT on LFB ancestor chain",
-                 lfb_number, ftt)
+    logging.info(
+        "LFB at block #%d (FTT=%.2f) -- verifying FT on LFB ancestor chain", lfb_number, ftt
+    )
 
     # The LFB itself must be finalized on every node, not just V1. Catches
     # the case where a peer accepted the block at the protocol level but
@@ -129,9 +130,7 @@ def test_dag_correctness(shared_shard, node_conf, timeouts) -> None:
     # finalization timeout so peers have a window to propagate the per-block
     # isFinalized field (multi-parent indirect-finalization completes seconds
     # after LFB advances).
-    assert_block_finalized_on_all_nodes(
-        all_nodes, lfb_hash, timeout=timeouts.finalization
-    )
+    assert_block_finalized_on_all_nodes(all_nodes, lfb_hash, timeout=timeouts.finalization)
 
     # Collect finalized block hashes by walking the parent chain from LFB
     finalized_hashes = []
@@ -165,5 +164,7 @@ def test_dag_correctness(shared_shard, node_conf, timeouts) -> None:
 
     logging.info(
         "FT cache verified on %d finalized blocks on %s (FT >= %.2f)",
-        len(finalized_hashes), validators[0].name, ftt,
+        len(finalized_hashes),
+        validators[0].name,
+        ftt,
     )

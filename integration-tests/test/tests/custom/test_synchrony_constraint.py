@@ -21,7 +21,7 @@ Synchrony math (weights among bonded validators only):
 Note: The rejection case (proposal denied when threshold not met) cannot
 be reliably tested with FTT=-1 because the finalized-baseline fallback
 rescues the proposer. The `--synchrony-finalized-baseline-enabled` config
-key is not exposed as a CLI flag. See docs/TODO.md.
+key is not exposed as a CLI flag.
 """
 import logging
 

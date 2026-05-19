@@ -19,7 +19,8 @@ from ...infra.types import NodeRole
 
 
 def _create_standalone_heartbeat_node(
-    provider, timeouts,
+    provider,
+    timeouts,
     heartbeat_enabled: bool = True,
     heartbeat_check_interval: int = 5,
     heartbeat_max_lfb_age: int = 3,
@@ -79,24 +80,20 @@ def test_heartbeat_creates_blocks_when_idle(provider, node_conf, timeouts) -> No
         logs = node.logs()
 
         # Heartbeat startup message
-        assert "Heartbeat: Starting with random initial delay" in logs, (
-            "Should log heartbeat startup message"
-        )
+        assert (
+            "Heartbeat: Starting with random initial delay" in logs
+        ), "Should log heartbeat startup message"
 
         # Block count
-        assert block_count >= 4, (
-            f"Expected >= 4 blocks (genesis + 3 heartbeat), got {block_count}"
-        )
+        assert block_count >= 4, f"Expected >= 4 blocks (genesis + 3 heartbeat), got {block_count}"
 
         # Success log entries
-        assert success_count >= 3, (
-            f"Expected >= 3 heartbeat success logs, got {success_count}"
-        )
+        assert success_count >= 3, f"Expected >= 3 heartbeat success logs, got {success_count}"
 
         # No regression error
-        assert "has not made progress" not in logs, (
-            "Should NOT see 'has not made progress' error in standalone mode"
-        )
+        assert (
+            "has not made progress" not in logs
+        ), "Should NOT see 'has not made progress' error in standalone mode"
 
         # Verify a block's shardId matches config
         blocks = node.get_blocks(5)
@@ -110,7 +107,9 @@ def test_heartbeat_creates_blocks_when_idle(provider, node_conf, timeouts) -> No
 
         logging.info(
             "Standalone heartbeat verified: %d blocks, %d success logs, shardId=%s",
-            block_count, success_count, node_conf.shard_id,
+            block_count,
+            success_count,
+            node_conf.shard_id,
         )
     finally:
         node.close()
@@ -125,22 +124,24 @@ def test_heartbeat_disabled_when_max_parents_is_one(provider, timeouts) -> None:
     3. No new blocks created for 15s (heartbeat effectively disabled)
     """
     handle, node = _create_standalone_heartbeat_node(
-        provider, timeouts,
+        provider,
+        timeouts,
         heartbeat_enabled=True,
         max_number_of_parents=1,
     )
     try:
         logs = node.logs()
-        assert "Heartbeat incompatible with max-number-of-parents=1" in logs or \
-               "CONFIGURATION ERROR" in logs, (
-            "Should log warning about max-number-of-parents=1 incompatibility"
-        )
+        assert (
+            "Heartbeat incompatible with max-number-of-parents=1" in logs
+            or "CONFIGURATION ERROR" in logs
+        ), "Should log warning about max-number-of-parents=1 incompatibility"
 
         initial_count = len(node.get_blocks(10))
         logging.info("Initial block count: %d (expecting no change)", initial_count)
 
         # Wait 15s and verify no new blocks appear
         import time
+
         time.sleep(15)
 
         final_count = len(node.get_blocks(10))

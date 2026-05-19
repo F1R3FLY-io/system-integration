@@ -90,7 +90,8 @@ def test_validator_failure_recovery(provider, timeouts) -> None:
         if baseline_lfb == 0:
             poll_until(
                 predicate=lambda: lfb_number(v1) if lfb_number(v1) > 0 else None,
-                timeout=timeouts.finalization, interval=5.0,
+                timeout=timeouts.finalization,
+                interval=5.0,
                 description="initial LFB > 0",
             )
             baseline_lfb = lfb_number(v1)
@@ -111,16 +112,17 @@ def test_validator_failure_recovery(provider, timeouts) -> None:
         wait_for_lfb_at_least(v2, baseline_lfb + 3, timeouts.finalization * 3)
 
         post_kill_lfb = lfb_number(v1)
-        logging.info("V1 LFB after V3 kill: #%d (advanced %d blocks)",
-                     post_kill_lfb, post_kill_lfb - baseline_lfb)
+        logging.info(
+            "V1 LFB after V3 kill: #%d (advanced %d blocks)",
+            post_kill_lfb,
+            post_kill_lfb - baseline_lfb,
+        )
 
         # Verify FT on finalized blocks is >= FTT
         lfb = v1.last_finalized_block()
         ft = float(lfb.blockInfo.faultTolerance)
         logging.info("V1 LFB FT: %.2f (need >= 0.1)", ft)
-        assert ft >= 0.1, (
-            f"V1 LFB FT={ft} should be >= 0.1 with 2/3 validators"
-        )
+        assert ft >= 0.1, f"V1 LFB FT={ft} should be >= 0.1 with 2/3 validators"
 
         # ── Restart V3 ──
         logging.info("Unpausing V3...")
@@ -142,9 +144,9 @@ def test_validator_failure_recovery(provider, timeouts) -> None:
         # All nodes should be close
         max_lfb = max(final_lfbs.values())
         min_lfb = min(final_lfbs.values())
-        assert max_lfb - min_lfb <= 3, (
-            f"LFB spread {max_lfb - min_lfb} exceeds 3 after recovery: {final_lfbs}"
-        )
+        assert (
+            max_lfb - min_lfb <= 3
+        ), f"LFB spread {max_lfb - min_lfb} exceeds 3 after recovery: {final_lfbs}"
 
         logging.info("Validator failure recovery test passed (FTT=0.1)")
     finally:
@@ -196,15 +198,15 @@ def test_validator_failure_halts_finalization(provider, timeouts) -> None:
         if baseline_lfb == 0:
             poll_until(
                 predicate=lambda: lfb_number(v1) if lfb_number(v1) > 0 else None,
-                timeout=timeouts.finalization, interval=5.0,
+                timeout=timeouts.finalization,
+                interval=5.0,
                 description="initial LFB > 0",
             )
             baseline_lfb = lfb_number(v1)
 
         # Ensure LFB advances with all 3 alive
         wait_for_lfb_at_least(v1, baseline_lfb + 3, timeouts.finalization * 3)
-        logging.info("Pre-kill LFB: #%d (FTT=0.67, all 3 validators finalizing)",
-                     lfb_number(v1))
+        logging.info("Pre-kill LFB: #%d (FTT=0.67, all 3 validators finalizing)", lfb_number(v1))
 
         # ── Kill V3 ──
         logging.info("Pausing V3 to simulate validator failure...")
@@ -301,7 +303,8 @@ def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
         if baseline_lfb == 0:
             poll_until(
                 predicate=lambda: lfb_number(v1) if lfb_number(v1) > 0 else None,
-                timeout=timeouts.finalization, interval=5.0,
+                timeout=timeouts.finalization,
+                interval=5.0,
                 description="initial LFB > 0",
             )
             baseline_lfb = lfb_number(v1)
@@ -324,10 +327,12 @@ def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
         # the test. Tracking specific post-pause block hashes isolates
         # the actual invariant.
         post_v1_deploy = v1.deploy_string(
-            '@"post-boundary-v1"!(10)', VALIDATOR1_ID.private_key(),
+            '@"post-boundary-v1"!(10)',
+            VALIDATOR1_ID.private_key(),
         )
         post_v2_deploy = v2.deploy_string(
-            '@"post-boundary-v2"!(20)', VALIDATOR2_ID.private_key(),
+            '@"post-boundary-v2"!(20)',
+            VALIDATOR2_ID.private_key(),
         )
 
         # V1 and V2 still CAN propose blocks (proposal needs only the
@@ -349,21 +354,21 @@ def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
         post_v2_hash = post_v2_block.blockHash
         logging.info(
             "Post-pause blocks proposed: v1=%s, v2=%s",
-            post_v1_hash[:16], post_v2_hash[:16],
+            post_v1_hash[:16],
+            post_v2_hash[:16],
         )
 
         # Verify those specific blocks remain non-finalized over the
         # observation window. Either V1 or V2 reporting them as
         # finalized would mean FT=0.5 was treated as crossing FTT=0.5,
         # violating strict-greater-than.
-        logging.info(
-            "Verifying post-pause blocks stay non-finalized (FT=0.5 NOT > FTT=0.5)..."
-        )
+        logging.info("Verifying post-pause blocks stay non-finalized (FT=0.5 NOT > FTT=0.5)...")
         deadline = time.time() + 30
         while time.time() < deadline:
             for node in (v1, v2):
                 for block_hash, label in (
-                    (post_v1_hash, "v1"), (post_v2_hash, "v2"),
+                    (post_v1_hash, "v1"),
+                    (post_v2_hash, "v2"),
                 ):
                     if node.is_finalized(block_hash):
                         raise AssertionError(
@@ -378,7 +383,8 @@ def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
             "V1 LFB after observation: #%d (pre-kill was #%d) — any LFB "
             "advance came from V3's pre-pause in-flight votes finalizing "
             "PRE-pause blocks, which is correct behavior",
-            post_kill_lfb, pre_kill_lfb,
+            post_kill_lfb,
+            pre_kill_lfb,
         )
 
         # ── Restart V3 ──
@@ -457,7 +463,8 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
         if baseline_lfb == 0:
             poll_until(
                 predicate=lambda: lfb_number(v1) if lfb_number(v1) > 0 else None,
-                timeout=timeouts.finalization, interval=5.0,
+                timeout=timeouts.finalization,
+                interval=5.0,
                 description="initial LFB > 0",
             )
             baseline_lfb = lfb_number(v1)
@@ -476,6 +483,7 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
 
         # Wait for bond to be included
         from ...infra.polling import wait_for_deploy_included
+
         bond_block = wait_for_deploy_included(v1, bond_deploy_id, timeouts.deploy_inclusion)
         logging.info("Bond included in block #%d", bond_block.blockNumber)
 
@@ -491,7 +499,8 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
         ) as joiner:
             # Wait for joiner to sync
             wait_for_block_visible(
-                joiner, bond_block.blockHash,
+                joiner,
+                bond_block.blockHash,
                 timeout=timeouts.node_startup * 2,
             )
             logging.info("Joiner synced to block #%d", bond_block.blockNumber)
@@ -510,16 +519,16 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
             logging.info("Post-epoch LFB: #%d", post_epoch_lfb)
 
             # Verify finalization continued throughout (no stall)
-            assert post_epoch_lfb >= target_lfb, (
-                f"LFB #{post_epoch_lfb} should have reached #{target_lfb}"
-            )
+            assert (
+                post_epoch_lfb >= target_lfb
+            ), f"LFB #{post_epoch_lfb} should have reached #{target_lfb}"
 
             # Verify V2 and readonly also advanced
             for node in all_nodes:
                 node_lfb = lfb_number(node)
-                assert node_lfb >= target_lfb - 3, (
-                    f"{node.name} LFB #{node_lfb} too far behind target #{target_lfb}"
-                )
+                assert (
+                    node_lfb >= target_lfb - 3
+                ), f"{node.name} LFB #{node_lfb} too far behind target #{target_lfb}"
 
             # Check if joiner produced any blocks (appeared in justifications)
             latest_blocks = v1.get_blocks(20)
@@ -533,9 +542,7 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
             if joiner_produced:
                 logging.info("Joiner activated and producing blocks")
             else:
-                logging.warning(
-                    "Joiner did not produce blocks in latest 20 — may need more epochs"
-                )
+                logging.warning("Joiner did not produce blocks in latest 20 — may need more epochs")
 
             logging.info("Epoch transition under heartbeat test passed")
     finally:
@@ -589,7 +596,8 @@ def test_merge_determinism_asymmetric_divergence(provider, timeouts) -> None:
         if baseline_lfb == 0:
             poll_until(
                 predicate=lambda: lfb_number(v1) if lfb_number(v1) > 0 else None,
-                timeout=timeouts.finalization, interval=5.0,
+                timeout=timeouts.finalization,
+                interval=5.0,
                 description="initial LFB > 0",
             )
             baseline_lfb = lfb_number(v1)
@@ -614,8 +622,11 @@ def test_merge_determinism_asymmetric_divergence(provider, timeouts) -> None:
         # Get a recent block that all validators should agree on
         v1_lfb = v1.last_finalized_block()
         lfb_hash = v1_lfb.blockInfo.blockHash
-        logging.info("Checking post-merge agreement on LFB %s (block #%d)",
-                     lfb_hash[:16], v1_lfb.blockInfo.blockNumber)
+        logging.info(
+            "Checking post-merge agreement on LFB %s (block #%d)",
+            lfb_hash[:16],
+            v1_lfb.blockInfo.blockNumber,
+        )
 
         # Verify all nodes agree on post-state
         # Opt into retrieval polling: after V1's asymmetric divergence and
@@ -623,7 +634,9 @@ def test_merge_determinism_asymmetric_divergence(provider, timeouts) -> None:
         # DAG-add window. Use timeouts.finalization so the budget scales
         # with --timeout-scale on arm64.
         assert_all_nodes_agree_on_block(
-            all_nodes, lfb_hash, timeout=timeouts.finalization,
+            all_nodes,
+            lfb_hash,
+            timeout=timeouts.finalization,
         )
         logging.info("Post-state agreement verified across all nodes")
 
@@ -632,9 +645,7 @@ def test_merge_determinism_asymmetric_divergence(provider, timeouts) -> None:
             lfb = node.last_finalized_block()
             ft = float(lfb.blockInfo.faultTolerance)
             logging.info("%s: LFB #%d, FT=%.2f", node.name, lfb.blockInfo.blockNumber, ft)
-            assert ft >= 0.1, (
-                f"{node.name}: post-merge LFB FT={ft} should be >= 0.1"
-            )
+            assert ft >= 0.1, f"{node.name}: post-merge LFB FT={ft} should be >= 0.1"
 
         # Poll LFB spread until convergence. V1 (60% stake) catching up
         # finalizes a long ancestor chain on its local view via indirect
