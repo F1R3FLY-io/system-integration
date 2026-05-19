@@ -189,10 +189,7 @@ def test_status(shared_shard, node_conf, timeouts) -> None:
         predicate=_discovery_converged,
         timeout=timeouts.node_startup,
         interval=2.0,
-        description=(
-            f"every node's discovery table has >= "
-            f"{expect['validator_count']} peers"
-        ),
+        description=(f"every node's discovery table has >= " f"{expect['validator_count']} peers"),
     )
 
     statuses = {}
