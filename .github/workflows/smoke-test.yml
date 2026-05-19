@@ -133,7 +133,7 @@ jobs:
     needs: validate
     timeout-minutes: 20
     env:
-      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:staging
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -261,7 +261,7 @@ jobs:
     needs: validate
     timeout-minutes: 15
     env:
-      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:staging
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -765,7 +765,7 @@ jobs:
     needs: validate
     timeout-minutes: 20
     env:
-      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:staging
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -815,7 +815,7 @@ jobs:
     needs: validate
     timeout-minutes: 20
     env:
-      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:staging
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -862,7 +862,7 @@ jobs:
     needs: validate
     timeout-minutes: 20
     env:
-      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:staging
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -1062,7 +1062,7 @@ jobs:
     needs: validate
     timeout-minutes: 15
     env:
-      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:staging
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
