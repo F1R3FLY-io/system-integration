@@ -15,7 +15,7 @@ name: f1r3fly-rust-standalone
 
 services:
   standalone:
-    image: ${F1R3FLY_NODE_IMAGE:-f1r3flyindustries/f1r3fly-rust-node:latest}
+    image: ${F1R3FLY_NODE_IMAGE:-f1r3flyindustries/f1r3fly-rust:latest}
     user: root
     restart: always
     networks:

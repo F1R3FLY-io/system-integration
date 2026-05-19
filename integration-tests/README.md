@@ -112,15 +112,15 @@ Every provider-created node reads `F1R3FLY_NODE_IMAGE` (env var, single source o
 
 ```bash
 # Explicit env var
-F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust-node:dev poetry run pytest ...
+F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust:dev poetry run pytest ...
 
 # Via shardctl shortcuts (all set F1R3FLY_NODE_IMAGE internally)
-poetry run shardctl test --rust   # f1r3flyindustries/f1r3fly-rust-node:latest
+poetry run shardctl test --rust   # f1r3flyindustries/f1r3fly-rust:latest
 poetry run shardctl test --scala  # f1r3flyindustries/f1r3fly-scala-node:latest
 poetry run shardctl test --image myrepo/custom:tag
 ```
 
-Default (no flags, no env): `f1r3flyindustries/f1r3fly-rust-node:latest`.
+Default (no flags, no env): `f1r3flyindustries/f1r3fly-rust:latest`.
 
 ---
 

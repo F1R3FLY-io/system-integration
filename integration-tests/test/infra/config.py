@@ -11,7 +11,7 @@ from typing import Dict, FrozenSet, List, Optional, Tuple
 
 from .types import NodeRole, ValidatorIdentity
 
-_DEFAULT_IMAGE = "f1r3flyindustries/f1r3fly-rust-node:latest"
+_DEFAULT_IMAGE = "f1r3flyindustries/f1r3fly-rust:latest"
 
 # Cached conf values — parsed once on first access
 def resolve_node_image() -> str:

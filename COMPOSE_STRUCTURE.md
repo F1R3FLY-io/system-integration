@@ -11,7 +11,7 @@ Canonical reference for the production compose files in `compose/`. Each file is
 | File | Topology | Validators | Image default |
 |---|---|---|---|
 | `compose/f1r3node.yml` | Scala shard | bootstrap + 3 + readonly | `f1r3flyindustries/f1r3fly-scala-node:latest` |
-| `compose/f1r3node-rust.yml` | Rust shard | bootstrap + 3 + readonly | `f1r3flyindustries/f1r3fly-rust-node:latest` |
+| `compose/f1r3node-rust.yml` | Rust shard | bootstrap + 3 + readonly | `f1r3flyindustries/f1r3fly-rust:latest` |
 | `compose/f1r3node-standalone.yml` | Scala standalone | 1 (single-node, no peers) | scala-node:latest |
 | `compose/f1r3node-rust-standalone.yml` | Rust standalone | 1 | rust-node:latest |
 | `compose/f1r3node-shard-light.yml` | Scala light shard | bootstrap + 2 (~7.5 GB RAM) | scala-node:latest |
@@ -41,7 +41,7 @@ image: ${F1R3FLY_NODE_IMAGE:-<file's-own-default>}
 When `F1R3FLY_NODE_IMAGE` is unset, each file falls back to its own default — Rust files get the Rust default, Scala files get the Scala default. To override:
 
 ```bash
-F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust-node:dev poetry run shardctl up f1r3node-rust
+F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust:dev poetry run shardctl up f1r3node-rust
 F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-scala-node:v1.2.3 poetry run shardctl up f1r3node
 ```
 

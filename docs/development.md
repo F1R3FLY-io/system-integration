@@ -196,7 +196,7 @@ The repo ships three dotenv files in the root:
 Override the node Docker image with `F1R3FLY_NODE_IMAGE` (single env var, applies to both `shardctl up` and `shardctl test`):
 
 ```bash
-F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust-node:dev poetry run shardctl up f1r3node-rust
+F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust:dev poetry run shardctl up f1r3node-rust
 ```
 
 See [configuration.md](configuration.md) for the full env var reference and [../COMPOSE_STRUCTURE.md#image-selection](../COMPOSE_STRUCTURE.md#image-selection) for image flow.

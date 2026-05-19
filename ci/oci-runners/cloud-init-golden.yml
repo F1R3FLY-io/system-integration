@@ -137,7 +137,7 @@ write_files:
         --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
 
       log "=== Pre-pull staging test image ==="
-      docker pull "f1r3flyindustries/f1r3fly-rust-node:staging"
+      docker pull "f1r3flyindustries/f1r3fly-rust:staging"
 
       log "=== Install GitHub Actions runner v$RUNNER_VERSION ==="
       ARCH=$(uname -m)

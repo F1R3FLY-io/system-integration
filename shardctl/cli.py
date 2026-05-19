@@ -1218,7 +1218,7 @@ def test_cmd(
     elif image:
         docker_image = image
     elif rust:
-        docker_image = "f1r3flyindustries/f1r3fly-rust-node:latest"
+        docker_image = "f1r3flyindustries/f1r3fly-rust:latest"
     else:
         docker_image = "f1r3flyindustries/f1r3fly-scala-node:latest"
 

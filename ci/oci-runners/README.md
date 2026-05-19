@@ -143,7 +143,7 @@ The baked image freezes a snapshot of:
 - Python 3.10 + Poetry 1.8.5
 - Rust stable toolchain
 - OCI CLI
-- `f1r3flyindustries/f1r3fly-rust-node:staging` Docker image
+- `f1r3flyindustries/f1r3fly-rust:staging` Docker image
 - `/etc/sysctl.d/99-ci-port-reservation.conf` reserving the test
   PortAllocator's range (41000-49000) from kernel ephemeral
   assignment (`net.ipv4.ip_local_reserved_ports`). Eliminates the

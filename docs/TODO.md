@@ -56,7 +56,7 @@ ERROR (~10s) instead of grinding through all 39 `@shared` tests.
 
 > **`--provider=subprocess` is required.** The pytest default is `docker`,
 > which ignores `F1R3FLY_NODE_BINARY` and spawns the
-> `f1r3flyindustries/f1r3fly-rust-node:latest` image instead. To exercise a
+> `f1r3flyindustries/f1r3fly-rust:latest` image instead. To exercise a
 > locally-built binary on a feature branch, you must pass `--provider=subprocess`
 > AND set `F1R3FLY_NODE_BINARY=/abs/path/to/target/release/node` (or rely on
 > the default lookup at `services/f1r3node-rust/target/release/node`).

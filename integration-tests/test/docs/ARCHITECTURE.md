@@ -195,7 +195,7 @@ The model is **allowlist-of-fatal**, not blacklist-of-acceptable. An earlier ite
 
 All three use sites read `resolve_node_image()`; nothing hardcodes image names (except the fallback default). `shardctl test --rust` / `--scala` / `--image` are ergonomic shortcuts that all end up exporting `F1R3FLY_NODE_IMAGE` to the pytest subprocess.
 
-Fallback default: `f1r3flyindustries/f1r3fly-rust-node:latest` (in `infra/config.py`).
+Fallback default: `f1r3flyindustries/f1r3fly-rust:latest` (in `infra/config.py`).
 
 ---
 

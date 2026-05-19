@@ -25,8 +25,8 @@ repositories:
     url: git@github.com:F1R3FLY-io/f1r3node.git
     branch: dev
   f1r3node-rust:
-    url: git@github.com:F1R3FLY-io/f1r3node.git
-    branch: rust/dev
+    url: git@github.com:F1R3FLY-io/f1r3node-rust.git
+    branch: staging
   monitoring:
     enabled: true
   rust-client:
@@ -85,34 +85,34 @@ builds:
     # - Nix flake provides complete dev environment
 
   f1r3node-rust:
-    # Rust node build configuration (chosen branch)
-    # Main build command (compiles Scala and stages executable)
+    # Pure Rust node — standard cargo + system deps (no Nix, no SBT)
     build_command: "cargo build --release -p node"
 
-    # Docker build command (includes Rust library compilation)
+    # Local Docker build (tags f1r3flyindustries/f1r3fly-rust:local)
     docker_build_command: "./node/docker-commands.sh build-local"
 
-    # Build environment
-    environment: "nix" # Uses nix develop shell
+    # Standard cargo build (toolchain auto-installed via rust-toolchain.toml)
+    environment: "cargo"
 
-    # Pre-build steps for Docker builds (runs in Nix environment)
-    docker_pre_build_steps:
-      - "rustup default stable" # Configure Rust toolchain
-
-    # Docker image produced
-    docker_image: "f1r3flyindustries/f1r3fly-rust-node:latest"
+    # Docker image produced (CI publishes :latest, :staging, :dev, :VERSION)
+    docker_image: "f1r3flyindustries/f1r3fly-rust:latest"
 
     # Build dependencies
     dependencies:
-      - "cargo"
-      - "rustc"
-      - "nix (optional but recommended)"
+      - "rust nightly (pinned via rust-toolchain.toml: nightly-2026-02-09)"
+      - "protoc (protobuf-compiler + libprotobuf-dev on Debian/Ubuntu)"
+      - "pkg-config"
+      - "libssl-dev / openssl"
+      - "liblmdb-dev / lmdb"
+      - "build-essential / gcc"
+      - "just (recommended — used by run-standalone workflow)"
 
     # Notes:
-    # - Requires Rust for native libraries (rspace, rholang)
-    # - Nix flake provides complete dev environment: nix develop
-    # - Multi-architecture support: AMD64 and AARCH64
-    # - Docker entrypoint auto-detects architecture
+    # - Standalone Cargo workspace extracted from f1r3node's rust/dev branch
+    # - 11 crates: node, casper, rholang, rspace++, models, crypto, comm,
+    #   block-storage, shared, graphz, rspace_plus_plus_rhotypes
+    # - rust-toolchain.toml auto-installs the correct nightly on first cargo run
+    # - Multi-architecture support (AMD64, AARCH64) via Cross.toml
 
   monitoring:
     enabled: false
