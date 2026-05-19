@@ -166,10 +166,34 @@ def _assert_light_block_info(block, expect, context=""):
 # ===========================================================================
 
 
-def test_status(shared_shard, node_conf) -> None:
+def test_status(shared_shard, node_conf, timeouts) -> None:
     """HTTP /api/status returns consistent node info across all nodes."""
     expect = _shard_expectations(shared_shard, node_conf)
     all_nodes = shared_shard.all_nodes
+
+    # Wait for Kademlia discovery to converge across every node before
+    # asserting routing-table size. Without this poll, test_status running
+    # as the first test against a fresh shard (e.g. `shardctl test --rust
+    # test_web_api` filtered via -k) can fire before every node has filled
+    # its routing table to validator_count, producing a transient count
+    # mismatch. Once each node reaches the threshold, the subsequent
+    # assertions read post-convergence state.
+    def _discovery_converged():
+        for node in all_nodes:
+            status = node.api_get("/status")
+            if status.get("nodes", 0) < expect["validator_count"]:
+                return None
+        return True
+
+    poll_until(
+        predicate=_discovery_converged,
+        timeout=timeouts.node_startup,
+        interval=2.0,
+        description=(
+            f"every node's discovery table has >= "
+            f"{expect['validator_count']} peers"
+        ),
+    )
 
     statuses = {}
     for node in all_nodes:
