@@ -7,8 +7,9 @@ startup logs).
 from __future__ import annotations
 
 import logging
+import re
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Pattern, Union
 
 from f1r3fly.polling import (
     DeployError,
@@ -44,6 +45,7 @@ __all__ = [
     "deploy_with_fallback",
     "wait_for_block_visible",
     "wait_for_block_visible_on_all_nodes",
+    "wait_for_log_match",
     "lfb_number",
     "wait_for_lfb_at_least",
     "wait_for_lfb_stable",
@@ -443,6 +445,34 @@ def wait_for_block_justified(node, validator_pubkey: str, block_hash: str, timeo
         timeout=timeout,
         interval=2.0,
         description=f"block {block_hash[:16]}... justified by {validator_pubkey[:16]}... on {node.name}",
+    )
+
+
+def wait_for_log_match(
+    node,
+    pattern: Union[str, Pattern[str]],
+    timeout: int,
+    interval: float = 1.0,
+):
+    """Poll the node's log for a regex match. Compiles ``pattern`` if str.
+
+    Used by the slashing E2E tests to wait for the receiving validator's
+    ``"Recording invalid block ... for <Variant>."`` log line before
+    triggering the slash proposal. Returns the ``re.Match`` on success;
+    raises ``TimeoutError`` if the pattern doesn't appear within
+    ``timeout`` seconds.
+    """
+    compiled = re.compile(pattern) if isinstance(pattern, str) else pattern
+
+    def _check():
+        match = compiled.search(node.logs())
+        return match if match else None
+
+    return poll_until(
+        predicate=_check,
+        timeout=timeout,
+        interval=interval,
+        description=f"log on {node.name} matches {compiled.pattern!r}",
     )
 
 
