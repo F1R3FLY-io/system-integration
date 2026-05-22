@@ -1,0 +1,79 @@
+# test_consensus_safety
+
+## Purpose
+
+Verifies critical consensus safety properties under validator failure, FTT boundary conditions, epoch transitions, and network divergence. These tests directly validate the behaviors described in `docs/consensus-configuration.md` under production-realistic conditions (heartbeat enabled, real FTT values).
+
+Each test creates its own shard with specific FTT and bond configuration.
+
+## Tests (5)
+
+### test_validator_failure_recovery
+
+**Config:** FTT=0.1, bonds 100/100/100, heartbeat, readonly
+**Marker:** `@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")` — paused validator legitimately produces invalid-block log lines on resume.
+
+Kill V3 (pause container), verify V1+V2 continue finalizing. With FTT=0.1, FT for 2/3 = 0.33 > 0.1 — finalization continues. Deploy on V1+V2 during failure, verify LFB advances by 3+ blocks. Verify FT >= 0.1 on finalized blocks. Restart V3, deploy on all 3, verify all nodes (including readonly) converge with LFB spread <= 3.
+
+**What it proves:** A 3-validator network with FTT=0.1 survives one validator failure without halting finalization.
+
+### test_validator_failure_halts_finalization
+
+**Config:** FTT=0.67, bonds 100/100/100, heartbeat, readonly
+**Marker:** `@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")` — paused validator legitimately produces invalid-block log lines on resume.
+
+Pause V3, drain the finalization pipeline of any V3 votes already in V1's gossip, then deploy fresh blocks on V1+V2 and verify they do NOT finalize. With FTT=0.67, FT for 2/3 = 0.33 which is NOT > 0.67. Restart V3, verify finalization resumes on all nodes.
+
+The drain is detected causally — not by sleeping. After `v3.pause()`, `wait_for_lfb_stable` polls V1's LFB until two consecutive reads agree, signaling that the finalization pipeline has consumed everything V3 contributed pre-pause. The LFB settles short of V3's last block (which needed another validator's vote to finalize, and V1+V2 alone are 0.667 — not > 0.67). Only then does the test deploy V1+V2 blocks and assert no advancement for 30s.
+
+**What it proves:** FTT=0.67 (production default) requires all 3 equal-stake validators. Once V3 is dead and the pre-pause pipeline has drained, new V1+V2-only blocks cannot finalize — the safety margin is enforced.
+
+### test_ftt_boundary_strict_greater_than
+
+**Config:** FTT=0.5, bonds 75/75/50, heartbeat, readonly
+
+Kill V3 (50 stake). V1+V2 (150 stake) have FT = (150\*2 - 200) / 200 = 0.5. Since the comparison is strict > (not >=), 0.5 is NOT > 0.5 — finalization halts. Observe 30 seconds of stall. Restart V3, verify finalization resumes.
+
+**What it proves:** The finalization formula uses strict greater-than. FT must EXCEED FTT, not merely equal it. At the exact boundary there is zero safety margin and finalization correctly refuses.
+
+### test_epoch_transition_under_heartbeat
+
+**Config:** FTT=0.1, bonds 100/100, epoch-length=4, heartbeat, readonly, joiner wallet seeded
+
+Bond VALIDATOR4 via `bond.rho` during active heartbeat (not manual propose). Wait for chain to advance past at least one epoch boundary automatically. Verify finalization continues throughout (no stall during epoch transition). Check if joiner produced blocks after activation.
+
+**What it proves:** Epoch-based validator activation works under production conditions (heartbeat, real FTT). The epoch transition doesn't stall finalization.
+
+### test_merge_determinism_asymmetric_divergence
+
+**Config:** FTT=0.1, bonds 60/20/15, heartbeat, readonly
+
+Pause V1 (heaviest validator, 60 stake) for 30 seconds. V2+V3 produce independent blocks during pause. Unpause V1 — it receives diverged tips and must merge. Deploy on all validators to stimulate convergence. Verify all nodes (including readonly) agree on post-state hash for the LFB. Verify FT >= 0.1 on all validators. Verify LFB spread <= 3.
+
+**What it proves:** With unequal stakes, the DAG merge and LCA computations produce identical results across all validators even when the heaviest validator has a different DAG view. Regression test for the InvalidBondsCache bug (Phase 1) and ConflictSetMerger (Phase 3).
+
+## Key assertions
+
+- **Recovery (FTT=0.1):** V1+V2 LFB advances by 3+ with V3 dead; FT >= 0.1; all nodes converge after restart
+- **Halt (FTT=0.67):** after V3 is paused and the in-flight finalization pipeline has drained past V3's last contribution, new V1+V2 blocks do NOT advance LFB for 30s; resumes after V3 restart
+- **Boundary (FTT=0.5):** LFB does NOT advance for 30s (FT=0.5 is not > 0.5); resumes after restart
+- **Epoch:** LFB reaches target past epoch boundary; all nodes within 3 of target
+- **Merge:** `assert_all_nodes_agree_on_block` on LFB; FT >= 0.1; spread <= 3
+
+## Infrastructure used
+
+- Per-test `Shard.create()` / `shard.destroy()` with custom configs
+- `shard.add_joiner()` for epoch transition test
+- `Node.pause()` / `Node.unpause()` for validator failure simulation
+- `wait_for_lfb_at_least` / `wait_for_lfb_stable` / `lfb_number` ([`infra/polling.py`](../infra/polling.py)) for causal LFB-based waits; `_poll_lfb_stalls` (file-local) for the steady-state no-advancement assertion
+- `assert_all_nodes_agree_on_block()` for post-state agreement
+- `wait_for_block_visible()` / `wait_for_deploy_included()` for synchronization
+- `check_node_logs_after_test` autouse fixture for fatal-log detection (panics + `FATAL_PATTERNS`; see [ARCHITECTURE.md § 7](ARCHITECTURE.md#7-log-scanning))
+- Readonly node included in all tests for observer consistency verification
+
+## Related
+
+- [consensus-configuration.md](../../../docs/consensus-configuration.md) -- FTT values, finalization formula, configuration guide
+- [test_asymmetric_bonds](test_asymmetric_bonds.md) -- FT monotonicity and agreement with unequal stakes
+- [test_convergence](test_convergence.md) -- DAG divergence recovery (shared shard, different focus)
+- [test_bonding_validators](test_bonding_validators.md) -- epoch-based activation with manual propose

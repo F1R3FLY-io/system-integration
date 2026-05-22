@@ -1,5 +1,18 @@
 # Troubleshooting
 
+## Quick fixes
+
+| Symptom | Quick fix |
+|---|---|
+| "casper instance was not available yet" | `shardctl wait` — blockchain needs 2-3 min |
+| Nodes stuck, won't complete genesis | `shardctl reset -y` then `shardctl up` |
+| Volumes/containers left behind from a crashed `shardctl up` | `shardctl reset --force` (skips compose detection, prefix-scans `rnode.*` + `f1r3fly-*`) |
+| Integration test framework state stuck | `shardctl test-reset` (force-removes `rnode.test.*` / `f1r3fly-test-*` / `test-*` regardless of status). Add `--session-id <id>` to scope cleanup to one session when other agents own concurrent sessions. |
+| Docker "outside of rootfs" on macOS | Switch Docker to gRPC FUSE ([details below](#docker-outside-of-rootfs-error)) |
+| Build fails with "better-sqlite3" | Docker build: `shardctl build-service f1r3sky-backend-bsky` |
+
+`shardctl reset` (production) and `shardctl test-reset` (integration tests) are scope-disjoint — running one will never touch the other's resources.
+
 ## macOS Specific Issues
 
 ### Docker "Outside of rootfs" Error
@@ -180,8 +193,15 @@ docker network inspect f1r3fly
 If nothing else works, start completely fresh:
 
 ```bash
-# Stop everything and remove data volumes
+# Stop everything and remove data volumes (production)
 poetry run shardctl reset -y
+
+# If reset reports "No F1R3FLY containers found" but you still see leftover state,
+# bypass detection and prefix-scan everything:
+poetry run shardctl reset --force -y
+
+# Also wipe any integration-test framework state (rnode.test.* / f1r3fly-test-* / test-*)
+poetry run shardctl test-reset
 
 # Remove and re-clone services
 rm -rf services/*
