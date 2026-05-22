@@ -210,12 +210,16 @@ Priority for new tests should be based on attack surface and production risk.
 
 ---
 
-## Status (2026-05-12) — All planned tests implemented + expansion landed
+## Status (2026-05-22) — All planned tests implemented; ported onto v2 framework
 
-This plan is historical. The 6-test revival landed first, then an expansion phase added 11 more tests covering the H1–H5 / M1–M6 threat coverage gaps. The canonical list of tests, their coverage scope, port_base allocations, and per-test docstrings live in:
+This plan is historical. The 6-test revival landed first, then an expansion phase added 13 more tests covering the H1–H5 / M1–M6 / B1 threat coverage gaps (19 total). The suite was subsequently ported onto the v2 integration test framework (`infra/` + `tests/{shared,custom,standalone}/` layout, introduced by PR #55) — the legacy framework files (`node_client.py`, `rnode.py`, `test_slash.py` at the old location, `TEST_CASES.md`) are gone. Current locations:
 
-- `integration-tests/TEST_CASES.md` — `test_slash.py` section (18 tests)
-- `integration-tests/test/test_slash.py` — module docstring + per-test docstrings
+- `integration-tests/test/tests/custom/test_slash.py` — 19 tests, module docstring + per-test docstrings (Linux-only)
+- `integration-tests/test/infra/p2p_client.py` — `NodeClient`, `p2p_protocol_client`, `_generate_fresh_p2p_credentials`, `rust_block_hash`, `is_exist_slash_deploy`, `TransportServer`
+- `integration-tests/test/infra/providers/docker.py` — `DockerNodeHandle.container_ip` / `.peer_cert` / `.peer_key`
+- `integration-tests/test/infra/node.py` — `Node.peer_ip` / `.peer_cert` / `.peer_key` (Docker-provider only)
+- `integration-tests/test/infra/polling.py` — `wait_for_log_match` (generic log-regex polling)
+- `integration-tests/test/docs/test_slash.md` — per-test docs (migrated from the deleted TEST_CASES.md)
 - `f1r3node-rust/docs/theory/slashing/slashing-threat-model.md` §3.1 — Docker / wire-protocol coverage table mapping each threat class to its Docker test
 - `f1r3node-rust/docs/theory/slashing/slashing-specification.md` §13 — `End-to-end shard reproduction of equivocation` row flipped from "Out" → "In" with cross-references
 
