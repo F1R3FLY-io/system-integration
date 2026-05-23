@@ -104,15 +104,67 @@ The custom shard compose generator in `conftest.py` may need to map the transpor
 
 Update `wait_for_log_match` regex patterns:
 - Scala: `Recording invalid block {hash[:10]}... for InvalidBlockHash`
-- Rust: `Recording invalid block {hash} for InvalidBlockHash` (full hash, no ellipsis, Debug format)
+- Rust: `Recording invalid block {hash[:10]}... for InvalidBlockHash.` (10-char
+  truncation matching Scala — `PrettyPrinter::build_string_bytes` at
+  `models/src/rust/casper/pretty_printer.rs:74` calls `Self::limit(..., 10)`;
+  trailing period comes from the `{:?}.` format string at
+  `casper/src/rust/casper_engine/validation_dispatcher.rs:481, :564`)
 
-Verify exact format by checking `multi_parent_casper_impl.rs` line ~1066.
+The regex must therefore (a) escape the literal `...` ellipsis (`\.\.\.`) and
+(b) include the trailing `\.` after the variant name. Example:
+```python
+re.compile(rf"Recording invalid block {h.hex()[:10]}\.\.\. for InvalidBlockHash\.")
+```
+
+Verify exact format by checking
+`casper/src/rust/casper_engine/validation_dispatcher.rs:481` (the line
+moved from `multi_parent_casper_impl.rs:~1066` during the Phase 3
+god-object decomposition).
 
 #### 6. Add to pyproject.toml and CI
 
 - Add `test_slash.py` to `python_files` in `pyproject.toml`
 - Add to CI workflow test matrix (both `build-test-and-deploy.yml` in f1r3node-rust and system-integration CI)
 - Update `TEST_CASES.md` with slash test documentation
+
+#### 7. Mirror Rust's block-hash byte layout for forged blocks
+
+The upstream Python `pyf1r3fly.crypto.gen_block_hash_from_block` wraps
+`sigAlgorithm` / `seqNum` / `shardId` in protobuf `StringValue` /
+`Int32Value` boxes before hashing. The Rust node
+(`casper/src/rust/util/proto_util.rs:380 hash_block`) hashes the raw UTF-8
+bytes for the string fields and 4 little-endian bytes for `seqNum`. The
+two hashes therefore diverge for every non-genesis block. Because
+`Validate::block_hash` is the **first** check in `block_summary`
+(`casper/src/rust/validate.rs:291`), any forged block re-hashed with the
+pyf1r3fly helper would be rejected as `InvalidBlockHash` before the
+test's intended offense (InvalidBlockNumber / InvalidSequenceNumber /
+InvalidFollows / InvalidParents) is reached.
+
+Add a module-local helper in `test_slash.py` that mirrors the Rust byte
+layout exactly:
+
+```python
+def rust_block_hash(block: BlockMessage) -> bytes:
+    buf = b''.join([
+        block.header.SerializeToString(),
+        block.body.SerializeToString(),
+        block.sender,
+        block.sigAlgorithm.encode('utf-8'),
+        block.seqNum.to_bytes(4, 'little', signed=True),
+        block.shardId.encode('utf-8'),
+        block.extraBytes,
+    ])
+    return hashlib.blake2b(buf, digest_size=32).digest()
+```
+
+Replace every `gen_block_hash_from_block(invalid_*)` call with
+`rust_block_hash(invalid_*)`. Anchor the invariant at the start of each
+active test with `assert rust_block_hash(b) == b.blockHash` for the
+unmodified `b` returned by `client.block_request(...)` — so future
+upstream drift surfaces immediately rather than silently breaking the
+tests. Filing a follow-up against `pyf1r3fly` to upstream the byte
+layout as a `rust_compat=True` flag is recommended but not required.
 
 ### Test Coverage Plan
 
@@ -155,3 +207,22 @@ Priority for new tests should be based on attack surface and production risk.
 3. Port remaining 5 active tests
 4. Evaluate and potentially enable `test_slash_invalid_validator_approve_evil_block`
 5. Consider new tests for uncovered offense types based on priority
+
+---
+
+## Status (2026-05-22) — All planned tests implemented; ported onto v2 framework
+
+This plan is historical. The 6-test revival landed first, then an expansion phase added 13 more tests covering the H1–H5 / M1–M6 / B1 threat coverage gaps (19 total). The suite was subsequently ported onto the v2 integration test framework (`infra/` + `tests/{shared,custom,standalone}/` layout, introduced by PR #55) — the legacy framework files (`node_client.py`, `rnode.py`, `test_slash.py` at the old location, `TEST_CASES.md`) are gone. Current locations:
+
+- `integration-tests/test/tests/custom/test_slash.py` — 19 tests, module docstring + per-test docstrings (Linux-only)
+- `integration-tests/test/infra/p2p_client.py` — `NodeClient`, `p2p_protocol_client`, `_generate_fresh_p2p_credentials`, `rust_block_hash`, `is_exist_slash_deploy`, `TransportServer`
+- `integration-tests/test/infra/providers/docker.py` — `DockerNodeHandle.container_ip` / `.peer_cert` / `.peer_key`
+- `integration-tests/test/infra/node.py` — `Node.peer_ip` / `.peer_cert` / `.peer_key` (Docker-provider only)
+- `integration-tests/test/infra/polling.py` — `wait_for_log_match` (generic log-regex polling)
+- `integration-tests/test/docs/test_slash.md` — per-test docs (migrated from the deleted TEST_CASES.md)
+- `f1r3node-rust/docs/theory/slashing/slashing-threat-model.md` §3.1 — Docker / wire-protocol coverage table mapping each threat class to its Docker test
+- `f1r3node-rust/docs/theory/slashing/slashing-specification.md` §13 — `End-to-end shard reproduction of equivocation` row flipped from "Out" → "In" with cross-references
+
+M7 (`test_slash_censoring_proposer_eventually_slashes`, T-37 / T-12PF) is deferred — the Rust binary has no runtime proposer-fairness detector and the threat model classifies T-12PF as a *boundary assumption* (per `slashing-traceability.md` finding 88 = `model_boundary`, "No source bug confirmed"). The deferral is documented in the `test_slash.py` module docstring.
+
+Implementation log: see `f1r3node-rust/docs/work-logs/` for the work-log entries that capture forge mechanics, post-state self-consistency analysis, and per-test debug iterations.

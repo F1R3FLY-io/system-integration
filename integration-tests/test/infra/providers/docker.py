@@ -355,6 +355,68 @@ class DockerNodeHandle:
             return False
         return (result.stdout or "").strip() == "running"
 
+    def container_ip(self, network: str) -> str:
+        """IPv4 address of this container on ``network`` (substring match).
+
+        Used by the raw-P2P slashing client to open a host-side TCP
+        socket to the container's transport port 40400. Requires native
+        Linux Docker bridge routing — caller is responsible for the
+        platform skip (Linux-only). Substring match so callers can pass
+        either the full ``<project>_<network>`` name or just the bare
+        suffix.
+        """
+        import json
+        result = _docker("inspect", self._name)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"docker inspect {self._name} failed: {result.stderr.strip()}"
+            )
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"docker inspect {self._name} returned non-JSON: {e}")
+        if not payload:
+            raise RuntimeError(f"docker inspect {self._name} returned empty payload")
+        networks = payload[0].get("NetworkSettings", {}).get("Networks", {})
+        for name, cfg in networks.items():
+            if network in name:
+                ip = cfg.get("IPAddress")
+                if ip:
+                    return ip
+        raise RuntimeError(
+            f"container {self._name} not connected to a network matching "
+            f"{network!r}; available: {list(networks)}"
+        )
+
+    def exec(self, *cmd: str) -> bytes:
+        """Run a command in the container and return raw stdout bytes.
+
+        Used by the raw-P2P slashing client to read the node's PEM cert
+        and key files for mTLS handshakes. Raises ``RuntimeError`` if
+        ``docker exec`` returns non-zero.
+        """
+        result = subprocess.run(
+            ["docker", "exec", self._name, *cmd],
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or b"").decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"docker exec {self._name} {' '.join(cmd)} failed "
+                f"(rc={result.returncode}): {stderr}"
+            )
+        return result.stdout
+
+    def peer_cert(self) -> bytes:
+        """Read /var/lib/rnode/node.certificate.pem from inside the container."""
+        return self.exec("cat", "/var/lib/rnode/node.certificate.pem")
+
+    def peer_key(self) -> bytes:
+        """Read /var/lib/rnode/node.key.pem from inside the container."""
+        return self.exec("cat", "/var/lib/rnode/node.key.pem")
+
     def restart(self) -> None:
         _docker("restart", self._name, check=True)
 

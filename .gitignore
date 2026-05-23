@@ -68,8 +68,8 @@ data/
 
 # Integration test artifacts
 integration-tests/.venv/
-integration-tests/integration-tests.log
-integration-tests/report.json
+integration-tests.log
+report.json
 integration-tests/.mypy_cache/
 integration-tests/.pytest_cache/
 integration-tests/data/
