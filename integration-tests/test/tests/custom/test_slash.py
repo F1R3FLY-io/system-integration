@@ -90,13 +90,13 @@ pytestmark = pytest.mark.xdist_group("custom")
 
 
 # Validator key aliases — readability inside the test bodies. The
-# canonical identities live in ``infra.keys.VALIDATOR{N}_ID``; we only
-# alias the ``.key`` field so existing call shapes like
+# canonical identities live in ``infra.keys.VALIDATOR{N}_ID``; we call
+# ``.private_key()`` once at import time so existing call shapes like
 # ``KEY.sign_block_hash(...)`` and ``KEY.get_public_key().to_hex()`` work
 # unchanged.
-BONDED_VALIDATOR_KEY_1: PrivateKey = VALIDATOR1_ID.key
-BONDED_VALIDATOR_KEY_2: PrivateKey = VALIDATOR2_ID.key
-BONDED_VALIDATOR_KEY_3: PrivateKey = VALIDATOR3_ID.key
+BONDED_VALIDATOR_KEY_1: PrivateKey = VALIDATOR1_ID.private_key()
+BONDED_VALIDATOR_KEY_2: PrivateKey = VALIDATOR2_ID.private_key()
+BONDED_VALIDATOR_KEY_3: PrivateKey = VALIDATOR3_ID.private_key()
 
 # Standard contract used by every slash test. Inlined (rather than read
 # from a path inside the container) so the test is portable across node
