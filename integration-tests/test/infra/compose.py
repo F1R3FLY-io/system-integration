@@ -41,7 +41,6 @@ _NODE_PORT_RESERVATION_SYSCTLS: List[str] = [
 ]
 
 
-
 def generate_compose(
     config: ShardConfig,
     genesis_dir: str,
@@ -196,14 +195,18 @@ def generate_compose(
         ro_host = container_name(ro_key)
         ro_ports = port_assignments[ro_key]
 
-        ro_command = [
-            "run",
-            f"--host={ro_host}",
-            f"--bootstrap={bootstrap_url}",
-            "--no-upnp",
-            "--allow-private-addresses",
-            "--heartbeat-disabled",  # readonly never proposes regardless of shard config
-        ] + NODE_LOGGING_FLAGS + _extra_cli(ro_key)
+        ro_command = (
+            [
+                "run",
+                f"--host={ro_host}",
+                f"--bootstrap={bootstrap_url}",
+                "--no-upnp",
+                "--allow-private-addresses",
+                "--heartbeat-disabled",  # readonly never proposes regardless of shard config
+            ]
+            + NODE_LOGGING_FLAGS
+            + _extra_cli(ro_key)
+        )
 
         services[ro_key] = {
             "image": config.effective_image,

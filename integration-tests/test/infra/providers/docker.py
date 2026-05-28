@@ -46,7 +46,6 @@ _NODE_PORT_RESERVATION_ARGS: List[str] = [
 ]
 
 
-
 def _docker(*args: str, check: bool = False, timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["docker", *args],
@@ -355,8 +354,7 @@ class DockerNodeHandle:
             logger.warning("DockerNodeHandle.archive_log: %s failed: %s", self._name, e)
             try:
                 dest_path.write_text(
-                    f"archive_log: exception raised: {e!r}\n"
-                    f"  container name: {self._name}\n"
+                    f"archive_log: exception raised: {e!r}\n" f"  container name: {self._name}\n"
                 )
             except Exception:
                 pass
