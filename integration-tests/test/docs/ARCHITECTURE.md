@@ -47,7 +47,7 @@ Session-scoped fixtures are built once; tests sharing a fixture run on one pytes
 | `ports: PortMapping` | Host-accessible ports (protocol/grpc_ext/grpc_int/http/discovery/admin) |
 | `grpc_host: str` | Hostname for gRPC connections — `localhost` for Docker, FQDN for K8s |
 | `network_name: str` | Docker network or K8s namespace |
-| `logs(tail=None) -> str` | Fetch stdout/stderr |
+| `logs(tail=None) -> str` | Fetch structured log content (Docker: reads `/var/lib/rnode/logs/node.log` via `docker exec cat`; subprocess: reads captured log file) |
 | `is_running() -> bool` | Liveness check |
 | `restart()` | Restart the node (Docker restart / K8s pod delete) |
 | `pause()` / `unpause()` | Simulate network partition (`docker pause` / K8s NetworkPolicy) |
@@ -149,7 +149,7 @@ CI runners are slower than laptops — `--timeout-scale=1.5` (or `2.0`) bumps ev
 
 `infra/log_events.py` + autouse fixture in `conftest.py` (`check_node_logs_after_test`).
 
-After **every test**, the fixture pulls logs from every active node via `handle.logs()` and runs `scan_for_forbidden` against a single `FORBIDDEN_PATTERNS` dict. Any unmatched-by-opt-out hit fails the test before teardown destroys the evidence.
+After **every test**, the fixture pulls logs from every active node via `handle.logs()` — which reads from the structured log file written by the node's `--log-sink=both` flag — and runs `scan_for_forbidden` against a single `FORBIDDEN_PATTERNS` dict. Any unmatched-by-opt-out hit fails the test before teardown destroys the evidence.
 
 `FORBIDDEN_PATTERNS` covers panics, KvStore failures, bonds-cache mismatches, missing DAG hashes, replay-rig divergence, structural self-validation failures, `FATAL` keyword, and similar consensus/runtime bug signatures — see [`infra/log_events.py`](../../test/infra/log_events.py) for the canonical list with per-pattern comments naming the bug class and known opt-outs.
 

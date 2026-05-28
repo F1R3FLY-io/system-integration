@@ -179,7 +179,7 @@ class SubprocessNodeHandle:
         return "\n".join(text.splitlines()[-tail:])
 
     def archive_log(self, dest_path: Path) -> None:
-        """Copy the rnode stdout/stderr log file to ``dest_path``.
+        """Copy the node's log file to ``dest_path``.
 
         The log file lives under the session data root, which is wiped
         at teardown. Copying out before that gives the artifact upload

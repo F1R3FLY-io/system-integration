@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Sequence
 
 from ..cleanup import DockerCleanupRegistry
 from ..compose import generate_compose
-from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_image
+from ..config import NODE_LOGGING_FLAGS, NodeConfig, ResourcePaths, ShardConfig, resolve_node_image
 from ..genesis import generate_genesis
 from ..keys import BOOTSTRAP_NODE_ID
 from ..ports import PortAllocator
@@ -44,6 +44,7 @@ _NODE_PORT_RESERVATION_ARGS: List[str] = [
     "--sysctl",
     "net.ipv4.ip_local_reserved_ports=40400-40405",
 ]
+
 
 
 def _docker(*args: str, check: bool = False, timeout: int = 120) -> subprocess.CompletedProcess:
@@ -307,44 +308,55 @@ class DockerNodeHandle:
     def identity(self) -> Optional[ValidatorIdentity]:
         return self._identity
 
+    # Path inside every container where the node writes its structured log.
+    _LOG_FILE_PATH = "/var/lib/rnode/logs/node.log"
+
     def logs(self, tail: Optional[int] = None) -> str:
-        args = ["logs"]
+        """Return the node's structured log content.
+
+        Reads from the log file written by the node's file sink
+        (``--log-sink=both``) rather than the Docker log buffer.
+        Falls back to an empty string if the container is not running
+        or the file does not yet exist (node still starting up).
+        """
+        result = _docker("exec", self._name, "cat", self._LOG_FILE_PATH)
+        if result.returncode != 0:
+            return ""
+        text = result.stdout or ""
         if tail:
-            args.extend(["--tail", str(tail)])
-        args.append(self._name)
-        result = _docker(*args)
-        return (result.stdout or "") + (result.stderr or "")
+            lines = text.splitlines()
+            text = "\n".join(lines[-tail:])
+        return text
 
     def archive_log(self, dest_path: Path) -> None:
-        """Dump the container's full stdout/stderr to ``dest_path``.
+        """Copy the node's log file from the container to ``dest_path``.
 
-        Runs ``docker logs <container>`` with output redirected to the
-        destination file. Idempotent and exception-safe — a missing
-        container (e.g. already removed) leaves ``docker logs``' own
-        stderr ("Error: No such container") in the file rather than
-        propagating.
-
-        Always produces a file at ``dest_path``: on a top-level
-        exception (mkdir failure, etc.) a diagnostic placeholder is
-        written. Matters because ``actions/upload-artifact@v4`` drops
-        empty directories, so a silent archive failure would leave no
-        trace in CI.
+        Uses ``docker cp`` so it works on running and stopped containers
+        — the log file lives on the named volume which persists until
+        ``docker compose down -v``. Always produces a file at
+        ``dest_path`` (diagnostic placeholder on failure) so
+        ``actions/upload-artifact@v4`` never silently drops the entry.
         """
         try:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
-            with dest_path.open("w") as f:
-                subprocess.run(
-                    ["docker", "logs", self._name],
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                    timeout=30,
+            result = subprocess.run(
+                ["docker", "cp", f"{self._name}:{self._LOG_FILE_PATH}", str(dest_path)],
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                dest_path.write_text(
+                    f"archive_log: docker cp failed\n"
+                    f"  container: {self._name}\n"
+                    f"  stderr: {result.stderr.decode(errors='replace')!r}\n"
                 )
         except Exception as e:
             logger.warning("DockerNodeHandle.archive_log: %s failed: %s", self._name, e)
             try:
                 dest_path.write_text(
-                    f"archive_log: exception raised: {e!r}\n" f"  container name: {self._name}\n"
+                    f"archive_log: exception raised: {e!r}\n"
+                    f"  container name: {self._name}\n"
                 )
             except Exception:
                 pass
@@ -881,6 +893,7 @@ class DockerProvider:
                 f"--host={container_name}",
                 f"--validator-private-key={_BOOTSTRAP_PRIVATE_KEY}",
                 "--allow-private-addresses",
+                *NODE_LOGGING_FLAGS,
                 *extra_cli,
             ]
         )
@@ -987,6 +1000,7 @@ class DockerProvider:
             f"--host={container_name}",
             f"--validator-private-key={_BOOTSTRAP_PRIVATE_KEY}",
             "--allow-private-addresses",
+            *NODE_LOGGING_FLAGS,
             *extra_cli,
         ]
 
@@ -1089,6 +1103,7 @@ class DockerProvider:
                     f"--validator-private-key={identity.private_hex}",
                 ]
             )
+        cmd.extend(NODE_LOGGING_FLAGS)
         cmd.extend(extra_cli)
 
         run_args = [

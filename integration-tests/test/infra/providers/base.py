@@ -66,17 +66,25 @@ class NodeHandle(typing_extensions.Protocol):
         ...
 
     def logs(self, tail: Optional[int] = None) -> str:
-        """Fetch the node's stdout/stderr logs."""
+        """Return the node's log content.
+
+        Source is provider-specific: Docker reads from the file written
+        by the node's file sink; subprocess reads the captured log file.
+        Returns an empty string if no log content is available yet.
+        """
         ...
 
     def archive_log(self, dest_path: Path) -> None:
-        """Persist the node's full stdout/stderr to ``dest_path``.
+        """Persist the node's complete log to ``dest_path``.
 
-        Called during teardown so node logs survive the destruction of
+        Called during teardown so logs survive the destruction of
         container/process resources. Implementations should:
           - Create parent directories as needed.
           - Capture the COMPLETE log (no tail truncation).
-          - Be exception-safe — failures are logged but do not propagate.
+          - Be exception-safe — failures are logged, never propagated.
+          - Always produce a file at ``dest_path`` (write a diagnostic
+            placeholder on failure) so artifact uploaders never silently
+            drop the entry.
         """
         ...
 

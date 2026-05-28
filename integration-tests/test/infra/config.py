@@ -13,6 +13,18 @@ from .types import NodeRole, ValidatorIdentity
 
 _DEFAULT_IMAGE = "f1r3flyindustries/f1r3fly-rust:latest"
 
+# CLI flags injected into every node command by all providers.
+# --log-sink=both  keeps stdout active for live inspection (`docker logs -f`)
+#   while also writing to <data-dir>/logs/node.log, which the test
+#   framework reads via provider-native file access rather than the
+#   Docker log buffer.
+# --log-format=json ensures the framework always receives parseable JSON
+#   regardless of any mounted rnode.conf that might set a different format.
+NODE_LOGGING_FLAGS: List[str] = [
+    "--log-sink=both",
+    "--log-format=json",
+]
+
 
 # Cached conf values — parsed once on first access
 def resolve_node_image() -> str:

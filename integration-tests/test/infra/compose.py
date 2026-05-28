@@ -21,7 +21,7 @@ from typing import Dict, List
 import yaml
 
 from .cleanup import DockerCleanupRegistry
-from .config import ResourcePaths, ShardConfig
+from .config import NODE_LOGGING_FLAGS, ResourcePaths, ShardConfig
 from .keys import BOOTSTRAP_NODE_ID
 from .types import PortMapping
 
@@ -39,6 +39,7 @@ _BOOTSTRAP_PRIVATE_KEY_HEX = "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1
 _NODE_PORT_RESERVATION_SYSCTLS: List[str] = [
     "net.ipv4.ip_local_reserved_ports=40400-40405",
 ]
+
 
 
 def generate_compose(
@@ -96,7 +97,7 @@ def generate_compose(
         boot_command.append(f"--fault-tolerance-threshold={config.ftt}")
     if not config.heartbeat:
         boot_command.append("--heartbeat-disabled")
-    boot_command += _extra_cli("boot")
+    boot_command += NODE_LOGGING_FLAGS + _extra_cli("boot")
 
     services["boot"] = {
         "image": config.effective_image,
@@ -153,7 +154,7 @@ def generate_compose(
             validator_command.append(f"--fault-tolerance-threshold={config.ftt}")
         if not config.heartbeat:
             validator_command.append("--heartbeat-disabled")
-        validator_command += _extra_cli(node_key)
+        validator_command += NODE_LOGGING_FLAGS + _extra_cli(node_key)
 
         services[node_key] = {
             "image": config.effective_image,
@@ -202,7 +203,7 @@ def generate_compose(
             "--no-upnp",
             "--allow-private-addresses",
             "--heartbeat-disabled",  # readonly never proposes regardless of shard config
-        ] + _extra_cli(ro_key)
+        ] + NODE_LOGGING_FLAGS + _extra_cli(ro_key)
 
         services[ro_key] = {
             "image": config.effective_image,
