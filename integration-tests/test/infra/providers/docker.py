@@ -311,45 +311,52 @@ class DockerNodeHandle:
     _LOG_FILE_PATH = "/var/lib/rnode/logs/node.log"
 
     def logs(self, tail: Optional[int] = None) -> str:
-        """Return the node's structured log content.
+        """Return the node's log content.
 
-        Reads from the log file written by the node's file sink
-        (``--log-sink=both``) rather than the Docker log buffer.
-        Falls back to an empty string if the container is not running
-        or the file does not yet exist (node still starting up).
+        Reads from the structured log file written by the node's file
+        sink (``--log-sink=both``). Falls back to ``docker logs``
+        (stdout/stderr buffer) when the file does not exist or is not
+        yet accessible — this covers the startup-failure case where the
+        node crashes before the file sink opens.
         """
         result = _docker("exec", self._name, "cat", self._LOG_FILE_PATH)
-        if result.returncode != 0:
-            return ""
-        text = result.stdout or ""
+        if result.returncode == 0:
+            text = result.stdout or ""
+        else:
+            fallback = _docker("logs", self._name)
+            text = (fallback.stdout or "") + (fallback.stderr or "")
         if tail:
             lines = text.splitlines()
             text = "\n".join(lines[-tail:])
         return text
 
     def archive_log(self, dest_path: Path) -> None:
-        """Copy the node's log file from the container to ``dest_path``.
+        """Persist the node's complete log to ``dest_path``.
 
-        Uses ``docker cp`` so it works on running and stopped containers
-        — the log file lives on the named volume which persists until
-        ``docker compose down -v``. Always produces a file at
-        ``dest_path`` (diagnostic placeholder on failure) so
+        Tries ``docker cp`` from the file sink first (works on running
+        and stopped containers). Falls back to ``docker logs`` redirect
+        when the file does not exist — ensures startup-failure output
+        is always captured even when the node crashed before the file
+        sink was opened. Always produces a file so
         ``actions/upload-artifact@v4`` never silently drops the entry.
         """
         try:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
-            result = subprocess.run(
+            cp_result = subprocess.run(
                 ["docker", "cp", f"{self._name}:{self._LOG_FILE_PATH}", str(dest_path)],
                 capture_output=True,
                 check=False,
                 timeout=30,
             )
-            if result.returncode != 0:
-                dest_path.write_text(
-                    f"archive_log: docker cp failed\n"
-                    f"  container: {self._name}\n"
-                    f"  stderr: {result.stderr.decode(errors='replace')!r}\n"
-                )
+            if cp_result.returncode != 0:
+                with dest_path.open("w") as f:
+                    subprocess.run(
+                        ["docker", "logs", self._name],
+                        stdout=f,
+                        stderr=subprocess.STDOUT,
+                        check=False,
+                        timeout=30,
+                    )
         except Exception as e:
             logger.warning("DockerNodeHandle.archive_log: %s failed: %s", self._name, e)
             try:
