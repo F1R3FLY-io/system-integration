@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Sequence
 
 from ..cleanup import DockerCleanupRegistry
 from ..compose import generate_compose
-from ..config import NODE_LOGGING_FLAGS, NodeConfig, ResourcePaths, ShardConfig, resolve_node_image
+from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_image
 from ..genesis import generate_genesis
 from ..keys import BOOTSTRAP_NODE_ID
 from ..ports import PortAllocator
@@ -898,7 +898,6 @@ class DockerProvider:
                 f"--host={container_name}",
                 f"--validator-private-key={_BOOTSTRAP_PRIVATE_KEY}",
                 "--allow-private-addresses",
-                *NODE_LOGGING_FLAGS,
                 *extra_cli,
             ]
         )
@@ -1005,7 +1004,6 @@ class DockerProvider:
             f"--host={container_name}",
             f"--validator-private-key={_BOOTSTRAP_PRIVATE_KEY}",
             "--allow-private-addresses",
-            *NODE_LOGGING_FLAGS,
             *extra_cli,
         ]
 
@@ -1108,7 +1106,6 @@ class DockerProvider:
                     f"--validator-private-key={identity.private_hex}",
                 ]
             )
-        cmd.extend(NODE_LOGGING_FLAGS)
         cmd.extend(extra_cli)
 
         run_args = [

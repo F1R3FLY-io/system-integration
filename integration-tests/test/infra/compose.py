@@ -21,7 +21,7 @@ from typing import Dict, List
 import yaml
 
 from .cleanup import DockerCleanupRegistry
-from .config import NODE_LOGGING_FLAGS, ResourcePaths, ShardConfig
+from .config import ResourcePaths, ShardConfig
 from .keys import BOOTSTRAP_NODE_ID
 from .types import PortMapping
 
@@ -96,7 +96,7 @@ def generate_compose(
         boot_command.append(f"--fault-tolerance-threshold={config.ftt}")
     if not config.heartbeat:
         boot_command.append("--heartbeat-disabled")
-    boot_command += NODE_LOGGING_FLAGS + _extra_cli("boot")
+    boot_command += _extra_cli("boot")
 
     services["boot"] = {
         "image": config.effective_image,
@@ -153,7 +153,7 @@ def generate_compose(
             validator_command.append(f"--fault-tolerance-threshold={config.ftt}")
         if not config.heartbeat:
             validator_command.append("--heartbeat-disabled")
-        validator_command += NODE_LOGGING_FLAGS + _extra_cli(node_key)
+        validator_command += _extra_cli(node_key)
 
         services[node_key] = {
             "image": config.effective_image,
@@ -195,18 +195,14 @@ def generate_compose(
         ro_host = container_name(ro_key)
         ro_ports = port_assignments[ro_key]
 
-        ro_command = (
-            [
-                "run",
-                f"--host={ro_host}",
-                f"--bootstrap={bootstrap_url}",
-                "--no-upnp",
-                "--allow-private-addresses",
-                "--heartbeat-disabled",  # readonly never proposes regardless of shard config
-            ]
-            + NODE_LOGGING_FLAGS
-            + _extra_cli(ro_key)
-        )
+        ro_command = [
+            "run",
+            f"--host={ro_host}",
+            f"--bootstrap={bootstrap_url}",
+            "--no-upnp",
+            "--allow-private-addresses",
+            "--heartbeat-disabled",  # readonly never proposes regardless of shard config
+        ] + _extra_cli(ro_key)
 
         services[ro_key] = {
             "image": config.effective_image,

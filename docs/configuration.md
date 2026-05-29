@@ -32,16 +32,16 @@ Roles within a shard are differentiated by CLI flags injected via the compose fi
 
 See the `command:` block in any compose file for the full per-role flag list.
 
-### Logging flags (integration tests)
+### Logging configuration (integration tests)
 
-The integration-test framework automatically injects these flags into every test node (defined in `integration-tests/test/infra/config.py:NODE_LOGGING_FLAGS`):
+Test nodes pick up structured logging from the mounted config files, not from CLI flags — keeping both Docker and subprocess providers consistent:
 
-| Flag | Effect |
-|---|---|
-| `--log-sink=both` | Write logs to stdout **and** `<data-dir>/logs/node.log`. Stdout remains active for live inspection (`docker logs -f`); the framework reads from the file. |
-| `--log-format=json` | Enforce JSON output so the framework's log scanner always receives parseable structured events, regardless of what any mounted `rnode.conf` sets. |
+| Config file | Used by | Logging settings |
+|---|---|---|
+| `conf/rust.conf` | All shard test nodes (Docker + subprocess) | `format = "json"`, `sink = "both"` |
+| `conf/standalone-dev.conf` | All standalone test nodes (Docker + subprocess) | `format = "json"`, `sink = "both"` |
 
-These are not added to production `shardctl up` nodes — only to nodes created by the test framework. Log level for test nodes is controlled by the `RUST_LOG` environment variable (highest priority over any config setting).
+`sink = "both"` writes to stdout (live inspection via `docker logs -f`) and to `<data-dir>/logs/node.log` (read by the test framework). Log level for test nodes is controlled by the `RUST_LOG` environment variable.
 
 ---
 
