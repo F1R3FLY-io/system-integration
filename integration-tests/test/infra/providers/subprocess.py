@@ -65,6 +65,22 @@ _DATA_DIR_BASENAME = ".subprocess-data"
 _DATA_DIR_SCAN_TOKEN = _DATA_DIR_BASENAME
 
 
+def _parse_ps_time(value: str) -> float:
+    """Parse a ``ps -o time`` value (``[[dd-]hh:]mm:ss`` or ``mm:ss.cc``) to
+    seconds. Returns 0.0 on any unexpected format."""
+    try:
+        days = 0
+        if "-" in value:
+            day_str, value = value.split("-", 1)
+            days = int(day_str)
+        seconds = 0.0
+        for p in value.split(":"):
+            seconds = seconds * 60 + float(p)
+        return days * 86400 + seconds
+    except (ValueError, IndexError):
+        return 0.0
+
+
 class SubprocessNodeHandle:
     """Handle to a node spawned as a host process by SubprocessProvider."""
 
@@ -292,27 +308,49 @@ class SubprocessNodeHandle:
     # ── Resource usage ──────────────────────────────────────────────
 
     def resource_usage(self) -> dict:
-        """Returns memory_mb, cpu_percent, memory_limit_mb (None — no limit)."""
+        """Returns memory_mb, cpu_percent, cpu_seconds, memory_limit_mb.
+
+        ``cpu_percent`` from ``ps`` is a lifetime average; for an accurate
+        instantaneous figure the resource monitor differences ``cpu_seconds``
+        (cumulative CPU time) across samples. ``memory_limit_mb`` is None —
+        subprocess nodes have no cgroup cap.
+        """
+        zero = {"memory_mb": 0.0, "cpu_percent": 0.0, "cpu_seconds": 0.0,
+                "memory_limit_mb": None}
         if not self.is_running():
-            return {"memory_mb": 0.0, "cpu_percent": 0.0, "memory_limit_mb": None}
+            return zero
         try:
             result = subprocess.run(
-                ["ps", "-p", str(self._proc.pid), "-o", "rss=,%cpu="],
+                ["ps", "-p", str(self._proc.pid), "-o", "rss=,%cpu=,time="],
                 capture_output=True,
                 text=True,
                 timeout=5,
             )
             line = (result.stdout or "").strip()
             if not line:
-                return {"memory_mb": 0.0, "cpu_percent": 0.0, "memory_limit_mb": None}
-            rss_kb_str, cpu_str = line.split()
+                return zero
+            rss_kb_str, cpu_str, time_str = line.split()
             return {
                 "memory_mb": float(rss_kb_str) / 1024.0,
                 "cpu_percent": float(cpu_str),
+                "cpu_seconds": _parse_ps_time(time_str),
                 "memory_limit_mb": None,
             }
         except (subprocess.TimeoutExpired, ValueError, OSError):
-            return {"memory_mb": 0.0, "cpu_percent": 0.0, "memory_limit_mb": None}
+            return zero
+
+    def iter_log_lines(self):
+        """Yield the node's log file line-by-line without loading it whole.
+
+        Streaming counterpart to ``logs()`` for the post-test forbidden-pattern
+        scan, so a multi-hundred-MB node log is never materialized in memory as
+        one string plus a splitlines list.
+        """
+        if not self._log_path.exists():
+            return
+        with open(self._log_path, "r", errors="replace") as fh:
+            for line in fh:
+                yield line.rstrip("\n")
 
 
 # ── SubprocessProvider ─────────────────────────────────────────────────
