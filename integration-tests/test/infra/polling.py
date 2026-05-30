@@ -46,7 +46,7 @@ __all__ = [
     "wait_for_block_visible_on_all_nodes",
     "lfb_number",
     "wait_for_lfb_at_least",
-    "wait_for_lfb_stable",
+    "wait_for_node_quiet",
     "DeployError",
 ]
 
@@ -163,30 +163,30 @@ def wait_for_lfb_at_least(
     )
 
 
-def wait_for_lfb_stable(
-    node,
-    timeout: int,
-    interval: float = 5.0,
-) -> int:
-    """Poll ``node``'s LFB until two consecutive reads agree and return
-    the stable height. Causal detector for "finalization pipeline has
-    drained" — exits as soon as the LFB has not changed for one full
-    ``interval``.
+def wait_for_node_quiet(node, timeout: int, interval: float = 1.0) -> None:
+    """Block until ``node``'s HTTP API stops responding.
 
-    Use after a perturbation (validator pause/kill, network partition)
-    where existing in-flight finalization should be allowed to settle
-    before asserting on the steady-state behavior.
+    Used after ``node.pause()`` to confirm SIGSTOP has actually landed
+    on the rnode process — empirically that delivery is not instant
+    (observed >10s gap between pause() returning and the process
+    actually halting under load). Until the process is suspended its
+    block-creation thread continues to produce blocks that influence
+    finalization.
+
+    Detection: ``/api/status`` raises (timeout / connection refused)
+    for one consecutive successful poll. The probe uses a short HTTP
+    timeout (2s) so this returns promptly once the process is stopped.
     """
     deadline = time.time() + timeout
-    last = lfb_number(node)
     while time.time() < deadline:
+        try:
+            node.api_get("/status", timeout=2)
+        except Exception:
+            return
         time.sleep(interval)
-        current = lfb_number(node)
-        if current == last:
-            return current
-        last = current
     raise TimeoutError(
-        f"{node.name} LFB did not stabilize within {timeout}s " f"(last observed: #{last})"
+        f"{node.name} still responding to /api/status after {timeout}s — "
+        f"pause() may not have taken effect"
     )
 
 
