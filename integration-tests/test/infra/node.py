@@ -15,6 +15,7 @@ from typing import Dict, Optional
 from f1r3fly.client import F1r3flyClient
 from f1r3fly.const import DEFAULT_PHLO_LIMIT, DEFAULT_PHLO_PRICE
 from f1r3fly.crypto import PrivateKey
+from f1r3fly.pos import PosAPI
 from f1r3fly.vault import VaultAPI
 
 from .types import NodeRole, PortMapping, ValidatorIdentity
@@ -53,6 +54,7 @@ class Node:
         self._grpc_external_client: Optional[F1r3flyClient] = None
         self._grpc_internal_client: Optional[F1r3flyClient] = None
         self._vault_api: Optional[VaultAPI] = None
+        self._pos_api: Optional[PosAPI] = None
 
     @property
     def name(self) -> str:
@@ -157,6 +159,7 @@ class Node:
             self._grpc_internal_client.close()
             self._grpc_internal_client = None
         self._vault_api = None
+        self._pos_api = None
 
     def get_vault(self, shard_id: str = "root") -> VaultAPI:
         """Construct a VaultAPI with the given shard ID."""
@@ -172,6 +175,22 @@ class Node:
         if self._vault_api is None:
             self._vault_api = VaultAPI(self._external_client())
         return self._vault_api
+
+    def get_pos(self, shard_id: str = "root") -> PosAPI:
+        """Construct a PosAPI with the given shard ID."""
+        return PosAPI(self._external_client(), shard_id=shard_id)
+
+    @property
+    def pos(self) -> PosAPI:
+        """Lazily construct a PosAPI backed by this node's gRPC client.
+
+        Exploratory reads (get_bonds/get_rewards/get_withdrawers/
+        get_pending_withdrawer) only work on a read-only node. Bond/withdraw
+        deploys work on any node and are signed by the acting validator's key.
+        """
+        if self._pos_api is None:
+            self._pos_api = PosAPI(self._external_client())
+        return self._pos_api
 
     def exit_code(self) -> Optional[int]:
         """Return the container's exit code, or None if still running."""

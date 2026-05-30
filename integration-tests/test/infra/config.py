@@ -110,6 +110,12 @@ class TimeoutConfig:
     finalization: int = 45
     command: int = 60
     port_release: int = 30
+    # Budget for an inherently multi-block consensus transition to complete:
+    # an epoch boundary moving pending withdrawers out of the active set, and a
+    # quarantine elapsing so withdrawn validators are paid out. These span
+    # ~quarantine-length + epoch-length blocks by construction (not contention),
+    # so they need a budget larger than a single finalization. Used unscaled.
+    epoch_transition: int = 45
     poll_interval: float = 2.0
     scale: float = 1.0
 

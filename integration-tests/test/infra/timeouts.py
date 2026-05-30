@@ -42,6 +42,12 @@ class TimeoutHierarchy:
         return self._scaled(self._config.port_release)
 
     @property
+    def epoch_transition(self) -> int:
+        """Max seconds for a multi-block consensus transition (epoch-boundary
+        withdrawer move, quarantine payout) to complete."""
+        return self._scaled(self._config.epoch_transition)
+
+    @property
     def poll_interval(self) -> float:
         """Seconds between status checks in polling loops."""
         return self._config.poll_interval
