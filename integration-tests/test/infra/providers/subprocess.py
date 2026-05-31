@@ -505,7 +505,9 @@ class SubprocessProvider:
         cmd += cli_args
 
         env = os.environ.copy()
-        env.setdefault("RUST_LOG", "info")
+        # RUST_LOG intentionally not defaulted; the node's logging.filter (conf/rust.conf
+        # + defaults.conf) drives log levels. A RUST_LOG set by the caller still passes
+        # through via os.environ.copy() above and takes precedence.
         env.setdefault("OPENAI_ENABLED", "false")
         if extra_env:
             env.update(extra_env)
@@ -966,7 +968,9 @@ class SubprocessProvider:
         cmd += cli_args
 
         env = os.environ.copy()
-        env.setdefault("RUST_LOG", "info")
+        # RUST_LOG intentionally not defaulted; the node's logging.filter (conf/rust.conf
+        # + defaults.conf) drives log levels. A RUST_LOG set by the caller still passes
+        # through via os.environ.copy() above and takes precedence.
         env.setdefault("OPENAI_ENABLED", "false")
 
         log_fh = open(log_path, log_mode)

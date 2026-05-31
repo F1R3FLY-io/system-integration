@@ -521,34 +521,44 @@ def test_validator_lifecycle(lifecycle_shard, timeouts) -> None:
 
 
 def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> None:
-    # ── Phase 1: SEQUENTIAL bond+activate V4, then V5 ────────────────────────
-    # Each joiner is brought online (LFS-synced, can't-propose verified), bonded
-    # alone, finalized + bonds-cache-consistent across all nodes, then activated
-    # and verified to propose + be justified before the next joiner starts. This
-    # matches the green-baseline ordering. The ONLY behavioral delta from that
-    # baseline is bg_load policy: bg_load runs throughout (always-on) instead of
-    # being stopped after V4 activation. Finalization budgets match the retired
-    # test's per-wait multipliers (finalization * 3/5, etc.) to absorb lumpy
-    # under-load finalization, asserted over ALL nodes read fresh.
+    # ── Phase 1: CONCURRENT bond V4 + V5 (original-plan concurrent-grow) ──────
+    # Both joiners are brought online (LFS-synced, can't-propose verified) first,
+    # then BOTH bonds are submitted in one window — back-to-back before awaiting
+    # inclusion — so they land in overlapping/sibling blocks. This is the
+    # concurrent multi-bond merge surface the original plan targets (the surface
+    # bug-d lived on), NOT the sequential one-at-a-time path. bg_load runs
+    # throughout (always-on). Finalization budgets match the retired test's
+    # per-wait multipliers (finalization * 3/5, etc.) to absorb lumpy under-load
+    # finalization, asserted over ALL nodes read fresh.
     bonds_pre = {b.validator: b.stake
                  for b in v1.last_finalized_block().blockInfo.bonds}
     assert len(bonds_pre) == 3, f"expected 3 genesis bonds pre-Phase-1: {sorted(bonds_pre)}"
 
-    joiners = {}
-    for proposer, identity, expected_after in (
-        (v1, VALIDATOR4_ID, 4),
-        (v2, VALIDATOR5_ID, 5),
-    ):
+    # Bring both joiners online BEFORE bonding either, so the two bond deploys
+    # can be in flight simultaneously.
+    j4 = _attach_prebond(shard, VALIDATOR4_ID, timeouts)
+    j5 = _attach_prebond(shard, VALIDATOR5_ID, timeouts)
+    joiners = {v4_pk: j4, v5_pk: j5}
+
+    # Submit V4 (via v1) and V5 (via v2) in one window: _submit_bonds deploys
+    # both before awaiting either, so they can land in sibling blocks.
+    results = _submit_bonds(
+        [(v1, VALIDATOR4_ID, _JOINER_STAKE["validator4"]),
+         (v2, VALIDATOR5_ID, _JOINER_STAKE["validator5"])],
+        timeouts,
+    )
+
+    # Each bond block finalizes on all nodes and the bonds map is cross-node
+    # consistent. Per-block bond COUNT is NOT asserted in the concurrent case —
+    # the two bonds may land in sibling blocks, so a given bond block need not yet
+    # contain the other joiner; the merge reconciles them. The invariant: the
+    # joiner is present at its own bond block at the right stake, that block
+    # finalizes on every node, and the map agrees across nodes. Budgets match
+    # retired Phase 4 (finalization * 3).
+    for r in results:
+        proposer, identity, stake, bond_block = (
+            r["proposer"], r["identity"], r["stake"], r["bond_block"])
         pk = identity.public_hex
-        stake = _JOINER_STAKE[identity.name]
-        joiner = _attach_prebond(shard, identity, timeouts)
-        joiners[pk] = joiner
-
-        [r] = _submit_bonds([(proposer, identity, stake)], timeouts)
-        bond_block = r["bond_block"]
-
-        # Bond block finalizes on all nodes; bonds map consistent on all nodes.
-        # Matches retired Phase 4 (finalization * 3).
         wait_for_finalized(proposer, bond_block.blockNumber, timeouts.finalization * 3)
         assert_block_finalized_on_all_nodes(shard.all_nodes, bond_block.blockHash,
                                             timeout=timeouts.finalization * 3)
@@ -557,19 +567,15 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         assert pk in bonds_now and bonds_now[pk] == stake, (
             f"{identity.name} not bonded at its bond block: {sorted(bonds_now)}"
         )
-        assert len(bonds_now) == expected_after, (
-            f"expected {expected_after} bonds after {identity.name}, got {len(bonds_now)}: "
-            f"{sorted(bonds_now)}"
-        )
         assert_bonds_map_consistent_across_nodes(shard.all_nodes, bond_block.blockHash,
                                                  bonds_now, timeout=timeouts.finalization * 3)
         _wait_for_active(ro, pk, True, timeouts, f"{identity.name} in /validators")
 
-        # Activate + verify it proposes and is justified before moving on.
-        _activate_and_verify_participation(shard, ro, proposer, joiner, identity,
-                                           bond_block, timeouts)
-
-    j4, j5 = joiners[v4_pk], joiners[v5_pk]
+    # Activate both joiners and verify each proposes and is justified on all nodes.
+    for r in results:
+        pk = r["identity"].public_hex
+        _activate_and_verify_participation(shard, ro, r["proposer"], joiners[pk],
+                                           r["identity"], r["bond_block"], timeouts)
 
     # Full-set liveness once both joiners are active: every validator in the
     # 5-node active set produces a block finalized + visible on all nodes.
@@ -583,7 +589,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     validators = _validators_on(ro)
     assert validators.get(v4_pk) == _JOINER_STAKE["validator4"], f"V4 stake: {validators}"
     assert validators.get(v5_pk) == _JOINER_STAKE["validator5"], f"V5 stake: {validators}"
-    logging.info("Phase 1: V4+V5 bonded SEQUENTIALLY, activated, and participating "
+    logging.info("Phase 1: V4+V5 bonded CONCURRENTLY, activated, and participating "
                  "(all nodes; bg_load always-on)")
 
     # ── Phase 2: negatives (woven, non-mutating) ─────────────────────────────
