@@ -79,11 +79,11 @@ def pytest_addoption(parser):
         "--rss-ceiling-mb",
         action="store",
         type=int,
-        default=8000,
+        default=5000,
         help="Kill nodes + fail the run if total node RSS exceeds this (MB) "
         "for 2 consecutive samples, protecting the host from swap-thrash/"
         "freeze. Always active; --monitor only adds the CSV + /metrics "
-        "output. 0 disables. Default 8000.",
+        "output. 0 disables. Default 5000.",
     )
     group.addoption(
         "--provider",
