@@ -79,12 +79,11 @@ def pytest_addoption(parser):
         "--rss-ceiling-mb",
         action="store",
         type=int,
-        default=24000,
-        help="With --monitor: kill nodes + fail the run if total node RSS "
-        "exceeds this (MB) for 2 consecutive samples, protecting the host "
-        "from swap-thrash/freeze. 0 disables. Default 24000 (sized to cap a "
-        "runaway run while leaving headroom on a 32GB host; lower it on a "
-        "smaller machine).",
+        default=8000,
+        help="Kill nodes + fail the run if total node RSS exceeds this (MB) "
+        "for 2 consecutive samples, protecting the host from swap-thrash/"
+        "freeze. Always active; --monitor only adds the CSV + /metrics "
+        "output. 0 disables. Default 8000.",
     )
     group.addoption(
         "--provider",
@@ -587,20 +586,19 @@ def check_node_logs_after_test(request, provider):
 
 @pytest.fixture(scope="session", autouse=True)
 def resource_monitor(request):
-    """Sample Docker resource usage during the test session.
+    """Watch node resource usage during the test session.
 
-    Enabled with ``--monitor``. Discovers all ``rnode.test.*`` containers
-    dynamically via ``docker stats`` — sees all containers globally,
-    including those created by other xdist workers.
+    The RSS-ceiling kill is ALWAYS active: when total node RSS exceeds
+    ``--rss-ceiling-mb`` for consecutive samples, every node process is
+    SIGKILLed to protect the host from swap-thrash and the run is failed.
+
+    ``--monitor`` additionally writes the time-series CSV plus a per-node
+    Prometheus ``/metrics`` scrape; without it, only the ceiling kill runs.
 
     In parallel mode, only the first worker (gw0) or the master process
     runs the monitor to avoid duplicate sampling. The monitor's global
     Docker discovery ensures it captures containers from all workers.
     """
-    if not request.config.getoption("--monitor"):
-        yield None
-        return
-
     # In xdist parallel mode, only run monitor on gw0 (or master)
     worker_id = getattr(request.config, "workerinput", {}).get("workerid", "")
     if worker_id and worker_id != "gw0":
@@ -614,9 +612,11 @@ def resource_monitor(request):
     # output files alongside the session's data. ``output_dir`` resolves to the
     # provider's session root when available.
     provider = request.getfixturevalue("provider")
-    output_dir = getattr(provider, "_session_root", None) or getattr(
-        provider, "session_data_root", None
-    )
+    # CSV + /metrics output only when --monitor; the ceiling kill runs regardless.
+    output_dir = (
+        getattr(provider, "_session_root", None)
+        or getattr(provider, "session_data_root", None)
+    ) if request.config.getoption("--monitor") else None
 
     ceiling = request.config.getoption("--rss-ceiling-mb")
     monitor = ResourceMonitor(

@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -279,6 +281,14 @@ class ResourceMonitor:
         self._stop_event.set()
 
     def _kill_all_nodes(self) -> None:
+        """SIGKILL every node process immediately to free RAM on a breach.
+
+        The breach path must reclaim memory fast, so it sends SIGKILL to each
+        node's process group rather than a graceful stop()/remove() (which can
+        block while the host is already under memory pressure, and which also
+        tears down data dirs). SIGKILL just frees the memory. Handles without an
+        OS pid (e.g. container providers) fall back to stop()/remove().
+        """
         if self._provider is None:
             return
         try:
@@ -286,6 +296,13 @@ class ResourceMonitor:
         except Exception:  # noqa: BLE001
             return
         for handle in handles:
+            pid = getattr(handle, "pid", None)
+            if pid:
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    continue
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
             for method in ("stop", "remove"):
                 fn = getattr(handle, method, None)
                 if fn is None:
