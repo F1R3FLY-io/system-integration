@@ -6,26 +6,47 @@ It mirrors the validator-lifecycle environment (heartbeat on, always-on
 background load, strict cluster-wide finalization assertions) but contends
 USER contract state instead of the validator bonds map.
 
-Three merge surfaces, each from a different proposer concurrently under load:
+Every state assertion is checked on EVERY node at a common finalized cut
+(``assert_*_consistent_across_nodes`` / ``await_*_converges_on_all_nodes``):
+a divergent finalized value is a node-identity break (the #71 cascade shape)
+even when it does not itself gate finalization.
 
-  - independent channels (distinct per-key cells) — must merge in PARALLEL;
-    every write lands. This is the structure a per-validator-channel PoS
-    rewrite would use, so it is direct evidence that rewrite is sound.
+Surfaces, from least to most adversarial:
 
-  - a single whole-Map cell with read-modify-write (Maps are excluded from
-    number-channels by design — the SAME shape as the PoS bonds cell). The
-    concurrent writes genuinely conflict; the platform must serialize them via
-    reject-and-recover so EVERY entry lands. Silent loss here is a merge bug;
-    convergence here proves the bonds failure is specific to the every-block
-    close-block contention, not the merge.
+  - independent channels (distinct per-key cells) — different channels commute,
+    so every concurrent write lands in PARALLEL;
+
+  - a single whole-Map cell with DISTINCT-key read-modify-writes per round
+    (Maps are excluded from number-channels — the SAME shape as the PoS bonds
+    cell); the platform serializes via reject-and-recover so EVERY entry lands;
+
+  - SAME-key conflicting writes (``test_same_key_conflict_*``) — three proposers
+    write the SAME map key DIFFERENT values in one round: a genuine non-foldable
+    conflict the merge keep-ones and recovery re-lands, so the cell settles to a
+    single deterministic value (never multi-valued, never stale-consumed) and is
+    identical on every node. This is the integration analog of the
+    ``fs_seal_non_foldable_fork`` unit test;
+
+  - a GUARDED read-modify-write conflict (``test_guarded_rmw_*``) — concurrent
+    conditional decrements whose losers re-EXECUTE the guard on the recovered
+    base, so the counter equals the sequential fold and never drops below the
+    single-application floor (a lower bound that catches the
+    ``fs_seal_must_not_double_apply`` ``FS=-20`` mode at integration level);
 
   - a mergeable integer counter (number-channel / IntegerAdd) — concurrent
-    increments must COMPOSE; the final value is the sum.
+    credits COMPOSE; the final value is the sum, never exceeding it
+    (an upper bound that catches a double-applied credit);
 
-Strict throughout: every user deploy must finalize on every node, and the
-final canonical state must reflect EVERY operation. Background load runs the
-whole time to reproduce the lumpy, contended finalization the merge must
-survive.
+  - cost-priority overdraft (``test_overdraft_cost_priority``) — two concurrent
+    same-source vault transfers that together overdraw; #3 keeps the
+    higher-phlo-price (higher-cost) branch, so the higher-cost transfer's amount
+    lands and the lower-cost one is rejected-then-recovery-fails. The integration
+    analog of ``fold_rejection_rejects_lower_cost_branch_on_overdraft``.
+
+Background load runs the whole time to reproduce the lumpy, contended
+finalization the merge must survive. Forbidden node-log patterns (including
+``StaleConsume`` and the single-value-cell invariant) are enforced on every
+node by the autouse ``check_node_logs_after_test`` fixture.
 """
 import logging
 import threading
@@ -34,13 +55,19 @@ from typing import List, Optional
 
 import pytest
 
-from ...infra.assertions import assert_block_finalized_on_all_nodes
+from ...infra.assertions import (
+    assert_all_nodes_agree_on_lfb,
+    assert_balance_consistent_across_nodes,
+    assert_block_finalized_on_all_nodes,
+    assert_channel_consistent_across_nodes,
+    await_balance_converges_on_all_nodes,
+    await_channel_converges_on_all_nodes,
+)
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import wait_for_deploy_included, wait_for_finalized
 from ...infra.shard import Shard
 from f1r3fly.crypto import PrivateKey
-from f1r3fly.par import par_as_int, par_as_map
 
 pytestmark = pytest.mark.xdist_group("custom")
 
@@ -65,6 +92,20 @@ _PRODUCER_WALLETS = [
 # it concurrently; its balance is a mergeable IntegerAdd number-channel.
 _MERGE_DEST_KEY = PrivateKey.from_seed(91004)
 _MERGE_DEST_ADDR = _MERGE_DEST_KEY.get_public_key().get_vault_address()
+
+# ── Cost-priority overdraft (#3) — concurrent same-source transfers ──────────
+# Source funded so each transfer fits ALONE but the two together overdraw. The
+# amounts (≫ gas) differ so the surviving branch is observable: #3 keeps the
+# higher-COST (higher phlo-price) branch, so the HIGH-amount transfer must land.
+_OVERDRAFT_SRC_KEY = PrivateKey.from_seed(91005)
+_OVERDRAFT_DST_KEY = PrivateKey.from_seed(91006)
+_OVERDRAFT_SRC_ADDR = _OVERDRAFT_SRC_KEY.get_public_key().get_vault_address()
+_OVERDRAFT_DST_ADDR = _OVERDRAFT_DST_KEY.get_public_key().get_vault_address()
+_OVERDRAFT_SRC_BALANCE = 200_000_000
+_OVERDRAFT_HIGH_AMOUNT = 120_000_000   # high phlo-price → higher cost → must WIN
+_OVERDRAFT_LOW_AMOUNT = 100_000_000    # low phlo-price → lower cost → must LOSE
+_OVERDRAFT_HIGH_PRICE = 10
+_OVERDRAFT_LOW_PRICE = 1
 
 # ── Background load: same-vault transfer contention (mirrors lifecycle) ───────
 _BG_SRC_KEY = PrivateKey.from_seed(90001)
@@ -167,177 +208,39 @@ def _assert_all_finalized(producers, all_nodes, deploy_ids: List[str], timeouts,
     )
 
 
-# ── Fixture: dedicated user-contract shard ───────────────────────────────────
-
-@pytest.fixture(scope="module")
-def user_shard(provider, timeouts):
-    config = ShardConfig(
-        bonds=[
-            (VALIDATOR1_ID, _GENESIS_STAKE),
-            (VALIDATOR2_ID, _GENESIS_STAKE),
-            (VALIDATOR3_ID, _GENESIS_STAKE),
-        ],
-        ftt=0.1,
-        heartbeat=True,
-        include_readonly=True,
-        extra_wallets=[
-            (_BG_SRC_ADDR, _WALLET_BALANCE),
-            (_BG_DST_ADDR, _WALLET_BALANCE),
-            (_MERGE_DEST_ADDR, _WALLET_BALANCE),
-        ] + _PRODUCER_WALLETS,
-    )
-    shard = Shard.create(provider, config, timeouts)
-    try:
-        yield shard
-    finally:
-        shard.destroy()
-
-
-# ── Read helpers (exploratory deploy on the readonly observer) ───────────────
-
-def _read_map(ro, cell_channel: str, block_hash: str = "") -> dict:
-    """Peek the current Map held on ``cell_channel`` (non-consuming `<<-`)."""
-    code = f'new return in {{ for (@m <<- @"{cell_channel}") {{ return!(m) }} }}'
-    result = ro.exploratory_deploy(code, block_hash)
-    return par_as_map(result[0])
-
-
-def _read_int(ro, channel: str, block_hash: str = "") -> int:
-    code = f'new return in {{ for (@n <<- @"{channel}") {{ return!(n) }} }}'
-    result = ro.exploratory_deploy(code, block_hash)
-    return par_as_int(result[0])
-
-
-def _await_map_monotone(ro, cell: str, expected: dict, timeout: float,
-                        label: str, interval: float = 1.0,
-                        volatile=frozenset()) -> None:
-    """Poll the FINALIZED map (`FS(LFB)` via exploratory read) until it == expected,
-    asserting NON-REGRESSION the whole way: an add-only key, once observed in a
-    finalized read, must never vanish or change in a later finalized read (a dropped
-    entry is the #71 finalized-state regression — which a converge-only check would
-    miss if it self-heals before the final read). Keys in ``volatile`` (touched by a
-    delete / update / re-add) are EXEMPT from the persistence+value check: they are
-    intentionally non-monotone, and their correctness is verified by ``expected``."""
-    high_water: dict = {}
-    last: dict = {}
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            cur = _read_map(ro, cell)
-        except Exception:  # noqa: BLE001 — transient read during contention
-            time.sleep(interval)
-            continue
-        for k, v in high_water.items():
-            if k in volatile:
-                continue
-            assert cur.get(k) == v, (
-                f"[{label}] finalized-state REGRESSION: {k}={v} was finalized then "
-                f"vanished/changed (now {cur.get(k)!r}); full finalized map {cur}"
-            )
-        for k, v in cur.items():
-            if k not in volatile:
-                high_water[k] = v
-        last = cur
-        if cur == expected:
-            return
-        time.sleep(interval)
-    raise AssertionError(
-        f"[{label}] finalized map did not converge to {expected} within {timeout:.0f}s; "
-        f"last={last}, high-water={high_water}"
-    )
-
-
-def _await_balance_monotone(ro, addr: str, expected: int, timeout: float,
-                            label: str, interval: float = 1.0) -> None:
-    """Poll the FINALIZED dest balance until it == expected, asserting it NEVER
-    DECREASES en route — a finalized credit must not be undone (#71 for a number
-    cell). Convergence alone would miss a transient drop that self-heals."""
-    high_water = -1
-    last: Optional[int] = None
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            cur = ro.get_vault().get_balance(addr)
-        except Exception:  # noqa: BLE001
-            time.sleep(interval)
-            continue
-        assert cur >= high_water, (
-            f"[{label}] finalized-balance REGRESSION: dropped from {high_water} to {cur}"
-        )
-        high_water = max(high_water, cur)
-        last = cur
-        if cur == expected:
-            return
-        time.sleep(interval)
-    raise AssertionError(
-        f"[{label}] balance did not reach {expected} within {timeout:.0f}s; last={last}"
-    )
-
-
-def _assert_bg_load_robust(producers, all_nodes, ro, bg, src0: int, dst0: int,
+def _assert_bg_load_robust(producers, all_nodes, bg, src0: int, dst0: int,
                            timeouts, label: str) -> None:
-    """Robust bg-load verification — the same non-regression + exact-reconciliation
-    principle the foreground scenarios apply, carried over to the always-on same-vault
-    transfer stream.
+    """Robust bg-load verification on ALL nodes — the same non-regression +
+    exact-reconciliation principle the foreground scenarios apply, carried over
+    to the always-on same-vault transfer stream.
 
-    The bg load moves exactly ``_BG_TRANSFER_AMOUNT`` from ``_BG_SRC`` to ``_BG_DST`` per
-    transfer. The SOURCE vault also pays gas (it signs the deploy), so its drop is
-    ``N*amount`` PLUS non-deterministic gas — no exact target. The DEST receives only the
-    transfer amount, so its target IS exact. After the N submitted transfers finalize:
+    The bg load moves exactly ``_BG_TRANSFER_AMOUNT`` from SRC to DST per
+    transfer. After the N submitted transfers finalize:
 
-      1. every bg transfer finalizes on every node (inclusion + cluster finalization);
-      2. DEST reconciles EXACTLY to ``dst0 + N*amount`` and never decreases en route —
-         every finalized credit lands exactly once: a drop is the #71 mode, a
-         double-apply overshoots the exact target and is caught as a timeout. This is the
-         strong check — dest is a contended IntegerAdd number cell, so exact convergence
-         is direct evidence the merge/seal compose concurrent credits losslessly;
-      3. SOURCE never increases en route (a finalized debit not undone) and ends debited
-         by AT LEAST the transferred total (``src0 - src_final >= N*amount``; the surplus
-         is gas).
-
-    Reading finalized balances on the readonly observer is sufficient for cluster
-    agreement: every bg block is asserted finalized on ALL nodes, and a block's state is
-    a function of its finalized cone, so a divergent finalized balance could not have
-    finalized the same blocks cluster-wide."""
+      1. every bg transfer finalizes on every node;
+      2. DEST reconciles EXACTLY to ``dst0 + N*amount`` on every node, never
+         decreasing en route (a finalized credit not undone — #71) and never
+         EXCEEDING it (a double-applied credit — caught immediately by the
+         upper bound rather than as a convergence timeout);
+      3. SOURCE, at the settled common cut, is identical on every node and
+         debited by AT LEAST the transferred total (the surplus is gas)."""
     bg_ids = bg.deploy_ids()
     _assert_all_finalized(producers, all_nodes, bg_ids, timeouts, label)
     n = len(bg_ids)
     want_dst = dst0 + n * _BG_TRANSFER_AMOUNT
     min_src_debit = n * _BG_TRANSFER_AMOUNT
-    dst_water = -1
-    src_water: Optional[int] = None
-    last_dst = last_src = None
-    deadline = time.time() + timeouts.finalization * 2
-    while time.time() < deadline:
-        try:
-            cur_dst = ro.get_vault().get_balance(_BG_DST_ADDR)
-            cur_src = ro.get_vault().get_balance(_BG_SRC_ADDR)
-        except Exception:  # noqa: BLE001
-            time.sleep(1.0)
-            continue
-        assert cur_dst >= dst_water, (
-            f"[{label}] bg-dst REGRESSION: finalized credit dropped from {dst_water} to {cur_dst}"
-        )
-        if src_water is not None:
-            assert cur_src <= src_water, (
-                f"[{label}] bg-src REGRESSION: finalized debit undone, rose from {src_water} to {cur_src}"
-            )
-        dst_water = max(dst_water, cur_dst)
-        src_water = cur_src if src_water is None else min(src_water, cur_src)
-        last_dst, last_src = cur_dst, cur_src
-        if cur_dst == want_dst:
-            assert src0 - cur_src >= min_src_debit, (
-                f"[{label}] bg-src under-debited: source fell by {src0 - cur_src} < transferred "
-                f"{min_src_debit} — a finalized debit was lost"
-            )
-            logging.info("%s: reconciled %d bg transfers — dst %d->%d (exact), src %d->%d (incl gas)",
-                         label, n, dst0, cur_dst, src0, cur_src)
-            return
-        time.sleep(1.0)
-    raise AssertionError(
-        f"[{label}] bg-dst did not reach exact credit {want_dst} within "
-        f"{timeouts.finalization * 2:.0f}s; last dst={last_dst} (want {want_dst}), src={last_src}"
+    await_balance_converges_on_all_nodes(
+        all_nodes, _BG_DST_ADDR, want_dst, timeouts.finalization * 2, f"{label}-dst",
+        non_regression="up", upper_bound=want_dst,
     )
+    lfb = assert_all_nodes_agree_on_lfb(all_nodes, timeout=timeouts.finalization)
+    src_final = assert_balance_consistent_across_nodes(all_nodes, _BG_SRC_ADDR, lfb)
+    assert src0 - src_final >= min_src_debit, (
+        f"[{label}] bg-src under-debited: source fell by {src0 - src_final} < transferred "
+        f"{min_src_debit} — a finalized debit was lost"
+    )
+    logging.info("%s: reconciled %d bg transfers on all nodes — dst->%d (exact), src->%d (incl gas)",
+                 label, n, want_dst, src_final)
 
 
 def _deploy_on_each(shard, term_for, timeouts) -> List[str]:
@@ -369,12 +272,42 @@ def _finalize_setup(shard, term: str, timeouts) -> None:
                                         timeout=timeouts.finalization * 2)
 
 
+# ── Fixture: dedicated user-contract shard ───────────────────────────────────
+
+@pytest.fixture(scope="module")
+def user_shard(provider, timeouts):
+    config = ShardConfig(
+        bonds=[
+            (VALIDATOR1_ID, _GENESIS_STAKE),
+            (VALIDATOR2_ID, _GENESIS_STAKE),
+            (VALIDATOR3_ID, _GENESIS_STAKE),
+        ],
+        ftt=0.1,
+        heartbeat=True,
+        include_readonly=True,
+        extra_wallets=[
+            (_BG_SRC_ADDR, _WALLET_BALANCE),
+            (_BG_DST_ADDR, _WALLET_BALANCE),
+            (_MERGE_DEST_ADDR, _WALLET_BALANCE),
+            (_OVERDRAFT_SRC_ADDR, _OVERDRAFT_SRC_BALANCE),
+            (_OVERDRAFT_DST_ADDR, _WALLET_BALANCE),
+        ] + _PRODUCER_WALLETS,
+    )
+    shard = Shard.create(provider, config, timeouts)
+    try:
+        yield shard
+    finally:
+        shard.destroy()
+
+
 # ── Tests ────────────────────────────────────────────────────────────────────
 
 def test_independent_channels_merge_in_parallel(user_shard, timeouts):
     """Concurrent writes to DISTINCT per-key cells must all land — different
-    channels commute, so the merge applies every write in parallel."""
+    channels commute, so the merge applies every write in parallel. Each cell's
+    finalized value is asserted identical on every node."""
     shard = user_shard
+    all_nodes = shard.all_nodes
     ro = shard.node("readonly")
     producers = [shard.node(n) for n in _PRODUCER_KEYS]
     bg = _BackgroundLoad(producers)
@@ -390,36 +323,32 @@ def test_independent_channels_merge_in_parallel(user_shard, timeouts):
             lambda name: f'@"ucc_kv_{name}"!({expected[name]})',
             timeouts,
         )
-        _assert_all_finalized(producers, shard.all_nodes,
-                              deploy_ids, timeouts, "independent-channels")
+        _assert_all_finalized(producers, all_nodes, deploy_ids, timeouts, "independent-channels")
         for name, val in expected.items():
-            got = _read_int(ro, f"ucc_kv_{name}")
-            assert got == val, f"key ucc_kv_{name}: expected {val}, read {got}"
+            await_channel_converges_on_all_nodes(
+                all_nodes, f"ucc_kv_{name}", val, timeouts.finalization * 2,
+                f"independent-{name}",
+            )
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(producers, shard.all_nodes, ro, bg, bg_src0, bg_dst0,
+        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
                                timeouts, "bg-load(independent)")
 
 
 def test_single_cell_map_concurrent_adds_all_resolve(user_shard, timeouts):
     """The PoS-bonds analog, full lifecycle: a single whole-Map cell driven by rounds
     of CONCURRENT read-modify-writes (set / delete / update / re-add), three proposers
-    per round. Maps are excluded from number-channels, so concurrent writes genuinely
-    conflict — one wins the merge, the losers are re-proposed by recovery onto the new
-    map. Each round is driven to full finalized convergence before the next, so
-    same-key cross-round ops are deterministically ordered.
+    per round on DISTINCT keys (they commute). One wins the merge, the losers are
+    re-proposed by recovery onto the new map. Each round is driven to full finalized
+    convergence ON EVERY NODE before the next, so same-key cross-round ops are
+    deterministically ordered.
 
-    Asserts end to end:
-      - every deploy finalizes on every node,
-      - NON-REGRESSION: an add-only finalized key never vanishes (the #71 mode),
-      - the finalized map converges each round to the exact running fold,
-      - the final finalized map equals the exact operation fold (adds − deletes,
-        latest value for updates).
-    A missing/extra entry is silently dropped/duplicated work — the bonds failure
-    mode. Within-round ops use DISTINCT keys (they commute); cross-round same-key ops
-    (delete-a then re-add-a; update-b) are ordered by the per-round convergence."""
+    Asserts end to end, on every node: every deploy finalizes; an add-only finalized
+    key never vanishes (the #71 mode); the finalized map converges each round to the
+    exact running fold; the final map equals the exact operation fold."""
     shard = user_shard
+    all_nodes = shard.all_nodes
     ro = shard.node("readonly")
     producers = [shard.node(n) for n in _PRODUCER_KEYS]
     bg = _BackgroundLoad(producers)
@@ -453,8 +382,7 @@ def test_single_cell_map_concurrent_adds_all_resolve(user_shard, timeouts):
                         f'@"ucc_map_cell"!(m.delete("{op[1]}")) }}')
 
             ids = _deploy_on_each(shard, term_for, timeouts)
-            _assert_all_finalized(producers, shard.all_nodes, ids, timeouts,
-                                  f"map-round-{rnd}")
+            _assert_all_finalized(producers, all_nodes, ids, timeouts, f"map-round-{rnd}")
 
             for op in ops.values():
                 k = op[1]
@@ -465,29 +393,137 @@ def test_single_cell_map_concurrent_adds_all_resolve(user_shard, timeouts):
                 else:
                     expected.pop(k, None)
 
-            # Drive the finalized cell to this round's exact fold, asserting no
-            # add-only finalized key vanishes en route (the #71 non-regression check).
-            _await_map_monotone(ro, "ucc_map_cell", expected, timeouts.finalization * 3,
-                                f"map-round-{rnd}", volatile=volatile)
+            # Drive the finalized cell to this round's exact fold on EVERY node, asserting
+            # no add-only finalized key vanishes en route (the #71 non-regression check).
+            await_channel_converges_on_all_nodes(
+                all_nodes, "ucc_map_cell", expected, timeouts.finalization * 3,
+                f"map-round-{rnd}", non_regression="map", volatile=volatile,
+            )
+    finally:
+        bg.stop()
+    if _BG_LOAD_ENABLED:
+        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
+                               timeouts, "bg-load(single-cell)")
 
-        final_map = _read_map(ro, "ucc_map_cell")
-        assert final_map == expected, (
-            f"final finalized map != exact operation fold: expected {expected}, got {final_map}"
+
+def test_same_key_conflict_resolves_to_single_value(user_shard, timeouts):
+    """SAME-cell, SAME-key CONFLICT (integration analog of fs_seal_non_foldable_fork):
+    three proposers concurrently write the SAME map key DIFFERENT values in one round.
+    Maps are excluded from number-channels, so these genuinely conflict — the merge
+    keep-ones one write and recovery re-lands the losers on the new base. The cell must
+    settle to a SINGLE value for the key (never multi-valued, never stale-consumed),
+    one of the written candidates, IDENTICAL on every node. A divergent or corrupted
+    value is the seal item-2 / #71 regression; a stale-consume crash is caught by the
+    autouse forbidden-log gate."""
+    shard = user_shard
+    all_nodes = shard.all_nodes
+    ro = shard.node("readonly")
+    producers = [shard.node(n) for n in _PRODUCER_KEYS]
+    bg = _BackgroundLoad(producers)
+    bg_src0 = bg_dst0 = 0
+    if _BG_LOAD_ENABLED:
+        bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
+        bg_dst0 = ro.get_vault().get_balance(_BG_DST_ADDR)
+        bg.start()
+    try:
+        _finalize_setup(shard, '@"ucc_conflict_map"!({})', timeouts)
+        candidates = {"validator1": 1, "validator2": 2, "validator3": 3}
+
+        ids = _deploy_on_each(
+            shard,
+            lambda name: (f'for (@m <- @"ucc_conflict_map") {{ '
+                          f'@"ucc_conflict_map"!(m.set("shared", {candidates[name]})) }}'),
+            timeouts,
+        )
+        _assert_all_finalized(producers, all_nodes, ids, timeouts, "same-key-conflict")
+
+        # Poll the finalized cell on EVERY node (at the common LFB) until it settles to a
+        # single "shared" entry whose value is one of the written candidates and is
+        # identical across nodes. Recovery re-lands the losers, so the running value may
+        # change between candidates before settling — but it must never be multi-valued,
+        # divergent, or missing.
+        candidate_vals = set(candidates.values())
+        deadline = time.time() + timeouts.finalization * 3
+        last = None
+        settled = False
+        while time.time() < deadline:
+            try:
+                lfb = assert_all_nodes_agree_on_lfb(all_nodes)
+            except AssertionError:
+                time.sleep(1.0)
+                continue
+            m = assert_channel_consistent_across_nodes(all_nodes, "ucc_conflict_map", lfb)
+            last = m
+            if m and set(m.keys()) == {"shared"} and m["shared"] in candidate_vals:
+                settled = True
+                break
+            time.sleep(1.0)
+        assert settled, (
+            f"[same-key-conflict] cell did not settle to a single shared value in "
+            f"{candidate_vals}; last all-node-consistent read={last}"
+        )
+        logging.info("same-key-conflict: settled to shared=%r on all nodes", last["shared"])
+    finally:
+        bg.stop()
+    if _BG_LOAD_ENABLED:
+        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
+                               timeouts, "bg-load(same-key-conflict)")
+
+
+def test_guarded_rmw_conflict_no_double_apply(user_shard, timeouts):
+    """GUARDED read-modify-write conflict (integration analog of
+    fs_seal_must_not_double_apply_guarded_conflicting_decrement): a single-value Int
+    cell seeded at 100, with three concurrent conditional decrements
+    ``if (n >= 60) n-60 else n``. The merge keep-ones one decrement (100 -> 40); the two
+    losers re-EXECUTE the guard on the recovered base (40 >= 60 is false -> no-op), so the
+    finalized counter settles to exactly 40 on every node.
+
+    The ``lower_bound=40`` is the key anti-double-apply assertion: if the seal folded a
+    rejected decrement (the verified ``FS=-20`` mode), the finalized value would drop
+    below 40 and fail immediately rather than as an opaque convergence timeout."""
+    shard = user_shard
+    all_nodes = shard.all_nodes
+    ro = shard.node("readonly")
+    producers = [shard.node(n) for n in _PRODUCER_KEYS]
+    bg = _BackgroundLoad(producers)
+    bg_src0 = bg_dst0 = 0
+    if _BG_LOAD_ENABLED:
+        bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
+        bg_dst0 = ro.get_vault().get_balance(_BG_DST_ADDR)
+        bg.start()
+    try:
+        _finalize_setup(shard, '@"ucc_guarded_counter"!(100)', timeouts)
+
+        ids = _deploy_on_each(
+            shard,
+            lambda name: ('for (@n <- @"ucc_guarded_counter") { '
+                          'if (n >= 60) { @"ucc_guarded_counter"!(n - 60) } '
+                          'else { @"ucc_guarded_counter"!(n) } }'),
+            timeouts,
+        )
+        _assert_all_finalized(producers, all_nodes, ids, timeouts, "guarded-rmw")
+
+        # Exactly one decrement applies (100 -> 40); the losers' recovery re-evaluates the
+        # guard and no-ops. Converge to 40 on every node, never rising (down-only) and —
+        # critically — never below 40 (a double-applied decrement is the item-1 mode).
+        await_channel_converges_on_all_nodes(
+            all_nodes, "ucc_guarded_counter", 40, timeouts.finalization * 3,
+            "guarded-rmw", non_regression="down", lower_bound=40,
         )
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(producers, shard.all_nodes, ro, bg, bg_src0, bg_dst0,
-                               timeouts, "bg-load(single-cell)")
+        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
+                               timeouts, "bg-load(guarded-rmw)")
 
 
 def test_mergeable_balance_concurrent_transfers_compose(user_shard, timeouts):
     """Concurrent vault transfers from three sources into ONE shared dest must
-    COMPOSE. The dest balance is a mergeable IntegerAdd number-channel (the only
-    genuinely-mergeable user-reachable surface — a plain user channel is NOT
-    in the mergeable_tags registry and would single-cell-conflict instead), so
-    every credit lands and the final balance is the sum, none lost."""
+    COMPOSE. The dest balance is a mergeable IntegerAdd number-channel, so every
+    credit lands and the final balance is the sum — never less (a finalized credit
+    undone, #71) and never MORE (a double-applied credit), on every node."""
     shard = user_shard
+    all_nodes = shard.all_nodes
     ro = shard.node("readonly")
     producers = [shard.node(n) for n in _PRODUCER_KEYS]
     bg = _BackgroundLoad(producers)
@@ -510,17 +546,98 @@ def test_mergeable_balance_concurrent_transfers_compose(user_shard, timeouts):
                 phlo_price=1, phlo_limit=_PHLO_LIMIT))
         for name, did in zip(_PRODUCER_KEYS, deploy_ids):
             wait_for_deploy_included(shard.node(name), did, timeouts.deploy_inclusion * 3)
-        _assert_all_finalized([shard.node(n) for n in _PRODUCER_KEYS], shard.all_nodes,
+        _assert_all_finalized([shard.node(n) for n in _PRODUCER_KEYS], all_nodes,
                               deploy_ids, timeouts, "mergeable-balance")
 
         expected = before + sum(amounts.values())
-
-        # Compose to the sum AND assert non-regression: the finalized balance must
-        # never decrease en route (a finalized credit must not be undone — #71).
-        _await_balance_monotone(ro, _MERGE_DEST_ADDR, expected, timeouts.finalization * 2,
-                                "mergeable-balance")
+        await_balance_converges_on_all_nodes(
+            all_nodes, _MERGE_DEST_ADDR, expected, timeouts.finalization * 2,
+            "mergeable-balance", non_regression="up", upper_bound=expected,
+        )
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(producers, shard.all_nodes, ro, bg, bg_src0, bg_dst0,
+        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
                                timeouts, "bg-load(balance)")
+
+
+def test_overdraft_cost_priority_keeps_higher_cost_transfer(user_shard, timeouts):
+    """Cost-priority overdraft (integration analog of
+    fold_rejection_rejects_lower_cost_branch_on_overdraft): two concurrent transfers
+    from the SAME source that each fit alone but together overdraw it. The source
+    balance cell is an IntegerAdd number-channel, so the combined debit goes negative
+    and #3's fold_rejection rejects the LOWER-cost branch.
+
+    The HIGH transfer (higher phlo-price -> higher cost) moves the LARGER amount; the
+    LOW transfer the smaller. With amounts (≫ gas) chosen so the source cannot cover
+    the loser after the winner applies, the loser's recovery re-executes and fails
+    (insufficient balance). So the dest must receive EXACTLY the HIGH amount — not the
+    low amount (which would mean the cheaper branch won), not their sum (a double-spend)
+    — and the source must never go negative. All checked on every node."""
+    shard = user_shard
+    all_nodes = shard.all_nodes
+    ro = shard.node("readonly")
+    producers = [shard.node(n) for n in _PRODUCER_KEYS]
+    bg = _BackgroundLoad(producers)
+    bg_src0 = bg_dst0 = 0
+    if _BG_LOAD_ENABLED:
+        bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
+        bg_dst0 = ro.get_vault().get_balance(_BG_DST_ADDR)
+        bg.start()
+    try:
+        before = ro.get_vault().get_balance(_OVERDRAFT_DST_ADDR)
+
+        # High-cost transfer on validator1, low-cost on validator2 — siblings the next
+        # block multi-parent-merges. Both debit the same source; together they overdraw.
+        high_id = shard.node("validator1").get_vault().transfer(
+            _OVERDRAFT_SRC_ADDR, _OVERDRAFT_DST_ADDR, _OVERDRAFT_HIGH_AMOUNT,
+            _OVERDRAFT_SRC_KEY, phlo_price=_OVERDRAFT_HIGH_PRICE, phlo_limit=_PHLO_LIMIT)
+        low_id = shard.node("validator2").get_vault().transfer(
+            _OVERDRAFT_SRC_ADDR, _OVERDRAFT_DST_ADDR, _OVERDRAFT_LOW_AMOUNT,
+            _OVERDRAFT_SRC_KEY, phlo_price=_OVERDRAFT_LOW_PRICE, phlo_limit=_PHLO_LIMIT)
+        for node, did in ((shard.node("validator1"), high_id), (shard.node("validator2"), low_id)):
+            wait_for_deploy_included(node, did, timeouts.deploy_inclusion * 3)
+
+        # No-double-spend SAFETY invariant. The merge keeps the higher-COST branch, but
+        # "cost" is phlo CONSUMED (≈equal for two simple transfers), not phlo_price — so
+        # WHICH branch wins is the deterministic tiebreak, not observable as price
+        # priority. What IS guaranteed and observable: EXACTLY ONE transfer lands (never
+        # both = double-spend, never neither), and the source never goes negative, on
+        # every node. The loser recovers and fails (insufficient balance after the winner).
+        accept_high = before + _OVERDRAFT_HIGH_AMOUNT
+        accept_low = before + _OVERDRAFT_LOW_AMOUNT
+        deadline = time.time() + timeouts.finalization * 3
+        last_dst = None
+        settled = False
+        while time.time() < deadline:
+            try:
+                lfb = assert_all_nodes_agree_on_lfb(all_nodes)
+            except AssertionError:
+                time.sleep(1.0)
+                continue
+            dst_v = assert_balance_consistent_across_nodes(all_nodes, _OVERDRAFT_DST_ADDR, lfb)
+            src_v = assert_balance_consistent_across_nodes(all_nodes, _OVERDRAFT_SRC_ADDR, lfb)
+            last_dst = dst_v
+            assert src_v >= 0, (
+                f"[overdraft] source went negative ({src_v}) — an overdraft was applied "
+                f"instead of rejected"
+            )
+            assert dst_v <= accept_high, (
+                f"[overdraft] dest {dst_v} exceeds single-winner max {accept_high} — both "
+                f"branches landed (double-spend)"
+            )
+            if dst_v in (accept_high, accept_low):
+                settled = True
+                break
+            time.sleep(1.0)
+        assert settled, (
+            f"[overdraft] dest did not settle to exactly one of "
+            f"{{{accept_high}, {accept_low}}}; last all-node read={last_dst}"
+        )
+        logging.info("overdraft: dest settled to %s (one of high=%d/low=%d), source>=0, all nodes",
+                     last_dst, accept_high, accept_low)
+    finally:
+        bg.stop()
+    if _BG_LOAD_ENABLED:
+        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
+                               timeouts, "bg-load(overdraft)")

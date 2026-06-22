@@ -8,6 +8,8 @@ from __future__ import annotations
 import time
 from typing import Optional
 
+from .types import NodeRole
+
 # Re-export deploy checking from pyf1r3fly
 from f1r3fly.deploy import (
     DeployError,
@@ -271,4 +273,206 @@ def assert_block_finalized_on_all_nodes(
     assert not not_finalized, (
         f"Block {block_hash[:16]}... is not finalized on "
         f"{len(not_finalized)} node(s) after {timeout}s: {not_finalized}"
+    )
+
+
+# ── Cross-node channel-value agreement (FS node-identity) ──────────────
+
+
+def _values_agree(values) -> bool:
+    """True iff every value equals the first. Works for dicts (which are
+    unhashable and so cannot go through a ``set``)."""
+    items = list(values)
+    return all(v == items[0] for v in items[1:])
+
+
+def _channel_reader(channel: str):
+    return lambda node, bh: node.read_channel(channel, bh)
+
+
+def _balance_reader(vault_addr: str):
+    return lambda node, bh: node.get_vault().get_balance(vault_addr, bh)
+
+
+def _pick_reader(nodes):
+    """The exploratory-capable node. Channel peeks and vault-balance reads are
+    served ONLY by a read-only RNode — validators reject them ("Exploratory
+    deploy can only be executed on read-only RNode") — so a finalized VALUE is
+    read there. Falls back to ``nodes[0]`` if no read-only node is present.
+    """
+    for node in nodes:
+        if getattr(node, "role", None) == NodeRole.READONLY:
+            return node
+    return nodes[0]
+
+
+def assert_value_consistent_across_nodes(nodes, read_fn, block_hash: str, what: str,
+                                         *, block_timeout: float = 5.0):
+    """Read a finalized value (via ``read_fn``) on the read-only node at
+    ``block_hash`` and assert every node agrees on that block's POST-STATE HASH.
+
+    The value is read once on the read-only observer because validators do not
+    serve exploratory reads. All-node FS node-identity is asserted on the
+    block's post-state hash instead — every node can serve a block query, and a
+    shared post-state hash subsumes channel/balance agreement (same post-state
+    ⇒ same value). A divergent post-state is the #71 cascade shape that
+    ``assert_block_finalized_on_all_nodes`` alone can miss when the divergent
+    cell does not itself gate finalization.
+    """
+    assert_all_nodes_agree_on_block(nodes, block_hash, timeout=int(block_timeout))
+    return read_fn(_pick_reader(nodes), block_hash)
+
+
+def assert_channel_consistent_across_nodes(nodes, channel: str, block_hash: str):
+    """All-node FS node-identity for a named channel at ``block_hash``."""
+    return assert_value_consistent_across_nodes(
+        nodes, _channel_reader(channel), block_hash, f'@"{channel}"'
+    )
+
+
+def assert_balance_consistent_across_nodes(nodes, vault_addr: str, block_hash: str):
+    """All-node FS node-identity for a vault balance at ``block_hash``."""
+    return assert_value_consistent_across_nodes(
+        nodes, _balance_reader(vault_addr), block_hash, f"balance({vault_addr[:12]})"
+    )
+
+
+def await_value_converges_on_all_nodes(
+    nodes,
+    read_fn,
+    expected,
+    timeout: float,
+    label: str,
+    *,
+    what: str = "value",
+    non_regression: Optional[str] = None,  # "map" | "up" | "down" | None
+    upper_bound: Optional[int] = None,
+    lower_bound: Optional[int] = None,
+    volatile=frozenset(),
+    interval: float = 1.0,
+):
+    """Poll the FINALIZED value until it equals ``expected``, enforcing:
+
+      * **node-identity** — whenever all nodes have finalized to the same cut,
+        every node must agree on that block's POST-STATE HASH (the value itself
+        is read on the read-only node, since validators reject exploratory
+        reads; post-state agreement subsumes value agreement). Convergence is
+        only accepted at such an aligned cut, so a converged result is
+        all-nodes-agreed by construction;
+      * **non-regression** (``non_regression``):
+          - ``"map"``  — an add-only key (not in ``volatile``) once finalized
+            never vanishes or changes (the dropped-entry mode);
+          - ``"up"``   — an integer never decreases (a finalized credit/count
+            not undone);
+          - ``"down"`` — an integer never increases (a finalized debit /
+            guarded-decrement not reverted);
+      * **anti-double-apply bounds** — ``upper_bound`` (value never exceeds —
+        catches a double-applied credit/count) and ``lower_bound`` (value never
+        below — catches a double-applied decrement, the item-1 ``FS=-20`` mode)
+        fail immediately rather than as an opaque convergence timeout.
+
+    Between finalization rounds, nodes' LFBs can momentarily differ; those
+    iterations still advance convergence/non-regression against the read-only
+    node's finalized read but defer the cross-node identity check until aligned.
+    """
+    reader = _pick_reader(nodes)
+    deadline = time.time() + timeout
+    water = None  # high/low-water: dict for "map", int for "up"/"down"
+    last = None
+    while time.time() < deadline:
+        try:
+            lfbs = {n.name: n.last_finalized_block().blockInfo.blockHash for n in nodes}
+        except Exception:  # noqa: BLE001 — transient query race during contention
+            time.sleep(interval)
+            continue
+        aligned = _values_agree(lfbs.values())
+        ref_block = lfbs[reader.name]
+        if aligned:
+            # All-node FS node-identity at the shared finalized cut. Retrieval
+            # races ("not added yet") are absorbed; a post-state divergence is
+            # the bug and is surfaced.
+            try:
+                assert_all_nodes_agree_on_block(nodes, ref_block, timeout=int(interval) + 1)
+            except AssertionError as e:
+                if "disagree on post-state" in str(e):
+                    raise
+                time.sleep(interval)
+                continue
+        try:
+            cur = read_fn(reader, ref_block)
+        except Exception:  # noqa: BLE001 — transient read during contention
+            time.sleep(interval)
+            continue
+        if cur is None:
+            time.sleep(interval)
+            continue
+
+        # Non-regression vs the running water-mark.
+        if non_regression == "map" and isinstance(water, dict):
+            for k, v in water.items():
+                if k in volatile:
+                    continue
+                assert cur.get(k) == v, (
+                    f"[{label}] finalized-state REGRESSION: {k}={v} was finalized then "
+                    f"vanished/changed (now {cur.get(k)!r}) at LFB {ref_block[:16]}; "
+                    f"full finalized map {cur}"
+                )
+        elif non_regression == "up" and water is not None:
+            assert cur >= water, (
+                f"[{label}] finalized-value REGRESSION: dropped from {water} to {cur}"
+            )
+        elif non_regression == "down" and water is not None:
+            assert cur <= water, (
+                f"[{label}] finalized-value REGRESSION: rose from {water} to {cur}"
+            )
+
+        # Anti-double-apply bounds.
+        if upper_bound is not None:
+            assert cur <= upper_bound, (
+                f"[{label}] OVER-apply: finalized value {cur} exceeds upper bound "
+                f"{upper_bound} — a write was double-applied"
+            )
+        if lower_bound is not None:
+            assert cur >= lower_bound, (
+                f"[{label}] OVER-apply: finalized value {cur} below lower bound "
+                f"{lower_bound} — a decrement was double-applied (item-1 mode)"
+            )
+
+        # Advance the water-mark.
+        if non_regression == "map":
+            water = dict(water) if isinstance(water, dict) else {}
+            for k, v in cur.items():
+                if k not in volatile:
+                    water[k] = v
+        elif non_regression == "up":
+            water = cur if water is None else max(water, cur)
+        elif non_regression == "down":
+            water = cur if water is None else min(water, cur)
+
+        last = cur
+        if aligned and cur == expected:
+            return cur
+        time.sleep(interval)
+
+    raise AssertionError(
+        f"[{label}] finalized {what} did not converge to {expected} on all nodes "
+        f"within {timeout:.0f}s; last={last}, water={water}"
+    )
+
+
+def await_channel_converges_on_all_nodes(nodes, channel: str, expected, timeout, label, **kw):
+    """All-node finalized convergence for a named channel. See
+    :func:`await_value_converges_on_all_nodes`."""
+    return await_value_converges_on_all_nodes(
+        nodes, _channel_reader(channel), expected, timeout, label,
+        what=f'@"{channel}"', **kw,
+    )
+
+
+def await_balance_converges_on_all_nodes(nodes, vault_addr: str, expected, timeout, label, **kw):
+    """All-node finalized convergence for a vault balance. See
+    :func:`await_value_converges_on_all_nodes`."""
+    return await_value_converges_on_all_nodes(
+        nodes, _balance_reader(vault_addr), expected, timeout, label,
+        what=f"balance({vault_addr[:12]})", **kw,
     )

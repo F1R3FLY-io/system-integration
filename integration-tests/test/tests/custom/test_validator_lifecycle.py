@@ -15,8 +15,9 @@ Coverage (see project-validator-lifecycle-test-design memory for the matrix):
   - concurrent shrink (move withdrawers out) + grow (activate a joiner) at one
     closeBlock; cross-node consistency on the shrink
   - post-unbond can't-propose; re-bond; everBonded re-bond guard
-  - reward behavioral cases 1-5 (accrues / idle-frozen / withdrawn-frozen /
-    paid-at-quarantine / directional proportionality by stake)
+  - reward behavioral cases (accrues-under-traffic / withdrawn-frozen /
+    paid-at-quarantine / directional proportionality by stake; the standing-pool
+    model has no idle-no-accrual property)
   - read sanity: getCoopVault / getInitialPosVault
 
 All PoS state reads go through the readonly node: validators reject
@@ -103,6 +104,12 @@ _BG_DST_ADDR = _BG_DST_KEY.get_public_key().get_vault_address()
 _BG_INTERVAL = 2.0  # retired-test load level; higher rates stall finalization
 _BG_TRANSFER_AMOUNT = 1
 
+# Background-load master switch. ON for the whole run (never paused): same-vault
+# IntegerAdd contention stresses the merge end-to-end AND drives netPhlo so rewards
+# accrue. The bg end-check is exact-vault reconciliation (_assert_bg_load_robust),
+# mirroring the user-contract test.
+_BG_LOAD_ENABLED = True
+
 # Throwaway deployer keys for the bond/withdraw rejection branches. They must be
 # funded so the deploy precharges successfully and the contract reaches its
 # amount/bond checks — an unfunded key would fail precharge (out-of-phlo)
@@ -110,20 +117,25 @@ _BG_TRANSFER_AMOUNT = 1
 _THROWAWAY_BOND_KEY = PrivateKey.from_seed(80001)
 _THROWAWAY_WITHDRAW_KEY = PrivateKey.from_seed(80002)
 
+# Mode-B deposit-fail wallet: funded JUST over the phlo precharge (phlo_limit*price)
+# but under the bond amount. The deploy's precharge reserves the full phlo_limit, so
+# the contract's bond-deposit transfer then fails for insufficient balance ->
+# (false, "Bond deposit failed: ..."), distinct from out-of-phlo (Mode A).
+_MODE_B_KEY = PrivateKey.from_seed(80003)
+_MODE_B_BALANCE = _BOND_PHLO_LIMIT + 500  # ~500 left after precharge, < bond amount
+
 
 class _BackgroundLoad:
     """Same-vault transfer generator, round-robin across producer nodes.
 
-    Always-on by default; ``pause()``/``resume()`` quiet it at finalization
-    gates and the epoch-move, where fork-choice contention would otherwise
-    block cluster-wide finalization.
+    Always-on for the whole test: same-vault IntegerAdd contention stresses the
+    merge end-to-end and drives netPhlo so rewards accrue.
     """
 
     def __init__(self, producers: List, interval: float = _BG_INTERVAL) -> None:
         self._producers = producers
         self._interval = interval
         self._stop = threading.Event()
-        self._paused = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._counter = 0
         self._errors = 0
@@ -141,12 +153,6 @@ class _BackgroundLoad:
         self._thread = threading.Thread(target=self._run, daemon=True, name="lifecycle-bg-load")
         self._thread.start()
 
-    def pause(self) -> None:
-        self._paused.set()
-
-    def resume(self) -> None:
-        self._paused.clear()
-
     def stop(self, join_timeout: float = 10.0) -> None:
         if self._thread is None:
             return
@@ -157,20 +163,19 @@ class _BackgroundLoad:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            if not self._paused.is_set():
-                node = self._producers[self._counter % len(self._producers)]
-                try:
-                    did = node.get_vault().transfer(
-                        _BG_SRC_ADDR, _BG_DST_ADDR, _BG_TRANSFER_AMOUNT, _BG_SRC_KEY,
-                        phlo_price=1, phlo_limit=_BOND_PHLO_LIMIT,
-                    )
-                    with self._lock:
-                        self._deploy_ids.append(did)
-                except Exception as e:  # noqa: BLE001 — submit errors are surfaced via the
-                    # finalization assertion (missing deploy), not swallowed silently.
-                    self._errors += 1
-                    logging.warning("bg-load transfer %d on %s failed: %s", self._counter, node.name, e)
-                self._counter += 1
+            node = self._producers[self._counter % len(self._producers)]
+            try:
+                did = node.get_vault().transfer(
+                    _BG_SRC_ADDR, _BG_DST_ADDR, _BG_TRANSFER_AMOUNT, _BG_SRC_KEY,
+                    phlo_price=1, phlo_limit=_BOND_PHLO_LIMIT,
+                )
+                with self._lock:
+                    self._deploy_ids.append(did)
+            except Exception as e:  # noqa: BLE001 — submit errors are surfaced via the
+                # finalization assertion (missing deploy), not swallowed silently.
+                self._errors += 1
+                logging.warning("bg-load transfer %d on %s failed: %s", self._counter, node.name, e)
+            self._counter += 1
             self._stop.wait(self._interval)
 
 
@@ -269,7 +274,7 @@ def _attach_prebond(shard, identity, timeouts):
     return joiner
 
 
-def _submit_bonds(submissions, timeouts):
+def _submit_bonds(ro, submissions, timeouts):
     """Submit one or more bond deploys, then await each for inclusion + success.
 
     ``submissions``: list of ``(proposer, identity, stake)``. Deploys are
@@ -291,8 +296,21 @@ def _submit_bonds(submissions, timeouts):
         # Bond inclusion under heartbeat-only config depends on the next
         # heartbeat round after attach; matches retired (deploy_inclusion * 3).
         bond_block = wait_for_deploy_included(proposer, deploy_id, timeouts.deploy_inclusion * 3)
-        assert proposer.pos.read_result(deploy_id, bond_block.blockHash).success, (
-            f"{identity.name} bond should succeed"
+        # The bond's success criterion is the LEDGER predicate: the key is in
+        # the sealed bonds (FS-backed /validators). Contract results and block
+        # fields are speculative execution records — a copy can report success
+        # while its effects lost the merge, and vice versa. Only FS is meant
+        # to be correct.
+        pk = identity.public_hex
+        # Concurrent bonds hit keep-one in the construction merge, so the second bond
+        # recovers + re-proposes before it seals — a multi-block wait. With bg off,
+        # block production is heartbeat-paced (slower finalization), so use the
+        # multi-block epoch_transition budget rather than finalization * 3.
+        poll_until(
+            predicate=lambda: True if pk in _validators_on(ro) else None,
+            timeout=timeouts.epoch_transition,
+            interval=timeouts.poll_interval,
+            description=f"{identity.name} bond sealed into FS",
         )
         results.append({
             "proposer": proposer, "identity": identity, "stake": stake,
@@ -322,12 +340,14 @@ def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bo
     # 5. Advance past the epoch boundary (activation). Matches retired
     # (finalization * 2): the boundary is multiple blocks out under load.
     epoch_target = bond_block.blockNumber + _EPOCH_LENGTH
+    # Reaching the epoch boundary is an inherently multi-block wait; with bg off,
+    # block production is heartbeat-paced, so use epoch_transition, not finalization * 2.
     poll_until(
         predicate=lambda: (
             proposer.last_finalized_block().blockInfo.blockNumber
             if proposer.last_finalized_block().blockInfo.blockNumber >= epoch_target else None
         ),
-        timeout=timeouts.finalization * 2,
+        timeout=timeouts.epoch_transition,
         interval=timeouts.poll_interval,
         description=f"LFB advances past epoch boundary #{epoch_target} for {identity.name}",
     )
@@ -423,6 +443,47 @@ def _wait_for_payout(ro, pubkey_hex: str, timeouts, label: str):
     )
 
 
+def _await_bonds_monotone(ro, expected: Dict[str, int], timeout: float, label: str,
+                          interval: float = 1.0, volatile=frozenset()) -> None:
+    """Poll the FS-backed active-validator set (``/validators``) until it == expected,
+    asserting NON-REGRESSION the whole way: a validator once observed bonded (at some
+    stake) must never vanish or change stake in a later finalized read — except keys in
+    ``volatile``, which an unbond / quarantine / re-bond stage is intentionally moving.
+
+    A bonded validator silently dropping or its stake regressing is the multi-parent
+    PoS-state-merge / FS-divergence failure mode (a divergent finalized state drops a
+    finalized bond — the seal-base bug class). Convergence alone would miss a transient
+    drop that self-heals before the final read; the high-water non-regression catches it.
+    """
+    high_water: Dict[str, int] = {}
+    last: Dict[str, int] = {}
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            cur = _validators_on(ro)
+        except Exception:  # noqa: BLE001 — transient read under churn/finalization
+            time.sleep(interval)
+            continue
+        for v, stake in high_water.items():
+            if v in volatile:
+                continue
+            assert cur.get(v) == stake, (
+                f"[{label}] bonds REGRESSION: validator {v[:16]} was finalized bonded at "
+                f"stake {stake} then vanished/changed (now {cur.get(v)!r}); full set {cur}"
+            )
+        for v, stake in cur.items():
+            if v not in volatile:
+                high_water[v] = stake
+        last = cur
+        if cur == expected:
+            return
+        time.sleep(interval)
+    raise AssertionError(
+        f"[{label}] active-validator set did not converge to {expected} within "
+        f"{timeout:.0f}s; last={last}, high-water={high_water}"
+    )
+
+
 def _assert_bg_load_deploys_finalized(producers, all_nodes, deploy_ids: List[str], timeouts,
                                       label: str = "bg-load") -> None:
     """Every background-load transfer must land in a block that finalizes ON ALL
@@ -466,6 +527,97 @@ def _assert_bg_load_deploys_finalized(producers, all_nodes, deploy_ids: List[str
     )
 
 
+def _balance(ro, addr: str) -> int:
+    """FS-backed (block_hash='') vault balance via the readonly node."""
+    return ro.get_vault().get_balance(addr)
+
+
+def _rewards(ro) -> Dict[str, int]:
+    """FS-backed PoS rewards map {pubkey_hex: reward} (committed + current-epoch)."""
+    return ro.pos.get_rewards()
+
+
+def _assert_bg_load_robust(producers, all_nodes, ro, bg, src0: int, dst0: int, timeouts,
+                           label: str = "bg-load") -> None:
+    """Exact-vault reconciliation for the same-vault bg transfers (mirrors the
+    user-contract test). Every bg transfer finalized on all nodes AND the
+    contended dst IntegerAdd cell composes to EXACTLY dst0 + N*amount (a drop is
+    the finalized-state regression mode; a double-apply overshoots and trips the
+    timeout). The gas-paying src has no exact target — assert it only decreased
+    and ended debited by at least the transferred total.
+    """
+    bg_ids = bg.deploy_ids()
+    _assert_bg_load_deploys_finalized(producers, all_nodes, bg_ids, timeouts, label)
+    n = len(bg_ids)
+    want_dst = dst0 + n * _BG_TRANSFER_AMOUNT
+    min_src_debit = n * _BG_TRANSFER_AMOUNT
+    dst_water, src_water = dst0, src0
+    deadline = time.time() + timeouts.finalization * 3
+    while time.time() < deadline:
+        cur_dst, cur_src = _balance(ro, _BG_DST_ADDR), _balance(ro, _BG_SRC_ADDR)
+        assert cur_dst >= dst_water, f"[{label}] dst balance regressed {dst_water}->{cur_dst}"
+        assert cur_src <= src_water, f"[{label}] src balance increased {src_water}->{cur_src}"
+        dst_water, src_water = cur_dst, cur_src
+        if cur_dst == want_dst:
+            assert src0 - cur_src >= min_src_debit, (
+                f"[{label}] src debit {src0 - cur_src} < transferred {min_src_debit}")
+            logging.info("bg-load reconciled: %d transfers, dst %d->%d", n, dst0, cur_dst)
+            return
+        time.sleep(timeouts.poll_interval)
+    raise AssertionError(
+        f"[{label}] dst credit did not reach exactly {want_dst} (n={n} transfers); "
+        f"last dst={dst_water} src={src_water}")
+
+
+def _submit_withdraw(actor, identity, timeouts):
+    """Submit a withdraw, await inclusion + contract success. Returns the block."""
+    deploy_id = actor.pos.withdraw(identity.private_key())
+    block = wait_for_deploy_included(actor, deploy_id, timeouts.deploy_inclusion * 3)
+    wait_for_finalized(actor, block.blockNumber, timeouts.finalization * 3)
+    result = actor.pos.read_result(deploy_id, block.blockHash)
+    assert result.success, f"{identity.name} withdraw failed: {result}"
+    logging.info("%s withdraw accepted at block #%d", identity.name, block.blockNumber)
+    return block
+
+
+def _await_pending(ro, pk: str, present: bool, timeouts, label: str) -> None:
+    """Poll FS get_pending_withdrawer until pk is present (or absent)."""
+    poll_until(
+        predicate=lambda: True if (pk in ro.pos.get_pending_withdrawer()) == present else None,
+        timeout=timeouts.epoch_transition,
+        interval=timeouts.poll_interval,
+        description=label,
+    )
+
+
+def _await_withdrawer(ro, pk: str, present: bool, timeout: float, label: str,
+                      interval: float = 2.0) -> None:
+    """Poll FS get_withdrawers until pk is present (or absent)."""
+    poll_until(
+        predicate=lambda: True if (pk in ro.pos.get_withdrawers()) == present else None,
+        timeout=timeout,
+        interval=interval,
+        description=label,
+    )
+
+
+def _advance_lfb(node, n_blocks: int, timeouts, budget: Optional[float] = None) -> int:
+    """Wait until the node's LFB advances by ``n_blocks``. Returns the reached height."""
+    start = node.last_finalized_block().blockInfo.blockNumber
+    target = start + n_blocks
+
+    def _reached():
+        cur = node.last_finalized_block().blockInfo.blockNumber
+        return cur if cur >= target else None
+
+    return poll_until(
+        predicate=_reached,
+        timeout=budget if budget is not None else timeouts.epoch_transition,
+        interval=timeouts.poll_interval,
+        description=f"LFB advances {n_blocks} blocks from #{start}",
+    )
+
+
 # ── Fixture: dedicated lifecycle shard ───────────────────────────────────────
 
 @pytest.fixture(scope="module")
@@ -478,6 +630,7 @@ def lifecycle_shard(provider, timeouts):
     extra_wallets.append((_BG_DST_ADDR, _WALLET_BALANCE))
     extra_wallets.append((_THROWAWAY_BOND_KEY.get_public_key().get_vault_address(), _WALLET_BALANCE))
     extra_wallets.append((_THROWAWAY_WITHDRAW_KEY.get_public_key().get_vault_address(), _WALLET_BALANCE))
+    extra_wallets.append((_MODE_B_KEY.get_public_key().get_vault_address(), _MODE_B_BALANCE))
 
     config = ShardConfig(
         bonds=[
@@ -508,16 +661,19 @@ def test_validator_lifecycle(lifecycle_shard, timeouts) -> None:
     )
 
     bg = _BackgroundLoad([v1, v2, v3])
-    bg.start()
+    bg_src0 = _balance(ro, _BG_SRC_ADDR) if _BG_LOAD_ENABLED else 0
+    bg_dst0 = _balance(ro, _BG_DST_ADDR) if _BG_LOAD_ENABLED else 0
+    if _BG_LOAD_ENABLED:
+        bg.start()
     try:
         _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts)
     finally:
         bg.stop()
-    # Strict: every background-load transfer submitted during the lifecycle
-    # must have finalized on ALL nodes (no orphaned/dropped work under the merge
-    # contention). Producers [v1,v2,v3] are searched to locate each deploy's
-    # block; finalization is asserted across the full node set.
-    _assert_bg_load_deploys_finalized([v1, v2, v3], shard.all_nodes, bg.deploy_ids(), timeouts)
+    # Strict end-check: every bg transfer finalized on ALL nodes AND the contended dst
+    # IntegerAdd cell composes to exactly dst0 + N (no dropped/double-applied work under
+    # the lifecycle's merge contention); src debited (gas-aware) by at least the total.
+    if _BG_LOAD_ENABLED:
+        _assert_bg_load_robust([v1, v2, v3], shard.all_nodes, ro, bg, bg_src0, bg_dst0, timeouts)
 
 
 def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> None:
@@ -543,6 +699,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # Submit V4 (via v1) and V5 (via v2) in one window: _submit_bonds deploys
     # both before awaiting either, so they can land in sibling blocks.
     results = _submit_bonds(
+        ro,
         [(v1, VALIDATOR4_ID, _JOINER_STAKE["validator4"]),
          (v2, VALIDATOR5_ID, _JOINER_STAKE["validator5"])],
         timeouts,
@@ -562,14 +719,21 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         wait_for_finalized(proposer, bond_block.blockNumber, timeouts.finalization * 3)
         assert_block_finalized_on_all_nodes(shard.all_nodes, bond_block.blockHash,
                                             timeout=timeouts.finalization * 3)
+        # The bond is in the FS-backed bonded set (/validators) immediately, but a
+        # block's `bonds` field is the ACTIVE consensus set, which includes the joiner
+        # only after the epoch boundary (activation, below). So verify the bond via the
+        # ledger predicate (/validators), and assert the block's active-bonds field is
+        # node-identical across nodes (the consensus-state agreement the seal guards).
         bonds_now = {b.validator: b.stake
                      for b in proposer.get_block(bond_block.blockHash).blockInfo.bonds}
-        assert pk in bonds_now and bonds_now[pk] == stake, (
-            f"{identity.name} not bonded at its bond block: {sorted(bonds_now)}"
-        )
         assert_bonds_map_consistent_across_nodes(shard.all_nodes, bond_block.blockHash,
                                                  bonds_now, timeout=timeouts.finalization * 3)
         _wait_for_active(ro, pk, True, timeouts, f"{identity.name} in /validators")
+        bonded_now = _validators_on(ro)
+        assert bonded_now.get(pk) == stake, (
+            f"{identity.name} bonded stake in /validators: expected {stake}, got "
+            f"{bonded_now.get(pk)!r}; full set {bonded_now}"
+        )
 
     # Activate both joiners and verify each proposes and is justified on all nodes.
     for r in results:
@@ -586,11 +750,20 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         timeouts,
     )
 
-    validators = _validators_on(ro)
-    assert validators.get(v4_pk) == _JOINER_STAKE["validator4"], f"V4 stake: {validators}"
-    assert validators.get(v5_pk) == _JOINER_STAKE["validator5"], f"V5 stake: {validators}"
+    # The FS-backed active set must converge to EXACTLY the 5 expected validators at
+    # their stakes, and NON-REGRESS the whole way — no genesis or joiner bond silently
+    # dropped by the multi-parent PoS-state merge (the seal-base bug class).
+    expected_bonds = {
+        VALIDATOR1_ID.public_hex: _GENESIS_STAKE,
+        VALIDATOR2_ID.public_hex: _GENESIS_STAKE,
+        VALIDATOR3_ID.public_hex: _GENESIS_STAKE,
+        v4_pk: _JOINER_STAKE["validator4"],
+        v5_pk: _JOINER_STAKE["validator5"],
+    }
+    _await_bonds_monotone(ro, expected_bonds, timeouts.finalization * 3,
+                          "phase1-bonds-converge")
     logging.info("Phase 1: V4+V5 bonded CONCURRENTLY, activated, and participating "
-                 "(all nodes; bg_load always-on)")
+                 "(all nodes; FS bonds converged to the exact 5-validator set)")
 
     # ── Phase 2: negatives (woven, non-mutating) ─────────────────────────────
     _assert_bond_rejected(v1, shard.all_nodes, ro, VALIDATOR4_ID.private_key(),
@@ -601,12 +774,162 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
                           _BOND_MAXIMUM + 1000, "greater than maximum", timeouts)
     _assert_withdraw_rejected(v1, shard.all_nodes, ro, _THROWAWAY_WITHDRAW_KEY,
                               "not bonded", timeouts)
-    logging.info("Phase 2: bond/withdraw rejection branches verified")
+    # Mode-B deposit-fail: wallet funded just over the phlo precharge but under the
+    # bond amount -> precharge succeeds, the contract's bond deposit transfer fails
+    # -> (false, "Bond deposit failed: ..."). amount = bond-maximum (passes min/max).
+    _assert_bond_rejected(v1, shard.all_nodes, ro, _MODE_B_KEY,
+                          _BOND_MAXIMUM, "Bond deposit failed", timeouts)
+    logging.info("Phase 2: bond/withdraw rejection branches verified (incl. Mode-B deposit-fail)")
 
-    # NOTE: Mode-B deposit-fail + double-withdraw edge + reward windows + the
-    # concurrent bond+unbond stages + payout + re-bond follow here. Built
-    # incrementally and tuned against a live run (Mode-B phlo_limit/balance
-    # tuning, poll budgets). This first slice establishes the shard, bonding,
-    # cross-node consistency, the rejection branches, and the strict bg-load
-    # finalization guard end-to-end. bg_load runs throughout (paused only at the
-    # joiner-activation and epoch-move windows once those phases exist).
+    g1_pk = VALIDATOR1_ID.public_hex
+
+    # ── Phase 3: reward window 1 — accrual + proportionality (cases 1, 5) ─────
+    # bg-on drives netPhlo into the PoS vault, so active validators accrue rewards
+    # proportional to stake (weight = bond/minBond -> genesis 1, V4 2, V5 3). Read
+    # FS rewards, let bg traffic accumulate across ~2 epochs, read again.
+    r0 = _rewards(ro)
+    _advance_lfb(v1, _EPOCH_LENGTH * 2, timeouts, budget=timeouts.epoch_transition * 2)
+    r1 = _rewards(ro)
+    d_gen = r1.get(g1_pk, 0) - r0.get(g1_pk, 0)
+    d_v4 = r1.get(v4_pk, 0) - r0.get(v4_pk, 0)
+    d_v5 = r1.get(v5_pk, 0) - r0.get(v5_pk, 0)
+    assert d_v4 > 0, (
+        f"reward case 1: V4 did not accrue under bg-load (Δ={d_v4}); r0={r0} r1={r1}")
+    assert d_gen < d_v4 < d_v5, (
+        f"reward case 5 (proportionality, weights 1:2:3): expected Δgen<ΔV4<ΔV5, "
+        f"got Δgen={d_gen} ΔV4={d_v4} ΔV5={d_v5}")
+    # No idle-no-accrual case: getCurrentEpochRewards distributes the STANDING posVault
+    # pool (posBalance - totalBond - totalWithdraw - totalCommittedRewards) every epoch,
+    # so getRewards keeps rising even with bg paused — in-flight gas keeps posBalance
+    # climbing, and the already-accumulated pool drains into committedRewards each epoch.
+    # "Idle -> no accrual" is false for this contract; the sound reward properties are
+    # accrual-under-traffic (case 1) + proportionality (case 5) + withdrawn-frozen
+    # (case 3, Phase 6) + paid-at-quarantine (case 4, Phase 8).
+    logging.info("Phase 3: rewards accrue proportionally ~1:2:3 by stake (cases 1, 5)")
+
+    # ── Phase 4: concurrent bond V6 + withdraw V4 + withdraw V5 (#1) ──────────
+    # Bond a third joiner while two active validators withdraw, in one window —
+    # allBonds grows (V6) while pendingWithdrawers grows (V4,V5) across overlapping
+    # blocks. The headline concurrent grow+shrink merge stress (now viable post-fix).
+    j6 = _attach_prebond(shard, VALIDATOR6_ID, timeouts)
+    bond_v6_id = v3.pos.bond(VALIDATOR6_ID.private_key(), _JOINER_STAKE["validator6"])
+    wd_v4_id = v1.pos.withdraw(VALIDATOR4_ID.private_key())
+    wd_v5_id = v2.pos.withdraw(VALIDATOR5_ID.private_key())
+    wd_v4_block = wait_for_deploy_included(v1, wd_v4_id, timeouts.deploy_inclusion * 3)
+    wait_for_deploy_included(v2, wd_v5_id, timeouts.deploy_inclusion * 3)
+    wait_for_deploy_included(v3, bond_v6_id, timeouts.deploy_inclusion * 3)
+    assert v1.pos.read_result(wd_v4_id, wd_v4_block.blockHash).success, "V4 withdraw failed"
+    _await_pending(ro, v4_pk, True, timeouts, "V4 in pendingWithdrawers")
+    _await_pending(ro, v5_pk, True, timeouts, "V5 in pendingWithdrawers")
+    _wait_for_active(ro, v6_pk, True, timeouts, "V6 bonded in /validators")
+    # Double-withdraw edge: a 2nd withdraw of V4 is contract-clean either way — if V4
+    # is still in allBonds it SUCCEEDS (idempotent overwrite of its pending entry); if
+    # the epoch move already ran it REJECTS "not bonded". Assert no corruption.
+    dw_id = v1.pos.withdraw(VALIDATOR4_ID.private_key())
+    dw_block = wait_for_deploy_included(v1, dw_id, timeouts.deploy_inclusion * 3)
+    wait_for_finalized(v1, dw_block.blockNumber, timeouts.finalization * 3)
+    dw_res = v1.pos.read_result(dw_id, dw_block.blockHash)
+    pend, wdr_now = ro.pos.get_pending_withdrawer(), ro.pos.get_withdrawers()
+    if dw_res.success:
+        assert v4_pk in pend and v4_pk not in wdr_now, (
+            f"idempotent double-withdraw: V4 should be a single pending entry; "
+            f"pending={sorted(pend)} withdrawers={sorted(wdr_now)}")
+    else:
+        assert "not bonded" in dw_res.reason and v4_pk in wdr_now, (
+            f"post-move double-withdraw should reject not-bonded; got {dw_res.reason!r}")
+    logging.info("Phase 4: V6 bonded concurrently while V4,V5 withdrew; double-withdraw clean (%s)",
+                 "overwrite" if dw_res.success else "post-move reject")
+
+    # ── Phase 5: epoch-move shrink ({V4,V5} out) + grow (V6 active) ───────────
+    # The next epoch boundary runs movePendingWithdrawer({V4,V5}) (allBonds shrinks)
+    # and keeps V6 in the active set. The multi-element move fold must be node-identical.
+    _wait_for_active(ro, v4_pk, False, timeouts, "V4 left /validators (moved to withdrawers)")
+    _wait_for_active(ro, v5_pk, False, timeouts, "V5 left /validators")
+    _await_withdrawer(ro, v4_pk, True, timeouts.epoch_transition, "V4 in withdrawers")
+    _await_withdrawer(ro, v5_pk, True, timeouts.epoch_transition, "V5 in withdrawers")
+    expected_post_shrink = {
+        VALIDATOR1_ID.public_hex: _GENESIS_STAKE, VALIDATOR2_ID.public_hex: _GENESIS_STAKE,
+        VALIDATOR3_ID.public_hex: _GENESIS_STAKE, v6_pk: _JOINER_STAKE["validator6"],
+    }
+    _await_bonds_monotone(ro, expected_post_shrink, timeouts.epoch_transition,
+                          "phase5-post-shrink", volatile=frozenset({v4_pk, v5_pk}))
+    sb = v1.last_finalized_block()
+    sb_bonds = {b.validator: b.stake for b in sb.blockInfo.bonds}
+    assert_bonds_map_consistent_across_nodes(shard.all_nodes, sb.blockInfo.blockHash,
+                                             sb_bonds, timeout=timeouts.finalization * 3)
+    logging.info("Phase 5: epoch-move shrank V4,V5 out + V6 active; FS bonds node-identical")
+
+    # ── Phase 6: reward window 2 — withdrawn V4,V5 frozen; V6,genesis accrue ──
+    r2_0 = _rewards(ro)
+    _advance_lfb(v1, _EPOCH_LENGTH * 2, timeouts, budget=timeouts.epoch_transition * 2)
+    r2_1 = _rewards(ro)
+    assert r2_1.get(v4_pk, 0) == r2_0.get(v4_pk, 0), (
+        f"reward case 3: withdrawn V4 accrued {r2_0.get(v4_pk)}->{r2_1.get(v4_pk)}")
+    assert r2_1.get(v5_pk, 0) == r2_0.get(v5_pk, 0), (
+        f"reward case 3: withdrawn V5 accrued {r2_0.get(v5_pk)}->{r2_1.get(v5_pk)}")
+    assert r2_1.get(v6_pk, 0) > r2_0.get(v6_pk, 0), (
+        f"reward case 3: active V6 should accrue {r2_0.get(v6_pk)}->{r2_1.get(v6_pk)}")
+    logging.info("Phase 6: V4,V5 rewards frozen (withdrawn); V6,genesis accrue (case 3)")
+
+    # ── Phase 7: post-unbond can't-propose ───────────────────────────────────
+    j4 = joiners[v4_pk]
+    j4.deploy_string(f'@"postwd-{VALIDATOR4_ID.name}"!(0)', VALIDATOR4_ID.private_key(),
+                     phlo_limit=_BOND_PHLO_LIMIT, phlo_price=_BOND_PHLO_PRICE)
+    with pytest.raises(F1r3flyClientException):
+        j4.propose()
+    v6_live = j6.deploy_string(f'@"live-{VALIDATOR6_ID.name}"!(1)', VALIDATOR6_ID.private_key(),
+                               phlo_limit=_BOND_PHLO_LIMIT, phlo_price=_BOND_PHLO_PRICE)
+    v6_block = wait_for_deploy_included(j6, v6_live, timeouts.deploy_inclusion * 5)
+    wait_for_finalized(j6, v6_block.blockNumber, timeouts.finalization * 5)
+    logging.info("Phase 7: withdrawn V4 cannot propose; active V6 proposes + finalizes")
+
+    # ── Phase 8: multi-element quarantine payout (case 4) ─────────────────────
+    # withdraw-during-quarantine negative: V4 is in withdrawers (not allBonds) ->
+    # a fresh withdraw rejects "not bonded".
+    _assert_withdraw_rejected(v1, shard.all_nodes, ro, VALIDATOR4_ID.private_key(),
+                              "not bonded", timeouts)
+    v4_addr, v5_addr = _vault_addr(VALIDATOR4_ID), _vault_addr(VALIDATOR5_ID)
+    v4_bal0, v5_bal0 = _balance(ro, v4_addr), _balance(ro, v5_addr)
+    wdr = ro.pos.get_withdrawers()
+    rwd_frozen = ro.pos.get_rewards()
+    v4_owed = wdr[v4_pk][0] + rwd_frozen.get(v4_pk, 0)  # bond + committed reward
+    v5_owed = wdr[v5_pk][0] + rwd_frozen.get(v5_pk, 0)
+    quarantine_budget = timeouts.epoch_transition * 6  # multi-epoch (quarantine spans epochs)
+    _await_withdrawer(ro, v4_pk, False, quarantine_budget, "V4 quarantine elapsed + paid")
+    _await_withdrawer(ro, v5_pk, False, quarantine_budget, "V5 quarantine elapsed + paid")
+    poll_until(
+        predicate=lambda: True if _balance(ro, v4_addr) >= v4_bal0 + v4_owed else None,
+        timeout=timeouts.finalization * 3, interval=timeouts.poll_interval,
+        description="V4 vault credited bond+reward")
+    poll_until(
+        predicate=lambda: True if _balance(ro, v5_addr) >= v5_bal0 + v5_owed else None,
+        timeout=timeouts.finalization * 3, interval=timeouts.poll_interval,
+        description="V5 vault credited bond+reward")
+    pb = v1.last_finalized_block()
+    pb_bonds = {b.validator: b.stake for b in pb.blockInfo.bonds}
+    assert_bonds_map_consistent_across_nodes(shard.all_nodes, pb.blockInfo.blockHash,
+                                             pb_bonds, timeout=timeouts.finalization * 3)
+    logging.info("Phase 8: V4,V5 quarantine paid (vault += bond+reward, case 4); FS node-identical")
+
+    # ── Phase 9: re-bond after payout (everBonded -> net-0 rewards) ───────────
+    # V4 completed quarantine + payout, so its committedRewards row was deleted; a
+    # re-bond succeeds and starts at net-0 rewards (not re-initialized to a stale value).
+    rebond_id = v1.pos.bond(VALIDATOR4_ID.private_key(), _JOINER_STAKE["validator4"])
+    rb_block = wait_for_deploy_included(v1, rebond_id, timeouts.deploy_inclusion * 3)
+    wait_for_finalized(v1, rb_block.blockNumber, timeouts.finalization * 3)
+    assert v1.pos.read_result(rebond_id, rb_block.blockHash).success, "V4 re-bond failed"
+    _wait_for_active(ro, v4_pk, True, timeouts, "V4 re-bonded into /validators")
+    assert _rewards(ro).get(v4_pk, 0) == 0, (
+        f"re-bond net-0: V4 rewards should be 0 after payout+rebond, got {_rewards(ro).get(v4_pk)}")
+    logging.info("Phase 9: V4 re-bonded post-payout at net-0 rewards")
+    # NOTE: the re-bond-BEFORE-payout double-credit (the contract does not reconcile a
+    # re-bond while still in withdrawers) is a fragile, contract-logic edge that asserts
+    # a known contract bug -- tracked in active-issues, not asserted here.
+
+    # ── Phase 10: read sanity ────────────────────────────────────────────────
+    coop = ro.pos.get_coop_vault()
+    assert len(coop) >= 2, f"getCoopVault unexpected shape: {coop}"
+    initial = ro.pos.get_initial_pos_vault()
+    assert len(initial) >= 1, f"getInitialPosVault unexpected shape: {initial}"
+    logging.info("Phase 10: getCoopVault (%d-tuple) / getInitialPosVault (%d-tuple) read sanity OK",
+                 len(coop), len(initial))
