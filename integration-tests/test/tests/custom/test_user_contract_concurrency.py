@@ -120,6 +120,16 @@ _BG_TRANSFER_AMOUNT = 1
 # switch gates all scenarios so bg state can't drift per-test.
 _BG_LOAD_ENABLED = True
 
+# Multi-round conflict sampling. The non-foldable / single-value-cell-race modes are
+# cone-shape-dependent (~50% per shot at the unit level), so the conflict scenarios run
+# many rounds on the SAME cell — each round re-samples the non-deterministic merge
+# ordering and stresses recovery re-basing onto the prior round's result. One round is
+# not a gate; this is.
+_CONFLICT_ROUNDS = 10
+# High fan-out: deploys submitted per producer node in one round. 3 nodes x this =
+# total concurrent writers in the round (exercises wider-than-3-way merge fan-out).
+_FANOUT_PER_NODE = 4
+
 
 class _BackgroundLoad:
     """Same-vault transfer generator, round-robin across producer nodes.
@@ -260,6 +270,24 @@ def _deploy_on_each(shard, term_for, timeouts) -> List[str]:
     return deploy_ids
 
 
+def _deploy_k_on_each(shard, term_for, k: int, timeouts) -> List[str]:
+    """Submit ``k`` deploys per genesis validator in tight succession (each signed by
+    that validator's own funded key), interleaved across nodes so 3*k proposals overlap
+    as siblings the next blocks multi-parent-merge. ``term_for(name, i)`` builds the i-th
+    term for a node. Returns all deploy ids; waits for inclusion only."""
+    submitted: List = []  # (node, did)
+    for i in range(k):
+        for name, key in _PRODUCER_KEYS.items():
+            node = shard.node(name)
+            did = node.deploy_string(term_for(name, i), key,
+                                     phlo_limit=_PHLO_LIMIT, phlo_price=_PHLO_PRICE)
+            submitted.append((node, did))
+            logging.info("FANOUT_DEPLOY_ID node=%s i=%d deploy_id=%s", name, i, did)
+    for node, did in submitted:
+        wait_for_deploy_included(node, did, timeouts.deploy_inclusion * 3)
+    return [did for _, did in submitted]
+
+
 def _finalize_setup(shard, term: str, timeouts) -> None:
     """Deploy a one-time setup term on validator1 and wait until it finalizes
     cluster-wide so the initialized cell is visible to every proposer."""
@@ -270,6 +298,73 @@ def _finalize_setup(shard, term: str, timeouts) -> None:
     wait_for_finalized(v1, block.blockNumber, timeouts.finalization * 3)
     assert_block_finalized_on_all_nodes(shard.all_nodes, block.blockHash,
                                         timeout=timeouts.finalization * 2)
+
+
+def _await_map_settles(all_nodes, channel, accept, allowed_keys, timeout, label):
+    """Poll the all-node-consistent finalized map until ``accept(m)`` holds, enforcing a
+    per-poll STRUCTURAL invariant: the map's key set must stay within ``allowed_keys`` at
+    every aligned cut (a spurious/extra key, or a transient never-settling corruption, is
+    a single-value-cell merge defect even if it never crashes). Recovery may move the
+    value between accepted states before settling — that is allowed; structural corruption
+    is not. Returns the settled map.
+    """
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        try:
+            lfb = assert_all_nodes_agree_on_lfb(all_nodes)
+        except AssertionError:
+            time.sleep(1.0)
+            continue
+        m = assert_channel_consistent_across_nodes(all_nodes, channel, lfb)
+        last = m
+        if m is not None:
+            assert set(m.keys()) <= allowed_keys, (
+                f"[{label}] corrupt finalized map: keys {sorted(m.keys())} exceed allowed "
+                f"{sorted(allowed_keys)} at LFB {lfb[:16]}; map={m}"
+            )
+            if accept(m):
+                return m
+        time.sleep(1.0)
+    raise AssertionError(
+        f"[{label}] finalized map did not settle to an accepted state within "
+        f"{timeout:.0f}s; last all-node-consistent read={last}"
+    )
+
+
+def _norm(x):
+    """Normalize a decoded Rholang value for tolerant comparison: tuples and lists are
+    both sequence-decoded, so compare them in one canonical form."""
+    return list(x) if isinstance(x, (tuple, list)) else x
+
+
+def _await_settles(all_nodes, channel, accept, timeout, label):
+    """Generic settle for ANY value type: poll the all-node-consistent finalized value
+    until ``accept(v)`` holds. Node-identity is enforced each poll (a post-state divergence
+    raises immediately; a transient retrieval race is retried). Returns the settled value."""
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        try:
+            lfb = assert_all_nodes_agree_on_lfb(all_nodes)
+        except AssertionError:
+            time.sleep(1.0)
+            continue
+        try:
+            v = assert_channel_consistent_across_nodes(all_nodes, channel, lfb)
+        except AssertionError as e:
+            if "disagree on post-state" in str(e):
+                raise
+            time.sleep(1.0)
+            continue
+        last = v
+        if accept(v):
+            return v
+        time.sleep(1.0)
+    raise AssertionError(
+        f"[{label}] finalized value did not settle to an accepted state within "
+        f"{timeout:.0f}s; last all-node-consistent read={last!r}"
+    )
 
 
 # ── Fixture: dedicated user-contract shard ───────────────────────────────────
@@ -427,42 +522,35 @@ def test_same_key_conflict_resolves_to_single_value(user_shard, timeouts):
         bg.start()
     try:
         _finalize_setup(shard, '@"ucc_conflict_map"!({})', timeouts)
-        candidates = {"validator1": 1, "validator2": 2, "validator3": 3}
+        for rnd in range(_CONFLICT_ROUNDS):
+            # Distinct candidate triple per round so each round is a fresh conflict AND the
+            # losers' recovery must re-base onto the prior round's settled value (cross-round
+            # stress). Many rounds = many samples of the cone-shape-dependent merge ordering.
+            candidates = {"validator1": rnd * 3 + 1,
+                          "validator2": rnd * 3 + 2,
+                          "validator3": rnd * 3 + 3}
+            candidate_vals = set(candidates.values())
+            ids = _deploy_on_each(
+                shard,
+                lambda name, c=candidates: (f'for (@m <- @"ucc_conflict_map") {{ '
+                              f'@"ucc_conflict_map"!(m.set("shared", {c[name]})) }}'),
+                timeouts,
+            )
+            _assert_all_finalized(producers, all_nodes, ids, timeouts, f"same-key-conflict-{rnd}")
 
-        ids = _deploy_on_each(
-            shard,
-            lambda name: (f'for (@m <- @"ucc_conflict_map") {{ '
-                          f'@"ucc_conflict_map"!(m.set("shared", {candidates[name]})) }}'),
-            timeouts,
-        )
-        _assert_all_finalized(producers, all_nodes, ids, timeouts, "same-key-conflict")
-
-        # Poll the finalized cell on EVERY node (at the common LFB) until it settles to a
-        # single "shared" entry whose value is one of the written candidates and is
-        # identical across nodes. Recovery re-lands the losers, so the running value may
-        # change between candidates before settling — but it must never be multi-valued,
-        # divergent, or missing.
-        candidate_vals = set(candidates.values())
-        deadline = time.time() + timeouts.finalization * 3
-        last = None
-        settled = False
-        while time.time() < deadline:
-            try:
-                lfb = assert_all_nodes_agree_on_lfb(all_nodes)
-            except AssertionError:
-                time.sleep(1.0)
-                continue
-            m = assert_channel_consistent_across_nodes(all_nodes, "ucc_conflict_map", lfb)
-            last = m
-            if m and set(m.keys()) == {"shared"} and m["shared"] in candidate_vals:
-                settled = True
-                break
-            time.sleep(1.0)
-        assert settled, (
-            f"[same-key-conflict] cell did not settle to a single shared value in "
-            f"{candidate_vals}; last all-node-consistent read={last}"
-        )
-        logging.info("same-key-conflict: settled to shared=%r on all nodes", last["shared"])
+            # Settle to a single "shared" entry whose value is one of THIS round's
+            # candidates, identical on every node, never multi-keyed/corrupt (the per-poll
+            # structural invariant lives in _await_map_settles). Recovery re-lands losers,
+            # so the value may move between candidates before settling.
+            settled = _await_map_settles(
+                all_nodes, "ucc_conflict_map",
+                accept=lambda m, cv=candidate_vals: m.get("shared") in cv,
+                allowed_keys={"shared"},
+                timeout=timeouts.finalization * 3,
+                label=f"same-key-conflict-{rnd}",
+            )
+            logging.info("same-key-conflict round %d/%d: settled to shared=%r on all nodes",
+                         rnd, _CONFLICT_ROUNDS, settled["shared"])
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
@@ -641,3 +729,255 @@ def test_overdraft_cost_priority_keeps_higher_cost_transfer(user_shard, timeouts
     if _BG_LOAD_ENABLED:
         _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
                                timeouts, "bg-load(overdraft)")
+
+
+def test_nested_map_concurrent_distinct_inner_keys(user_shard, timeouts):
+    """Nested single-value Map cell (the PoS ``allBonds`` shape): one cell holds an OUTER
+    map whose ``"bonds"`` key holds an INNER map. Each round, three proposers concurrently
+    rewrite the SAME outer key ``"bonds"`` adding DISTINCT inner keys — a same-outer-key
+    conflict the merge must resolve by RECURSING into the inner map and unioning the
+    distinct entries (merge3_map recursion), NOT keep-one'ing the whole inner map (which
+    would drop two validators' entries — the #71 mode). Integration analog of
+    fs_seal_nested_map_proxy_pos_statech. Every inner entry, once finalized, must persist
+    on every node; the inner map converges to the exact union each round."""
+    shard = user_shard
+    all_nodes = shard.all_nodes
+    ro = shard.node("readonly")
+    producers = [shard.node(n) for n in _PRODUCER_KEYS]
+    bg = _BackgroundLoad(producers)
+    bg_src0 = bg_dst0 = 0
+    if _BG_LOAD_ENABLED:
+        bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
+        bg_dst0 = ro.get_vault().get_balance(_BG_DST_ADDR)
+        bg.start()
+    try:
+        _finalize_setup(shard, '@"ucc_nested"!({"bonds" : {}})', timeouts)
+        inner: dict = {}
+        for rnd in range(_CONFLICT_ROUNDS):
+            keys = {"validator1": f"v1_{rnd}", "validator2": f"v2_{rnd}",
+                    "validator3": f"v3_{rnd}"}
+            vals = {"validator1": rnd * 3 + 1, "validator2": rnd * 3 + 2,
+                    "validator3": rnd * 3 + 3}
+            ids = _deploy_on_each(
+                shard,
+                lambda name, k=keys, v=vals: (
+                    f'for (@m <- @"ucc_nested") {{ @"ucc_nested"!('
+                    f'm.set("bonds", m.getOrElse("bonds", {{}}).set("{k[name]}", {v[name]}))) }}'),
+                timeouts,
+            )
+            _assert_all_finalized(producers, all_nodes, ids, timeouts, f"nested-map-{rnd}")
+            for name in _PRODUCER_KEYS:
+                inner[keys[name]] = vals[name]
+            # Converge to {"bonds": <exact inner union>} on every node. An inner entry
+            # missing/changed is the recursive-merge-drops-an-entry (#71) mode.
+            await_channel_converges_on_all_nodes(
+                all_nodes, "ucc_nested", {"bonds": dict(inner)},
+                timeouts.finalization * 3, f"nested-map-{rnd}",
+            )
+    finally:
+        bg.stop()
+    if _BG_LOAD_ENABLED:
+        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
+                               timeouts, "bg-load(nested-map)")
+
+
+def test_concurrent_delete_and_set_same_key(user_shard, timeouts):
+    """Delete/set RACE on the SAME key in one cell: each round, validator1 DELETES key
+    ``"x"``, validator2 SETS ``"x"`` to a new value, validator3 updates a distinct key
+    ``"y"`` — all three consume the one cell, so it is a genuine 3-way single-value-cell
+    conflict. The merge keep-ones one write and recovery re-lands the losers, so the cell
+    settles deterministically and node-identically to EITHER ``"x"`` present (set ordered
+    last) OR ``"x"`` absent (delete ordered last) — never multi-valued, never both, never
+    a spurious key. ``"y"`` (uncontended on its key, contended on the cell) always lands.
+    Exercises delete-vs-write conflict resolution, which the other scenarios omit."""
+    shard = user_shard
+    all_nodes = shard.all_nodes
+    ro = shard.node("readonly")
+    producers = [shard.node(n) for n in _PRODUCER_KEYS]
+    bg = _BackgroundLoad(producers)
+    bg_src0 = bg_dst0 = 0
+    if _BG_LOAD_ENABLED:
+        bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
+        bg_dst0 = ro.get_vault().get_balance(_BG_DST_ADDR)
+        bg.start()
+    try:
+        _finalize_setup(shard, '@"ucc_delset"!({"x" : 0, "y" : 0})', timeouts)
+        for rnd in range(_CONFLICT_ROUNDS):
+            set_val = rnd * 2 + 1
+            y_val = rnd * 2 + 2
+
+            def term_for(name, sv=set_val, yv=y_val):
+                if name == "validator1":
+                    return 'for (@m <- @"ucc_delset") { @"ucc_delset"!(m.delete("x")) }'
+                if name == "validator2":
+                    return f'for (@m <- @"ucc_delset") {{ @"ucc_delset"!(m.set("x", {sv})) }}'
+                return f'for (@m <- @"ucc_delset") {{ @"ucc_delset"!(m.set("y", {yv})) }}'
+
+            ids = _deploy_on_each(shard, term_for, timeouts)
+            _assert_all_finalized(producers, all_nodes, ids, timeouts, f"del-set-{rnd}")
+            # Settle: "y" == this round's value; "x" either absent (del last) or == set_val
+            # (set last); single-valued, node-identical, no spurious keys (per-poll in helper).
+            settled = _await_map_settles(
+                all_nodes, "ucc_delset",
+                accept=lambda m, sv=set_val, yv=y_val: m.get("y") == yv and m.get("x") in (None, sv),
+                allowed_keys={"x", "y"},
+                timeout=timeouts.finalization * 3,
+                label=f"del-set-{rnd}",
+            )
+            logging.info("del-set round %d/%d: settled to %r on all nodes",
+                         rnd, _CONFLICT_ROUNDS, settled)
+    finally:
+        bg.stop()
+    if _BG_LOAD_ENABLED:
+        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
+                               timeouts, "bg-load(del-set)")
+
+
+def test_high_fanout_distinct_keys_all_land(user_shard, timeouts):
+    """Wider-than-3-way concurrency: each of the 3 producers submits ``_FANOUT_PER_NODE``
+    deploys (3 x that total) overlapping as siblings, every one a read-modify-write of ONE
+    shared map cell adding a DISTINCT key. Distinct keys commute, so the merge + recovery
+    must serialize the wide fan-out and land EVERY write — none dropped — with the
+    finalized map equal to the full key set on every node. Stresses the merge with more
+    concurrent single-cell writers than there are validators."""
+    shard = user_shard
+    all_nodes = shard.all_nodes
+    ro = shard.node("readonly")
+    producers = [shard.node(n) for n in _PRODUCER_KEYS]
+    bg = _BackgroundLoad(producers)
+    bg_src0 = bg_dst0 = 0
+    if _BG_LOAD_ENABLED:
+        bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
+        bg_dst0 = ro.get_vault().get_balance(_BG_DST_ADDR)
+        bg.start()
+    try:
+        _finalize_setup(shard, '@"ucc_fanout"!({})', timeouts)
+        expected: dict = {}
+        idx = 0
+        for name in _PRODUCER_KEYS:
+            for i in range(_FANOUT_PER_NODE):
+                idx += 1
+                expected[f"{name}_{i}"] = idx
+        ids = _deploy_k_on_each(
+            shard,
+            lambda name, i: (f'for (@m <- @"ucc_fanout") {{ '
+                             f'@"ucc_fanout"!(m.set("{name}_{i}", {expected[f"{name}_{i}"]})) }}'),
+            _FANOUT_PER_NODE, timeouts,
+        )
+        _assert_all_finalized(producers, all_nodes, ids, timeouts, "high-fanout")
+        # Every distinct key must land; the finalized map equals the full set on every node,
+        # and no already-finalized key vanishes en route (#71 non-regression).
+        await_channel_converges_on_all_nodes(
+            all_nodes, "ucc_fanout", expected, timeouts.finalization * 4, "high-fanout",
+            non_regression="map",
+        )
+    finally:
+        bg.stop()
+    if _BG_LOAD_ENABLED:
+        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
+                               timeouts, "bg-load(high-fanout)")
+
+
+def test_set_cell_concurrent_distinct_elements_union(user_shard, timeouts):
+    """Single Set cell, concurrent DISTINCT-element adds (the Set analog of nested-map
+    union / fs_seal_nested_set_proxy_pos_activevalidators): each round three proposers
+    ``s.add()`` a distinct element to the SAME set cell. Distinct elements commute, so the
+    merge unions them via merge3_set — every added element must land and persist on every
+    node. Covers the Set value type and the set-union merge primitive."""
+    shard = user_shard
+    all_nodes = shard.all_nodes
+    ro = shard.node("readonly")
+    producers = [shard.node(n) for n in _PRODUCER_KEYS]
+    bg = _BackgroundLoad(producers)
+    bg_src0 = bg_dst0 = 0
+    if _BG_LOAD_ENABLED:
+        bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
+        bg_dst0 = ro.get_vault().get_balance(_BG_DST_ADDR)
+        bg.start()
+    try:
+        _finalize_setup(shard, '@"ucc_set"!(Set())', timeouts)
+        elements: set = set()
+        for rnd in range(_CONFLICT_ROUNDS):
+            elems = {"validator1": rnd * 3 + 1, "validator2": rnd * 3 + 2,
+                     "validator3": rnd * 3 + 3}
+            ids = _deploy_on_each(
+                shard,
+                lambda name, e=elems: (f'for (@s <- @"ucc_set") {{ '
+                                       f'@"ucc_set"!(s.add({e[name]})) }}'),
+                timeouts,
+            )
+            _assert_all_finalized(producers, all_nodes, ids, timeouts, f"set-union-{rnd}")
+            elements.update(elems.values())
+            # Every added element, once finalized, must be present on every node (a missing
+            # element is a union-drops-a-member regression). Membership check tolerates the
+            # set/list decode form.
+            _await_settles(
+                all_nodes, "ucc_set",
+                accept=lambda v, ex=set(elements): v is not None and all(e in v for e in ex),
+                timeout=timeouts.finalization * 3, label=f"set-union-{rnd}",
+            )
+    finally:
+        bg.stop()
+    if _BG_LOAD_ENABLED:
+        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
+                               timeouts, "bg-load(set-union)")
+
+
+def test_scalar_value_conflict_resolves_deterministically(user_shard, timeouts):
+    """Same-cell CONFLICT across the full range of NON-foldable value types — String, Bool,
+    Int, List, Tuple — the generalized non_foldable_fork. For each type, three proposers
+    concurrently write DIFFERENT values of that type into one cell (wrapped ``{"v": <value>}``
+    so the decode is a stable map). These are non-mergeable, so the merge keep-ones one
+    write and recovery re-lands the losers; the cell must settle to a SINGLE value that is
+    one of the written candidates, node-identical, never multi-valued or stale-consumed.
+    Exercises the deterministic_pick scalar leaf for every value type."""
+    shard = user_shard
+    all_nodes = shard.all_nodes
+    ro = shard.node("readonly")
+    producers = [shard.node(n) for n in _PRODUCER_KEYS]
+    bg = _BackgroundLoad(producers)
+    bg_src0 = bg_dst0 = 0
+    if _BG_LOAD_ENABLED:
+        bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
+        bg_dst0 = ro.get_vault().get_balance(_BG_DST_ADDR)
+        bg.start()
+    # (type label, [(rholang literal, decoded value) per proposer]).
+    type_cases = [
+        ("string", [('"alpha"', "alpha"), ('"bravo"', "bravo"), ('"charlie"', "charlie")]),
+        ("bool", [('true', True), ('false', False), ('true', True)]),
+        ("int", [('111', 111), ('222', 222), ('333', 333)]),
+        ("list", [('[1, 2]', [1, 2]), ('[3, 4]', [3, 4]), ('[5, 6]', [5, 6])]),
+        ("tuple", [('(1, 2)', (1, 2)), ('(3, 4)', (3, 4)), ('(5, 6)', (5, 6))]),
+    ]
+    try:
+        for type_label, cands in type_cases:
+            cell = f"ucc_scalar_{type_label}"
+            # Sentinel seed distinct from every candidate of every type (and not equal under
+            # Python's True==1/False==0 coercion, which a numeric seed would trip for Bool).
+            _finalize_setup(shard, f'@"{cell}"!({{"v" : "INIT"}})', timeouts)
+            lits = {name: cands[i][0] for i, name in enumerate(_PRODUCER_KEYS)}
+            decoded = [_norm(c[1]) for c in cands]
+            for rnd in range(3):
+                ids = _deploy_on_each(
+                    shard,
+                    lambda name, c=cell, l=lits: (f'for (@m <- @"{c}") {{ '
+                                                  f'@"{c}"!(m.set("v", {l[name]})) }}'),
+                    timeouts,
+                )
+                _assert_all_finalized(producers, all_nodes, ids, timeouts,
+                                      f"scalar-{type_label}-{rnd}")
+                # Settle to {"v": <one written candidate>}, single-keyed, node-identical.
+                settled = _await_map_settles(
+                    all_nodes, cell,
+                    accept=lambda m, d=decoded: m.get("v") is not None and _norm(m.get("v")) in d,
+                    allowed_keys={"v"},
+                    timeout=timeouts.finalization * 3,
+                    label=f"scalar-{type_label}-{rnd}",
+                )
+                logging.info("scalar-%s round %d: settled to v=%r on all nodes",
+                             type_label, rnd, settled.get("v"))
+    finally:
+        bg.stop()
+    if _BG_LOAD_ENABLED:
+        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
+                               timeouts, "bg-load(scalar-types)")
