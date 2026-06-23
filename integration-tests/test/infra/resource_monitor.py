@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import multiprocessing
 import os
 import re
 import signal
@@ -95,8 +96,29 @@ class NodeStats:
 
 
 def _host_memory() -> Dict[str, float]:
-    """Best-effort host free RAM + swap-used in MB (darwin). Empty on failure."""
-    out: Dict[str, float] = {}
+    """Best-effort host available RAM + swap-used in MB. Empty on failure.
+
+    Linux / WSL reads ``/proc/meminfo`` directly (``MemAvailable`` is the
+    reclaim-aware free figure; swap-used = ``SwapTotal - SwapFree``). macOS
+    falls back to ``vm_stat`` + ``sysctl vm.swapusage``. meminfo values are kB.
+    """
+    meminfo = Path("/proc/meminfo")
+    if meminfo.exists():
+        try:
+            vals: Dict[str, int] = {}
+            for line in meminfo.read_text().splitlines():
+                key, _, rest = line.partition(":")
+                if key in ("MemAvailable", "SwapTotal", "SwapFree"):
+                    vals[key] = int(rest.strip().split()[0])
+            out: Dict[str, float] = {}
+            if "MemAvailable" in vals:
+                out["free_mb"] = vals["MemAvailable"] / 1024.0
+            if "SwapTotal" in vals and "SwapFree" in vals:
+                out["swap_used_mb"] = (vals["SwapTotal"] - vals["SwapFree"]) / 1024.0
+            return out
+        except Exception:  # noqa: BLE001 — monitoring is best-effort
+            return {}
+    out = {}
     try:
         vm = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5).stdout
         page = 4096
@@ -116,6 +138,128 @@ def _host_memory() -> Dict[str, float]:
     return out
 
 
+def _loadavg() -> Optional[float]:
+    """1-minute host load average, or None if unavailable."""
+    try:
+        return float(Path("/proc/loadavg").read_text().split()[0])
+    except Exception:  # noqa: BLE001
+        try:
+            return os.getloadavg()[0]
+        except (OSError, AttributeError):
+            return None
+
+
+def _guardian_pids(token: str) -> List[int]:
+    """PIDs of node processes carrying ``token`` (the session data root) in argv."""
+    try:
+        out = subprocess.run(["pgrep", "-f", token], capture_output=True,
+                             text=True, timeout=5).stdout
+    except Exception:  # noqa: BLE001
+        return []
+    pids: List[int] = []
+    for tok in out.split():
+        try:
+            pid = int(tok)
+        except ValueError:
+            continue
+        if pid != os.getpid():
+            pids.append(pid)
+    return pids
+
+
+def _sum_rss_mb(pids: List[int]) -> float:
+    """Total resident RSS (MB) of ``pids`` via ``ps`` (portable; RSS in kB)."""
+    if not pids:
+        return 0.0
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "rss=", "-p", ",".join(str(p) for p in pids)],
+            capture_output=True, text=True, timeout=5).stdout
+    except Exception:  # noqa: BLE001
+        return 0.0
+    total_kb = 0.0
+    for tok in out.split():
+        try:
+            total_kb += float(tok)
+        except ValueError:
+            continue
+    return total_kb / 1024.0
+
+
+def _guardian_loop(
+    token: str,
+    breach_path: str,
+    rss_ceiling_mb: Optional[float],
+    free_floor_mb: Optional[float],
+    load_factor: Optional[float],
+    cores: int,
+    consecutive: int,
+    interval: float,
+) -> None:
+    """Out-of-process host guardian (subprocess provider).
+
+    Runs as its OWN OS process, so a CPU- or swap-starvation freeze that also
+    starves the in-process monitor thread cannot disable it (the structural
+    reason the old external watchdog existed). Each tick it re-discovers the
+    node PIDs by the session data-root token and trips when ANY active limit is
+    exceeded for ``consecutive`` ticks:
+
+      * total node RSS over ``rss_ceiling_mb``;
+      * host available RAM under ``free_floor_mb`` (swap-thrash precursor — the
+        resident-RSS ceiling alone is blind to swapped-out pages);
+      * 1-minute load over ``load_factor * cores`` (CPU-saturation freeze).
+
+    On a trip it records the reason to ``breach_path`` and SIGKILLs every node
+    process group to reclaim RAM/CPU immediately, then exits. The parent reads
+    the breach file and fails the run.
+    """
+    over = 0
+    while True:
+        time.sleep(interval)
+        pids = _guardian_pids(token)
+        if not pids:
+            over = 0
+            continue
+        reasons: List[str] = []
+        if rss_ceiling_mb:
+            rss = _sum_rss_mb(pids)
+            if rss > rss_ceiling_mb:
+                reasons.append(f"node RSS {rss:.0f}MB > ceiling {rss_ceiling_mb:.0f}MB")
+        host = _host_memory()
+        if free_floor_mb and "free_mb" in host and host["free_mb"] < free_floor_mb:
+            reasons.append(
+                f"host available RAM {host['free_mb']:.0f}MB < floor {free_floor_mb:.0f}MB "
+                f"(swap used {host.get('swap_used_mb', 0.0):.0f}MB)")
+        if load_factor and cores:
+            load1 = _loadavg()
+            if load1 is not None and load1 > load_factor * cores:
+                reasons.append(f"1-min load {load1:.1f} > {load_factor:.1f}*{cores} cores")
+        if not reasons:
+            over = 0
+            continue
+        over += 1
+        if over < consecutive:
+            continue
+        msg = (
+            f"Host-protection guardian breach: {'; '.join(reasons)} for {consecutive} "
+            f"consecutive samples ({interval:.0f}s each). Killed {len(pids)} node "
+            f"processes to protect the host from freeze/swap-thrash."
+        )
+        try:
+            Path(breach_path).write_text(msg)
+        except Exception:  # noqa: BLE001
+            pass
+        for pid in pids:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        return
+
+
 class ResourceMonitor:
     """Samples resource usage across test nodes.
 
@@ -131,6 +275,9 @@ class ResourceMonitor:
         output_dir: Optional[Path] = None,
         rss_ceiling_mb: Optional[float] = None,
         ceiling_consecutive: int = 2,
+        guardian_token: Optional[str] = None,
+        host_free_floor_mb: Optional[float] = None,
+        host_load_factor: Optional[float] = None,
     ) -> None:
         self._interval = interval
         self._provider = provider
@@ -154,10 +301,24 @@ class ResourceMonitor:
         self._ceiling_consecutive = max(1, ceiling_consecutive)
         self._over_ceiling_count = 0
         self._breach: Optional[str] = None
+        # Out-of-process host guardian. When the provider supplies a guardian
+        # token (its nodes are host processes — Provider.host_process_guardian_token),
+        # a child process independently enforces the RSS ceiling + host free-RAM
+        # floor + load cap and SIGKILLs the nodes on breach, surviving a freeze
+        # that starves this in-process monitor. Providers that return no token
+        # (Docker/K8s — platform-capped) keep the in-process ceiling.
+        self._guardian_token = guardian_token
+        self._host_free_floor_mb = host_free_floor_mb
+        self._host_load_factor = host_load_factor
+        self._guardian: Optional[multiprocessing.Process] = None
+        self._breach_path: Optional[Path] = (
+            Path(guardian_token) / ".guardian-breach" if guardian_token else None
+        )
 
     # ── lifecycle ──────────────────────────────────────────────────────
     def start(self) -> None:
         self._stop_event.clear()
+        self._maybe_start_guardian()
         if self._output_dir is not None:
             self._output_dir.mkdir(parents=True, exist_ok=True)
             self._ts_fh = open(self._output_dir / "resource-timeseries.csv", "w", newline="")
@@ -173,8 +334,64 @@ class ResourceMonitor:
         self._thread = threading.Thread(target=self._sample_loop, daemon=True)
         self._thread.start()
 
+    def _maybe_start_guardian(self) -> None:
+        """Spawn the out-of-process host guardian when the provider supplies a
+        guardian token (its nodes are host processes that can freeze the host).
+
+        The token lets the guardian re-discover node PIDs independently of this
+        process, so it survives a freeze. Requires at least one active limit.
+        Providers that return no token (Docker/K8s) keep the in-process ceiling.
+        """
+        if self._breach_path is None:
+            return
+        if not (self._rss_ceiling_mb or self._host_free_floor_mb or self._host_load_factor):
+            return
+        try:
+            self._breach_path.unlink()
+        except OSError:
+            pass
+        cores = os.cpu_count() or 1
+        self._guardian = multiprocessing.Process(
+            target=_guardian_loop,
+            args=(
+                self._guardian_token,
+                str(self._breach_path),
+                self._rss_ceiling_mb,
+                self._host_free_floor_mb,
+                self._host_load_factor,
+                cores,
+                self._ceiling_consecutive,
+                self._interval,
+            ),
+            daemon=True,
+            name="host-guardian",
+        )
+        self._guardian.start()
+
+    def _poll_guardian_breach(self) -> None:
+        """Read the guardian's breach marker (if any) and end the run."""
+        if self._breach is not None or self._breach_path is None:
+            return
+        try:
+            if self._breach_path.exists():
+                self._breach = (self._breach_path.read_text().strip()
+                                or "host guardian breach")
+                logger.error("%s", self._breach)
+                self._stop_event.set()
+        except OSError:
+            pass
+
     def stop(self) -> None:
         self._stop_event.set()
+        # Capture any breach the guardian recorded, then reap it.
+        if self._guardian is not None:
+            self._poll_guardian_breach()
+            try:
+                if self._guardian.is_alive():
+                    self._guardian.terminate()
+                self._guardian.join(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
         if self._thread:
             self._thread.join(timeout=15)
         if self._output_dir is not None:
@@ -246,7 +463,12 @@ class ResourceMonitor:
         if node_count > self._peak_node_count:
             self._peak_node_count = node_count
 
-        self._check_ceiling(session_memory, elapsed)
+        # The out-of-process guardian enforces the limits when active (subprocess
+        # provider); otherwise (Docker) the in-process ceiling does.
+        if self._guardian is not None:
+            self._poll_guardian_breach()
+        else:
+            self._check_ceiling(session_memory, elapsed)
 
     def _check_ceiling(self, session_memory_mb: float, elapsed: float) -> None:
         """Abort the run if total node RSS stays above the ceiling.

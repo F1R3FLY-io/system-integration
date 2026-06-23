@@ -243,6 +243,28 @@ class Provider(typing_extensions.Protocol):
         """
         ...
 
+    def host_process_guardian_token(self) -> Optional[str]:
+        """Argv substring uniquely identifying this provider's nodes AS HOST
+        PROCESSES for an out-of-process resource guardian, or ``None``.
+
+        Providers whose nodes are direct host processes sharing the host's
+        CPU/RAM — so a runaway can freeze the host — return a ``pgrep -f`` token
+        (e.g. the session data root). ``ResourceMonitor`` then runs a separate
+        guardian process that discovers and SIGKILLs the nodes by this token,
+        surviving a freeze/swap-thrash that would starve the in-process monitor
+        thread. Providers whose nodes are resource-capped by their platform
+        (Docker cgroups, K8s limits) return ``None`` — host protection is
+        delegated there and the monitor uses its in-process ceiling instead.
+        """
+        ...
+
+    @property
+    def monitor_output_dir(self) -> Optional[Path]:
+        """Per-session directory for monitor artifacts (resource time-series CSV
+        + /metrics scrape), or ``None`` if this provider has no host-visible
+        session directory. Used only under ``--monitor``."""
+        ...
+
     @classmethod
     def force_cleanup_all_test_resources(cls) -> None:
         """Aggressively remove every test-framework resource on this backend.

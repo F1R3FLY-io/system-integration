@@ -607,6 +607,17 @@ class DockerProvider:
     def active_handles(self) -> list:
         return list(self._active_handles)
 
+    def host_process_guardian_token(self) -> Optional[str]:
+        """Docker nodes are cgroup-capped containers, not host processes — host
+        protection is delegated to the container runtime, so there is no
+        out-of-process guardian (the in-process RSS ceiling still applies)."""
+        return None
+
+    @property
+    def monitor_output_dir(self) -> Optional[Path]:
+        """No host-visible per-session dir; the monitor reports peak/avg only."""
+        return None
+
     @property
     def retired_log_snapshots(self) -> List[RetiredLogSnapshot]:
         return list(self._retired_log_snapshots)

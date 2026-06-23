@@ -421,6 +421,18 @@ class SubprocessProvider:
     def active_handles(self) -> List[SubprocessNodeHandle]:
         return list(self._active_handles)
 
+    def host_process_guardian_token(self) -> Optional[str]:
+        """Subprocess nodes are host processes launched with a data dir under
+        ``<session_root>/<role>``. The trailing separator scopes the ``pgrep``
+        match to this session and avoids prefix collisions (mirrors
+        ``cleanup_session``)."""
+        return f"{self._session_root}{os.sep}"
+
+    @property
+    def monitor_output_dir(self) -> Optional[Path]:
+        """Monitor artifacts land in the session data root alongside node logs."""
+        return self._session_root
+
     @property
     def retired_log_snapshots(self) -> List[RetiredLogSnapshot]:
         return list(self._retired_log_snapshots)

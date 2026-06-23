@@ -84,7 +84,26 @@ def pytest_addoption(parser):
         help="Kill nodes + fail the run if total node RSS exceeds this (MB) "
         "for 2 consecutive samples, protecting the host from swap-thrash/"
         "freeze. Always active; --monitor only adds the CSV + /metrics "
-        "output. 0 disables. Default 5000.",
+        "output. 0 disables. Default 5000. (subprocess provider: enforced by an "
+        "out-of-process guardian that survives a freeze.)",
+    )
+    group.addoption(
+        "--host-free-floor-mb",
+        action="store",
+        type=int,
+        default=2000,
+        help="Kill nodes + fail the run if host AVAILABLE RAM drops below this "
+        "(MB) for 2 consecutive samples — catches swap-thrash the resident-RSS "
+        "ceiling is blind to. Subprocess provider only. 0 disables. Default 2000.",
+    )
+    group.addoption(
+        "--host-load-factor",
+        action="store",
+        type=float,
+        default=8.0,
+        help="Kill nodes + fail the run if 1-min load average exceeds this "
+        "factor times the core count for 2 consecutive samples — catches a "
+        "CPU-saturation freeze. Subprocess provider only. 0 disables. Default 8.0.",
     )
     group.addoption(
         "--provider",
@@ -618,12 +637,16 @@ def check_node_logs_after_test(request, provider):
 def resource_monitor(request):
     """Watch node resource usage during the test session.
 
-    The RSS-ceiling kill is ALWAYS active: when total node RSS exceeds
-    ``--rss-ceiling-mb`` for consecutive samples, every node process is
-    SIGKILLed to protect the host from swap-thrash and the run is failed.
+    Host protection is ALWAYS active and fails the run when breached. For the
+    subprocess provider it runs in an out-of-process guardian that SIGKILLs the
+    nodes on any of: total node RSS over ``--rss-ceiling-mb``, host available
+    RAM under ``--host-free-floor-mb`` (swap-thrash), or 1-min load over
+    ``--host-load-factor * cores`` (CPU freeze). Being a separate process, it
+    survives a freeze that would starve the in-process monitor thread. The
+    Docker provider keeps the in-process RSS ceiling.
 
     ``--monitor`` additionally writes the time-series CSV plus a per-node
-    Prometheus ``/metrics`` scrape; without it, only the ceiling kill runs.
+    Prometheus ``/metrics`` scrape; without it, only the host-protection kill runs.
 
     In parallel mode, only the first worker (gw0) or the master process
     runs the monitor to avoid duplicate sampling. The monitor's global
@@ -643,17 +666,26 @@ def resource_monitor(request):
     # provider's session root when available.
     provider = request.getfixturevalue("provider")
     # CSV + /metrics output only when --monitor; the ceiling kill runs regardless.
-    output_dir = (
-        getattr(provider, "_session_root", None)
-        or getattr(provider, "session_data_root", None)
-    ) if request.config.getoption("--monitor") else None
+    output_dir = (provider.monitor_output_dir
+                  if request.config.getoption("--monitor") else None)
+
+    # The provider declares whether (and how) its nodes can be guarded
+    # out-of-process: host-process providers (subprocess) return a pgrep token,
+    # platform-capped providers (Docker/K8s) return None and use the in-process
+    # ceiling. The monitor stays provider-neutral.
+    guardian_token = getattr(provider, "host_process_guardian_token", lambda: None)()
 
     ceiling = request.config.getoption("--rss-ceiling-mb")
+    free_floor = request.config.getoption("--host-free-floor-mb")
+    load_factor = request.config.getoption("--host-load-factor")
     monitor = ResourceMonitor(
         interval=3.0,
         provider=provider,
         output_dir=output_dir,
         rss_ceiling_mb=(ceiling if ceiling and ceiling > 0 else None),
+        guardian_token=guardian_token,
+        host_free_floor_mb=(free_floor if free_floor and free_floor > 0 else None),
+        host_load_factor=(load_factor if load_factor and load_factor > 0 else None),
     )
     monitor.start()
     yield monitor
