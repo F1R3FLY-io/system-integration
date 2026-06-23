@@ -667,6 +667,7 @@ def lifecycle_shard(provider, timeouts):
         shard.destroy()
 
 
+@pytest.mark.allow_forbidden_patterns("ComputationOutOfPhlogistons")
 def test_validator_lifecycle(lifecycle_shard, timeouts) -> None:
     shard = lifecycle_shard
     v1, v2, v3 = (shard.node("validator1"), shard.node("validator2"), shard.node("validator3"))

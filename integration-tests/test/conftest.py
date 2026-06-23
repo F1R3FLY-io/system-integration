@@ -5,6 +5,7 @@ All infrastructure logic lives in infra/ modules.
 """
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 import time
@@ -542,7 +543,29 @@ def check_node_logs_after_test(request, provider):
 
     Provider-agnostic: works with Docker, Subprocess, K8s, or any
     future provider that implements the NodeHandle protocol.
+
+    Per-test offset: the node log is cumulative and ``shared_shard`` is
+    session-scoped, so a forbidden pattern produced by one test — even a
+    test that legitimately opts out via ``allow_forbidden_patterns`` —
+    would otherwise re-trip every later test that inherits the same log.
+    Snapshot each active node's current log line-count BEFORE the test
+    runs and scan only the lines added during the test at teardown.
     """
+    start_offsets = {}
+    try:
+        for handle in provider.active_handles:
+            try:
+                il = getattr(handle, "iter_log_lines", None)
+                start_offsets[handle.name] = (
+                    sum(1 for _ in il())
+                    if il is not None
+                    else len(handle.logs().splitlines())
+                )
+            except Exception:
+                start_offsets[handle.name] = 0
+    except Exception:
+        pass
+
     yield
 
     from .infra.log_events import format_errors, scan_for_forbidden, scan_lines_for_forbidden
@@ -555,15 +578,22 @@ def check_node_logs_after_test(request, provider):
     forbidden: list = []
     for handle in provider.active_handles:
         try:
+            # Scan only the lines THIS test produced: skip the prefix that
+            # already existed at setup. A node attached mid-test has no
+            # recorded offset (defaults to 0), so its whole log — all of which
+            # is from this test — is scanned.
+            offset = start_offsets.get(handle.name, 0)
             # Stream the log file line-by-line when the provider supports it
             # (subprocess) so a large node log isn't loaded whole + splitlines
             # into memory during the post-test scan. Fall back to the string
             # API for providers without a streaming iterator.
             iter_lines = getattr(handle, "iter_log_lines", None)
             if iter_lines is not None:
-                forbidden.extend(scan_lines_for_forbidden(iter_lines(), handle.name, allowed))
+                new_lines = itertools.islice(iter_lines(), offset, None)
+                forbidden.extend(scan_lines_for_forbidden(new_lines, handle.name, allowed))
             else:
-                forbidden.extend(scan_for_forbidden(handle.logs(), handle.name, allowed))
+                tail = handle.logs().splitlines()[offset:]
+                forbidden.extend(scan_lines_for_forbidden(tail, handle.name, allowed))
         except Exception:
             continue
 
