@@ -38,6 +38,7 @@ import pytest
 from ...infra.assertions import (
     assert_block_finalized_on_all_nodes,
     assert_bonds_map_consistent_across_nodes,
+    assert_deploy_errored,
 )
 from ...infra.config import ShardConfig
 from ...infra.keys import (
@@ -58,6 +59,7 @@ from ...infra.polling import (
 from ...infra.shard import Shard
 from f1r3fly.client import F1r3flyClientException
 from f1r3fly.crypto import PrivateKey
+from eth_hash.auto import keccak
 
 pytestmark = pytest.mark.xdist_group("custom")
 
@@ -81,6 +83,9 @@ _QUARANTINE_LENGTH = 10
 _WALLET_BALANCE = 50_000_000_000_000_000  # joiners: cover phlo + stake
 _BOND_PHLO_LIMIT = 100_000_000
 _BOND_PHLO_PRICE = 1
+# Mode-A out-of-phlo: a phlo_limit large enough to precharge but far too small to run the
+# bond contract to completion, so the deploy runs out of phlo mid-execution and errors.
+_MODE_A_PHLO_LIMIT = 50_000
 
 # Only the bond bounds genuinely deviate from rust.conf / node defaults.
 # epoch-length, quarantine-length, and synchrony-constraint-threshold=0 are
@@ -229,6 +234,17 @@ def _assert_withdraw_rejected(actor, all_nodes, ro, key, expected_reason: str, t
     )
     assert ro.pos.get_bonds() == bonds_before, "rejected withdraw changed bonds map"
     logging.info("Withdraw correctly rejected (%s): %s", expected_reason, result.reason)
+
+
+def _pos_call_result(actor, all_nodes, deploy_id: str, timeouts):
+    """Await a PoS mutating deploy (commit/reveal/posVaultTransfer) for inclusion +
+    all-node finalization, then return its contract ``PosResult`` ack. Same load
+    budgets as the rejection helpers (deploy_inclusion * 3 / finalization * 3)."""
+    block = wait_for_deploy_included(actor, deploy_id, timeouts.deploy_inclusion * 3)
+    wait_for_finalized(actor, block.blockNumber, timeouts.finalization * 3)
+    assert_block_finalized_on_all_nodes(all_nodes, block.blockHash,
+                                        timeout=timeouts.finalization * 3)
+    return actor.pos.read_result(deploy_id, block.blockHash)
 
 
 def _validators_on(ro) -> Dict[str, int]:
@@ -926,10 +942,95 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # re-bond while still in withdrawers) is a fragile, contract-logic edge that asserts
     # a known contract bug -- tracked in active-issues, not asserted here.
 
-    # ── Phase 10: read sanity ────────────────────────────────────────────────
+    # ── Phase 10: read sanity (vault descriptors + genesis params) ────────────
     coop = ro.pos.get_coop_vault()
     assert len(coop) >= 2, f"getCoopVault unexpected shape: {coop}"
     initial = ro.pos.get_initial_pos_vault()
     assert len(initial) >= 1, f"getInitialPosVault unexpected shape: {initial}"
-    logging.info("Phase 10: getCoopVault (%d-tuple) / getInitialPosVault (%d-tuple) read sanity OK",
-                 len(coop), len(initial))
+    # The contract's epoch/quarantine params must agree with rust.conf (the poll-budget
+    # math above assumes these exact values).
+    assert ro.pos.get_epoch_length() == _EPOCH_LENGTH, (
+        f"getEpochLength {ro.pos.get_epoch_length()} != rust.conf {_EPOCH_LENGTH}")
+    assert ro.pos.get_quarantine_length() == _QUARANTINE_LENGTH, (
+        f"getQuarantineLength {ro.pos.get_quarantine_length()} != rust.conf {_QUARANTINE_LENGTH}")
+    logging.info("Phase 10: getCoopVault (%d-tuple) / getInitialPosVault (%d-tuple) / "
+                 "epochLength=%d / quarantineLength=%d read sanity OK",
+                 len(coop), len(initial), _EPOCH_LENGTH, _QUARANTINE_LENGTH)
+
+    # ── Phase 11: commit-reveal randomness (commitRandomImage / revealRandom) ──
+    # The randomImages/randomNumbers subsystem: V1 commits a keccak256 image, then
+    # walks every reveal branch. keccak (eth_hash) matches the contract's
+    # rho:crypto:keccak256Hash, so revealing the preimage matches the committed image.
+    secret = b"lifecycle-reveal-secret-v1"
+    image_hex = keccak(secret).hex()
+    secret_hex = secret.hex()
+
+    commit_id = v1.pos.commit_random_image(VALIDATOR1_ID.private_key(), image_hex)
+    r = _pos_call_result(v1, shard.all_nodes, commit_id, timeouts)
+    assert r.success, f"commitRandomImage (happy) failed: {r}"
+    # Re-commit by the same validator is rejected (one image per validator).
+    recommit_id = v1.pos.commit_random_image(VALIDATOR1_ID.private_key(), image_hex)
+    r = _pos_call_result(v1, shard.all_nodes, recommit_id, timeouts)
+    assert not r.success and "already committed" in r.reason.lower(), (
+        f"second commitRandomImage should reject already-committed; got {r}")
+    # Reveal with no prior commit (V2 never committed) -> not-found.
+    nf_id = v2.pos.reveal_random(VALIDATOR2_ID.private_key(), secret_hex)
+    r = _pos_call_result(v2, shard.all_nodes, nf_id, timeouts)
+    assert not r.success and "not found" in r.reason.lower(), (
+        f"revealRandom with no commit should reject not-found; got {r}")
+    # Reveal a wrong preimage (keccak(wrong) != committed image) -> mismatch.
+    mismatch_id = v1.pos.reveal_random(VALIDATOR1_ID.private_key(), b"wrong-preimage".hex())
+    r = _pos_call_result(v1, shard.all_nodes, mismatch_id, timeouts)
+    assert not r.success and "match" in r.reason.lower(), (
+        f"revealRandom with wrong preimage should reject mismatch; got {r}")
+    # Reveal the correct preimage -> success (randomNumbers updated).
+    ok_id = v1.pos.reveal_random(VALIDATOR1_ID.private_key(), secret_hex)
+    r = _pos_call_result(v1, shard.all_nodes, ok_id, timeouts)
+    assert r.success, f"revealRandom (correct preimage) should succeed; got {r}"
+    logging.info("Phase 11: commit-reveal randomness — commit happy/already-committed; "
+                 "reveal not-found/mismatch/success all verified")
+
+    # ── Phase 12: posVaultTransfer permission guard ───────────────────────────
+    # The human-facing posVault transfer is gated on the PoS contract key; any other
+    # deployer (here a genesis validator) is denied. We cannot exercise the success
+    # path without the PoS private key, so the reachable branch is the permission deny.
+    xfer_id = v1.pos.pos_vault_transfer(VALIDATOR1_ID.private_key(), _BG_DST_ADDR, 1)
+    r = _pos_call_result(v1, shard.all_nodes, xfer_id, timeouts)
+    assert not r.success and "permission" in r.reason.lower(), (
+        f"posVaultTransfer from a non-PoS key must be denied; got {r}")
+    logging.info("Phase 12: posVaultTransfer correctly denied for a non-PoS deployer key")
+
+    # ── Phase 13: Mode-A out-of-phlo bond (deploy-failure mode; Issue A territory) ──
+    # A bond with a phlo_limit too small to complete runs out of phlo mid-execution: the
+    # deploy ERRORS (full phlo charged, bond NOT applied), distinct from Mode-B's clean
+    # (false, msg). Per Issue A (f1r3node-rust#47) out-of-phlo can diverge play vs replay;
+    # we do NOT skip it — if it arises, the all-node-finalize check surfaces it AS Issue A.
+    bonds_before_a = ro.pos.get_bonds()
+    mode_a_id = v1.pos.bond(_THROWAWAY_BOND_KEY, _BOND_MAXIMUM, phlo_limit=_MODE_A_PHLO_LIMIT)
+    a_block = wait_for_deploy_included(v1, mode_a_id, timeouts.deploy_inclusion * 3)
+    wait_for_finalized(v1, a_block.blockNumber, timeouts.finalization * 3)
+    try:
+        assert_block_finalized_on_all_nodes(shard.all_nodes, a_block.blockHash,
+                                            timeout=timeouts.finalization * 3)
+    except AssertionError as e:
+        raise AssertionError(
+            "Mode-A out-of-phlo block did not finalize on all nodes — this is Issue A "
+            "(f1r3node-rust#47: out-of-phlo play/replay divergence -> InvalidTransaction). "
+            f"Fix the replay path, do not skip the case: {e}") from e
+    assert_deploy_errored(v1.get_block(a_block.blockHash), mode_a_id)
+    assert ro.pos.get_bonds() == bonds_before_a, (
+        f"Mode-A out-of-phlo must not bond: before={bonds_before_a} after={ro.pos.get_bonds()}")
+    logging.info("Phase 13: Mode-A out-of-phlo bond errored, bonds unchanged, finalized on all nodes")
+
+    # ── Phase 14: auth-token-gated system methods reject a bogus token ────────────
+    # chargeDeploy / refundDeploy / closeBlock are user-callable (single write-enabled PoS
+    # bundle) but reject a bogus token (Nil) before any work, so no state changes.
+    bonds_before_t = ro.pos.get_bonds()
+    for method in ("chargeDeploy", "refundDeploy", "closeBlock"):
+        tok_id = v1.pos.call_auth_gated_invalid_token(VALIDATOR1_ID.private_key(), method)
+        r = _pos_call_result(v1, shard.all_nodes, tok_id, timeouts)
+        assert not r.success and "invalid system auth token" in r.reason.lower(), (
+            f"{method} with a bogus token must reject Invalid-system-auth-token; got {r}")
+    assert ro.pos.get_bonds() == bonds_before_t, (
+        f"bogus-token system calls must not mutate state: {bonds_before_t} -> {ro.pos.get_bonds()}")
+    logging.info("Phase 14: chargeDeploy/refundDeploy/closeBlock reject a bogus auth token, no state change")

@@ -141,7 +141,7 @@ class ResourceMonitor:
         self._total_peak_memory_mb = 0.0
         self._peak_node_count = 0
         self._t0 = time.monotonic()
-        # cpu_seconds differencing state (provider mode): name -> (cpu_s, wall)
+        # cpu_seconds differencing state (provider mode): name -> (pid, cpu_s, wall)
         self._cpu_prev: Dict[str, tuple] = {}
         self._ts_writer = None
         self._ts_fh = None
@@ -216,7 +216,7 @@ class ResourceMonitor:
             except Exception:  # noqa: BLE001
                 continue
             mem = float(usage.get("memory_mb", 0.0) or 0.0)
-            cpu = self._cpu_percent(name, usage, elapsed)
+            cpu = self._cpu_percent(name, getattr(handle, "pid", None), usage, elapsed)
             limit = usage.get("memory_limit_mb")
             self._stats.setdefault(name, NodeStats(name=name)).record(mem, cpu)
             session_memory += mem
@@ -317,20 +317,29 @@ class ResourceMonitor:
         """Non-None if the RSS ceiling was breached and nodes were killed."""
         return self._breach
 
-    def _cpu_percent(self, name: str, usage: dict, elapsed: float) -> float:
+    def _cpu_percent(self, name: str, pid, usage: dict, elapsed: float) -> float:
         """Instantaneous CPU%: difference cpu_seconds across samples when the
         provider supplies it (subprocess); else use the provider's cpu_percent
-        (Docker's is already instantaneous)."""
+        (Docker's is already instantaneous).
+
+        Guards against a node NAME being reused by a DIFFERENT process between
+        samples — e.g. two shards with same-named roles (boot, validator1, …)
+        both in ``active_handles``. Their cumulative ``cpu_seconds`` are
+        unrelated, so differencing one against the other yields a spurious giant
+        delta (the source of the impossible >100×-cores CPU% readings). When the
+        pid for a name changes, reset the baseline and report 0 for that sample
+        instead of emitting a cross-process diff."""
         cpu_s = usage.get("cpu_seconds")
         if cpu_s is None:
             return float(usage.get("cpu_percent", 0.0) or 0.0)
         prev = self._cpu_prev.get(name)
-        self._cpu_prev[name] = (float(cpu_s), elapsed)
+        self._cpu_prev[name] = (pid, float(cpu_s), elapsed)
         if prev is None:
             return 0.0
-        prev_cpu, prev_t = prev
+        prev_pid, prev_cpu, prev_t = prev
         dt = elapsed - prev_t
-        if dt <= 0:
+        if prev_pid != pid or dt <= 0:
+            # New process under this name (or no time elapsed) — don't diff across it.
             return 0.0
         return max(0.0, (float(cpu_s) - prev_cpu) / dt * 100.0)
 
