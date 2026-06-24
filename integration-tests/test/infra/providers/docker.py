@@ -18,6 +18,7 @@ from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_image
 from ..genesis import generate_genesis
 from ..keys import BOOTSTRAP_NODE_ID
 from ..ports import PortAllocator
+from ..run_outcome import current_test_failed
 from ..timeouts import TimeoutHierarchy
 from ..types import NodeRole, PortMapping, ValidatorIdentity
 from .base import (
@@ -594,6 +595,10 @@ class DockerProvider:
         return self._registry.keep_running
 
     @property
+    def keep_on_failure(self) -> bool:
+        return self._registry.keep_on_failure
+
+    @property
     def _archive_dir(self) -> Path:
         """Root directory for per-session log archival.
 
@@ -776,6 +781,13 @@ class DockerProvider:
                 self._active_handles.remove(h)
         if self.keep_running:
             logger.info("Shard kept running (--keep-running)")
+            return
+        if self.keep_on_failure and current_test_failed():
+            self._registry.preserved_on_failure = True
+            logger.warning(
+                "Shard PRESERVED (--keep-on-failure; test failed). Run "
+                "`shardctl test-reset` when done inspecting."
+            )
             return
 
         archive_handles(handles, self._archive_dir / f"shard{self._shard_counter}")

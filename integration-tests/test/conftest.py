@@ -71,6 +71,16 @@ def pytest_addoption(parser):
         help="Don't tear down shard after tests",
     )
     group.addoption(
+        "--keep-on-failure",
+        action="store_true",
+        default=False,
+        help="Tear down shards for passing tests, but PRESERVE the shard of a "
+        "failing test for inspection. Unlike --keep-running (which keeps every "
+        "shard and reintroduces the host-load accumulation that causes "
+        "flakiness), this keeps the host clean on the happy path. Designed to "
+        "pair with -x. Run `shardctl test-reset` to clean up a preserved shard.",
+    )
+    group.addoption(
         "--monitor",
         action="store_true",
         default=False,
@@ -224,6 +234,7 @@ def provider(request, port_allocator, session_id, timeouts, resource_paths):
     """
     choice = request.config.getoption("--provider")
     keep = request.config.getoption("--keep-running")
+    keep_on_failure = request.config.getoption("--keep-on-failure")
 
     if keep:
         logging.warning(
@@ -232,9 +243,17 @@ def provider(request, port_allocator, session_id, timeouts, resource_paths):
             session_id,
             session_id,
         )
+    elif keep_on_failure:
+        logging.info(
+            "Session %s started with --keep-on-failure: a failing test's shard "
+            "is preserved for inspection; passing tests tear down normally.",
+            session_id,
+        )
 
     if choice == "docker":
-        registry = DockerCleanupRegistry(session_id, keep_running=keep)
+        registry = DockerCleanupRegistry(
+            session_id, keep_running=keep, keep_on_failure=keep_on_failure
+        )
         prov = DockerProvider(
             port_allocator=port_allocator,
             registry=registry,
@@ -248,6 +267,7 @@ def provider(request, port_allocator, session_id, timeouts, resource_paths):
             port_allocator=port_allocator,
             session_id=session_id,
             keep_running=keep,
+            keep_on_failure=keep_on_failure,
             timeouts=timeouts,
             paths=resource_paths,
         )
@@ -447,6 +467,13 @@ def pytest_runtest_makereport(item, call):
     """
     outcome = yield
     report = outcome.get_result()
+    if report.when == "call":
+        # Record outcome so fixture-scoped shard teardown (which runs after the
+        # report is cleared) can honor --keep-on-failure. Inline teardown reads
+        # the in-flight exception directly; see infra/run_outcome.py.
+        from .infra.run_outcome import note_call_outcome
+
+        note_call_outcome(report.failed)
     if not report.failed:
         return
     longrepr = str(report.longrepr or "")

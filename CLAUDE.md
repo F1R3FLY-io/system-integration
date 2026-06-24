@@ -136,6 +136,7 @@ Test framework lives at [integration-tests/](integration-tests/). Canonical invo
   poetry run shardctl test --skip-setup --session-id <id> <suite>   # ~2s per iteration
   poetry run shardctl test-reset                                      # when done
   ```
+- **Debugging a flake-under-load** (preserve only the failing shard): use `--keep-on-failure` with `-x` instead of `--keep-running`. Passing tests tear down (no host-load accumulation, which is itself a flake source on a constrained host); the first failing test's shard is left up for inspection. `poetry run pytest <suite> -x --keep-on-failure --provider=subprocess` (or `shardctl test --keep-on-failure -a -x`). `shardctl test-reset` when done.
 - **Image selection:** `F1R3FLY_NODE_IMAGE` env var (single source of truth). Default `f1r3flyindustries/f1r3fly-rust:latest`.
 - **Cleanup:** `shardctl test-reset` force-removes every `rnode.test.*` / `f1r3fly-test-*` / `test-*` resource, running or stopped. Add `--session-id <id>` to scope cleanup to one session — useful when another agent owns concurrent sessions.
 - **Docs layout:**

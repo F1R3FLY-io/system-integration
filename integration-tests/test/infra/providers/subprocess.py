@@ -37,6 +37,7 @@ from typing import List, Optional, Sequence
 from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_binary
 from ..keys import BOOTSTRAP_NODE_ID
 from ..ports import PortAllocator
+from ..run_outcome import current_test_failed
 from ..timeouts import TimeoutHierarchy
 from ..types import NodeRole, PortMapping, ValidatorIdentity
 from .base import (
@@ -367,10 +368,15 @@ class SubprocessProvider:
         timeouts: TimeoutHierarchy,
         paths: Optional[ResourcePaths] = None,
         binary_path: Optional[str] = None,
+        keep_on_failure: bool = False,
     ) -> None:
         self._ports = port_allocator
         self._session_id = session_id
         self._keep_running = keep_running
+        self._keep_on_failure = keep_on_failure
+        # Set when destroy_shard preserves a shard for --keep-on-failure, so the
+        # session-end cleanup_all() leaves the preserved shard alone too.
+        self._preserved_on_failure = False
         self._timeouts = timeouts
         self._paths = paths or ResourcePaths.resolve()
 
@@ -723,6 +729,17 @@ class SubprocessProvider:
             logger.info(
                 "Subprocess shard for session %s kept running (--keep-running). "
                 "PIDs: %s. Data: %s",
+                self._session_id,
+                ", ".join(str(h.pid) for h in handles),
+                self._session_root,
+            )
+            return
+        if self._keep_on_failure and current_test_failed():
+            self._preserved_on_failure = True
+            logger.warning(
+                "Subprocess shard for session %s PRESERVED (--keep-on-failure; "
+                "test failed). PIDs: %s. Data: %s. Run `shardctl test-reset` "
+                "when done inspecting.",
                 self._session_id,
                 ", ".join(str(h.pid) for h in handles),
                 self._session_root,
@@ -1110,10 +1127,16 @@ class SubprocessProvider:
         """Reap all handles spawned by this provider, then remove the
         session data root. Idempotent — safe to call multiple times.
         """
-        if self._keep_running:
+        if self._keep_running or self._preserved_on_failure:
+            reason = (
+                "--keep-running"
+                if self._keep_running
+                else "--keep-on-failure (a test failed)"
+            )
             logger.info(
-                "SubprocessProvider: --keep-running, skipping cleanup of "
+                "SubprocessProvider: %s, skipping cleanup of "
                 "%d handles for session %s (data at %s)",
+                reason,
                 len(self._active_handles),
                 self._session_id,
                 self._session_root,
