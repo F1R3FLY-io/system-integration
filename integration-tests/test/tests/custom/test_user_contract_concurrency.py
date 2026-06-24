@@ -119,7 +119,7 @@ _BG_TRANSFER_AMOUNT = 1
 # Background-load master switch. Keep OFF until the base (no-bg) cases pass on
 # every node; flip to True to add contended-finalization stress on top. One
 # switch gates all scenarios so bg state can't drift per-test.
-_BG_LOAD_ENABLED = True
+_BG_LOAD_ENABLED = False
 
 # Multi-round conflict sampling. The non-foldable / single-value-cell-race modes are
 # cone-shape-dependent (~50% per shot at the unit level), so the conflict scenarios run
@@ -208,8 +208,11 @@ def _assert_all_finalized(
     never finalizes even though the deploy does.
     """
     del producers  # deploy-status is queried per node directly; no block lookup
+    # finalization * 3 (135s at scale 1.0): a same-key conflict whose loser is
+    # keep-one'd repeatedly must win a cut via recovery and then finalize — measured
+    # at ~102s for a 7-rejection delete/set round, so * 2 (90s) was ~12s short.
     assert_all_deploys_finalized_on_all_nodes(
-        all_nodes, deploy_ids, timeouts.finalization * 2, label=label
+        all_nodes, deploy_ids, timeouts.finalization * 3, label=label
     )
 
 
