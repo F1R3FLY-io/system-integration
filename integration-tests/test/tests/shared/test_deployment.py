@@ -58,6 +58,7 @@ def test_deploy_invalid_syntax_rejected(shared_shard, timeouts) -> None:
     logging.info("Invalid syntax rejected, valid deploy succeeded in block %s", block_hash[:16])
 
 
+@pytest.mark.allow_forbidden_patterns("ComputationOutOfPhlogistons")
 def test_deploy_insufficient_phlo_errored(shared_shard, timeouts) -> None:
     """Deploy with insufficient phlo is included in a block but marked as errored.
 

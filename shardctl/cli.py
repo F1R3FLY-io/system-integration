@@ -1177,6 +1177,13 @@ def test_cmd(
         "--keep-running",
         help="Start shard normally but leave it running after tests (for debugging)",
     ),
+    keep_on_failure: bool = typer.Option(
+        False,
+        "--keep-on-failure",
+        help="Tear down shards for passing tests, but keep a failing test's "
+        "shard for inspection (avoids the host-load accumulation of "
+        "--keep-running; pair with -x)",
+    ),
     extra_args: Optional[List[str]] = typer.Option(
         None, "--pytest-args", "-a", help="Additional arguments to pass to pytest"
     ),
@@ -1199,6 +1206,7 @@ def test_cmd(
         poetry run shardctl test test_web_api --verbose       # Verbose output
         poetry run shardctl test --skip-setup                 # Test against running shard
         poetry run shardctl test --keep-running               # Leave shard up after tests
+        poetry run shardctl test --keep-on-failure -a -x      # Keep only a failing test's shard
         poetry run shardctl test --image myimage:latest       # Custom image
         F1R3FLY_NODE_IMAGE=mynode:dev poetry run shardctl test  # Env var override
     """
@@ -1277,6 +1285,9 @@ def test_cmd(
 
     if keep_running:
         pytest_args.append("--keep-running")
+
+    if keep_on_failure:
+        pytest_args.append("--keep-on-failure")
 
     if extra_args:
         # shlex-split so a single `--pytest-args "--timeout=600 --monitor"`

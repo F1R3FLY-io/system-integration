@@ -66,17 +66,25 @@ class NodeHandle(typing_extensions.Protocol):
         ...
 
     def logs(self, tail: Optional[int] = None) -> str:
-        """Fetch the node's stdout/stderr logs."""
+        """Return the node's log content.
+
+        Source is provider-specific: Docker reads from the file written
+        by the node's file sink; subprocess reads the captured log file.
+        Returns an empty string if no log content is available yet.
+        """
         ...
 
     def archive_log(self, dest_path: Path) -> None:
-        """Persist the node's full stdout/stderr to ``dest_path``.
+        """Persist the node's complete log to ``dest_path``.
 
-        Called during teardown so node logs survive the destruction of
+        Called during teardown so logs survive the destruction of
         container/process resources. Implementations should:
           - Create parent directories as needed.
           - Capture the COMPLETE log (no tail truncation).
-          - Be exception-safe — failures are logged but do not propagate.
+          - Be exception-safe — failures are logged, never propagated.
+          - Always produce a file at ``dest_path`` (write a diagnostic
+            placeholder on failure) so artifact uploaders never silently
+            drop the entry.
         """
         ...
 
@@ -233,6 +241,28 @@ class Provider(typing_extensions.Protocol):
         Called at session start (stale cleanup), session end, and
         atexit. Must be idempotent and crash-safe.
         """
+        ...
+
+    def host_process_guardian_token(self) -> Optional[str]:
+        """Argv substring uniquely identifying this provider's nodes AS HOST
+        PROCESSES for an out-of-process resource guardian, or ``None``.
+
+        Providers whose nodes are direct host processes sharing the host's
+        CPU/RAM — so a runaway can freeze the host — return a ``pgrep -f`` token
+        (e.g. the session data root). ``ResourceMonitor`` then runs a separate
+        guardian process that discovers and SIGKILLs the nodes by this token,
+        surviving a freeze/swap-thrash that would starve the in-process monitor
+        thread. Providers whose nodes are resource-capped by their platform
+        (Docker cgroups, K8s limits) return ``None`` — host protection is
+        delegated there and the monitor uses its in-process ceiling instead.
+        """
+        ...
+
+    @property
+    def monitor_output_dir(self) -> Optional[Path]:
+        """Per-session directory for monitor artifacts (resource time-series CSV
+        + /metrics scrape), or ``None`` if this provider has no host-visible
+        session directory. Used only under ``--monitor``."""
         ...
 
     @classmethod

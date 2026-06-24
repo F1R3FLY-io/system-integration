@@ -116,7 +116,12 @@ shardctl test [SUITE]             Run integration tests via pytest
   --session-id TEXT               Session ID of an existing shard (printed by
                                   --keep-running runs)
   --keep-running                  Start shard, skip teardown — leaves the shard up
-                                  and prints its session ID for reuse
+                                  and prints its session ID for reuse (keeps every
+                                  shard; accumulates on multi-test suites)
+  --keep-on-failure               Tear down shards for passing tests, but keep a
+                                  failing test's shard for inspection. Avoids the
+                                  host-load accumulation of --keep-running; pair
+                                  with -x (e.g. `--keep-on-failure -a -x`)
   --verbose, -v                   Verbose pytest output
   --pytest-args, -a TEXT          Additional pytest arguments
   Image priority: F1R3FLY_NODE_IMAGE env > --image > --rust/--scala > default

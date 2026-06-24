@@ -28,10 +28,22 @@ METRICS_TO_SCRAPE = [
     "block_validation_step_bonds_cache_time",
     "block_validation_step_block_summary_time",
     "block_processing_stage_parents_post_state_time",
+    # parents-post-state sub-stages — attribute the multi-parent merge cost
+    # (floor compute / FS seal fold / scope build / mergeable recompute / dag merge).
+    "block_processing_stage_parents_post_state_floor_compute_time",
+    "block_processing_stage_parents_post_state_fs_seal_time",
+    "block_processing_stage_parents_post_state_scope_build_time",
+    "block_processing_stage_parents_post_state_ensure_mergeable_time",
+    "block_processing_stage_parents_post_state_merge_time",
     "block_processing_stage_replay_time",
     "dag_merge_total_time",
     "dag_merge_index_time",
     "dag_merge_conflict_time",
+    # dag_merger::merge pre-conflict phases — full attribution of the merge total
+    # (index_build = per-scope-block DeployChainIndex build, the dominant fat-block cost).
+    "dag_merge_actual_blocks_time",
+    "dag_merge_index_build_time",
+    "dag_merge_dedup_time",
     "dag_merge_branches_time",
     "dag_merge_conflicts_map_time",
     "dag_merge_rejection_options_time",
@@ -260,9 +272,35 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             lines.append(
                 f"    replay_block (execution): {replay_avg*1000:.0f}ms ({int(replay_count)} blocks)"
             )
+    # parents_post_state sub-stage breakdown — where the multi-parent merge cost goes
+    # (the ~1.8s/multi-parent that used to be lumped under parents_post_state).
+    pps_substages = [
+        (
+            "floor_compute (clique floor)",
+            "block_processing_stage_parents_post_state_floor_compute_time",
+        ),
+        ("fs_seal (FS fold)", "block_processing_stage_parents_post_state_fs_seal_time"),
+        ("scope_build (cone walk)", "block_processing_stage_parents_post_state_scope_build_time"),
+        (
+            "ensure_mergeable (recompute)",
+            "block_processing_stage_parents_post_state_ensure_mergeable_time",
+        ),
+        ("dag merge", "block_processing_stage_parents_post_state_merge_time"),
+    ]
+    pps_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in pps_substages)
+    if pps_has_data:
+        lines.append("  parents_post_state sub-stages (avg per multi-parent block):")
+        for label, key in pps_substages:
+            avg = metrics.get(key, 0)
+            count = metrics.get(key + ".count", 0)
+            if count > 0:
+                lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} blocks)")
     # DAG merge breakdown
     dag_metrics = [
         ("dag_merge_total", "dag_merge_total_time"),
+        ("  actual_blocks (scope scan)", "dag_merge_actual_blocks_time"),
+        ("  index_build (DeployChainIndex)", "dag_merge_index_build_time"),
+        ("  dedup (freshest-source)", "dag_merge_dedup_time"),
         ("dag_merge_index (LMDB)", "dag_merge_index_time"),
         ("dag_merge_conflict", "dag_merge_conflict_time"),
         ("  branches (depends O(D\u00b2))", "dag_merge_branches_time"),

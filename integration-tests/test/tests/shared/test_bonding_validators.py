@@ -52,12 +52,13 @@ conftest.py) so the bond deploys can pay phlo + stake.
 
 import logging
 import threading
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import pytest
 from f1r3fly.client import F1r3flyClientException
 
 from ...infra.assertions import (
+    assert_all_deploys_finalized_on_all_nodes,
     assert_block_finalized_on_all_nodes,
     assert_bonds_map_consistent_across_nodes,
 )
@@ -216,38 +217,13 @@ def _assert_bg_load_deploys_finalized(
     is meant to prevent that; this assertion fails loud if a future change
     regresses either the tiebreaker or the recovery path.
     """
-    if not deploy_ids:
-        return
-    missing: List[str] = []
-    unfinalized: List[Tuple[str, int]] = []
-    for sig in deploy_ids:
-        light_block = None
-        for node in producers:
-            try:
-                light_block = node.find_deploy(sig)
-                if light_block is not None:
-                    break
-            except Exception:
-                continue
-        if light_block is None:
-            missing.append(sig)
-            continue
-        try:
-            wait_for_finalized(
-                producers[0],
-                light_block.blockNumber,
-                timeouts.finalization * 2,
-            )
-            if not producers[0].is_finalized(light_block.blockHash):
-                unfinalized.append((sig, light_block.blockNumber))
-        except Exception:
-            unfinalized.append((sig, light_block.blockNumber))
-    assert not missing and not unfinalized, (
-        f"[{label}] {len(missing)} bg-load deploys never included, "
-        f"{len(unfinalized)} included but unfinalized "
-        f"(of {len(deploy_ids)} total). "
-        f"missing(first 3)={[s[:16] for s in missing[:3]]} "
-        f"unfinalized(first 3)={[(s[:16], n) for s, n in unfinalized[:3]]}"
+    # Delegates to the shared, re-homing-aware deploy-status helper. A bg-load
+    # deploy whose first block loses fork choice and is re-included into a
+    # finalized descendant is correctly counted finalized; the old find_deploy +
+    # block-hash check falsely flagged it as dropped work. Checks all producers
+    # (stronger than the previous producers[0]-only check).
+    assert_all_deploys_finalized_on_all_nodes(
+        producers, deploy_ids, timeouts.finalization * 2, label=label
     )
 
 

@@ -32,6 +32,17 @@ Roles within a shard are differentiated by CLI flags injected via the compose fi
 
 See the `command:` block in any compose file for the full per-role flag list.
 
+### Logging configuration (integration tests)
+
+Test nodes pick up structured logging from the mounted config files, not from CLI flags — keeping both Docker and subprocess providers consistent:
+
+| Config file | Used by | Logging settings |
+|---|---|---|
+| `conf/rust.conf` | All shard test nodes (Docker + subprocess) | `format = "json"`, `sink = "both"` |
+| `conf/standalone-dev.conf` | All standalone test nodes (Docker + subprocess) | `format = "json"`, `sink = "both"` |
+
+`sink = "both"` writes to stdout (live inspection via `docker logs -f`) and to `<data-dir>/logs/node.log` (read by the test framework). Log level for test nodes is controlled by the `RUST_LOG` environment variable.
+
 ---
 
 ## Environment files

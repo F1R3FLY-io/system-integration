@@ -18,6 +18,7 @@ from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_image
 from ..genesis import generate_genesis
 from ..keys import BOOTSTRAP_NODE_ID
 from ..ports import PortAllocator
+from ..run_outcome import current_test_failed
 from ..timeouts import TimeoutHierarchy
 from ..types import NodeRole, PortMapping, ValidatorIdentity
 from .base import (
@@ -307,39 +308,56 @@ class DockerNodeHandle:
     def identity(self) -> Optional[ValidatorIdentity]:
         return self._identity
 
+    # Path inside every container where the node writes its structured log.
+    _LOG_FILE_PATH = "/var/lib/rnode/logs/node.log"
+
     def logs(self, tail: Optional[int] = None) -> str:
-        args = ["logs"]
+        """Return the node's log content.
+
+        Reads from the structured log file written by the node's file
+        sink (``--log-sink=both``). Falls back to ``docker logs``
+        (stdout/stderr buffer) when the file does not exist or is not
+        yet accessible — this covers the startup-failure case where the
+        node crashes before the file sink opens.
+        """
+        result = _docker("exec", self._name, "cat", self._LOG_FILE_PATH)
+        if result.returncode == 0:
+            text = result.stdout or ""
+        else:
+            fallback = _docker("logs", self._name)
+            text = (fallback.stdout or "") + (fallback.stderr or "")
         if tail:
-            args.extend(["--tail", str(tail)])
-        args.append(self._name)
-        result = _docker(*args)
-        return (result.stdout or "") + (result.stderr or "")
+            lines = text.splitlines()
+            text = "\n".join(lines[-tail:])
+        return text
 
     def archive_log(self, dest_path: Path) -> None:
-        """Dump the container's full stdout/stderr to ``dest_path``.
+        """Persist the node's complete log to ``dest_path``.
 
-        Runs ``docker logs <container>`` with output redirected to the
-        destination file. Idempotent and exception-safe — a missing
-        container (e.g. already removed) leaves ``docker logs``' own
-        stderr ("Error: No such container") in the file rather than
-        propagating.
-
-        Always produces a file at ``dest_path``: on a top-level
-        exception (mkdir failure, etc.) a diagnostic placeholder is
-        written. Matters because ``actions/upload-artifact@v4`` drops
-        empty directories, so a silent archive failure would leave no
-        trace in CI.
+        Tries ``docker cp`` from the file sink first (works on running
+        and stopped containers). Falls back to ``docker logs`` redirect
+        when the file does not exist — ensures startup-failure output
+        is always captured even when the node crashed before the file
+        sink was opened. Always produces a file so
+        ``actions/upload-artifact@v4`` never silently drops the entry.
         """
         try:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
-            with dest_path.open("w") as f:
-                subprocess.run(
-                    ["docker", "logs", self._name],
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                    timeout=30,
-                )
+            cp_result = subprocess.run(
+                ["docker", "cp", f"{self._name}:{self._LOG_FILE_PATH}", str(dest_path)],
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+            if cp_result.returncode != 0:
+                with dest_path.open("w") as f:
+                    subprocess.run(
+                        ["docker", "logs", self._name],
+                        stdout=f,
+                        stderr=subprocess.STDOUT,
+                        check=False,
+                        timeout=30,
+                    )
         except Exception as e:
             logger.warning("DockerNodeHandle.archive_log: %s failed: %s", self._name, e)
             try:
@@ -577,6 +595,10 @@ class DockerProvider:
         return self._registry.keep_running
 
     @property
+    def keep_on_failure(self) -> bool:
+        return self._registry.keep_on_failure
+
+    @property
     def _archive_dir(self) -> Path:
         """Root directory for per-session log archival.
 
@@ -589,6 +611,17 @@ class DockerProvider:
     @property
     def active_handles(self) -> list:
         return list(self._active_handles)
+
+    def host_process_guardian_token(self) -> Optional[str]:
+        """Docker nodes are cgroup-capped containers, not host processes — host
+        protection is delegated to the container runtime, so there is no
+        out-of-process guardian (the in-process RSS ceiling still applies)."""
+        return None
+
+    @property
+    def monitor_output_dir(self) -> Optional[Path]:
+        """No host-visible per-session dir; the monitor reports peak/avg only."""
+        return None
 
     @property
     def retired_log_snapshots(self) -> List[RetiredLogSnapshot]:
@@ -748,6 +781,13 @@ class DockerProvider:
                 self._active_handles.remove(h)
         if self.keep_running:
             logger.info("Shard kept running (--keep-running)")
+            return
+        if self.keep_on_failure and current_test_failed():
+            self._registry.preserved_on_failure = True
+            logger.warning(
+                "Shard PRESERVED (--keep-on-failure; test failed). Run "
+                "`shardctl test-reset` when done inspecting."
+            )
             return
 
         archive_handles(handles, self._archive_dir / f"shard{self._shard_counter}")

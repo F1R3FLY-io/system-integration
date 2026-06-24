@@ -100,6 +100,13 @@ class Node:
     def network_name(self) -> str:
         return self._handle.network_name
 
+    @property
+    def data_dir(self):
+        """The node's on-disk data directory, if the provider exposes one
+        (subprocess sessions). ``None`` otherwise. Its parent is the run's
+        session directory."""
+        return getattr(self._handle, "data_dir", None)
+
     # ── HTTP API helpers ──
 
     def http_get(self, path: str, timeout: int = 60):
@@ -288,6 +295,12 @@ class Node:
     def exploratory_deploy(self, rholang_code: str, block_hash: str = "") -> list:
         """Execute a read-only deploy. Returns list of Par results."""
         return self._external_client().exploratory_deploy(rholang_code, block_hash)
+
+    def read_channel(self, channel: str, block_hash: str = ""):
+        """Peek a named channel's current value via a non-consuming read,
+        auto-typed to a Python value (``dict``/``int``/``str``/...), or
+        ``None`` when empty. Delegates to ``F1r3flyClient.read_channel``."""
+        return self._external_client().read_channel(channel, block_hash)
 
     def registry_lookup(self, uri: str, block_hash: str = "") -> list:
         """Look up a value in the registry via exploratory deploy.

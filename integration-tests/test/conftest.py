@@ -5,6 +5,7 @@ All infrastructure logic lives in infra/ modules.
 """
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 import time
@@ -70,6 +71,16 @@ def pytest_addoption(parser):
         help="Don't tear down shard after tests",
     )
     group.addoption(
+        "--keep-on-failure",
+        action="store_true",
+        default=False,
+        help="Tear down shards for passing tests, but PRESERVE the shard of a "
+        "failing test for inspection. Unlike --keep-running (which keeps every "
+        "shard and reintroduces the host-load accumulation that causes "
+        "flakiness), this keeps the host clean on the happy path. Designed to "
+        "pair with -x. Run `shardctl test-reset` to clean up a preserved shard.",
+    )
+    group.addoption(
         "--monitor",
         action="store_true",
         default=False,
@@ -79,10 +90,30 @@ def pytest_addoption(parser):
         "--rss-ceiling-mb",
         action="store",
         type=int,
-        default=8000,
-        help="With --monitor: kill nodes + fail the run if total node RSS "
-        "exceeds this (MB) for 2 consecutive samples, protecting the host "
-        "from swap-thrash/freeze. 0 disables. Default 8000.",
+        default=5000,
+        help="Kill nodes + fail the run if total node RSS exceeds this (MB) "
+        "for 2 consecutive samples, protecting the host from swap-thrash/"
+        "freeze. Always active; --monitor only adds the CSV + /metrics "
+        "output. 0 disables. Default 5000. (subprocess provider: enforced by an "
+        "out-of-process guardian that survives a freeze.)",
+    )
+    group.addoption(
+        "--host-free-floor-mb",
+        action="store",
+        type=int,
+        default=2000,
+        help="Kill nodes + fail the run if host AVAILABLE RAM drops below this "
+        "(MB) for 2 consecutive samples — catches swap-thrash the resident-RSS "
+        "ceiling is blind to. Subprocess provider only. 0 disables. Default 2000.",
+    )
+    group.addoption(
+        "--host-load-factor",
+        action="store",
+        type=float,
+        default=8.0,
+        help="Kill nodes + fail the run if 1-min load average exceeds this "
+        "factor times the core count for 2 consecutive samples — catches a "
+        "CPU-saturation freeze. Subprocess provider only. 0 disables. Default 8.0.",
     )
     group.addoption(
         "--provider",
@@ -203,6 +234,7 @@ def provider(request, port_allocator, session_id, timeouts, resource_paths):
     """
     choice = request.config.getoption("--provider")
     keep = request.config.getoption("--keep-running")
+    keep_on_failure = request.config.getoption("--keep-on-failure")
 
     if keep:
         logging.warning(
@@ -211,9 +243,17 @@ def provider(request, port_allocator, session_id, timeouts, resource_paths):
             session_id,
             session_id,
         )
+    elif keep_on_failure:
+        logging.info(
+            "Session %s started with --keep-on-failure: a failing test's shard "
+            "is preserved for inspection; passing tests tear down normally.",
+            session_id,
+        )
 
     if choice == "docker":
-        registry = DockerCleanupRegistry(session_id, keep_running=keep)
+        registry = DockerCleanupRegistry(
+            session_id, keep_running=keep, keep_on_failure=keep_on_failure
+        )
         prov = DockerProvider(
             port_allocator=port_allocator,
             registry=registry,
@@ -227,6 +267,7 @@ def provider(request, port_allocator, session_id, timeouts, resource_paths):
             port_allocator=port_allocator,
             session_id=session_id,
             keep_running=keep,
+            keep_on_failure=keep_on_failure,
             timeouts=timeouts,
             paths=resource_paths,
         )
@@ -426,6 +467,13 @@ def pytest_runtest_makereport(item, call):
     """
     outcome = yield
     report = outcome.get_result()
+    if report.when == "call":
+        # Record outcome so fixture-scoped shard teardown (which runs after the
+        # report is cleared) can honor --keep-on-failure. Inline teardown reads
+        # the in-flight exception directly; see infra/run_outcome.py.
+        from .infra.run_outcome import note_call_outcome
+
+        note_call_outcome(report.failed)
     if not report.failed:
         return
     longrepr = str(report.longrepr or "")
@@ -541,7 +589,27 @@ def check_node_logs_after_test(request, provider):
 
     Provider-agnostic: works with Docker, Subprocess, K8s, or any
     future provider that implements the NodeHandle protocol.
+
+    Per-test offset: the node log is cumulative and ``shared_shard`` is
+    session-scoped, so a forbidden pattern produced by one test — even a
+    test that legitimately opts out via ``allow_forbidden_patterns`` —
+    would otherwise re-trip every later test that inherits the same log.
+    Snapshot each active node's current log line-count BEFORE the test
+    runs and scan only the lines added during the test at teardown.
     """
+    start_offsets = {}
+    try:
+        for handle in provider.active_handles:
+            try:
+                il = getattr(handle, "iter_log_lines", None)
+                start_offsets[handle.name] = (
+                    sum(1 for _ in il()) if il is not None else len(handle.logs().splitlines())
+                )
+            except Exception:
+                start_offsets[handle.name] = 0
+    except Exception:
+        pass
+
     yield
 
     from .infra.log_events import format_errors, scan_for_forbidden, scan_lines_for_forbidden
@@ -554,15 +622,22 @@ def check_node_logs_after_test(request, provider):
     forbidden: list = []
     for handle in provider.active_handles:
         try:
+            # Scan only the lines THIS test produced: skip the prefix that
+            # already existed at setup. A node attached mid-test has no
+            # recorded offset (defaults to 0), so its whole log — all of which
+            # is from this test — is scanned.
+            offset = start_offsets.get(handle.name, 0)
             # Stream the log file line-by-line when the provider supports it
             # (subprocess) so a large node log isn't loaded whole + splitlines
             # into memory during the post-test scan. Fall back to the string
             # API for providers without a streaming iterator.
             iter_lines = getattr(handle, "iter_log_lines", None)
             if iter_lines is not None:
-                forbidden.extend(scan_lines_for_forbidden(iter_lines(), handle.name, allowed))
+                new_lines = itertools.islice(iter_lines(), offset, None)
+                forbidden.extend(scan_lines_for_forbidden(new_lines, handle.name, allowed))
             else:
-                forbidden.extend(scan_for_forbidden(handle.logs(), handle.name, allowed))
+                tail = handle.logs().splitlines()[offset:]
+                forbidden.extend(scan_lines_for_forbidden(tail, handle.name, allowed))
         except Exception:
             continue
 
@@ -585,20 +660,23 @@ def check_node_logs_after_test(request, provider):
 
 @pytest.fixture(scope="session", autouse=True)
 def resource_monitor(request):
-    """Sample Docker resource usage during the test session.
+    """Watch node resource usage during the test session.
 
-    Enabled with ``--monitor``. Discovers all ``rnode.test.*`` containers
-    dynamically via ``docker stats`` — sees all containers globally,
-    including those created by other xdist workers.
+    Host protection is ALWAYS active and fails the run when breached. For the
+    subprocess provider it runs in an out-of-process guardian that SIGKILLs the
+    nodes on any of: total node RSS over ``--rss-ceiling-mb``, host available
+    RAM under ``--host-free-floor-mb`` (swap-thrash), or 1-min load over
+    ``--host-load-factor * cores`` (CPU freeze). Being a separate process, it
+    survives a freeze that would starve the in-process monitor thread. The
+    Docker provider keeps the in-process RSS ceiling.
+
+    ``--monitor`` additionally writes the time-series CSV plus a per-node
+    Prometheus ``/metrics`` scrape; without it, only the host-protection kill runs.
 
     In parallel mode, only the first worker (gw0) or the master process
     runs the monitor to avoid duplicate sampling. The monitor's global
     Docker discovery ensures it captures containers from all workers.
     """
-    if not request.config.getoption("--monitor"):
-        yield None
-        return
-
     # In xdist parallel mode, only run monitor on gw0 (or master)
     worker_id = getattr(request.config, "workerinput", {}).get("workerid", "")
     if worker_id and worker_id != "gw0":
@@ -612,16 +690,26 @@ def resource_monitor(request):
     # output files alongside the session's data. ``output_dir`` resolves to the
     # provider's session root when available.
     provider = request.getfixturevalue("provider")
-    output_dir = getattr(provider, "_session_root", None) or getattr(
-        provider, "session_data_root", None
-    )
+    # CSV + /metrics output only when --monitor; the ceiling kill runs regardless.
+    output_dir = provider.monitor_output_dir if request.config.getoption("--monitor") else None
+
+    # The provider declares whether (and how) its nodes can be guarded
+    # out-of-process: host-process providers (subprocess) return a pgrep token,
+    # platform-capped providers (Docker/K8s) return None and use the in-process
+    # ceiling. The monitor stays provider-neutral.
+    guardian_token = getattr(provider, "host_process_guardian_token", lambda: None)()
 
     ceiling = request.config.getoption("--rss-ceiling-mb")
+    free_floor = request.config.getoption("--host-free-floor-mb")
+    load_factor = request.config.getoption("--host-load-factor")
     monitor = ResourceMonitor(
         interval=3.0,
         provider=provider,
         output_dir=output_dir,
         rss_ceiling_mb=(ceiling if ceiling and ceiling > 0 else None),
+        guardian_token=guardian_token,
+        host_free_floor_mb=(free_floor if free_floor and free_floor > 0 else None),
+        host_load_factor=(load_factor if load_factor and load_factor > 0 else None),
     )
     monitor.start()
     yield monitor

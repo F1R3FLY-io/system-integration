@@ -161,6 +161,22 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
         r"(has \d+ pre-state values; single-value invariant violated"
         r"|Expected at most one value for number channel)"
     ),
+    # ── Seal / merge stale-consume backstop ──
+    # state_change_merger.rs `make_trie_action` fail-closed tripwire: a
+    # chain whose committed diff was rebased onto a divergent base reached
+    # the fold — a single-value-cell race that should have been rejected
+    # upstream in DagMerger or skipped by the seal. This is the integration
+    # surface of the seal `item 2` regression (a non-foldable concurrent
+    # write the seal double-folds); the skip-rejected fix removes the
+    # in-seal source, so a recurrence under load is a merge/seal regression.
+    "StaleConsume": re.compile(r"stale-consume on channel"),
+    # ── Multi-parent pre-state divergence ──
+    # interpreter_util.rs: a validator recomputed a multi-parent pre-state
+    # that differs from the one the proposer signed — the divergent-FS /
+    # divergent-merge symptom and head of the #71 InvalidTransaction cascade.
+    "ComputedPreStateMismatch": re.compile(
+        r"Computed pre-state hash .* does not equal block's pre-state hash"
+    ),
     # ── Propose-path internal assertion ──
     # rnode's propose path raised an internal "this should never happen"
     # error tagged with the offending sequence number. Always indicates
