@@ -59,6 +59,10 @@ _METRIC_KEYWORDS = (
     "deploy",
     "rspace",
     "casper",
+    # Block-retrieval / fetch path (observer-lag diagnosis): download latency
+    # histogram + outstanding-request backlog gauge + peer count, per node.
+    "block_retriever",
+    "block_download",
 )
 
 
