@@ -29,10 +29,11 @@ quarantine polls.
 """
 import logging
 import threading
-import time
 from typing import Dict, List, Optional, Tuple
 
 import pytest
+from f1r3fly.client import F1r3flyClientException
+from f1r3fly.crypto import PrivateKey
 
 from ...infra.assertions import (
     assert_block_finalized_on_all_nodes,
@@ -55,8 +56,6 @@ from ...infra.polling import (
     wait_for_finalized,
 )
 from ...infra.shard import Shard
-from f1r3fly.client import F1r3flyClientException
-from f1r3fly.crypto import PrivateKey
 
 pytestmark = pytest.mark.xdist_group("custom")
 

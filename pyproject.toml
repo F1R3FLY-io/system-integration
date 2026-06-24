@@ -79,3 +79,7 @@ ignore = ["N999"]
 # data layouts; keep shardctl/ strict at 100 but allow integration-tests
 # to exceed for readability where wrapping would hurt.
 "integration-tests/**/*.py" = ["E501"]
+# conftest.py must set GRPC_ENABLE_FORK_SUPPORT before the .infra imports load
+# gRPC (transitively via pyf1r3fly.client), so its module-level imports
+# legitimately follow that os.environ call.
+"integration-tests/test/conftest.py" = ["E402"]
