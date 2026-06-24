@@ -8,14 +8,14 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from .types import NodeRole
-
 # Re-export deploy checking from pyf1r3fly
 from f1r3fly.deploy import (
     DeployError,
     check_deploy_errored,
     check_deploy_succeeded,
 )
+
+from .types import NodeRole
 
 # Re-export Par extraction from pyf1r3fly
 
@@ -356,8 +356,9 @@ def _pick_reader(nodes):
     return nodes[0]
 
 
-def assert_value_consistent_across_nodes(nodes, read_fn, block_hash: str, what: str,
-                                         *, block_timeout: float = 5.0):
+def assert_value_consistent_across_nodes(
+    nodes, read_fn, block_hash: str, what: str, *, block_timeout: float = 5.0
+):
     """Read a finalized value (via ``read_fn``) on the read-only node at
     ``block_hash`` and assert every node agrees on that block's POST-STATE HASH.
 
@@ -468,13 +469,11 @@ def await_value_converges_on_all_nodes(
                     f"full finalized map {cur}"
                 )
         elif non_regression == "up" and water is not None:
-            assert cur >= water, (
-                f"[{label}] finalized-value REGRESSION: dropped from {water} to {cur}"
-            )
+            assert (
+                cur >= water
+            ), f"[{label}] finalized-value REGRESSION: dropped from {water} to {cur}"
         elif non_regression == "down" and water is not None:
-            assert cur <= water, (
-                f"[{label}] finalized-value REGRESSION: rose from {water} to {cur}"
-            )
+            assert cur <= water, f"[{label}] finalized-value REGRESSION: rose from {water} to {cur}"
 
         # Anti-double-apply bounds.
         if upper_bound is not None:
@@ -514,8 +513,13 @@ def await_channel_converges_on_all_nodes(nodes, channel: str, expected, timeout,
     """All-node finalized convergence for a named channel. See
     :func:`await_value_converges_on_all_nodes`."""
     return await_value_converges_on_all_nodes(
-        nodes, _channel_reader(channel), expected, timeout, label,
-        what=f'@"{channel}"', **kw,
+        nodes,
+        _channel_reader(channel),
+        expected,
+        timeout,
+        label,
+        what=f'@"{channel}"',
+        **kw,
     )
 
 
@@ -523,6 +527,11 @@ def await_balance_converges_on_all_nodes(nodes, vault_addr: str, expected, timeo
     """All-node finalized convergence for a vault balance. See
     :func:`await_value_converges_on_all_nodes`."""
     return await_value_converges_on_all_nodes(
-        nodes, _balance_reader(vault_addr), expected, timeout, label,
-        what=f"balance({vault_addr[:12]})", **kw,
+        nodes,
+        _balance_reader(vault_addr),
+        expected,
+        timeout,
+        label,
+        what=f"balance({vault_addr[:12]})",
+        **kw,
     )

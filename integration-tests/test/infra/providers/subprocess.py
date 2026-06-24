@@ -316,8 +316,7 @@ class SubprocessNodeHandle:
         (cumulative CPU time) across samples. ``memory_limit_mb`` is None —
         subprocess nodes have no cgroup cap.
         """
-        zero = {"memory_mb": 0.0, "cpu_percent": 0.0, "cpu_seconds": 0.0,
-                "memory_limit_mb": None}
+        zero = {"memory_mb": 0.0, "cpu_percent": 0.0, "cpu_seconds": 0.0, "memory_limit_mb": None}
         if not self.is_running():
             return zero
         try:
@@ -1128,11 +1127,7 @@ class SubprocessProvider:
         session data root. Idempotent — safe to call multiple times.
         """
         if self._keep_running or self._preserved_on_failure:
-            reason = (
-                "--keep-running"
-                if self._keep_running
-                else "--keep-on-failure (a test failed)"
-            )
+            reason = "--keep-running" if self._keep_running else "--keep-on-failure (a test failed)"
             logger.info(
                 "SubprocessProvider: %s, skipping cleanup of "
                 "%d handles for session %s (data at %s)",

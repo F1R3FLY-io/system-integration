@@ -54,6 +54,7 @@ import time
 from typing import List, Optional
 
 import pytest
+from f1r3fly.crypto import PrivateKey
 
 from ...infra.assertions import (
     assert_all_deploys_finalized_on_all_nodes,
@@ -68,7 +69,6 @@ from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import wait_for_deploy_included, wait_for_finalized
 from ...infra.shard import Shard
-from f1r3fly.crypto import PrivateKey
 
 pytestmark = pytest.mark.xdist_group("custom")
 
@@ -103,8 +103,8 @@ _OVERDRAFT_DST_KEY = PrivateKey.from_seed(91006)
 _OVERDRAFT_SRC_ADDR = _OVERDRAFT_SRC_KEY.get_public_key().get_vault_address()
 _OVERDRAFT_DST_ADDR = _OVERDRAFT_DST_KEY.get_public_key().get_vault_address()
 _OVERDRAFT_SRC_BALANCE = 200_000_000
-_OVERDRAFT_HIGH_AMOUNT = 120_000_000   # high phlo-price → higher cost → must WIN
-_OVERDRAFT_LOW_AMOUNT = 100_000_000    # low phlo-price → lower cost → must LOSE
+_OVERDRAFT_HIGH_AMOUNT = 120_000_000  # high phlo-price → higher cost → must WIN
+_OVERDRAFT_LOW_AMOUNT = 100_000_000  # low phlo-price → lower cost → must LOSE
 _OVERDRAFT_HIGH_PRICE = 10
 _OVERDRAFT_LOW_PRICE = 1
 
@@ -165,7 +165,9 @@ class _BackgroundLoad:
             return
         self._stop.set()
         self._thread.join(timeout=join_timeout)
-        logging.info("Background load stopped: %d transfers, %d errors", self._counter, self._errors)
+        logging.info(
+            "Background load stopped: %d transfers, %d errors", self._counter, self._errors
+        )
         self._thread = None
 
     def _run(self) -> None:
@@ -173,8 +175,12 @@ class _BackgroundLoad:
             node = self._producers[self._counter % len(self._producers)]
             try:
                 did = node.get_vault().transfer(
-                    _BG_SRC_ADDR, _BG_DST_ADDR, _BG_TRANSFER_AMOUNT, _BG_SRC_KEY,
-                    phlo_price=1, phlo_limit=_PHLO_LIMIT,
+                    _BG_SRC_ADDR,
+                    _BG_DST_ADDR,
+                    _BG_TRANSFER_AMOUNT,
+                    _BG_SRC_KEY,
+                    phlo_price=1,
+                    phlo_limit=_PHLO_LIMIT,
                 )
                 with self._lock:
                     self._deploy_ids.append(did)
@@ -187,8 +193,10 @@ class _BackgroundLoad:
 
 # ── Strict finalization helper (mirrors lifecycle's bg-load assertion) ───────
 
-def _assert_all_finalized(producers, all_nodes, deploy_ids: List[str], timeouts,
-                          label: str) -> None:
+
+def _assert_all_finalized(
+    producers, all_nodes, deploy_ids: List[str], timeouts, label: str
+) -> None:
     """Every deploy in ``deploy_ids`` must finalize on EVERY node — zero
     tolerance for silently dropped work.
 
@@ -205,8 +213,9 @@ def _assert_all_finalized(producers, all_nodes, deploy_ids: List[str], timeouts,
     )
 
 
-def _assert_bg_load_robust(producers, all_nodes, bg, src0: int, dst0: int,
-                           timeouts, label: str) -> None:
+def _assert_bg_load_robust(
+    producers, all_nodes, bg, src0: int, dst0: int, timeouts, label: str
+) -> None:
     """Robust bg-load verification on ALL nodes — the same non-regression +
     exact-reconciliation principle the foreground scenarios apply, carried over
     to the always-on same-vault transfer stream.
@@ -227,8 +236,13 @@ def _assert_bg_load_robust(producers, all_nodes, bg, src0: int, dst0: int,
     want_dst = dst0 + n * _BG_TRANSFER_AMOUNT
     min_src_debit = n * _BG_TRANSFER_AMOUNT
     await_balance_converges_on_all_nodes(
-        all_nodes, _BG_DST_ADDR, want_dst, timeouts.finalization * 2, f"{label}-dst",
-        non_regression="up", upper_bound=want_dst,
+        all_nodes,
+        _BG_DST_ADDR,
+        want_dst,
+        timeouts.finalization * 2,
+        f"{label}-dst",
+        non_regression="up",
+        upper_bound=want_dst,
     )
     lfb = assert_all_nodes_agree_on_lfb(all_nodes, timeout=timeouts.finalization)
     src_final = assert_balance_consistent_across_nodes(all_nodes, _BG_SRC_ADDR, lfb)
@@ -236,8 +250,13 @@ def _assert_bg_load_robust(producers, all_nodes, bg, src0: int, dst0: int,
         f"[{label}] bg-src under-debited: source fell by {src0 - src_final} < transferred "
         f"{min_src_debit} — a finalized debit was lost"
     )
-    logging.info("%s: reconciled %d bg transfers on all nodes — dst->%d (exact), src->%d (incl gas)",
-                 label, n, want_dst, src_final)
+    logging.info(
+        "%s: reconciled %d bg transfers on all nodes — dst->%d (exact), src->%d (incl gas)",
+        label,
+        n,
+        want_dst,
+        src_final,
+    )
 
 
 def _deploy_on_each(shard, term_for, timeouts) -> List[str]:
@@ -248,8 +267,9 @@ def _deploy_on_each(shard, term_for, timeouts) -> List[str]:
     deploy_ids: List[str] = []
     for name, key in _PRODUCER_KEYS.items():
         node = shard.node(name)
-        did = node.deploy_string(term_for(name), key,
-                                 phlo_limit=_PHLO_LIMIT, phlo_price=_PHLO_PRICE)
+        did = node.deploy_string(
+            term_for(name), key, phlo_limit=_PHLO_LIMIT, phlo_price=_PHLO_PRICE
+        )
         deploy_ids.append(did)
         logging.info("RMW_DEPLOY_ID node=%s deploy_id=%s", name, did)
     for name, did in zip(_PRODUCER_KEYS, deploy_ids):
@@ -266,8 +286,9 @@ def _deploy_k_on_each(shard, term_for, k: int, timeouts) -> List[str]:
     for i in range(k):
         for name, key in _PRODUCER_KEYS.items():
             node = shard.node(name)
-            did = node.deploy_string(term_for(name, i), key,
-                                     phlo_limit=_PHLO_LIMIT, phlo_price=_PHLO_PRICE)
+            did = node.deploy_string(
+                term_for(name, i), key, phlo_limit=_PHLO_LIMIT, phlo_price=_PHLO_PRICE
+            )
             submitted.append((node, did))
             logging.info("FANOUT_DEPLOY_ID node=%s i=%d deploy_id=%s", name, i, did)
     for node, did in submitted:
@@ -279,12 +300,14 @@ def _finalize_setup(shard, term: str, timeouts) -> None:
     """Deploy a one-time setup term on validator1 and wait until it finalizes
     cluster-wide so the initialized cell is visible to every proposer."""
     v1 = shard.node("validator1")
-    did = v1.deploy_string(term, _PRODUCER_KEYS["validator1"],
-                           phlo_limit=_PHLO_LIMIT, phlo_price=_PHLO_PRICE)
+    did = v1.deploy_string(
+        term, _PRODUCER_KEYS["validator1"], phlo_limit=_PHLO_LIMIT, phlo_price=_PHLO_PRICE
+    )
     block = wait_for_deploy_included(v1, did, timeouts.deploy_inclusion * 3)
     wait_for_finalized(v1, block.blockNumber, timeouts.finalization * 3)
-    assert_block_finalized_on_all_nodes(shard.all_nodes, block.blockHash,
-                                        timeout=timeouts.finalization * 2)
+    assert_block_finalized_on_all_nodes(
+        shard.all_nodes, block.blockHash, timeout=timeouts.finalization * 2
+    )
 
 
 def _await_map_settles(all_nodes, channel, accept, allowed_keys, timeout, label):
@@ -356,6 +379,7 @@ def _await_settles(all_nodes, channel, accept, timeout, label):
 
 # ── Fixture: dedicated user-contract shard ───────────────────────────────────
 
+
 @pytest.fixture(scope="module")
 def user_shard(provider, timeouts):
     config = ShardConfig(
@@ -373,7 +397,8 @@ def user_shard(provider, timeouts):
             (_MERGE_DEST_ADDR, _WALLET_BALANCE),
             (_OVERDRAFT_SRC_ADDR, _OVERDRAFT_SRC_BALANCE),
             (_OVERDRAFT_DST_ADDR, _WALLET_BALANCE),
-        ] + _PRODUCER_WALLETS,
+        ]
+        + _PRODUCER_WALLETS,
     )
     shard = Shard.create(provider, config, timeouts)
     try:
@@ -383,6 +408,7 @@ def user_shard(provider, timeouts):
 
 
 # ── Tests ────────────────────────────────────────────────────────────────────
+
 
 def test_independent_channels_merge_in_parallel(user_shard, timeouts):
     """Concurrent writes to DISTINCT per-key cells must all land — different
@@ -408,14 +434,18 @@ def test_independent_channels_merge_in_parallel(user_shard, timeouts):
         _assert_all_finalized(producers, all_nodes, deploy_ids, timeouts, "independent-channels")
         for name, val in expected.items():
             await_channel_converges_on_all_nodes(
-                all_nodes, f"ucc_kv_{name}", val, timeouts.finalization * 2,
+                all_nodes,
+                f"ucc_kv_{name}",
+                val,
+                timeouts.finalization * 2,
                 f"independent-{name}",
             )
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
-                               timeouts, "bg-load(independent)")
+        _assert_bg_load_robust(
+            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(independent)"
+        )
 
 
 def test_single_cell_map_concurrent_adds_all_resolve(user_shard, timeouts):
@@ -444,24 +474,37 @@ def test_single_cell_map_concurrent_adds_all_resolve(user_shard, timeouts):
 
         # One concurrent op per proposer per round. ("set", key, val) | ("del", key).
         rounds = [
-            {"validator1": ("set", "a", 1), "validator2": ("set", "b", 2),
-             "validator3": ("set", "c", 3)},                       # adds
-            {"validator1": ("del", "a"), "validator2": ("set", "d", 4),
-             "validator3": ("set", "e", 5)},                       # delete a (+ distinct adds)
-            {"validator1": ("set", "a", 9), "validator2": ("set", "b", 20),
-             "validator3": ("set", "f", 6)},                       # re-add a, update b, add f
+            {
+                "validator1": ("set", "a", 1),
+                "validator2": ("set", "b", 2),
+                "validator3": ("set", "c", 3),
+            },  # adds
+            {
+                "validator1": ("del", "a"),
+                "validator2": ("set", "d", 4),
+                "validator3": ("set", "e", 5),
+            },  # delete a (+ distinct adds)
+            {
+                "validator1": ("set", "a", 9),
+                "validator2": ("set", "b", 20),
+                "validator3": ("set", "f", 6),
+            },  # re-add a, update b, add f
         ]
 
         expected: dict = {}
-        volatile: set = set()           # keys revisited by del/update/re-add — non-monotone
+        volatile: set = set()  # keys revisited by del/update/re-add — non-monotone
         for rnd, ops in enumerate(rounds):
+
             def term_for(name, ops=ops):
                 op = ops[name]
                 if op[0] == "set":
-                    return (f'for (@m <- @"ucc_map_cell") {{ '
-                            f'@"ucc_map_cell"!(m.set("{op[1]}", {op[2]})) }}')
-                return (f'for (@m <- @"ucc_map_cell") {{ '
-                        f'@"ucc_map_cell"!(m.delete("{op[1]}")) }}')
+                    return (
+                        f'for (@m <- @"ucc_map_cell") {{ '
+                        f'@"ucc_map_cell"!(m.set("{op[1]}", {op[2]})) }}'
+                    )
+                return (
+                    f'for (@m <- @"ucc_map_cell") {{ ' f'@"ucc_map_cell"!(m.delete("{op[1]}")) }}'
+                )
 
             ids = _deploy_on_each(shard, term_for, timeouts)
             _assert_all_finalized(producers, all_nodes, ids, timeouts, f"map-round-{rnd}")
@@ -478,14 +521,20 @@ def test_single_cell_map_concurrent_adds_all_resolve(user_shard, timeouts):
             # Drive the finalized cell to this round's exact fold on EVERY node, asserting
             # no add-only finalized key vanishes en route (the #71 non-regression check).
             await_channel_converges_on_all_nodes(
-                all_nodes, "ucc_map_cell", expected, timeouts.finalization * 3,
-                f"map-round-{rnd}", non_regression="map", volatile=volatile,
+                all_nodes,
+                "ucc_map_cell",
+                expected,
+                timeouts.finalization * 3,
+                f"map-round-{rnd}",
+                non_regression="map",
+                volatile=volatile,
             )
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
-                               timeouts, "bg-load(single-cell)")
+        _assert_bg_load_robust(
+            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(single-cell)"
+        )
 
 
 def test_same_key_conflict_resolves_to_single_value(user_shard, timeouts):
@@ -513,14 +562,18 @@ def test_same_key_conflict_resolves_to_single_value(user_shard, timeouts):
             # Distinct candidate triple per round so each round is a fresh conflict AND the
             # losers' recovery must re-base onto the prior round's settled value (cross-round
             # stress). Many rounds = many samples of the cone-shape-dependent merge ordering.
-            candidates = {"validator1": rnd * 3 + 1,
-                          "validator2": rnd * 3 + 2,
-                          "validator3": rnd * 3 + 3}
+            candidates = {
+                "validator1": rnd * 3 + 1,
+                "validator2": rnd * 3 + 2,
+                "validator3": rnd * 3 + 3,
+            }
             candidate_vals = set(candidates.values())
             ids = _deploy_on_each(
                 shard,
-                lambda name, c=candidates: (f'for (@m <- @"ucc_conflict_map") {{ '
-                              f'@"ucc_conflict_map"!(m.set("shared", {c[name]})) }}'),
+                lambda name, c=candidates: (
+                    f'for (@m <- @"ucc_conflict_map") {{ '
+                    f'@"ucc_conflict_map"!(m.set("shared", {c[name]})) }}'
+                ),
                 timeouts,
             )
             _assert_all_finalized(producers, all_nodes, ids, timeouts, f"same-key-conflict-{rnd}")
@@ -530,19 +583,25 @@ def test_same_key_conflict_resolves_to_single_value(user_shard, timeouts):
             # structural invariant lives in _await_map_settles). Recovery re-lands losers,
             # so the value may move between candidates before settling.
             settled = _await_map_settles(
-                all_nodes, "ucc_conflict_map",
+                all_nodes,
+                "ucc_conflict_map",
                 accept=lambda m, cv=candidate_vals: m.get("shared") in cv,
                 allowed_keys={"shared"},
                 timeout=timeouts.finalization * 3,
                 label=f"same-key-conflict-{rnd}",
             )
-            logging.info("same-key-conflict round %d/%d: settled to shared=%r on all nodes",
-                         rnd, _CONFLICT_ROUNDS, settled["shared"])
+            logging.info(
+                "same-key-conflict round %d/%d: settled to shared=%r on all nodes",
+                rnd,
+                _CONFLICT_ROUNDS,
+                settled["shared"],
+            )
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
-                               timeouts, "bg-load(same-key-conflict)")
+        _assert_bg_load_robust(
+            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(same-key-conflict)"
+        )
 
 
 def test_guarded_rmw_conflict_no_double_apply(user_shard, timeouts):
@@ -571,9 +630,11 @@ def test_guarded_rmw_conflict_no_double_apply(user_shard, timeouts):
 
         ids = _deploy_on_each(
             shard,
-            lambda name: ('for (@n <- @"ucc_guarded_counter") { '
-                          'if (n >= 60) { @"ucc_guarded_counter"!(n - 60) } '
-                          'else { @"ucc_guarded_counter"!(n) } }'),
+            lambda name: (
+                'for (@n <- @"ucc_guarded_counter") { '
+                'if (n >= 60) { @"ucc_guarded_counter"!(n - 60) } '
+                'else { @"ucc_guarded_counter"!(n) } }'
+            ),
             timeouts,
         )
         _assert_all_finalized(producers, all_nodes, ids, timeouts, "guarded-rmw")
@@ -582,14 +643,20 @@ def test_guarded_rmw_conflict_no_double_apply(user_shard, timeouts):
         # guard and no-ops. Converge to 40 on every node, never rising (down-only) and —
         # critically — never below 40 (a double-applied decrement is the item-1 mode).
         await_channel_converges_on_all_nodes(
-            all_nodes, "ucc_guarded_counter", 40, timeouts.finalization * 3,
-            "guarded-rmw", non_regression="down", lower_bound=40,
+            all_nodes,
+            "ucc_guarded_counter",
+            40,
+            timeouts.finalization * 3,
+            "guarded-rmw",
+            non_regression="down",
+            lower_bound=40,
         )
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
-                               timeouts, "bg-load(guarded-rmw)")
+        _assert_bg_load_robust(
+            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(guarded-rmw)"
+        )
 
 
 def test_mergeable_balance_concurrent_transfers_compose(user_shard, timeouts):
@@ -616,24 +683,44 @@ def test_mergeable_balance_concurrent_transfers_compose(user_shard, timeouts):
         deploy_ids: List[str] = []
         for name, key in _PRODUCER_KEYS.items():
             src_addr = key.get_public_key().get_vault_address()
-            deploy_ids.append(shard.node(name).get_vault().transfer(
-                src_addr, _MERGE_DEST_ADDR, amounts[name], key,
-                phlo_price=1, phlo_limit=_PHLO_LIMIT))
+            deploy_ids.append(
+                shard.node(name)
+                .get_vault()
+                .transfer(
+                    src_addr,
+                    _MERGE_DEST_ADDR,
+                    amounts[name],
+                    key,
+                    phlo_price=1,
+                    phlo_limit=_PHLO_LIMIT,
+                )
+            )
         for name, did in zip(_PRODUCER_KEYS, deploy_ids):
             wait_for_deploy_included(shard.node(name), did, timeouts.deploy_inclusion * 3)
-        _assert_all_finalized([shard.node(n) for n in _PRODUCER_KEYS], all_nodes,
-                              deploy_ids, timeouts, "mergeable-balance")
+        _assert_all_finalized(
+            [shard.node(n) for n in _PRODUCER_KEYS],
+            all_nodes,
+            deploy_ids,
+            timeouts,
+            "mergeable-balance",
+        )
 
         expected = before + sum(amounts.values())
         await_balance_converges_on_all_nodes(
-            all_nodes, _MERGE_DEST_ADDR, expected, timeouts.finalization * 2,
-            "mergeable-balance", non_regression="up", upper_bound=expected,
+            all_nodes,
+            _MERGE_DEST_ADDR,
+            expected,
+            timeouts.finalization * 2,
+            "mergeable-balance",
+            non_regression="up",
+            upper_bound=expected,
         )
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
-                               timeouts, "bg-load(balance)")
+        _assert_bg_load_robust(
+            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(balance)"
+        )
 
 
 def test_overdraft_cost_priority_keeps_higher_cost_transfer(user_shard, timeouts):
@@ -664,12 +751,30 @@ def test_overdraft_cost_priority_keeps_higher_cost_transfer(user_shard, timeouts
 
         # High-cost transfer on validator1, low-cost on validator2 — siblings the next
         # block multi-parent-merges. Both debit the same source; together they overdraw.
-        high_id = shard.node("validator1").get_vault().transfer(
-            _OVERDRAFT_SRC_ADDR, _OVERDRAFT_DST_ADDR, _OVERDRAFT_HIGH_AMOUNT,
-            _OVERDRAFT_SRC_KEY, phlo_price=_OVERDRAFT_HIGH_PRICE, phlo_limit=_PHLO_LIMIT)
-        low_id = shard.node("validator2").get_vault().transfer(
-            _OVERDRAFT_SRC_ADDR, _OVERDRAFT_DST_ADDR, _OVERDRAFT_LOW_AMOUNT,
-            _OVERDRAFT_SRC_KEY, phlo_price=_OVERDRAFT_LOW_PRICE, phlo_limit=_PHLO_LIMIT)
+        high_id = (
+            shard.node("validator1")
+            .get_vault()
+            .transfer(
+                _OVERDRAFT_SRC_ADDR,
+                _OVERDRAFT_DST_ADDR,
+                _OVERDRAFT_HIGH_AMOUNT,
+                _OVERDRAFT_SRC_KEY,
+                phlo_price=_OVERDRAFT_HIGH_PRICE,
+                phlo_limit=_PHLO_LIMIT,
+            )
+        )
+        low_id = (
+            shard.node("validator2")
+            .get_vault()
+            .transfer(
+                _OVERDRAFT_SRC_ADDR,
+                _OVERDRAFT_DST_ADDR,
+                _OVERDRAFT_LOW_AMOUNT,
+                _OVERDRAFT_SRC_KEY,
+                phlo_price=_OVERDRAFT_LOW_PRICE,
+                phlo_limit=_PHLO_LIMIT,
+            )
+        )
         for node, did in ((shard.node("validator1"), high_id), (shard.node("validator2"), low_id)):
             wait_for_deploy_included(node, did, timeouts.deploy_inclusion * 3)
 
@@ -709,13 +814,18 @@ def test_overdraft_cost_priority_keeps_higher_cost_transfer(user_shard, timeouts
             f"[overdraft] dest did not settle to exactly one of "
             f"{{{accept_high}, {accept_low}}}; last all-node read={last_dst}"
         )
-        logging.info("overdraft: dest settled to %s (one of high=%d/low=%d), source>=0, all nodes",
-                     last_dst, accept_high, accept_low)
+        logging.info(
+            "overdraft: dest settled to %s (one of high=%d/low=%d), source>=0, all nodes",
+            last_dst,
+            accept_high,
+            accept_low,
+        )
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
-                               timeouts, "bg-load(overdraft)")
+        _assert_bg_load_robust(
+            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(overdraft)"
+        )
 
 
 def test_nested_map_concurrent_distinct_inner_keys(user_shard, timeouts):
@@ -741,15 +851,14 @@ def test_nested_map_concurrent_distinct_inner_keys(user_shard, timeouts):
         _finalize_setup(shard, '@"ucc_nested"!({"bonds" : {}})', timeouts)
         inner: dict = {}
         for rnd in range(_CONFLICT_ROUNDS):
-            keys = {"validator1": f"v1_{rnd}", "validator2": f"v2_{rnd}",
-                    "validator3": f"v3_{rnd}"}
-            vals = {"validator1": rnd * 3 + 1, "validator2": rnd * 3 + 2,
-                    "validator3": rnd * 3 + 3}
+            keys = {"validator1": f"v1_{rnd}", "validator2": f"v2_{rnd}", "validator3": f"v3_{rnd}"}
+            vals = {"validator1": rnd * 3 + 1, "validator2": rnd * 3 + 2, "validator3": rnd * 3 + 3}
             ids = _deploy_on_each(
                 shard,
                 lambda name, k=keys, v=vals: (
                     f'for (@m <- @"ucc_nested") {{ @"ucc_nested"!('
-                    f'm.set("bonds", m.getOrElse("bonds", {{}}).set("{k[name]}", {v[name]}))) }}'),
+                    f'm.set("bonds", m.getOrElse("bonds", {{}}).set("{k[name]}", {v[name]}))) }}'
+                ),
                 timeouts,
             )
             _assert_all_finalized(producers, all_nodes, ids, timeouts, f"nested-map-{rnd}")
@@ -758,14 +867,18 @@ def test_nested_map_concurrent_distinct_inner_keys(user_shard, timeouts):
             # Converge to {"bonds": <exact inner union>} on every node. An inner entry
             # missing/changed is the recursive-merge-drops-an-entry (#71) mode.
             await_channel_converges_on_all_nodes(
-                all_nodes, "ucc_nested", {"bonds": dict(inner)},
-                timeouts.finalization * 3, f"nested-map-{rnd}",
+                all_nodes,
+                "ucc_nested",
+                {"bonds": dict(inner)},
+                timeouts.finalization * 3,
+                f"nested-map-{rnd}",
             )
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
-                               timeouts, "bg-load(nested-map)")
+        _assert_bg_load_robust(
+            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(nested-map)"
+        )
 
 
 def test_concurrent_delete_and_set_same_key(user_shard, timeouts):
@@ -805,19 +918,23 @@ def test_concurrent_delete_and_set_same_key(user_shard, timeouts):
             # Settle: "y" == this round's value; "x" either absent (del last) or == set_val
             # (set last); single-valued, node-identical, no spurious keys (per-poll in helper).
             settled = _await_map_settles(
-                all_nodes, "ucc_delset",
-                accept=lambda m, sv=set_val, yv=y_val: m.get("y") == yv and m.get("x") in (None, sv),
+                all_nodes,
+                "ucc_delset",
+                accept=lambda m, sv=set_val, yv=y_val: m.get("y") == yv
+                and m.get("x") in (None, sv),
                 allowed_keys={"x", "y"},
                 timeout=timeouts.finalization * 3,
                 label=f"del-set-{rnd}",
             )
-            logging.info("del-set round %d/%d: settled to %r on all nodes",
-                         rnd, _CONFLICT_ROUNDS, settled)
+            logging.info(
+                "del-set round %d/%d: settled to %r on all nodes", rnd, _CONFLICT_ROUNDS, settled
+            )
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
-                               timeouts, "bg-load(del-set)")
+        _assert_bg_load_robust(
+            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(del-set)"
+        )
 
 
 def test_high_fanout_distinct_keys_all_land(user_shard, timeouts):
@@ -847,22 +964,30 @@ def test_high_fanout_distinct_keys_all_land(user_shard, timeouts):
                 expected[f"{name}_{i}"] = idx
         ids = _deploy_k_on_each(
             shard,
-            lambda name, i: (f'for (@m <- @"ucc_fanout") {{ '
-                             f'@"ucc_fanout"!(m.set("{name}_{i}", {expected[f"{name}_{i}"]})) }}'),
-            _FANOUT_PER_NODE, timeouts,
+            lambda name, i: (
+                f'for (@m <- @"ucc_fanout") {{ '
+                f'@"ucc_fanout"!(m.set("{name}_{i}", {expected[f"{name}_{i}"]})) }}'
+            ),
+            _FANOUT_PER_NODE,
+            timeouts,
         )
         _assert_all_finalized(producers, all_nodes, ids, timeouts, "high-fanout")
         # Every distinct key must land; the finalized map equals the full set on every node,
         # and no already-finalized key vanishes en route (#71 non-regression).
         await_channel_converges_on_all_nodes(
-            all_nodes, "ucc_fanout", expected, timeouts.finalization * 4, "high-fanout",
+            all_nodes,
+            "ucc_fanout",
+            expected,
+            timeouts.finalization * 4,
+            "high-fanout",
             non_regression="map",
         )
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
-                               timeouts, "bg-load(high-fanout)")
+        _assert_bg_load_robust(
+            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(high-fanout)"
+        )
 
 
 def test_set_cell_concurrent_distinct_elements_union(user_shard, timeouts):
@@ -885,12 +1010,16 @@ def test_set_cell_concurrent_distinct_elements_union(user_shard, timeouts):
         _finalize_setup(shard, '@"ucc_set"!(Set())', timeouts)
         elements: set = set()
         for rnd in range(_CONFLICT_ROUNDS):
-            elems = {"validator1": rnd * 3 + 1, "validator2": rnd * 3 + 2,
-                     "validator3": rnd * 3 + 3}
+            elems = {
+                "validator1": rnd * 3 + 1,
+                "validator2": rnd * 3 + 2,
+                "validator3": rnd * 3 + 3,
+            }
             ids = _deploy_on_each(
                 shard,
-                lambda name, e=elems: (f'for (@s <- @"ucc_set") {{ '
-                                       f'@"ucc_set"!(s.add({e[name]})) }}'),
+                lambda name, e=elems: (
+                    f'for (@s <- @"ucc_set") {{ ' f'@"ucc_set"!(s.add({e[name]})) }}'
+                ),
                 timeouts,
             )
             _assert_all_finalized(producers, all_nodes, ids, timeouts, f"set-union-{rnd}")
@@ -899,15 +1028,18 @@ def test_set_cell_concurrent_distinct_elements_union(user_shard, timeouts):
             # element is a union-drops-a-member regression). Membership check tolerates the
             # set/list decode form.
             _await_settles(
-                all_nodes, "ucc_set",
+                all_nodes,
+                "ucc_set",
                 accept=lambda v, ex=set(elements): v is not None and all(e in v for e in ex),
-                timeout=timeouts.finalization * 3, label=f"set-union-{rnd}",
+                timeout=timeouts.finalization * 3,
+                label=f"set-union-{rnd}",
             )
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
-                               timeouts, "bg-load(set-union)")
+        _assert_bg_load_robust(
+            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(set-union)"
+        )
 
 
 def test_scalar_value_conflict_resolves_deterministically(user_shard, timeouts):
@@ -931,10 +1063,10 @@ def test_scalar_value_conflict_resolves_deterministically(user_shard, timeouts):
     # (type label, [(rholang literal, decoded value) per proposer]).
     type_cases = [
         ("string", [('"alpha"', "alpha"), ('"bravo"', "bravo"), ('"charlie"', "charlie")]),
-        ("bool", [('true', True), ('false', False), ('true', True)]),
-        ("int", [('111', 111), ('222', 222), ('333', 333)]),
-        ("list", [('[1, 2]', [1, 2]), ('[3, 4]', [3, 4]), ('[5, 6]', [5, 6])]),
-        ("tuple", [('(1, 2)', (1, 2)), ('(3, 4)', (3, 4)), ('(5, 6)', (5, 6))]),
+        ("bool", [("true", True), ("false", False), ("true", True)]),
+        ("int", [("111", 111), ("222", 222), ("333", 333)]),
+        ("list", [("[1, 2]", [1, 2]), ("[3, 4]", [3, 4]), ("[5, 6]", [5, 6])]),
+        ("tuple", [("(1, 2)", (1, 2)), ("(3, 4)", (3, 4)), ("(5, 6)", (5, 6))]),
     ]
     try:
         for type_label, cands in type_cases:
@@ -947,24 +1079,32 @@ def test_scalar_value_conflict_resolves_deterministically(user_shard, timeouts):
             for rnd in range(3):
                 ids = _deploy_on_each(
                     shard,
-                    lambda name, c=cell, l=lits: (f'for (@m <- @"{c}") {{ '
-                                                  f'@"{c}"!(m.set("v", {l[name]})) }}'),
+                    lambda name, c=cell, lts=lits: (
+                        f'for (@m <- @"{c}") {{ ' f'@"{c}"!(m.set("v", {lts[name]})) }}'
+                    ),
                     timeouts,
                 )
-                _assert_all_finalized(producers, all_nodes, ids, timeouts,
-                                      f"scalar-{type_label}-{rnd}")
+                _assert_all_finalized(
+                    producers, all_nodes, ids, timeouts, f"scalar-{type_label}-{rnd}"
+                )
                 # Settle to {"v": <one written candidate>}, single-keyed, node-identical.
                 settled = _await_map_settles(
-                    all_nodes, cell,
+                    all_nodes,
+                    cell,
                     accept=lambda m, d=decoded: m.get("v") is not None and _norm(m.get("v")) in d,
                     allowed_keys={"v"},
                     timeout=timeouts.finalization * 3,
                     label=f"scalar-{type_label}-{rnd}",
                 )
-                logging.info("scalar-%s round %d: settled to v=%r on all nodes",
-                             type_label, rnd, settled.get("v"))
+                logging.info(
+                    "scalar-%s round %d: settled to v=%r on all nodes",
+                    type_label,
+                    rnd,
+                    settled.get("v"),
+                )
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(producers, all_nodes, bg, bg_src0, bg_dst0,
-                               timeouts, "bg-load(scalar-types)")
+        _assert_bg_load_robust(
+            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(scalar-types)"
+        )

@@ -53,8 +53,13 @@ def dump_endpoints(shard, *, filename: str = "endpoints.json", log: bool = True)
         for name, ep in endpoints.items():
             logger.info(
                 "ENDPOINT %-11s host=%s protocol=%d grpc_ext=%d grpc_int=%d http=%d (%s)",
-                name, ep["host"], ep["protocol"], ep["grpc_ext"], ep["grpc_int"],
-                ep["http"], ep["http_url"],
+                name,
+                ep["host"],
+                ep["protocol"],
+                ep["grpc_ext"],
+                ep["grpc_int"],
+                ep["http"],
+                ep["http_url"],
             )
     session_dir = _session_dir(shard)
     path: Optional[Path] = None

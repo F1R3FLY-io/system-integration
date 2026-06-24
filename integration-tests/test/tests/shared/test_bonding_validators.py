@@ -684,9 +684,7 @@ def test_bonding_validators(shared_shard, timeouts) -> None:
     # reporting a skip. The Phase C body below is preserved verbatim and
     # runs only when the flag is True.
     if not PHASE_C_ENABLED:
-        logging.info(
-            "Phase C held out (PHASE_C_ENABLED=False); Phases A+B passed → test PASSES"
-        )
+        logging.info("Phase C held out (PHASE_C_ENABLED=False); Phases A+B passed → test PASSES")
         return
 
     # ── Phase C: fresh observer LFS-syncs against 5-bonded shard ──

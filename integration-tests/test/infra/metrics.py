@@ -275,10 +275,16 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
     # parents_post_state sub-stage breakdown — where the multi-parent merge cost goes
     # (the ~1.8s/multi-parent that used to be lumped under parents_post_state).
     pps_substages = [
-        ("floor_compute (clique floor)", "block_processing_stage_parents_post_state_floor_compute_time"),
+        (
+            "floor_compute (clique floor)",
+            "block_processing_stage_parents_post_state_floor_compute_time",
+        ),
         ("fs_seal (FS fold)", "block_processing_stage_parents_post_state_fs_seal_time"),
         ("scope_build (cone walk)", "block_processing_stage_parents_post_state_scope_build_time"),
-        ("ensure_mergeable (recompute)", "block_processing_stage_parents_post_state_ensure_mergeable_time"),
+        (
+            "ensure_mergeable (recompute)",
+            "block_processing_stage_parents_post_state_ensure_mergeable_time",
+        ),
         ("dag merge", "block_processing_stage_parents_post_state_merge_time"),
     ]
     pps_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in pps_substages)

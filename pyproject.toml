@@ -28,7 +28,7 @@ urllib3 = ">=1.24.2"
 ecdsa = "*"
 eth-hash = { version = "*", extras = ["pycryptodome"] }
 pycryptodome = "*"
-pyf1r3fly = { path = "services/pyf1r3fly", develop = true }
+pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git", rev = "175f2aa5b53e" }
 requests = "*"
 pytest-timeout = "^2.4.0"
 pytest-instafail = "^0.5.0"
@@ -79,3 +79,7 @@ ignore = ["N999"]
 # data layouts; keep shardctl/ strict at 100 but allow integration-tests
 # to exceed for readability where wrapping would hurt.
 "integration-tests/**/*.py" = ["E501"]
+# conftest.py must set GRPC_ENABLE_FORK_SUPPORT before the .infra imports load
+# gRPC (transitively via pyf1r3fly.client), so its module-level imports
+# legitimately follow that os.environ call.
+"integration-tests/test/conftest.py" = ["E402"]

@@ -1228,7 +1228,7 @@ optional = false
 python-versions = ">=3.10"
 groups = ["integration"]
 files = []
-develop = true
+develop = false
 
 [package.dependencies]
 click = ">=8.1.0"
@@ -1242,11 +1242,13 @@ pycryptodome = ">=3.19.0"
 python-bitcoinlib = ">=0.12.0"
 
 [package.extras]
-dev = ["grpcio-tools (>=1.60.0)", "isort (>=5.12.0)", "mypy (>=1.7.0)", "mypy-protobuf (>=3.5.0)", "pytest (>=8.0.0)", "sphinx (>=7.2.0)", "typing-extensions (>=4.8.0)"]
+dev = ["grpcio-tools (>=1.60.0)", "isort (>=5.12.0)", "mypy (>=1.7.0)", "mypy-protobuf (>=3.5.0)", "pytest (>=8.0.0)", "typing-extensions (>=4.8.0)"]
 
 [package.source]
-type = "directory"
-url = "services/pyf1r3fly"
+type = "git"
+url = "https://github.com/F1R3FLY-io/pyf1r3fly.git"
+reference = "175f2aa5b53e"
+resolved_reference = "175f2aa5b53e48d0d459d9411fdaebebbec850e2"
 
 [[package]]
 name = "pyflakes"
@@ -1776,4 +1778,4 @@ test = ["pytest", "websockets"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "cb556a15d18f4cd6c6b448effef8c7602c6e139b22ff5c74fbe3a20d7f4b18bd"
+content-hash = "b026e7ec0f581a5015a61f6a9a26859748862df8aa5b8c53beba6395bc8c95f8"

@@ -326,9 +326,11 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                 lfb_now = _get_lfb_number(v1)
                 peak_lag = tip_now - lfb_now
                 logging.info(
-                    "  Cone at end of %s submission: tip-LFB lag = %d blocks "
-                    "(tip #%d, LFB #%d)",
-                    phase_name, peak_lag, tip_now, lfb_now,
+                    "  Cone at end of %s submission: tip-LFB lag = %d blocks " "(tip #%d, LFB #%d)",
+                    phase_name,
+                    peak_lag,
+                    tip_now,
+                    lfb_now,
                 )
 
                 tracker.wait_for_finalization(timeout=finalization_timeout)

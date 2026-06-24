@@ -122,13 +122,10 @@ class DockerCleanupRegistry:
             )
             if total:
                 reason = (
-                    "--keep-running"
-                    if self.keep_running
-                    else "--keep-on-failure (a test failed)"
+                    "--keep-running" if self.keep_running else "--keep-on-failure (a test failed)"
                 )
                 logger.info(
-                    "DockerCleanupRegistry: %s, skipping cleanup of "
-                    "%d resources for session %s",
+                    "DockerCleanupRegistry: %s, skipping cleanup of " "%d resources for session %s",
                     reason,
                     total,
                     self.session_id,

@@ -35,7 +35,7 @@ import sys
 import urllib.request
 from collections import deque
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 _DATA_ROOT = Path(__file__).resolve().parents[2] / ".subprocess-data"
 
@@ -77,9 +77,7 @@ def recover_ports(session_id: str) -> Dict[str, Dict[str, int]]:
     session_dir = _DATA_ROOT / session_id
     if not session_dir.is_dir():
         raise SystemExit(f"no session data at {session_dir}")
-    roles = sorted(
-        d.name for d in session_dir.iterdir() if d.is_dir() and d.name != "genesis"
-    )
+    roles = sorted(d.name for d in session_dir.iterdir() if d.is_dir() and d.name != "genesis")
     result: Dict[str, Dict[str, int]] = {}
     for role in roles:
         role_dir = str(session_dir / role)
@@ -167,7 +165,9 @@ def is_ancestor(http_port: int, ancestor: str, descendant: str) -> Tuple[bool, L
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("session_id")
     ap.add_argument("command", choices=["ports", "lfb", "block", "ancestor"])
     ap.add_argument("args", nargs="*")
@@ -176,8 +176,10 @@ def main() -> int:
 
     if ns.command == "ports":
         for role, p in sorted(recover_ports(ns.session_id).items()):
-            print(f"{role:12} http={p.get('http')} grpc={p.get('grpc_ext')} "
-                  f"protocol={p.get('protocol')} discovery={p.get('discovery')}")
+            print(
+                f"{role:12} http={p.get('http')} grpc={p.get('grpc_ext')} "
+                f"protocol={p.get('protocol')} discovery={p.get('discovery')}"
+            )
         return 0
 
     port = _http_port(ns.session_id, ns.node)

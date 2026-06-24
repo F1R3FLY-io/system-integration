@@ -1206,7 +1206,7 @@ def test_cmd(
         poetry run shardctl test test_web_api --verbose       # Verbose output
         poetry run shardctl test --skip-setup                 # Test against running shard
         poetry run shardctl test --keep-running               # Leave shard up after tests
-        poetry run shardctl test --keep-on-failure -a -x      # Keep only a failing test's shard (-x via -a)
+        poetry run shardctl test --keep-on-failure -a -x      # Keep only a failing test's shard
         poetry run shardctl test --image myimage:latest       # Custom image
         F1R3FLY_NODE_IMAGE=mynode:dev poetry run shardctl test  # Env var override
     """

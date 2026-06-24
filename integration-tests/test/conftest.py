@@ -603,9 +603,7 @@ def check_node_logs_after_test(request, provider):
             try:
                 il = getattr(handle, "iter_log_lines", None)
                 start_offsets[handle.name] = (
-                    sum(1 for _ in il())
-                    if il is not None
-                    else len(handle.logs().splitlines())
+                    sum(1 for _ in il()) if il is not None else len(handle.logs().splitlines())
                 )
             except Exception:
                 start_offsets[handle.name] = 0
@@ -693,8 +691,7 @@ def resource_monitor(request):
     # provider's session root when available.
     provider = request.getfixturevalue("provider")
     # CSV + /metrics output only when --monitor; the ceiling kill runs regardless.
-    output_dir = (provider.monitor_output_dir
-                  if request.config.getoption("--monitor") else None)
+    output_dir = provider.monitor_output_dir if request.config.getoption("--monitor") else None
 
     # The provider declares whether (and how) its nodes can be guarded
     # out-of-process: host-process providers (subprocess) return a pgrep token,

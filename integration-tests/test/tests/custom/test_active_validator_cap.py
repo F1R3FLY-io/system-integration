@@ -58,8 +58,7 @@ def cap_shard(provider, timeouts):
     """A shard whose active-validator cap (== genesis count) is smaller than the bonded
     set it will grow to, so ``pickActiveValidators`` take(N) is actually exercised."""
     extra_wallets = [
-        (_vault_addr(ident), _WALLET_BALANCE)
-        for ident in (VALIDATOR4_ID, VALIDATOR5_ID)
+        (_vault_addr(ident), _WALLET_BALANCE) for ident in (VALIDATOR4_ID, VALIDATOR5_ID)
     ]
     config = ShardConfig(
         bonds=[
@@ -93,7 +92,8 @@ def test_active_validator_cap(cap_shard, timeouts) -> None:
     # Genesis fills the cap exactly at boot.
     poll_until(
         predicate=lambda: True if len(_validators_on(ro)) == _ACTIVE_CAP else None,
-        timeout=timeouts.epoch_transition, interval=timeouts.poll_interval,
+        timeout=timeouts.epoch_transition,
+        interval=timeouts.poll_interval,
         description=f"genesis active set == cap ({_ACTIVE_CAP})",
     )
 
@@ -111,7 +111,8 @@ def test_active_validator_cap(cap_shard, timeouts) -> None:
     # All five land in allBonds, but the active set stays capped.
     poll_until(
         predicate=lambda: True if len(ro.pos.get_bonds()) == 5 else None,
-        timeout=timeouts.epoch_transition, interval=timeouts.poll_interval,
+        timeout=timeouts.epoch_transition,
+        interval=timeouts.poll_interval,
         description="all 5 validators in allBonds",
     )
     # Cross an epoch boundary so pickActiveValidators runs on the 5-bonded set.
@@ -120,22 +121,29 @@ def test_active_validator_cap(cap_shard, timeouts) -> None:
     bonded = ro.pos.get_bonds()
     active = _validators_on(ro)
     assert len(bonded) == 5, f"expected 5 bonded, got {len(bonded)}: {bonded}"
-    assert len(active) == _ACTIVE_CAP, (
-        f"active set must cap at {_ACTIVE_CAP} despite 5 bonded, got {len(active)}: {active}")
+    assert (
+        len(active) == _ACTIVE_CAP
+    ), f"active set must cap at {_ACTIVE_CAP} despite 5 bonded, got {len(active)}: {active}"
     assert set(active) <= set(bonded), f"active not a subset of bonded: {active} vs {bonded}"
 
     # The capped shard must still finalize — prove via an ACTIVE genesis (at most 2 of 5
     # are inactive, so at least one genesis remains active).
     live_node, live_id = next(
-        (n, ident) for n, ident in
-        [(v1, VALIDATOR1_ID), (v2, VALIDATOR2_ID), (v3, VALIDATOR3_ID)]
+        (n, ident)
+        for n, ident in [(v1, VALIDATOR1_ID), (v2, VALIDATOR2_ID), (v3, VALIDATOR3_ID)]
         if ident.public_hex in active
     )
-    lid = live_node.deploy_string('@"cap-liveness"!(1)', live_id.private_key(),
-                                  phlo_limit=_BOND_PHLO_LIMIT, phlo_price=_BOND_PHLO_PRICE)
+    lid = live_node.deploy_string(
+        '@"cap-liveness"!(1)',
+        live_id.private_key(),
+        phlo_limit=_BOND_PHLO_LIMIT,
+        phlo_price=_BOND_PHLO_PRICE,
+    )
     lb = wait_for_deploy_included(live_node, lid, timeouts.deploy_inclusion * 5)
     wait_for_finalized(live_node, lb.blockNumber, timeouts.finalization * 5)
-    assert_block_finalized_on_all_nodes(shard.all_nodes, lb.blockHash,
-                                        timeout=timeouts.finalization * 5)
-    logging.info("active-validator cap: 5 bonded, exactly %d active, shard still finalizes",
-                 _ACTIVE_CAP)
+    assert_block_finalized_on_all_nodes(
+        shard.all_nodes, lb.blockHash, timeout=timeouts.finalization * 5
+    )
+    logging.info(
+        "active-validator cap: 5 bonded, exactly %d active, shard still finalizes", _ACTIVE_CAP
+    )

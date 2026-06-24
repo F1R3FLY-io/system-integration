@@ -127,8 +127,9 @@ def _host_memory() -> Dict[str, float]:
             if line.startswith("Pages free:"):
                 free = int(line.split(":")[1].strip().rstrip(".")) * page
         out["free_mb"] = free / 1e6
-        sw = subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True,
-                            text=True, timeout=5).stdout
+        sw = subprocess.run(
+            ["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True, timeout=5
+        ).stdout
         # "total = X.00M  used = Y.00M  free = Z.00M"
         m = re.search(r"used\s*=\s*([0-9.]+)M", sw)
         if m:
@@ -152,8 +153,9 @@ def _loadavg() -> Optional[float]:
 def _guardian_pids(token: str) -> List[int]:
     """PIDs of node processes carrying ``token`` (the session data root) in argv."""
     try:
-        out = subprocess.run(["pgrep", "-f", token], capture_output=True,
-                             text=True, timeout=5).stdout
+        out = subprocess.run(
+            ["pgrep", "-f", token], capture_output=True, text=True, timeout=5
+        ).stdout
     except Exception:  # noqa: BLE001
         return []
     pids: List[int] = []
@@ -174,7 +176,10 @@ def _sum_rss_mb(pids: List[int]) -> float:
     try:
         out = subprocess.run(
             ["ps", "-o", "rss=", "-p", ",".join(str(p) for p in pids)],
-            capture_output=True, text=True, timeout=5).stdout
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout
     except Exception:  # noqa: BLE001
         return 0.0
     total_kb = 0.0
@@ -229,7 +234,8 @@ def _guardian_loop(
         if free_floor_mb and "free_mb" in host and host["free_mb"] < free_floor_mb:
             reasons.append(
                 f"host available RAM {host['free_mb']:.0f}MB < floor {free_floor_mb:.0f}MB "
-                f"(swap used {host.get('swap_used_mb', 0.0):.0f}MB)")
+                f"(swap used {host.get('swap_used_mb', 0.0):.0f}MB)"
+            )
         if load_factor and cores:
             load1 = _loadavg()
             if load1 is not None and load1 > load_factor * cores:
@@ -374,8 +380,7 @@ class ResourceMonitor:
             return
         try:
             if self._breach_path.exists():
-                self._breach = (self._breach_path.read_text().strip()
-                                or "host guardian breach")
+                self._breach = self._breach_path.read_text().strip() or "host guardian breach"
                 logger.error("%s", self._breach)
                 self._stop_event.set()
         except OSError:
@@ -440,19 +445,28 @@ class ResourceMonitor:
             node_count += 1
             if self._ts_writer is not None:
                 self._ts_writer.writerow(
-                    [f"{elapsed:.1f}", name, f"{mem:.1f}", f"{cpu:.1f}",
-                     "" if limit is None else f"{limit:.1f}"]
+                    [
+                        f"{elapsed:.1f}",
+                        name,
+                        f"{mem:.1f}",
+                        f"{cpu:.1f}",
+                        "" if limit is None else f"{limit:.1f}",
+                    ]
                 )
             self._scrape_metrics(handle, name, elapsed)
 
         # System-wide row (page cache / swap not visible in per-proc RSS).
         host = _host_memory()
         if self._ts_writer is not None and host:
-            self._ts_writer.writerow([
-                f"{elapsed:.1f}", "__system__",
-                f"{host.get('free_mb', 0.0):.1f}", "",
-                f"{host.get('swap_used_mb', 0.0):.1f}",
-            ])
+            self._ts_writer.writerow(
+                [
+                    f"{elapsed:.1f}",
+                    "__system__",
+                    f"{host.get('free_mb', 0.0):.1f}",
+                    "",
+                    f"{host.get('swap_used_mb', 0.0):.1f}",
+                ]
+            )
         if self._ts_fh is not None:
             self._ts_fh.flush()
         if self._metrics_fh is not None:
@@ -487,8 +501,11 @@ class ResourceMonitor:
         logger.warning(
             "ResourceMonitor: total node RSS %.0fMB > ceiling %.0fMB "
             "(%d/%d consecutive) at t=%.0fs",
-            session_memory_mb, self._rss_ceiling_mb,
-            self._over_ceiling_count, self._ceiling_consecutive, elapsed,
+            session_memory_mb,
+            self._rss_ceiling_mb,
+            self._over_ceiling_count,
+            self._ceiling_consecutive,
+            elapsed,
         )
         if self._over_ceiling_count < self._ceiling_consecutive:
             return
@@ -603,9 +620,16 @@ class ResourceMonitor:
     def _sample_via_docker(self) -> None:
         try:
             result = subprocess.run(
-                ["docker", "stats", "--no-stream", "--format",
-                 "{{.Name}}|{{.MemUsage}}|{{.CPUPerc}}"],
-                capture_output=True, text=True, timeout=15,
+                [
+                    "docker",
+                    "stats",
+                    "--no-stream",
+                    "--format",
+                    "{{.Name}}|{{.MemUsage}}|{{.CPUPerc}}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
         except Exception:  # noqa: BLE001
             return
@@ -628,8 +652,9 @@ class ResourceMonitor:
             session_memory += mem_mb
             node_count += 1
             if self._ts_writer is not None:
-                self._ts_writer.writerow([f"{elapsed:.1f}", name, f"{mem_mb:.1f}",
-                                          f"{cpu:.1f}", ""])
+                self._ts_writer.writerow(
+                    [f"{elapsed:.1f}", name, f"{mem_mb:.1f}", f"{cpu:.1f}", ""]
+                )
         if self._ts_fh is not None:
             self._ts_fh.flush()
         if session_memory > self._total_peak_memory_mb:
