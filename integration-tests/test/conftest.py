@@ -6,8 +6,18 @@ All infrastructure logic lives in infra/ modules.
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
+
+# Disable gRPC's pthread_atfork handlers before the gRPC C-core loads (pulled in
+# transitively by the .infra imports below via pyf1r3fly.client). The test
+# process forks to spawn node subprocesses while gRPC channels are live on
+# worker threads; with fork support enabled (the grpcio default) every fork
+# emits a "fork_posix.cc ... skipping fork() handlers" warning. The children
+# exec the node binary immediately and never use the Python gRPC stack, so fork
+# support buys nothing here. setdefault leaves an explicit shell override intact.
+os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 
 import pytest
 
@@ -64,6 +74,15 @@ def pytest_addoption(parser):
         action="store_true",
         default=False,
         help="Enable resource monitoring (logs peak memory/CPU per container)",
+    )
+    group.addoption(
+        "--rss-ceiling-mb",
+        action="store",
+        type=int,
+        default=8000,
+        help="With --monitor: kill nodes + fail the run if total node RSS "
+        "exceeds this (MB) for 2 consecutive samples, protecting the host "
+        "from swap-thrash/freeze. 0 disables. Default 8000.",
     )
     group.addoption(
         "--provider",
@@ -525,7 +544,7 @@ def check_node_logs_after_test(request, provider):
     """
     yield
 
-    from .infra.log_events import format_errors, scan_for_forbidden
+    from .infra.log_events import format_errors, scan_for_forbidden, scan_lines_for_forbidden
 
     # Collect opt-out keys from this test's markers.
     allowed = frozenset()
@@ -535,10 +554,17 @@ def check_node_logs_after_test(request, provider):
     forbidden: list = []
     for handle in provider.active_handles:
         try:
-            logs = handle.logs()
+            # Stream the log file line-by-line when the provider supports it
+            # (subprocess) so a large node log isn't loaded whole + splitlines
+            # into memory during the post-test scan. Fall back to the string
+            # API for providers without a streaming iterator.
+            iter_lines = getattr(handle, "iter_log_lines", None)
+            if iter_lines is not None:
+                forbidden.extend(scan_lines_for_forbidden(iter_lines(), handle.name, allowed))
+            else:
+                forbidden.extend(scan_for_forbidden(handle.logs(), handle.name, allowed))
         except Exception:
             continue
-        forbidden.extend(scan_for_forbidden(logs, handle.name, allowed))
 
     # Also scan logs from transient nodes that were attached and
     # detached during this test (e.g., observers attached via the
@@ -581,8 +607,25 @@ def resource_monitor(request):
 
     from .infra.resource_monitor import ResourceMonitor
 
-    monitor = ResourceMonitor(interval=5.0)
+    # Provider-agnostic sampling: get the session's provider so the monitor can
+    # enumerate node handles (works for subprocess + Docker) and write per-run
+    # output files alongside the session's data. ``output_dir`` resolves to the
+    # provider's session root when available.
+    provider = request.getfixturevalue("provider")
+    output_dir = getattr(provider, "_session_root", None) or getattr(
+        provider, "session_data_root", None
+    )
+
+    ceiling = request.config.getoption("--rss-ceiling-mb")
+    monitor = ResourceMonitor(
+        interval=3.0,
+        provider=provider,
+        output_dir=output_dir,
+        rss_ceiling_mb=(ceiling if ceiling and ceiling > 0 else None),
+    )
     monitor.start()
     yield monitor
     monitor.stop()
     logging.info(monitor.report())
+    if monitor.breach is not None:
+        pytest.fail(monitor.breach, pytrace=False)

@@ -15,7 +15,7 @@ Three layers of documentation:
 - **Docker + Docker Compose** (containers managed by the test fixtures)
 - **Python 3.10** (see the [main README](../README.md) for pyenv setup)
 - **Poetry** (Python dependency manager)
-- **Memory** — 12 GB RAM minimum for Rust node tests (3-validator shards)
+- **Memory (Docker allocation)** — 4 GB for Rust 3-validator shards, 16 GB for Scala 3-validator shards, 12 GB for the Scala light shard
 
 ```bash
 # From the repo root
