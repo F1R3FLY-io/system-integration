@@ -31,11 +31,12 @@ quarantine polls.
 import logging
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import pytest
 
 from ...infra.assertions import (
+    assert_all_deploys_finalized_on_all_nodes,
     assert_block_finalized_on_all_nodes,
     assert_bonds_map_consistent_across_nodes,
     assert_deploy_errored,
@@ -514,32 +515,9 @@ def _assert_bg_load_deploys_finalized(producers, all_nodes, deploy_ids: List[str
     Finalization is verified on EVERY node (not just the proposer): a block can
     finalize on its proposer but be rejected/never-finalized on a peer.
     """
-    if not deploy_ids:
-        return
-    missing: List[str] = []
-    unfinalized: List[Tuple[str, int]] = []
-    for sig in deploy_ids:
-        light_block = None
-        for node in producers:
-            try:
-                light_block = node.find_deploy(sig)
-                if light_block is not None:
-                    break
-            except Exception:  # noqa: BLE001 — try the next producer
-                continue
-        if light_block is None:
-            missing.append(sig)
-            continue
-        try:
-            assert_block_finalized_on_all_nodes(all_nodes, light_block.blockHash,
-                                                timeout=timeouts.finalization * 2)
-        except Exception:  # noqa: BLE001 — any node not finalized counts as unfinalized
-            unfinalized.append((sig, light_block.blockNumber))
-    assert not missing and not unfinalized, (
-        f"[{label}] {len(missing)} bg-load deploys never included, "
-        f"{len(unfinalized)} included but not finalized on all nodes (of {len(deploy_ids)} total). "
-        f"missing(first 3)={[s[:16] for s in missing[:3]]} "
-        f"unfinalized(first 3)={[(s[:16], n) for s, n in unfinalized[:3]]}"
+    del producers  # deploy-status is queried per node directly; no block lookup
+    assert_all_deploys_finalized_on_all_nodes(
+        all_nodes, deploy_ids, timeouts.finalization * 2, label=label
     )
 
 

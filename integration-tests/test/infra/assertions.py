@@ -276,6 +276,56 @@ def assert_block_finalized_on_all_nodes(
     )
 
 
+def assert_all_deploys_finalized_on_all_nodes(
+    nodes,
+    deploy_ids: list[str],
+    timeout: int,
+    *,
+    label: str = "deploys",
+) -> None:
+    """Assert every deploy in ``deploy_ids`` reaches Finalized on EVERY node.
+
+    Deploy-centric, not block-centric. Polls each node's
+    ``deploy_finalization_status`` (via ``wait_for_deploy_finalized``), which
+    follows a deploy across multi-parent **re-homing**: a deploy whose first
+    block loses a merge and is re-included into a finalized descendant is
+    correctly reported Finalized. The older pattern -- resolve ``find_deploy``
+    once, then poll that fixed block hash for ``isFinalized`` -- FALSELY fails
+    that case, because the losing-fork block never finalizes even though the
+    deploy does (its work moved to a different, finalized block).
+
+    Zero tolerance for genuinely dropped work: a deploy that never finalizes on
+    some node within ``timeout`` (Pending -> TimeoutError) or terminally fails
+    (Failed/Expired -> DeployError) is collected and reported with a diagnostic.
+
+    Use this for bg-load / deploy-orphaning regression checks instead of
+    locating the block with ``find_deploy`` and asserting that block's hash
+    finalizes.
+    """
+    # Local import keeps the assertions -> polling edge lazy (no import cycle).
+    from .polling import wait_for_deploy_finalized
+
+    if not deploy_ids:
+        return
+    not_finalized: list[tuple[str, str, str]] = []  # (sig[:16], node.name, reason)
+    for sig in deploy_ids:
+        for node in nodes:
+            try:
+                wait_for_deploy_finalized(node, sig, timeout)
+            except Exception as exc:  # noqa: BLE001
+                # TimeoutError (Pending past timeout) and DeployError (terminal
+                # Failed/Expired) both mean "did not finalize here". Caught broad
+                # because the deploy-status DeployError is f1r3fly.polling's, not
+                # the f1r3fly.deploy class re-exported at module scope.
+                not_finalized.append((sig[:16], node.name, type(exc).__name__))
+                break  # one un-finalizing node is enough; move to the next deploy
+    assert not not_finalized, (
+        f"[{label}] {len(not_finalized)} of {len(deploy_ids)} deploys did not "
+        f"finalize on all nodes (deploy-status, re-homing-aware). "
+        f"first(3)={not_finalized[:3]}"
+    )
+
+
 # ── Cross-node channel-value agreement (FS node-identity) ──────────────
 
 

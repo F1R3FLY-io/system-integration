@@ -47,7 +47,8 @@ One comprehensive test on its own `provider.create_shard` shard (destroyed at th
 - `_BackgroundLoad` (same-vault IntegerAdd contention, always-on for the whole test) + `_assert_bg_load_robust`
 - `PosAPI` (`bond` / `withdraw` / `read_result` / `get_bonds` / `get_rewards` / `get_pending_withdrawer` / `get_withdrawers` / `get_coop_vault` / `get_initial_pos_vault` / `get_epoch_length` / `get_quarantine_length` / `commit_random_image` / `reveal_random` / `pos_vault_transfer` / `call_auth_gated_invalid_token`) and `VaultAPI.get_balance` — all FS-backed via the readonly node
 - `_submit_bonds` / `_submit_withdraw` / `_pos_call_result` / `_await_pending` / `_await_withdrawer` / `_wait_for_active` / `_await_bonds_monotone` / `_advance_lfb`
-- `assert_block_finalized_on_all_nodes` / `assert_bonds_map_consistent_across_nodes` / `wait_for_finalized` / `poll_until` ([`infra/polling.py`](../infra/polling.py))
+- `assert_block_finalized_on_all_nodes` (per-block, for specific PoS/bond blocks) / `assert_bonds_map_consistent_across_nodes` / `wait_for_finalized` / `poll_until` ([`infra/polling.py`](../infra/polling.py))
+- `_assert_bg_load_deploys_finalized` — bg-load orphan-regression check; a thin wrapper over the shared `assert_all_deploys_finalized_on_all_nodes`. **Deploy-status based, re-homing-aware:** polls each node's `deploy_finalization_status`, so a transfer re-homed from a losing-fork block into a finalized descendant counts as finalized (vs the old find_deploy + block-hash check, which falsely flagged it as dropped work)
 - `check_node_logs_after_test` autouse fixture for fatal-log detection (see [ARCHITECTURE.md § 7](ARCHITECTURE.md#7-log-scanning))
 
 ## Related

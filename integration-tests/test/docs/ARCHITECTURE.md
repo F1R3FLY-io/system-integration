@@ -61,7 +61,8 @@ Session-scoped fixtures are built once; tests sharing a fixture run on one pytes
 
 | Method / property | Purpose |
 |---|---|
-| `keep_running: bool` | Skip teardown on session end (via `--keep-running`) |
+| `keep_running: bool` | Skip teardown on session end (via `--keep-running`) — keeps *every* shard |
+| `keep_on_failure: bool` | Via `--keep-on-failure`: `destroy_shard()` preserves the shard **only when its test failed**, otherwise tears down normally. The "did the current test fail?" signal comes from `infra/run_outcome.py` — `sys.exc_info()` for inline `try/finally: shard.destroy()` teardown (the failing exception is still propagating), or the `pytest_runtest_makereport` hook's recorded `call` outcome for fixture-finalization teardown. Pairs with `-x`. |
 | `active_handles: List[NodeHandle]` | Every handle this provider created; used by log scanner |
 | `create_shard(config) -> List[NodeHandle]` | Spin up bootstrap + validators + optional readonly |
 | `add_node(network, node_config, bootstrap) -> NodeHandle` | Attach a joiner or observer (role taken from `node_config.role` — `JOINER` or `READONLY`). READONLY adds `--heartbeat-disabled` and skips validator-identity flags. |
@@ -238,7 +239,7 @@ Design for `NotImplementedError` with clear guidance as a first pass — `K8sPro
 | `ports.py` | `PortAllocator` |
 | `cleanup.py` | `DockerCleanupRegistry` (see Section 4); other providers own their own resource lifetime |
 | `polling.py` | Node-aware wrappers around `f1r3fly.polling` (`deploy_and_read`, `wait_for_deploy_finalized` for canonical-state per-deploy tracking, `wait_for_finalized` for block-height advancement, `deploy_with_fallback`, `poll_until`) |
-| `assertions.py` | Deploy/shard assertions re-exported from `f1r3fly.deploy` + `f1r3fly.par`; cross-node helpers (`assert_block_finalized_on_all_nodes`, `assert_bonds_map_consistent_across_nodes`, `assert_all_nodes_agree_on_block`, `assert_all_nodes_agree_on_lfb`, `assert_contracts_consistent_across_nodes`) |
+| `assertions.py` | Deploy/shard assertions re-exported from `f1r3fly.deploy` + `f1r3fly.par`; cross-node helpers (`assert_block_finalized_on_all_nodes`, `assert_all_deploys_finalized_on_all_nodes`, `assert_bonds_map_consistent_across_nodes`, `assert_all_nodes_agree_on_block`, `assert_all_nodes_agree_on_lfb`, `assert_contracts_consistent_across_nodes`). **Deploy- vs block-level finalization:** `assert_all_deploys_finalized_on_all_nodes` is the bg-load/orphan-regression helper — it polls each node's `deploy_finalization_status` (re-homing-aware: a deploy whose first block loses a merge and is re-included into a finalized descendant counts as finalized), where `assert_block_finalized_on_all_nodes` checks one fixed block hash (correct only when the block itself is the one that finalizes, e.g. a specific PoS/foreground block). |
 | `log_events.py` | Structured log event parsing + `scan_for_forbidden` (single unified `FORBIDDEN_PATTERNS` dict with per-pattern marker opt-out) |
 | `token_metadata.py` | HTTP `/api/status` token helper (on-chain queries via pyf1r3fly) |
 | `genesis.py` | Custom genesis file generation |

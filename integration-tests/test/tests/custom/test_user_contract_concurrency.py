@@ -56,6 +56,7 @@ from typing import List, Optional
 import pytest
 
 from ...infra.assertions import (
+    assert_all_deploys_finalized_on_all_nodes,
     assert_all_nodes_agree_on_lfb,
     assert_balance_consistent_across_nodes,
     assert_block_finalized_on_all_nodes,
@@ -188,33 +189,19 @@ class _BackgroundLoad:
 
 def _assert_all_finalized(producers, all_nodes, deploy_ids: List[str], timeouts,
                           label: str) -> None:
-    """Every deploy in ``deploy_ids`` must land in a block that finalizes on
-    EVERY node. A deploy that lands in a losing-fork block and is never merged
-    into a finalized descendant is silently dropped work — zero tolerance."""
-    missing: List[str] = []
-    unfinalized: List = []
-    for sig in deploy_ids:
-        light_block = None
-        for node in producers:
-            try:
-                light_block = node.find_deploy(sig)
-                if light_block is not None:
-                    break
-            except Exception:  # noqa: BLE001
-                continue
-        if light_block is None:
-            missing.append(sig)
-            continue
-        try:
-            assert_block_finalized_on_all_nodes(all_nodes, light_block.blockHash,
-                                                timeout=timeouts.finalization * 2)
-        except Exception:  # noqa: BLE001
-            unfinalized.append((sig, light_block.blockNumber))
-    assert not missing and not unfinalized, (
-        f"[{label}] {len(missing)} deploys never included, {len(unfinalized)} included "
-        f"but not finalized on all nodes (of {len(deploy_ids)}). "
-        f"missing(3)={[s[:16] for s in missing[:3]]} "
-        f"unfinalized(3)={[(s[:16], n) for s, n in unfinalized[:3]]}"
+    """Every deploy in ``deploy_ids`` must finalize on EVERY node — zero
+    tolerance for silently dropped work.
+
+    Delegates to the shared, re-homing-aware
+    ``assert_all_deploys_finalized_on_all_nodes`` (deploy-status based). A deploy
+    whose first block loses a merge and is re-included into a finalized
+    descendant is correctly counted finalized; the old ``find_deploy`` +
+    block-hash check falsely failed that case because the losing-fork block
+    never finalizes even though the deploy does.
+    """
+    del producers  # deploy-status is queried per node directly; no block lookup
+    assert_all_deploys_finalized_on_all_nodes(
+        all_nodes, deploy_ids, timeouts.finalization * 2, label=label
     )
 
 

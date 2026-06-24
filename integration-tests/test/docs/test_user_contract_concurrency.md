@@ -64,6 +64,7 @@ Reading finalized balances on the readonly observer suffices for cluster agreeme
 - `_BackgroundLoad` + `_assert_bg_load_robust` — always-on contended load + gas-aware vault reconciliation
 - Exploratory deploy on the readonly observer (`_read_map` / `_read_int` via non-consuming `<<-`) for finalized-state reads
 - `assert_block_finalized_on_all_nodes` / `wait_for_deploy_included` / `wait_for_finalized` ([`infra/polling.py`](../infra/polling.py)) for cluster-wide finalization waits
+- `_assert_all_finalized` — the bg-load orphan-regression check; a thin wrapper over the shared `assert_all_deploys_finalized_on_all_nodes`. **Deploy-status based, not block-hash:** it polls each node's `deploy_finalization_status`, so a deploy re-homed from a losing-fork block into a finalized descendant counts as finalized (the older find_deploy + block-hash check falsely flagged that as dropped work)
 - `check_node_logs_after_test` autouse fixture for fatal-log detection (see [ARCHITECTURE.md § 7](ARCHITECTURE.md#7-log-scanning))
 - Readonly node for observer consistency verification
 

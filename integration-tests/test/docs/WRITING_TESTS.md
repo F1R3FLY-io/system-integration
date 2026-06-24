@@ -148,6 +148,18 @@ status = wait_for_deploy_finalized(node, deploy_id, timeouts.finalization)
 
 Use `wait_for_finalized(block_number)` only when the test cares about LFB advancement to a specific height (rare — most assertions are about a deploy's outcome, not the chain's height).
 
+### Assert many deploys finalized on all nodes (bg-load / orphan regression)
+
+To check that a batch of deploys (e.g. a background-load run) all finalized on every node, use `assert_all_deploys_finalized_on_all_nodes` — do **not** resolve `find_deploy` once and assert that block hash finalizes. The latter falsely fails on **re-homing**: a deploy whose first block loses a merge is re-included into a finalized descendant, so the original block hash never finalizes even though the deploy does. The shared helper is built on `wait_for_deploy_finalized` (per-node `deploy_finalization_status`), so it follows re-homing while still flagging genuinely dropped work.
+
+```python
+from ...infra.assertions import assert_all_deploys_finalized_on_all_nodes
+
+assert_all_deploys_finalized_on_all_nodes(
+    shard.all_nodes, deploy_ids, timeouts.finalization * 2, label="bg-load"
+)
+```
+
 ### Deploy + read result in one helper
 
 ```python
