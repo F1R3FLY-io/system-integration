@@ -136,28 +136,35 @@ def test_fault_tolerance_asymmetric_bonds(asymmetric_shard, timeouts) -> None:
     logging.info("Asymmetric DAG: %d blocks, %d multi-parent", len(blocks), multi_parent_count)
     assert multi_parent_count > 0, "No multi-parent blocks in asymmetric-bond DAG"
 
-    # FT monotonicity on ALL validators
+    # FT monotonicity along the MAIN-PARENT CHAIN (the finality spine), not by height.
+    #
+    # Finality flows along main_parent (parents[0]), not by block height. In a
+    # multi-parent DAG a height-N sibling that sits off the main-parent spine (only
+    # ever a merged-in secondary parent) is witnessed by fewer validators than a
+    # height-(N+1) block on the spine, so per-height FT is NOT monotone -- that is
+    # topology, not a finality bug. The invariant that DOES hold deterministically:
+    # any validator agreeing on a block also agrees on all of its main-parent
+    # ancestors (they are DAG-ancestors of the same latest message), so agreeing
+    # weight -- and thus FT -- is non-increasing as you walk from the tip down the
+    # main-parent chain toward genesis. Assert exactly that.
     for node in validators:
-        node_blocks = node.get_blocks(50)
-        sorted_blocks = sorted(node_blocks, key=lambda b: b.blockNumber)
-        ft_by_height: dict[int, float] = {}
-        for b in sorted_blocks:
-            ft = float(b.faultTolerance)
-            height = b.blockNumber
-            if height not in ft_by_height or ft > ft_by_height[height]:
-                ft_by_height[height] = ft
-
-        heights = sorted(ft_by_height.keys())
-        for i in range(len(heights) - 1):
-            h_cur = heights[i]
-            h_next = heights[i + 1]
-            assert ft_by_height[h_cur] >= ft_by_height[h_next], (
-                f"FT not monotonically non-increasing on {node.name}: "
-                f"height {h_cur} FT={ft_by_height[h_cur]} < "
-                f"height {h_next} FT={ft_by_height[h_next]}"
+        by_hash = {b.blockHash: b for b in node.get_blocks(50)}
+        tip = max(by_hash.values(), key=lambda b: b.blockNumber)
+        cur = tip
+        steps = 0
+        while cur.parentsHashList:
+            main_parent = by_hash.get(cur.parentsHashList[0])
+            if main_parent is None:
+                break  # walked past the fetched window
+            assert float(main_parent.faultTolerance) >= float(cur.faultTolerance), (
+                f"FT not monotone along main-parent chain on {node.name}: "
+                f"ancestor #{main_parent.blockNumber} FT={main_parent.faultTolerance} < "
+                f"descendant #{cur.blockNumber} FT={cur.faultTolerance}"
             )
-
-        logging.info("FT monotonicity verified on %s across %d heights", node.name, len(heights))
+            cur = main_parent
+            steps += 1
+        assert steps > 0, f"main-parent chain walk did no steps on {node.name}"
+        logging.info("FT monotone along main-parent chain on %s (%d steps)", node.name, steps)
 
 
 def test_finalization_asymmetric_bonds(asymmetric_shard, timeouts) -> None:
