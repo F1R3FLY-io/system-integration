@@ -213,10 +213,12 @@ def test_validator_failure_halts_finalization(provider, timeouts) -> None:
         # was confirmed quiet — V3 has no opportunity to vote on them,
         # so their finalization is the actual signal we care about.
         post_v1_deploy = v1.deploy_string(
-            '@"post-halt-v1"!(10)', VALIDATOR1_ID.private_key(),
+            '@"post-halt-v1"!(10)',
+            VALIDATOR1_ID.private_key(),
         )
         post_v2_deploy = v2.deploy_string(
-            '@"post-halt-v2"!(20)', VALIDATOR2_ID.private_key(),
+            '@"post-halt-v2"!(20)',
+            VALIDATOR2_ID.private_key(),
         )
 
         post_v1_block = poll_until(
@@ -235,21 +237,21 @@ def test_validator_failure_halts_finalization(provider, timeouts) -> None:
         post_v2_hash = post_v2_block.blockHash
         logging.info(
             "Post-pause blocks proposed: v1=%s, v2=%s",
-            post_v1_hash[:16], post_v2_hash[:16],
+            post_v1_hash[:16],
+            post_v2_hash[:16],
         )
 
         # Observation window: either V1 or V2 reporting these specific
         # blocks as finalized would mean FT >= FTT=0.67 was reached
         # with only V1+V2 stake (0.667 < 0.67 in strict-greater-than
         # semantics) — a safety violation.
-        logging.info(
-            "Verifying post-pause blocks stay non-finalized (FT=0.33 NOT > FTT=0.67)..."
-        )
+        logging.info("Verifying post-pause blocks stay non-finalized (FT=0.33 NOT > FTT=0.67)...")
         deadline = time.time() + 30
         while time.time() < deadline:
             for node in (v1, v2):
                 for block_hash, label in (
-                    (post_v1_hash, "v1"), (post_v2_hash, "v2"),
+                    (post_v1_hash, "v1"),
+                    (post_v2_hash, "v2"),
                 ):
                     if node.is_finalized(block_hash):
                         raise AssertionError(

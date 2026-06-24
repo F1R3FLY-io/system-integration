@@ -315,8 +315,7 @@ class SubprocessNodeHandle:
         (cumulative CPU time) across samples. ``memory_limit_mb`` is None —
         subprocess nodes have no cgroup cap.
         """
-        zero = {"memory_mb": 0.0, "cpu_percent": 0.0, "cpu_seconds": 0.0,
-                "memory_limit_mb": None}
+        zero = {"memory_mb": 0.0, "cpu_percent": 0.0, "cpu_seconds": 0.0, "memory_limit_mb": None}
         if not self.is_running():
             return zero
         try:

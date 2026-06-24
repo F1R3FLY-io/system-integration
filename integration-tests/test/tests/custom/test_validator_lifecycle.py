@@ -151,7 +151,9 @@ class _BackgroundLoad:
             return
         self._stop.set()
         self._thread.join(timeout=join_timeout)
-        logging.info("Background load stopped: %d transfers, %d errors", self._counter, self._errors)
+        logging.info(
+            "Background load stopped: %d transfers, %d errors", self._counter, self._errors
+        )
         self._thread = None
 
     def _run(self) -> None:
@@ -160,27 +162,35 @@ class _BackgroundLoad:
                 node = self._producers[self._counter % len(self._producers)]
                 try:
                     did = node.get_vault().transfer(
-                        _BG_SRC_ADDR, _BG_DST_ADDR, _BG_TRANSFER_AMOUNT, _BG_SRC_KEY,
-                        phlo_price=1, phlo_limit=_BOND_PHLO_LIMIT,
+                        _BG_SRC_ADDR,
+                        _BG_DST_ADDR,
+                        _BG_TRANSFER_AMOUNT,
+                        _BG_SRC_KEY,
+                        phlo_price=1,
+                        phlo_limit=_BOND_PHLO_LIMIT,
                     )
                     with self._lock:
                         self._deploy_ids.append(did)
                 except Exception as e:  # noqa: BLE001 — submit errors are surfaced via the
                     # finalization assertion (missing deploy), not swallowed silently.
                     self._errors += 1
-                    logging.warning("bg-load transfer %d on %s failed: %s", self._counter, node.name, e)
+                    logging.warning(
+                        "bg-load transfer %d on %s failed: %s", self._counter, node.name, e
+                    )
                 self._counter += 1
             self._stop.wait(self._interval)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+
 def _vault_addr(identity) -> str:
     return identity.private_key().get_public_key().get_vault_address()
 
 
-def _assert_bond_rejected(proposer, all_nodes, ro, key, amount: int, expected_reason: str,
-                          timeouts) -> None:
+def _assert_bond_rejected(
+    proposer, all_nodes, ro, key, amount: int, expected_reason: str, timeouts
+) -> None:
     """A rejected bond is a SUCCESSFUL deploy whose contract returns
     ``(false, reason)`` — assert the reason and that the bonds map is
     unchanged, NOT that the deploy errored. Finalization is asserted across
@@ -193,17 +203,18 @@ def _assert_bond_rejected(proposer, all_nodes, ro, key, amount: int, expected_re
     # finalization * 3) so a lumpy under-load finalization doesn't false-fail.
     block = wait_for_deploy_included(proposer, deploy_id, timeouts.deploy_inclusion * 3)
     wait_for_finalized(proposer, block.blockNumber, timeouts.finalization * 3)
-    assert_block_finalized_on_all_nodes(all_nodes, block.blockHash,
-                                        timeout=timeouts.finalization * 3)
+    assert_block_finalized_on_all_nodes(
+        all_nodes, block.blockHash, timeout=timeouts.finalization * 3
+    )
     result = proposer.pos.read_result(deploy_id, block.blockHash)
     assert not result.success, f"expected bond rejection, got success: {result}"
-    assert expected_reason in result.reason, (
-        f"expected reason containing {expected_reason!r}, got {result.reason!r}"
-    )
+    assert (
+        expected_reason in result.reason
+    ), f"expected reason containing {expected_reason!r}, got {result.reason!r}"
     bonds_after = ro.pos.get_bonds()
-    assert bonds_after == bonds_before, (
-        f"rejected bond changed bonds map: before={bonds_before} after={bonds_after}"
-    )
+    assert (
+        bonds_after == bonds_before
+    ), f"rejected bond changed bonds map: before={bonds_before} after={bonds_after}"
     logging.info("Bond correctly rejected (%s): %s", expected_reason, result.reason)
 
 
@@ -214,13 +225,14 @@ def _assert_withdraw_rejected(actor, all_nodes, ro, key, expected_reason: str, t
     # finalization * 3) so a lumpy under-load finalization doesn't false-fail.
     block = wait_for_deploy_included(actor, deploy_id, timeouts.deploy_inclusion * 3)
     wait_for_finalized(actor, block.blockNumber, timeouts.finalization * 3)
-    assert_block_finalized_on_all_nodes(all_nodes, block.blockHash,
-                                        timeout=timeouts.finalization * 3)
+    assert_block_finalized_on_all_nodes(
+        all_nodes, block.blockHash, timeout=timeouts.finalization * 3
+    )
     result = actor.pos.read_result(deploy_id, block.blockHash)
     assert not result.success, f"expected withdraw rejection, got success: {result}"
-    assert expected_reason in result.reason, (
-        f"expected reason containing {expected_reason!r}, got {result.reason!r}"
-    )
+    assert (
+        expected_reason in result.reason
+    ), f"expected reason containing {expected_reason!r}, got {result.reason!r}"
     assert ro.pos.get_bonds() == bonds_before, "rejected withdraw changed bonds map"
     logging.info("Withdraw correctly rejected (%s): %s", expected_reason, result.reason)
 
@@ -258,11 +270,16 @@ def _attach_prebond(shard, identity, timeouts):
     joiner = shard.attach_joiner(identity)
     # LFS-sync budget scales with shard age (deep LFB + side-branch history under
     # bg_load); matches retired _bond_lifecycle (finalization * 3).
-    wait_for_block_visible(joiner, current_lfb.blockInfo.blockHash,
-                           timeout=timeouts.finalization * 3)
+    wait_for_block_visible(
+        joiner, current_lfb.blockInfo.blockHash, timeout=timeouts.finalization * 3
+    )
 
-    joiner.deploy_string(f'@"pre-bond-{identity.name}"!(0)', identity.private_key(),
-                         phlo_limit=_BOND_PHLO_LIMIT, phlo_price=_BOND_PHLO_PRICE)
+    joiner.deploy_string(
+        f'@"pre-bond-{identity.name}"!(0)',
+        identity.private_key(),
+        phlo_limit=_BOND_PHLO_LIMIT,
+        phlo_price=_BOND_PHLO_PRICE,
+    )
     with pytest.raises(F1r3flyClientException):
         joiner.propose()
     return joiner
@@ -290,18 +307,22 @@ def _submit_bonds(submissions, timeouts):
         # Bond inclusion under heartbeat-only config depends on the next
         # heartbeat round after attach; matches retired (deploy_inclusion * 3).
         bond_block = wait_for_deploy_included(proposer, deploy_id, timeouts.deploy_inclusion * 3)
-        assert proposer.pos.read_result(deploy_id, bond_block.blockHash).success, (
-            f"{identity.name} bond should succeed"
+        assert proposer.pos.read_result(
+            deploy_id, bond_block.blockHash
+        ).success, f"{identity.name} bond should succeed"
+        results.append(
+            {
+                "proposer": proposer,
+                "identity": identity,
+                "stake": stake,
+                "deploy_id": deploy_id,
+                "bond_block": bond_block,
+            }
         )
-        results.append({
-            "proposer": proposer, "identity": identity, "stake": stake,
-            "deploy_id": deploy_id, "bond_block": bond_block,
-        })
     return results
 
 
-def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bond_block,
-                                       timeouts):
+def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bond_block, timeouts):
     """Activate a bonded joiner and verify it participates (retired sub-phases 5-7).
 
     bg_load stays ON throughout (default-on policy). If the joiner's first
@@ -324,7 +345,8 @@ def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bo
     poll_until(
         predicate=lambda: (
             proposer.last_finalized_block().blockInfo.blockNumber
-            if proposer.last_finalized_block().blockInfo.blockNumber >= epoch_target else None
+            if proposer.last_finalized_block().blockInfo.blockNumber >= epoch_target
+            else None
         ),
         timeout=timeouts.finalization * 2,
         interval=timeouts.poll_interval,
@@ -332,8 +354,12 @@ def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bo
     )
 
     # 6. Joiner proposes a block that finalizes on all nodes.
-    joiner.deploy_string(f'@"active-{identity.name}"!(1)', identity.private_key(),
-                         phlo_limit=_BOND_PHLO_LIMIT, phlo_price=_BOND_PHLO_PRICE)
+    joiner.deploy_string(
+        f'@"active-{identity.name}"!(1)',
+        identity.private_key(),
+        phlo_limit=_BOND_PHLO_LIMIT,
+        phlo_price=_BOND_PHLO_PRICE,
+    )
 
     def _joiner_proposed():
         for blk in joiner.get_blocks(50):
@@ -350,12 +376,17 @@ def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bo
     # Widen the finalize budget vs base finalization to absorb load (finalization
     # under bg_load finalizes in lumpy batches); matches retired (finalization * 5).
     wait_for_finalized(joiner, joiner_block.blockNumber, timeouts.finalization * 5)
-    assert_block_finalized_on_all_nodes(shard.all_nodes, joiner_block.blockHash,
-                                        timeout=timeouts.finalization * 5)
+    assert_block_finalized_on_all_nodes(
+        shard.all_nodes, joiner_block.blockHash, timeout=timeouts.finalization * 5
+    )
 
     # 7. Another validator justifies the joiner in a later finalized block.
-    proposer.deploy_string(f'@"after-{identity.name}"!(2)', proposer_id.private_key(),
-                           phlo_limit=_BOND_PHLO_LIMIT, phlo_price=_BOND_PHLO_PRICE)
+    proposer.deploy_string(
+        f'@"after-{identity.name}"!(2)',
+        proposer_id.private_key(),
+        phlo_limit=_BOND_PHLO_LIMIT,
+        phlo_price=_BOND_PHLO_PRICE,
+    )
 
     def _proposer_justifies_joiner():
         for blk in proposer.get_blocks(50):
@@ -374,8 +405,9 @@ def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bo
         description=f"{proposer.name} produces a block justifying {identity.name}",
     )
     wait_for_finalized(proposer, just_block.blockNumber, timeouts.finalization * 5)
-    assert_block_finalized_on_all_nodes(shard.all_nodes, just_block.blockHash,
-                                        timeout=timeouts.finalization * 5)
+    assert_block_finalized_on_all_nodes(
+        shard.all_nodes, just_block.blockHash, timeout=timeouts.finalization * 5
+    )
     logging.info("%s activated, proposes, and is justified (all nodes)", identity.name)
 
 
@@ -391,15 +423,19 @@ def _assert_full_liveness(shard, active, timeouts):
     # finalization * 5) to absorb lumpy under-load finalization.
     for node, node_id in active:
         live_id = node.deploy_string(
-            f'@"liveness-{node.name}"!(1)', node_id.private_key(),
-            phlo_limit=_BOND_PHLO_LIMIT, phlo_price=_BOND_PHLO_PRICE,
+            f'@"liveness-{node.name}"!(1)',
+            node_id.private_key(),
+            phlo_limit=_BOND_PHLO_LIMIT,
+            phlo_price=_BOND_PHLO_PRICE,
         )
         live_block = wait_for_deploy_included(node, live_id, timeouts.deploy_inclusion * 5)
         wait_for_finalized(node, live_block.blockNumber, timeouts.finalization * 5)
-        wait_for_block_visible_on_all_nodes(shard.all_nodes, live_block.blockHash,
-                                            timeout=timeouts.finalization * 5)
-        assert_block_finalized_on_all_nodes(shard.all_nodes, live_block.blockHash,
-                                            timeout=timeouts.finalization * 5)
+        wait_for_block_visible_on_all_nodes(
+            shard.all_nodes, live_block.blockHash, timeout=timeouts.finalization * 5
+        )
+        assert_block_finalized_on_all_nodes(
+            shard.all_nodes, live_block.blockHash, timeout=timeouts.finalization * 5
+        )
 
 
 def _wait_for_active(ro, pubkey_hex: str, present: bool, timeouts, label: str):
@@ -422,8 +458,9 @@ def _wait_for_payout(ro, pubkey_hex: str, timeouts, label: str):
     )
 
 
-def _assert_bg_load_deploys_finalized(producers, all_nodes, deploy_ids: List[str], timeouts,
-                                      label: str = "bg-load") -> None:
+def _assert_bg_load_deploys_finalized(
+    producers, all_nodes, deploy_ids: List[str], timeouts, label: str = "bg-load"
+) -> None:
     """Every background-load transfer must land in a block that finalizes ON ALL
     NODES.
 
@@ -453,8 +490,9 @@ def _assert_bg_load_deploys_finalized(producers, all_nodes, deploy_ids: List[str
             missing.append(sig)
             continue
         try:
-            assert_block_finalized_on_all_nodes(all_nodes, light_block.blockHash,
-                                                timeout=timeouts.finalization * 2)
+            assert_block_finalized_on_all_nodes(
+                all_nodes, light_block.blockHash, timeout=timeouts.finalization * 2
+            )
         except Exception:  # noqa: BLE001 — any node not finalized counts as unfinalized
             unfinalized.append((sig, light_block.blockNumber))
     assert not missing and not unfinalized, (
@@ -467,6 +505,7 @@ def _assert_bg_load_deploys_finalized(producers, all_nodes, deploy_ids: List[str
 
 # ── Fixture: dedicated lifecycle shard ───────────────────────────────────────
 
+
 @pytest.fixture(scope="module")
 def lifecycle_shard(provider, timeouts):
     extra_wallets = [
@@ -475,8 +514,12 @@ def lifecycle_shard(provider, timeouts):
     ]
     extra_wallets.append((_BG_SRC_ADDR, _WALLET_BALANCE))
     extra_wallets.append((_BG_DST_ADDR, _WALLET_BALANCE))
-    extra_wallets.append((_THROWAWAY_BOND_KEY.get_public_key().get_vault_address(), _WALLET_BALANCE))
-    extra_wallets.append((_THROWAWAY_WITHDRAW_KEY.get_public_key().get_vault_address(), _WALLET_BALANCE))
+    extra_wallets.append(
+        (_THROWAWAY_BOND_KEY.get_public_key().get_vault_address(), _WALLET_BALANCE)
+    )
+    extra_wallets.append(
+        (_THROWAWAY_WITHDRAW_KEY.get_public_key().get_vault_address(), _WALLET_BALANCE)
+    )
 
     config = ShardConfig(
         bonds=[
@@ -503,7 +546,9 @@ def test_validator_lifecycle(lifecycle_shard, timeouts) -> None:
     ro = shard.readonly
 
     v4_pk, v5_pk, v6_pk = (
-        VALIDATOR4_ID.public_hex, VALIDATOR5_ID.public_hex, VALIDATOR6_ID.public_hex,
+        VALIDATOR4_ID.public_hex,
+        VALIDATOR5_ID.public_hex,
+        VALIDATOR6_ID.public_hex,
     )
 
     bg = _BackgroundLoad([v1, v2, v3])
@@ -529,8 +574,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # being stopped after V4 activation. Finalization budgets match the retired
     # test's per-wait multipliers (finalization * 3/5, etc.) to absorb lumpy
     # under-load finalization, asserted over ALL nodes read fresh.
-    bonds_pre = {b.validator: b.stake
-                 for b in v1.last_finalized_block().blockInfo.bonds}
+    bonds_pre = {b.validator: b.stake for b in v1.last_finalized_block().blockInfo.bonds}
     assert len(bonds_pre) == 3, f"expected 3 genesis bonds pre-Phase-1: {sorted(bonds_pre)}"
 
     joiners = {}
@@ -549,24 +593,28 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         # Bond block finalizes on all nodes; bonds map consistent on all nodes.
         # Matches retired Phase 4 (finalization * 3).
         wait_for_finalized(proposer, bond_block.blockNumber, timeouts.finalization * 3)
-        assert_block_finalized_on_all_nodes(shard.all_nodes, bond_block.blockHash,
-                                            timeout=timeouts.finalization * 3)
-        bonds_now = {b.validator: b.stake
-                     for b in proposer.get_block(bond_block.blockHash).blockInfo.bonds}
-        assert pk in bonds_now and bonds_now[pk] == stake, (
-            f"{identity.name} not bonded at its bond block: {sorted(bonds_now)}"
+        assert_block_finalized_on_all_nodes(
+            shard.all_nodes, bond_block.blockHash, timeout=timeouts.finalization * 3
         )
+        bonds_now = {
+            b.validator: b.stake for b in proposer.get_block(bond_block.blockHash).blockInfo.bonds
+        }
+        assert (
+            pk in bonds_now and bonds_now[pk] == stake
+        ), f"{identity.name} not bonded at its bond block: {sorted(bonds_now)}"
         assert len(bonds_now) == expected_after, (
             f"expected {expected_after} bonds after {identity.name}, got {len(bonds_now)}: "
             f"{sorted(bonds_now)}"
         )
-        assert_bonds_map_consistent_across_nodes(shard.all_nodes, bond_block.blockHash,
-                                                 bonds_now, timeout=timeouts.finalization * 3)
+        assert_bonds_map_consistent_across_nodes(
+            shard.all_nodes, bond_block.blockHash, bonds_now, timeout=timeouts.finalization * 3
+        )
         _wait_for_active(ro, pk, True, timeouts, f"{identity.name} in /validators")
 
         # Activate + verify it proposes and is justified before moving on.
-        _activate_and_verify_participation(shard, ro, proposer, joiner, identity,
-                                           bond_block, timeouts)
+        _activate_and_verify_participation(
+            shard, ro, proposer, joiner, identity, bond_block, timeouts
+        )
 
     j4, j5 = joiners[v4_pk], joiners[v5_pk]
 
@@ -574,26 +622,55 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # 5-node active set produces a block finalized + visible on all nodes.
     _assert_full_liveness(
         shard,
-        [(v1, VALIDATOR1_ID), (v2, VALIDATOR2_ID), (v3, VALIDATOR3_ID),
-         (j4, VALIDATOR4_ID), (j5, VALIDATOR5_ID)],
+        [
+            (v1, VALIDATOR1_ID),
+            (v2, VALIDATOR2_ID),
+            (v3, VALIDATOR3_ID),
+            (j4, VALIDATOR4_ID),
+            (j5, VALIDATOR5_ID),
+        ],
         timeouts,
     )
 
     validators = _validators_on(ro)
     assert validators.get(v4_pk) == _JOINER_STAKE["validator4"], f"V4 stake: {validators}"
     assert validators.get(v5_pk) == _JOINER_STAKE["validator5"], f"V5 stake: {validators}"
-    logging.info("Phase 1: V4+V5 bonded SEQUENTIALLY, activated, and participating "
-                 "(all nodes; bg_load always-on)")
+    logging.info(
+        "Phase 1: V4+V5 bonded SEQUENTIALLY, activated, and participating "
+        "(all nodes; bg_load always-on)"
+    )
 
     # ── Phase 2: negatives (woven, non-mutating) ─────────────────────────────
-    _assert_bond_rejected(v1, shard.all_nodes, ro, VALIDATOR4_ID.private_key(),
-                          _JOINER_STAKE["validator4"], "already bonded", timeouts)
-    _assert_bond_rejected(v1, shard.all_nodes, ro, _THROWAWAY_BOND_KEY,
-                          _BOND_MINIMUM - 50, "less than minimum", timeouts)
-    _assert_bond_rejected(v1, shard.all_nodes, ro, _THROWAWAY_BOND_KEY,
-                          _BOND_MAXIMUM + 1000, "greater than maximum", timeouts)
-    _assert_withdraw_rejected(v1, shard.all_nodes, ro, _THROWAWAY_WITHDRAW_KEY,
-                              "not bonded", timeouts)
+    _assert_bond_rejected(
+        v1,
+        shard.all_nodes,
+        ro,
+        VALIDATOR4_ID.private_key(),
+        _JOINER_STAKE["validator4"],
+        "already bonded",
+        timeouts,
+    )
+    _assert_bond_rejected(
+        v1,
+        shard.all_nodes,
+        ro,
+        _THROWAWAY_BOND_KEY,
+        _BOND_MINIMUM - 50,
+        "less than minimum",
+        timeouts,
+    )
+    _assert_bond_rejected(
+        v1,
+        shard.all_nodes,
+        ro,
+        _THROWAWAY_BOND_KEY,
+        _BOND_MAXIMUM + 1000,
+        "greater than maximum",
+        timeouts,
+    )
+    _assert_withdraw_rejected(
+        v1, shard.all_nodes, ro, _THROWAWAY_WITHDRAW_KEY, "not bonded", timeouts
+    )
     logging.info("Phase 2: bond/withdraw rejection branches verified")
 
     # NOTE: Mode-B deposit-fail + double-withdraw edge + reward windows + the
