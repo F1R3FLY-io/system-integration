@@ -47,9 +47,36 @@ write_files:
         --replace
 
       log "=== Run runner (--ephemeral: one job, then exits) ==="
-      sudo -u "$RUNNER_USER" ./run.sh || true
+      # Idle watchdog. run.sh blocks indefinitely waiting for a job. If this
+      # runner was over-provisioned (more runners launched than matrix jobs) or
+      # its run was cancelled, no job ever arrives, run.sh never returns, and the
+      # self-terminate below never runs — the VM leaks (this is exactly how the
+      # fleet of idle runners accumulated). Generous cap: once a job is picked up
+      # we let it finish; if none arrives within the timeout we kill run.sh and
+      # fall through to self-terminate.
+      IDLE_TIMEOUT_SECS=2700   # 45 min with no job
+      sudo -u "$RUNNER_USER" ./run.sh > /var/log/runner-run.log 2>&1 &
+      RUN_PID=$!
+      (
+        elapsed=0
+        while kill -0 "$RUN_PID" 2>/dev/null; do
+          if grep -q "Running job:" /var/log/runner-run.log 2>/dev/null; then
+            exit 0   # a job started — let it run to completion
+          fi
+          if [ "$elapsed" -ge "$IDLE_TIMEOUT_SECS" ]; then
+            log "Idle ${IDLE_TIMEOUT_SECS}s with no job; killing runner to self-terminate."
+            kill "$RUN_PID" 2>/dev/null || true
+            exit 0
+          fi
+          sleep 15
+          elapsed=$((elapsed + 15))
+        done
+      ) &
+      WATCHDOG_PID=$!
+      wait "$RUN_PID" 2>/dev/null || true
+      kill "$WATCHDOG_PID" 2>/dev/null || true
 
-      log "=== Job complete; self-terminating instance via instance principal ==="
+      log "=== Job complete (or idle timeout); self-terminating instance via instance principal ==="
       INSTANCE_ID=$(curl -fsSL -H "Authorization: Bearer Oracle" \
         http://169.254.169.254/opc/v2/instance/id)
       /usr/local/bin/oci --auth instance_principal \

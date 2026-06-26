@@ -1,0 +1,72 @@
+# Scheduled safety net for the OCI ephemeral runner pool.
+#
+# Ephemeral runners self-terminate after their job and, with the idle watchdog
+# in ci/oci-runners/cloud-init-runner.yml.tmpl, after a no-job timeout. This
+# reaps anything that still leaks (cloud-init failure, hung job, watchdog miss):
+# terminates ci-runner VMs older than the generous max age and deregisters
+# offline ci-eph-* runners. Runs on a GitHub-hosted runner (never an ephemeral
+# OCI VM, so it can't reap itself).
+name: Reap stale ephemeral runners
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # every 30 minutes
+  workflow_dispatch:
+
+concurrency:
+  group: reap-runners
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  reap:
+    name: Reap stale runners
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install OCI CLI
+        shell: bash -ex {0}
+        run: |
+          bash -c "$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)" -- \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
+          oci --version
+
+      - name: Configure OCI auth from secrets
+        shell: bash -ex {0}
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.oci
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+          oci iam region list >/dev/null && echo "OCI auth OK"
+
+      - name: Reap stale runners
+        shell: bash -e {0}
+        env:
+          # RELEASE_PAT (repo-admin) is required to deregister runners — the
+          # default GITHUB_TOKEN cannot manage self-hosted runners.
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+        run: |
+          chmod +x ci/oci-runners/reap-stale-runners.sh
+          ci/oci-runners/reap-stale-runners.sh
