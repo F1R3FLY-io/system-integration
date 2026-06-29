@@ -161,6 +161,17 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
         r"(has \d+ pre-state values; single-value invariant violated"
         r"|Expected at most one value for number channel)"
     ),
+    # ── Reducer single-value violation (eval_single_expr / eval_to_bool) ──
+    # reduce.rs raises this when a Par reaching a single-expression context
+    # holds != 1 expressions: n_exprs=0 (empty Par) or >1 (multi-Datum). The
+    # n_exprs=0 case is the orphan-#3 signature — a coupled state-channel
+    # sub-map decoupled during merge (e.g. pendingWithdrawer[X] with no
+    # allBonds[X] → Nil + reward), surfacing as a ReduceError in the PoS
+    # payout. Dissolved by eager advance-only construction; a recurrence is a
+    # merge/coupling regression. Distinct layer from SingleValueInvariantViolated
+    # (merge pipeline) — this fires inside the reducer. Checked manually every
+    # run; now enforced.
+    "ReducerMultipleExpressions": re.compile(r"Multiple expressions given\. eval_"),
     # ── Seal / merge stale-consume backstop ──
     # state_change_merger.rs `make_trie_action` fail-closed tripwire: a
     # chain whose committed diff was rebased onto a divergent base reached

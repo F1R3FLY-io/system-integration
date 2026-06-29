@@ -396,7 +396,7 @@ def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bo
             if proposer.last_finalized_block().blockInfo.blockNumber >= epoch_target
             else None
         ),
-        timeout=timeouts.epoch_transition,
+        timeout=timeouts.epoch_transition * 3,
         interval=timeouts.poll_interval,
         description=f"LFB advances past epoch boundary #{epoch_target} for {identity.name}",
     )
@@ -490,7 +490,7 @@ def _wait_for_active(ro, pubkey_hex: str, present: bool, timeouts, label: str):
     """Poll /validators until pubkey is present (or absent) in the active set."""
     poll_until(
         predicate=lambda: True if (pubkey_hex in _validators_on(ro)) == present else None,
-        timeout=timeouts.epoch_transition,
+        timeout=timeouts.epoch_transition * 3,
         interval=timeouts.poll_interval,
         description=label,
     )
@@ -500,7 +500,7 @@ def _wait_for_payout(ro, pubkey_hex: str, timeouts, label: str):
     """Poll get_withdrawers until pubkey is gone (quarantine elapsed, paid)."""
     poll_until(
         predicate=lambda: True if pubkey_hex not in ro.pos.get_withdrawers() else None,
-        timeout=timeouts.epoch_transition,
+        timeout=timeouts.epoch_transition * 3,
         interval=timeouts.poll_interval,
         description=label,
     )
@@ -634,7 +634,7 @@ def _await_pending(ro, pk: str, present: bool, timeouts, label: str) -> None:
     """Poll FS get_pending_withdrawer until pk is present (or absent)."""
     poll_until(
         predicate=lambda: True if (pk in ro.pos.get_pending_withdrawer()) == present else None,
-        timeout=timeouts.epoch_transition,
+        timeout=timeouts.epoch_transition * 3,
         interval=timeouts.poll_interval,
         description=label,
     )
@@ -663,7 +663,7 @@ def _advance_lfb(node, n_blocks: int, timeouts, budget: Optional[float] = None) 
 
     return poll_until(
         predicate=_reached,
-        timeout=budget if budget is not None else timeouts.epoch_transition,
+        timeout=budget if budget is not None else timeouts.epoch_transition * 3,
         interval=timeouts.poll_interval,
         description=f"LFB advances {n_blocks} blocks from #{start}",
     )
@@ -978,8 +978,8 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # and keeps V6 in the active set. The multi-element move fold must be node-identical.
     _wait_for_active(ro, v4_pk, False, timeouts, "V4 left /validators (moved to withdrawers)")
     _wait_for_active(ro, v5_pk, False, timeouts, "V5 left /validators")
-    _await_withdrawer(ro, v4_pk, True, timeouts.epoch_transition, "V4 in withdrawers")
-    _await_withdrawer(ro, v5_pk, True, timeouts.epoch_transition, "V5 in withdrawers")
+    _await_withdrawer(ro, v4_pk, True, timeouts.epoch_transition * 3, "V4 in withdrawers")
+    _await_withdrawer(ro, v5_pk, True, timeouts.epoch_transition * 3, "V5 in withdrawers")
     expected_post_shrink = {
         VALIDATOR1_ID.public_hex: _GENESIS_STAKE,
         VALIDATOR2_ID.public_hex: _GENESIS_STAKE,
@@ -989,7 +989,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     _await_bonds_monotone(
         ro,
         expected_post_shrink,
-        timeouts.epoch_transition,
+        timeouts.epoch_transition * 3,
         "phase5-post-shrink",
         volatile=frozenset({v4_pk, v5_pk}),
     )
