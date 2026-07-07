@@ -13,7 +13,7 @@ import logging
 
 import pytest
 
-from ...infra.keys import VALIDATOR1_ID
+from ...infra.keys import ALL_IDENTITIES, VALIDATOR1_ID
 from ...infra.polling import wait_for_deploy_finalized
 
 pytestmark = pytest.mark.xdist_group("shared")
@@ -27,6 +27,14 @@ def _validator_pubkeys(shared_shard):
 def _any_validator_pubkey(shared_shard):
     """Get any one genesis validator public key hex."""
     return next(iter(_validator_pubkeys(shared_shard)))
+
+
+def _unbonded_validator_pubkey(shared_shard):
+    """Get a valid secp256k1 public key that is not bonded in this shard."""
+    bonded = _validator_pubkeys(shared_shard)
+    return next(
+        identity.public_hex for identity in ALL_IDENTITIES if identity.public_hex not in bonded
+    )
 
 
 # ===========================================================================
@@ -95,7 +103,7 @@ def test_validator_bonded(shared_shard) -> None:
 def test_validator_unknown(shared_shard) -> None:
     """GET /api/validator/{pubkey} returns isBonded=false for unknown key."""
     ro = shared_shard.readonly
-    fake_key = "aa" * 65  # 130-char hex, not a real validator
+    fake_key = _unbonded_validator_pubkey(shared_shard)
 
     result = ro.api_get(f"/validator/{fake_key}")
 
@@ -236,7 +244,7 @@ def test_bond_status_bonded(shared_shard) -> None:
 
 def test_bond_status_unknown(shared_shard) -> None:
     """GET /api/bond-status/{pubkey} returns isBonded=false for unknown key on all nodes."""
-    fake_key = "bb" * 65  # 130-char hex
+    fake_key = _unbonded_validator_pubkey(shared_shard)
 
     for node in shared_shard.all_nodes:
         result = node.api_get(f"/bond-status/{fake_key}")
