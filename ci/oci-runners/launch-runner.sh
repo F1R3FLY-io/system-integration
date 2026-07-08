@@ -165,6 +165,13 @@ for attempt in $(seq 1 $MAX_ATTEMPTS); do
 done
 
 echo "  Instance:    $INSTANCE_OCID"
+
+# When set, append this launch's runner name for post-launch verification
+# (CI watchdogs poll GitHub's runner API for these names to detect batches
+# that boot but never register — see 2026-07-07 forced-update incident).
+if [[ -n "${RUNNER_NAMES_FILE:-}" ]]; then
+  echo "$RUNNER_NAME" >> "$RUNNER_NAMES_FILE"
+fi
 echo
 echo "Cloud-init runs ~3–5 min before the runner registers on GitHub."
 echo

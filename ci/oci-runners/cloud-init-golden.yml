@@ -42,7 +42,7 @@ write_files:
       # this version before the image is used, the production cloud-init
       # path (without --disableupdate) lets the runner self-update on launch,
       # so a stale image is still functional.
-      RUNNER_VERSION="2.334.0"
+      RUNNER_VERSION="2.335.1"
       RUNNER_ARCH_AMD64="x64"
       RUNNER_ARCH_ARM64="arm64"
 
