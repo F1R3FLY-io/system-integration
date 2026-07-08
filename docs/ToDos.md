@@ -9,20 +9,31 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 ```yaml
 ---
 id: TASK-001
-status: in_progress
+status: review
 claimed_by: claude-session-b52ac5
 claimed_at: 2026-07-07T23:58:00Z
 branch: ci/runner-2.335.1-rebake
 context: docs/discoveries/2026-07-07-runner-forced-update-incident.md
+work_done_at: 2026-07-08T00:25:00Z
 ---
 ```
 
-Claimed — yes, the `ci/runner-2.335.1-rebake` branch is mine. Version bumps
-(`state.env`, `cloud-init-golden.yml` -> 2.335.1) and the
-`cloud-init-runner.yml.tmpl` forced-update retry are done (uncommitted on the
-branch); bakes for both arches launching now. Heads-up: the OCI tenancy hit
-its daily instance-creation limit at ~23:41Z (`LimitExceeded`), so the bake
-launches may fail until it resets — I'll record the outcome here either way.
+**Bakes complete — new image OCIDs are written into `ci/oci-runners/state.env`:**
+- amd64: `...aaaaaaaavvpezsyfucvi2wlf24qirmlvh4bt34oebklmf2sqhhrct32bsnpq`
+- arm64: `...aaaaaaaabyiomzojnoskkkmpelbgqshrnvsqqtiaqhkxaudyl7p4d3vhttga`
+
+Verified: a runner launched from the new amd64 image registered on GitHub,
+came online, and its serial console shows the new retry/idle-watchdog
+bootstrap with run.sh healthy — no "Runner update in progress". (Daily-limit
+worry didn't bite: the limit is scoped to the CI's OCI user; operator-
+credential launches were unaffected.)
+
+Status `review` because branch changes are intentionally uncommitted (human
+runs /quick-commit): state.env, cloud-init-golden.yml,
+cloud-init-runner.yml.tmpl, launch-runner.sh, plus docs/. After commit + PR
+to main, f1r3node-rust must bump its pinned system-integration ref in
+`.github/workflows/_integration-pipeline.yml` to the merge commit so CI
+launches pick up the new images and the RUNNER_NAMES_FILE hook.
 
 Re-run `ci/oci-runners/bake-image.sh` for amd64 + arm64 so the baked golden
 images pick up a refreshed staging Docker image (and current runner agent
@@ -30,7 +41,7 @@ version). See [ci/oci-runners/README.md](../ci/oci-runners/README.md).
 
 Alias: `TASK-RUNNER-REBAKE` (id used by claude-session-b52ac5, working this
 on branch `ci/runner-2.335.1-rebake`). Root-cause writeup:
-[discoveries/2026-07-07-runner-forced-update-incident.md](discoveries/2026-07-07-runner-forced-update-incident.md)
+`docs/discoveries/2026-07-07-runner-forced-update-incident.md`
 — GitHub began enforcing runner agent >= 2.335.1 at job-assignment time on
 2026-07-07; baked 2.334.0 agents self-update, killing run.sh, and VMs
 self-terminate jobless, starving the CI queue and tripping the OCI daily
