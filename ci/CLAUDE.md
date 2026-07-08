@@ -1,5 +1,18 @@
 # F1R3FLY CI Runner Instances
 
+This directory contains the tooling for two different runner pools:
+
+| Pool | Subdir | Lifetime | Compartment | Labels (Rust) | Use |
+|---|---|---|---|---|---|
+| **Persistent** (legacy) | this directory | Long-lived VMs (always running) | `f1r3fly-devops` | `f1r3fly-rust-ci` | Currently powers `build-test-and-deploy.yml`. Source of the state-leak flakiness we're moving away from. |
+| **Ephemeral** (new) | [`oci-runners/`](oci-runners/README.md) | One job per fresh VM | `ci-runner` | `f1r3fly-rust-ci-ephemeral` | Powers `oci-ephemeral-tests.yml`. Solves the flakiness — see `oci-runners/README.md`. |
+
+The two pools coexist without contention because their labels are distinct.
+
+---
+
+## Persistent runners (this file)
+
 ## Overview
 
 Self-hosted GitHub Actions runners for the F1R3FLY blockchain CI pipeline, hosted on Oracle Cloud Infrastructure (OCI). Scala and Rust runners are separate instances with distinct labels to prevent cross-routing (both workflows live in the same repo).

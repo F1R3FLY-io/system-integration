@@ -3,6 +3,15 @@ services/*/
 
 tmp
 
+# Subprocess provider per-session data dirs (data + logs from
+# `pytest --provider=subprocess` runs)
+integration-tests/.subprocess-data/
+
+# Archived node logs from teardown (per-session subdirs of <name>.log
+# files). Captured by Provider.destroy_* paths before resources are
+# removed, so post-failure inspection survives container/process teardown.
+integration-tests/log-archive/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -64,3 +73,5 @@ integration-tests/report.json
 integration-tests/.mypy_cache/
 integration-tests/.pytest_cache/
 integration-tests/data/
+docs/discoveries/
+docs/work-logs/

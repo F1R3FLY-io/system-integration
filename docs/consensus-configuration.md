@@ -41,23 +41,40 @@ From the original design documentation (SafetyOracle.scala):
 | 0.67 | 67% | >5/6 of weight | Very conservative (both Scala and Rust default) |
 | 0.99 | 99% | Near-unanimity | Effectively broken for small validator sets |
 
+### FT caching at finalization time
+
+When the finalizer determines that a block's FT exceeds the threshold, the computed FT value is stored in `BlockMetadata.fault_tolerance_value`. This cached value is the permanent safety certificate for that block — it proves what fraction of total stake was in agreement at the moment of finalization.
+
+**Why caching is required:** The clique oracle computes FT from the live DAG using each validator's `latest_message_hash`. Different nodes have different DAG states due to block propagation delays. Without caching, the same finalized block returns different FT values on different nodes (e.g., FT=1.0 on the boot node, FT=-1.0 on a validator). The cached value ensures all nodes report the same FT for finalized blocks.
+
+**Multi-parent DAG consideration:** In a multi-parent DAG, FT instability is worse than in a linear chain. Each block designates a "main parent" (first entry in `parents_hash_list`), and `is_in_main_chain` only follows main parent pointers. Merge blocks can shift which branch is "main," causing validators to lose agreement on blocks from non-main branches — even their own blocks. Caching prevents these DAG topology changes from affecting finalized block FT.
+
+**Indirectly finalized blocks:** When a block is directly finalized, all its unfinalized ancestors are also marked as finalized. These ancestors receive the directly finalized block's FT as a conservative lower bound. CBC Casper guarantees that ancestor blocks have FT >= descendant FT (the agreeing clique for any block is a subset of the agreeing set for its ancestors).
+
+**FT convergence:** Cached FT is monotonically non-decreasing. On each finalization round, `propagate_ft_to_finalized_blocks` updates all previously-finalized blocks whose cached FT is lower than the new LFB's FT. This covers orphaned branches in the multi-parent DAG. With all validators active, cached FT converges toward 1.0.
+
+**API behavior:**
+- Finalized blocks: API returns `BlockMetadata.fault_tolerance_value` (cached, monotonically increasing)
+- Non-finalized blocks: API computes FT via the clique oracle from the live DAG (existing behavior)
+- Bulk endpoints (`get_blocks`, `show_main_chain`, `get_blocks_by_heights`) use a single DAG snapshot per response for internal consistency
+
 ### Effect on validator count (equal stake)
 
 The normalized FT value for a given agreement ratio:
 
 | Agreeing / Total | FT value | Finalized at FTT=0.0? | FTT=0.1? | FTT=0.33? | FTT=0.67? |
 |-----------------|----------|----------------------|----------|-----------|-----------|
-| 2/3 (67%) | 0.33 | Yes | Yes | No (strict >) | No |
+| 2/3 (67%) | 0.3333... (1/3) | Yes | Yes | Yes (0.333 > 0.33) | No |
 | 3/4 (75%) | 0.50 | Yes | Yes | Yes | No |
-| 5/7 (71%) | 0.43 | Yes | Yes | Yes | No |
-| 5/6 (83%) | 0.67 | Yes | Yes | Yes | No (strict >) |
-| 6/7 (86%) | 0.71 | Yes | Yes | Yes | Yes |
+| 5/7 (71%) | 0.4286... (3/7) | Yes | Yes | Yes | No |
+| 5/6 (83%) | 0.6667... (2/3) | Yes | Yes | Yes | No (0.667 < 0.67) |
+| 6/7 (86%) | 0.7143... (5/7) | Yes | Yes | Yes | Yes |
 | 7/10 (70%) | 0.40 | Yes | Yes | Yes | No |
 | 9/10 (90%) | 0.80 | Yes | Yes | Yes | Yes |
 
 Key observations:
 - **FTT=0.67** (default) with 3 equal-stake validators requires **all 3** to agree for finalization. Losing 1 validator halts finalization.
-- **FTT=0.33** with 3 validators still requires all 3 (FT for 2/3 = 0.33, comparison is strict `>`)
+- **FTT=0.33** with 3 validators allows 2/3 to finalize (FT for 2/3 = 1/3 ≈ 0.3333, which IS > 0.33)
 - **FTT=0.1** with 3 validators allows 2/3 to finalize (FT 0.33 > 0.1)
 - **FTT=0.67** with 7+ validators starts being practical (can lose 1 of 7)
 
@@ -160,9 +177,11 @@ Same as dev — tests need 2/3 finalization to verify shard recovery from valida
 
 ## Related
 
-- `conf/default.conf` — where these values are set for docker shard
+- `conf/rust.conf` / `conf/scala.conf` — where these values are set for docker shard
 - `node/src/main/resources/defaults.conf` — hardcoded defaults (FTT=0.67 for both Scala and Rust)
-- `casper/src/rust/finality/finalizer.rs` — finalization algorithm and FT formula
+- `casper/src/rust/finality/finalizer.rs` — finalization algorithm, FT formula, and FT caching
 - `casper/src/rust/safety/clique_oracle.rs` — weight map calculation
+- `casper/src/rust/api/block_api.rs` — returns cached FT for finalized blocks
+- `block-storage/src/rust/dag/block_metadata_store.rs` — stores FT in `BlockMetadata` at finalization
 - f1r3node#437 — network deadlock at `synchrony-constraint-threshold = 0.67`
 - f1r3node#459 — fork abandonment mechanism (expelled validators can't rejoin)

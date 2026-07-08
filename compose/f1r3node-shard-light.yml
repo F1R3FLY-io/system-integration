@@ -16,8 +16,10 @@
 #   Validator1:  40410-40415
 #   Validator2:  40420-40425
 
+name: f1r3fly-scala-light
+
 x-rnode: &default-rnode
-  image: ${F1R3FLY_SCALA_IMAGE:-f1r3flyindustries/f1r3fly-scala-node}
+  image: ${F1R3FLY_NODE_IMAGE:-f1r3flyindustries/f1r3fly-scala-node:latest}
   user: root
   restart: always
   networks:
@@ -56,7 +58,7 @@ services:
       - "40405:40405"
     volumes:
       - boot-data:/var/lib/rnode
-      - ../conf/default.conf:/var/lib/rnode/rnode.conf
+      - ../conf/scala.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/shard-light-bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
@@ -97,7 +99,7 @@ services:
       - "40415:40405"
     volumes:
       - validator1-data:/var/lib/rnode
-      - ../conf/default.conf:/var/lib/rnode/rnode.conf
+      - ../conf/scala.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/shard-light-bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
@@ -138,7 +140,7 @@ services:
       - "40425:40405"
     volumes:
       - validator2-data:/var/lib/rnode
-      - ../conf/default.conf:/var/lib/rnode/rnode.conf
+      - ../conf/scala.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/shard-light-bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml

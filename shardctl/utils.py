@@ -35,11 +35,7 @@ def get_docker_compose_command():
 
     # Try "docker compose" (v2 plugin, available since Docker ~20.10)
     try:
-        subprocess.run(
-            ["docker", "compose", "version"],
-            capture_output=True,
-            check=True
-        )
+        subprocess.run(["docker", "compose", "version"], capture_output=True, check=True)
         _docker_compose_command_cache = ["docker", "compose"]
         return list(_docker_compose_command_cache)
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -47,27 +43,21 @@ def get_docker_compose_command():
 
     # Fall back to "docker-compose" (standalone binary)
     try:
-        subprocess.run(
-            ["docker-compose", "version"],
-            capture_output=True,
-            check=True
-        )
+        subprocess.run(["docker-compose", "version"], capture_output=True, check=True)
         _docker_compose_command_cache = ["docker-compose"]
         return list(_docker_compose_command_cache)
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
 
     # Neither found — default to "docker compose" and let it fail with a clear error
-    console.print("[yellow]Warning: Neither 'docker compose' nor 'docker-compose' found[/yellow]", style="dim")
+    console.print(
+        "[yellow]Warning: Neither 'docker compose' nor 'docker-compose' found[/yellow]", style="dim"
+    )
     _docker_compose_command_cache = ["docker", "compose"]
     return list(_docker_compose_command_cache)
 
 
-def clone_services(
-    service_repos: Dict[str, Dict],
-    services_dir: Path,
-    force: bool = False
-) -> None:
+def clone_services(service_repos: Dict[str, Dict], services_dir: Path, force: bool = False) -> None:
     """Clone service repositories into the services directory.
 
     Args:
@@ -89,29 +79,30 @@ def clone_services(
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-
         for service_name, repo_config in service_repos.items():
             service_path = services_dir / service_name
 
             # Extract URL and branch
-            repo_url = repo_config.get('url', repo_config) if isinstance(repo_config, dict) else repo_config
-            branch = repo_config.get('branch') if isinstance(repo_config, dict) else None
+            repo_url = repo_config.get("url") if isinstance(repo_config, dict) else repo_config
+            branch = repo_config.get("branch") if isinstance(repo_config, dict) else None
+
+            # Some entries in services.yml have no `url` (e.g. monitoring — a
+            # compose-only service that lives in this repo). Nothing to clone.
+            if not repo_url:
+                console.print(f"[dim]Skipping {service_name}: no repository URL configured[/dim]")
+                continue
 
             # Check if service already exists
             if service_path.exists():
                 if force:
-                    task = progress.add_task(
-                        f"Removing existing {service_name}...",
-                        total=None
-                    )
+                    task = progress.add_task(f"Removing existing {service_name}...", total=None)
                     try:
                         import shutil
+
                         shutil.rmtree(service_path)
                         progress.update(task, completed=True)
                     except Exception as e:
-                        console.print(
-                            f"[red]Error removing {service_name}: {e}[/red]"
-                        )
+                        console.print(f"[red]Error removing {service_name}: {e}[/red]")
                         continue
                 else:
                     console.print(
@@ -132,12 +123,7 @@ def clone_services(
                     clone_cmd.extend(["-b", branch])
                 clone_cmd.extend([repo_url, str(service_path)])
 
-                result = subprocess.run(
-                    clone_cmd,
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
+                subprocess.run(clone_cmd, capture_output=True, text=True, check=True)
                 progress.update(task, completed=True)
 
                 success_msg = f"[green]✓[/green] Cloned {service_name}"
@@ -147,8 +133,7 @@ def clone_services(
 
             except subprocess.CalledProcessError as e:
                 console.print(
-                    f"[red]✗ Failed to clone {service_name}[/red]\n"
-                    f"[dim]{e.stderr}[/dim]"
+                    f"[red]✗ Failed to clone {service_name}[/red]\n" f"[dim]{e.stderr}[/dim]"
                 )
             except Exception as e:
                 console.print(f"[red]✗ Error cloning {service_name}: {e}[/red]")
@@ -161,12 +146,7 @@ def check_docker_compose_installed() -> bool:
         True if docker-compose is available, False otherwise.
     """
     try:
-        result = subprocess.run(
-            ["docker", "compose", "version"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        subprocess.run(["docker", "compose", "version"], capture_output=True, text=True, check=True)
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
@@ -179,12 +159,7 @@ def check_git_installed() -> bool:
         True if git is available, False otherwise.
     """
     try:
-        result = subprocess.run(
-            ["git", "--version"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        subprocess.run(["git", "--version"], capture_output=True, text=True, check=True)
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
@@ -199,9 +174,7 @@ def validate_environment() -> bool:
     valid = True
 
     if not check_docker_compose_installed():
-        console.print(
-            "[red]Error: docker-compose is not installed or not in PATH[/red]"
-        )
+        console.print("[red]Error: docker-compose is not installed or not in PATH[/red]")
         valid = False
 
     if not check_git_installed():
@@ -266,10 +239,7 @@ def _docker_platform_for_f1r3node() -> str:
 
 
 def build_service(
-    service_name: str,
-    service_path: Path,
-    build_config: dict,
-    docker: bool = False
+    service_name: str, service_path: Path, build_config: dict, docker: bool = False
 ) -> bool:
     """Build a service using its build configuration.
 
@@ -293,17 +263,13 @@ def build_service(
     if docker:
         build_command = build_config.get("docker_build_command")
         if not build_command:
-            console.print(
-                f"[yellow]No docker build command configured for {service_name}[/yellow]"
-            )
+            console.print(f"[yellow]No docker build command configured for {service_name}[/yellow]")
             return False
         console.print(f"[bold blue]Building Docker image for {service_name}...[/bold blue]")
     else:
         build_command = build_config.get("build_command")
         if not build_command:
-            console.print(
-                f"[red]No build command configured for {service_name}[/red]"
-            )
+            console.print(f"[red]No build command configured for {service_name}[/red]")
             return False
         console.print(f"[bold blue]Building {service_name}...[/bold blue]")
 
@@ -322,11 +288,7 @@ def build_service(
     if environment == "nix":
         # Check if nix is available
         try:
-            subprocess.run(
-                ["nix", "--version"],
-                capture_output=True,
-                check=True
-            )
+            subprocess.run(["nix", "--version"], capture_output=True, check=True)
             use_nix = True
             console.print("[dim]Running in Nix development environment[/dim]")
         except (subprocess.CalledProcessError, FileNotFoundError):
@@ -336,20 +298,22 @@ def build_service(
 
     # Detect if this is a Node.js project (to apply nvm/node 18 environment)
     node_deps = build_config.get("dependencies", [])
-    is_node_project = any(
-        str(dep).strip().lower().startswith("node") for dep in node_deps
-    ) or (service_path / "package.json").exists()
+    is_node_project = (
+        any(str(dep).strip().lower().startswith("node") for dep in node_deps)
+        or (service_path / "package.json").exists()
+    )
 
     # Node 18 environment bootstrap (safe if nvm not installed)
     # - Sources nvm if present
     # - Switches to Node 18
     # - Enables corepack for pnpm/yarn
-    node18_prefix = ('')
-#        'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"; '
-#        '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '
-#        'if command -v nvm >/dev/null 2>&1; then nvm install 18 >/dev/null && nvm use 18 >/dev/null; fi; '
-#        'corepack enable >/dev/null 2>&1; '
-#    )
+    node18_prefix = ""
+    #        'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"; '
+    #        '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '
+    #        'if command -v nvm >/dev/null 2>&1; then nvm install 18 '
+    #        '>/dev/null && nvm use 18 >/dev/null; fi; '
+    #        'corepack enable >/dev/null 2>&1; '
+    #    )
 
     # Run pre-build steps
     if docker:
@@ -369,7 +333,11 @@ def build_service(
 
             if use_nix:
                 # Run the command directly in nix develop environment
-                step_cmd = f'nix --extra-experimental-features nix-command --extra-experimental-features flakes develop --command bash -c "{step_core}"'
+                step_cmd = (
+                    "nix --extra-experimental-features nix-command "
+                    "--extra-experimental-features flakes develop "
+                    f'--command bash -c "{step_core}"'
+                )
             else:
                 step_cmd = step_core
 
@@ -399,11 +367,11 @@ def build_service(
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
-                    bufsize=1
+                    bufsize=1,
                 )
 
                 for line in step_process.stdout:
-                    console.print(line, end='')
+                    console.print(line, end="")
 
                 returncode = step_process.wait()
                 if returncode != 0:
@@ -413,7 +381,7 @@ def build_service(
                 console.print(f"\n[yellow]Pre-build step interrupted: {step}[/yellow]")
                 cleanup_step_process()
                 return False
-            except subprocess.CalledProcessError as e:
+            except subprocess.CalledProcessError:
                 cleanup_step_process()
                 console.print(f"[red]Pre-build step failed: {step}[/red]")
                 return False
@@ -427,7 +395,11 @@ def build_service(
         build_command = node18_prefix + build_command
 
     if use_nix:
-        build_command = f'nix --extra-experimental-features nix-command --extra-experimental-features flakes develop --command bash -c "{build_command}"'
+        build_command = (
+            "nix --extra-experimental-features nix-command "
+            "--extra-experimental-features flakes develop "
+            f'--command bash -c "{build_command}"'
+        )
 
     # Run the build command
     console.print(f"[dim]$ {build_command}[/dim]")
@@ -470,7 +442,7 @@ def build_service(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1
+            bufsize=1,
         )
 
     try:
@@ -489,11 +461,9 @@ def build_service(
 
         if docker:
             docker_image = build_config.get("docker_image", "N/A")
-            console.print(
-                f"[green]✓[/green] Docker image built successfully: {docker_image}"
-            )
+            console.print(f"[green]✓[/green] Docker image built successfully: {docker_image}")
         else:
-            console.print(f"[green]✓[/green] Build completed successfully")
+            console.print("[green]✓[/green] Build completed successfully")
 
             # Show binary path if available
             binary_path = build_config.get("binary_path")
@@ -600,16 +570,16 @@ def run_native_service(service_name: str, root_dir: Path, run_config: dict) -> b
 
 
 def clean_services(
-    services_to_clean: Optional[List[str]],
-    services_dir: Path,
-    all_services: bool = True
+    services_to_clean: Optional[List[str]], services_dir: Path, all_services: bool = True
 ) -> None:
     """Remove service directories from services/ folder.
 
     Args:
-        services_to_clean: List of specific services to clean. If None or empty, cleans based on all_services flag.
+        services_to_clean: Specific services to clean. If None or empty,
+            falls back to ``all_services``.
         services_dir: Path to services directory.
-        all_services: If True (and no services_to_clean specified), remove all services. If False, remove nothing.
+        all_services: If True (and ``services_to_clean`` is empty), remove
+            all services. If False, remove nothing.
     """
     import shutil
 
@@ -623,7 +593,9 @@ def clean_services(
         services_list = services_to_clean
     elif all_services:
         # Clean all services
-        services_list = [d.name for d in services_dir.iterdir() if d.is_dir() and d.name != ".gitkeep"]
+        services_list = [
+            d.name for d in services_dir.iterdir() if d.is_dir() and d.name != ".gitkeep"
+        ]
     else:
         console.print("[yellow]No services specified and --all not set[/yellow]")
         return
@@ -672,7 +644,7 @@ repositories:
 """
 
     try:
-        with open(config_path, 'w') as f:
+        with open(config_path, "w") as f:
             f.write(example_content)
         console.print(f"[green]Created example configuration at {config_path}[/green]")
     except Exception as e:
@@ -713,7 +685,9 @@ def sync_service_branch(service_name: str, service_path: Path, branch: str) -> b
             capture_output=True,
             text=True,
         )
-        current_branch = current_branch_result.stdout.strip() if current_branch_result.returncode == 0 else ""
+        current_branch = (
+            current_branch_result.stdout.strip() if current_branch_result.returncode == 0 else ""
+        )
 
         # Checkout the branch if not already on it
         if current_branch != branch:
