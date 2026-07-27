@@ -4,43 +4,6 @@
 
 This is a microservices integration repository for the F1R3FLY blockchain ecosystem. It provides tooling and orchestration for managing multiple service repositories (f1r3node, f1r3sky, embers, etc.) as independent nested git repositories with docker-compose coordination.
 
-## Repository Structure
-
-```
-.
-├── services/                    # Service repos (git-ignored)
-│   ├── f1r3node/               # F1R3FLY blockchain node (Scala)
-│   ├── f1r3node-rust/          # F1R3FLY blockchain node (Rust)
-│   ├── rust-client/            # Rust CLI client
-│   ├── f1r3drive/              # F1r3Drive FUSE app (Java)
-│   ├── embers/                 # Embers API (Rust, opt-in)
-│   ├── embers-frontend/        # Embers UI (React 19, opt-in)
-│   └── f1r3sky-backend/        # AT Protocol backend (Node.js, opt-in)
-├── shardctl/                   # CLI tool package
-├── compose/                    # Docker Compose files (one per service)
-│   ├── f1r3node.yml            # Scala shard
-│   ├── f1r3node-rust.yml       # Rust shard (default)
-│   ├── embers.yml              # Embers API + frontend
-│   ├── f1r3sky.yml             # F1R3Sky AT Protocol services
-│   └── monitoring.yml          # Prometheus + Grafana
-├── docs/                       # Documentation
-│   ├── setup.md                # Full setup walkthrough + per-service build deps
-│   ├── cli-reference.md        # Every shardctl command + flag
-│   ├── configuration.md        # Node configs + env files
-│   ├── consensus-configuration.md  # FTT / synchrony / finalization semantics
-│   ├── troubleshooting.md      # Common issues
-│   ├── development.md          # Development workflow + advanced usage
-│   ├── slashing-mechanism.md   # Slashing summary
-│   ├── slashing-test-plan.md   # Slashing test rewrite plan
-│   └── f1r3drive-guide.md      # F1R3Drive FUSE app
-├── COMPOSE_STRUCTURE.md        # Canonical compose reference
-├── services.yml                # Service repository URLs and branches
-├── .env.node                   # Node container hostnames + validator keys
-├── .env.embers                 # Embers configuration
-├── .env.f1r3sky                # F1R3Sky configuration
-└── README.md                   # Welcome + Quick Start + pointers
-```
-
 ## Key Concepts
 
 - **Services are git-ignored**: Each service repository (f1r3node, embers, f1r3sky-backend, etc.) is cloned into `services/` and completely ignored by the parent system-integration repository
@@ -80,6 +43,43 @@ poetry run shardctl logs --follow
 
 # Stop services
 poetry run shardctl down
+```
+
+## Repository Structure
+
+```
+.
+├── services/                    # Service repos (git-ignored)
+│   ├── f1r3node/               # F1R3FLY blockchain node (Scala)
+│   ├── f1r3node-rust/          # F1R3FLY blockchain node (Rust)
+│   ├── rust-client/            # Rust CLI client
+│   ├── f1r3drive/              # F1r3Drive FUSE app (Java)
+│   ├── embers/                 # Embers API (Rust, opt-in)
+│   ├── embers-frontend/        # Embers UI (React 19, opt-in)
+│   └── f1r3sky-backend/        # AT Protocol backend (Node.js, opt-in)
+├── shardctl/                   # CLI tool package
+├── compose/                    # Docker Compose files (one per service)
+│   ├── f1r3node.yml            # Scala shard
+│   ├── f1r3node-rust.yml       # Rust shard (default)
+│   ├── embers.yml              # Embers API + frontend
+│   ├── f1r3sky.yml             # F1R3Sky AT Protocol services
+│   └── monitoring.yml          # Prometheus + Grafana
+├── docs/                       # Documentation
+│   ├── setup.md                # Full setup walkthrough + per-service build deps
+│   ├── cli-reference.md        # Every shardctl command + flag
+│   ├── configuration.md        # Node configs + env files
+│   ├── consensus-configuration.md  # FTT / synchrony / finalization semantics
+│   ├── troubleshooting.md      # Common issues
+│   ├── development.md          # Development workflow + advanced usage
+│   ├── slashing-mechanism.md   # Slashing summary
+│   ├── slashing-test-plan.md   # Slashing test rewrite plan
+│   └── f1r3drive-guide.md      # F1R3Drive FUSE app
+├── COMPOSE_STRUCTURE.md        # Canonical compose reference
+├── services.yml                # Service repository URLs and branches
+├── .env.node                   # Node container hostnames + validator keys
+├── .env.embers                 # Embers configuration
+├── .env.f1r3sky                # F1R3Sky configuration
+└── README.md                   # Welcome + Quick Start + pointers
 ```
 
 ## Service Repositories
@@ -144,150 +144,3 @@ Test framework lives at [integration-tests/](integration-tests/). Canonical invo
   - [integration-tests/test/docs/ARCHITECTURE.md](integration-tests/test/docs/ARCHITECTURE.md) — framework internals (fixtures, Provider protocol, cleanup, ports, timeouts)
   - [integration-tests/test/docs/WRITING_TESTS.md](integration-tests/test/docs/WRITING_TESTS.md) — recipes for adding a test
   - [integration-tests/test/docs/INDEX.md](integration-tests/test/docs/INDEX.md) — catalog of all 22 test files
-
-### Key Principles
-
-1. **Stigmergic Collaboration**: Coordinate with other agents through shared `.md` files
-2. **Document-First**: Create design docs and specifications BEFORE implementation
-3. **Signal vs. Slop**: Maximize code that solves problems; avoid over-engineering
-4. **Acceptance Criteria**: Define measurable success criteria in task definitions
-
-### Standard Document Structure
-
-| Document | Purpose | Location |
-|----------|---------|----------|
-| Tasks/Epics | Implementation tracking | `docs/ToDos.md` |
-| Work Logs | Session progress | `docs/work-logs/*.md` (local-only, git-ignored) |
-| Discoveries | Shared findings | `docs/discoveries/*.md` (local-only, git-ignored) |
-
-Backlog, user-story, user-flow, and completed-work documents are not currently
-kept in this repo. Add them (via `/harmonize`) when there is real content to
-record, rather than carrying empty scaffolding.
-
-### Before Starting Work
-
-1. **Read `docs/ToDos.md`** to check task status and claims
-2. **Check `docs/work-logs/`** for existing progress on related tasks
-3. **Review `docs/discoveries/`** for relevant context from other agents
-
-### When Claiming a Task
-
-Update the task in `docs/ToDos.md`:
-
-```yaml
----
-id: TASK-001
-status: in_progress          # Changed from 'pending'
-claimed_by: claude-session-a1b2c3  # See Implementer Identification format
-claimed_at: 2025-01-15T10:00:00Z
-# Other valid claimed_by formats:
-#   human-jeff@example.com        # Human (git config --get user.email)
-#   design-sprint/researcher      # Agent team member ({team}/{name})
----
-```
-
-### During Work
-
-1. **Create work log** at `docs/work-logs/task-{id}-{timestamp}.md`
-2. **Document discoveries** in `docs/discoveries/` for other agents
-3. **Update blockers** if you encounter dependencies
-
-### Before Pausing/Completing
-
-Update your work log with handoff notes:
-
-```yaml
----
-handoff_status: ready | paused | blocked
-next_steps:
-  - What remains to be done
----
-```
-
-## AI Artifact Generation Guidelines
-
-**Core strategy:** Default to **Markdown + Mermaid** as the source of truth for all generated artifacts. Use **HTML** only when high engagement or advanced interactivity is required.
-
-**Preferred formats:**
-
-| Format | Use for | Notes |
-|--------|---------|-------|
-| **Markdown + Mermaid** | Primary. Diagrams (flowcharts, sequences, architecture, timelines, Gantt, ERDs), structured documents, plans, specs | Relative links (`./images/`, `./docs/`) and GitHub/GitLab raw URLs for local/cloud asset referencing |
-| **HTML (CSS/JS + embedded Mermaid)** | Secondary. Interactive dashboards, prototypes, dynamic reviews, stakeholder deliverables | When visual polish and engagement are critical (tabs, sliders, clickable elements) |
-
-**Hybrid rule:** Always produce Markdown as the canonical, Git-friendly version first; generate a self-contained HTML export on request.
-
-**Key principles:**
-
-- Prioritize human readability, editability, and Git compatibility (clean diffs, relative paths, native rendering on GitHub/GitLab).
-- Maximize information density while avoiding text walls — convert complex information into Mermaid diagrams.
-- Support seamless referencing of local files and cloud artifacts (images, other docs, raw Git content).
-- Favor Markdown for internal/agent use and long-term storage (token efficiency).
-- Use HTML when delivering to stakeholders or for living documents (engagement).
-
-**Output guidance:** When creating artifacts, ask whether HTML interactivity is needed. Default to clean Markdown with embedded Mermaid unless specified.
-
-## Slash Commands
-
-These are provided by the maintainer's personal Claude configuration and are not
-shipped in this repository (`.claude/` is git-ignored). They are listed for
-reference; a fresh clone will not have them.
-
-### Git Operations
-- `/quick-commit` - Stage and commit changes (required in safe mode)
-- `/recursive-push` - Push across repositories
-
-### Task Management
-- `/nextTask` - Find and select next task to work on
-- `/implement` - Begin implementation of a task
-- `/epic-review` - Preview and summarize epics
-- `/epic-hygiene` - Archive completed epics
-
-### Workspace Sync
-- `/harmonize` - Sync workspace policies into this repo
-- `/multi-repo-sync` - Workspace-wide sync orchestration
-
-### PII Guidelines for Contributors
-
-**CRITICAL - Before submitting any contribution:**
-
-Contributors MUST ensure their code, commits, and documentation do NOT contain PII:
-
-**Check before committing:**
-- [ ] No absolute file paths with usernames in code or documentation
-- [ ] No personal email addresses in code (use generic examples like `user@example.com`)
-- [ ] No real user data in tests or examples (use synthetic/fake data only)
-- [ ] No PII in log statements (sanitize or use user IDs instead)
-- [ ] No PII in error messages or stack traces
-- [ ] No PII in code comments or documentation
-- [ ] No credentials, tokens, or secrets in code (use environment variables)
-- [ ] No IP addresses, MAC addresses, or device identifiers in examples
-
-**If you accidentally committed PII:**
-1. **DO NOT** push to remote repository
-2. Use `git reset` to remove the commit
-3. If already pushed, contact maintainers immediately
-4. Repository history may need to be rewritten to remove PII
-
-**Use these instead:**
-- File paths: Use relative paths or generic placeholders (`[WORKSPACE_ROOT]/project/`)
-- Email addresses: Use `user@example.com`, `admin@example.com`
-- Names: Use `John Doe`, `Jane Smith`, `User123`
-- Phone numbers: Use `+1-555-0100` (officially reserved for examples)
-- IP addresses: Use reserved ranges (`192.0.2.1`, `198.51.100.1`, `203.0.113.1`)
-- Dates: Use recent but generic dates, not specific personal dates
-
-**For test data:**
-- Use test data generators that create realistic but fake data
-- Use well-known test fixtures (e.g., `test@example.com`)
-- Never use production or real user data in development/testing
-
-## grepai - Semantic Code Search
-
-`grepai` is an optional, MIT-licensed semantic-search tool. If it is installed
-and indexed locally for this repo, prefer it for intent-based code exploration;
-if it is unavailable, fall back to your harness's native search and file-reading
-tools. It is recommended but never required. Nothing here is harness-specific -
-substitute your tool's equivalents for the generic actions described below.
-Setup (with the privacy-first local Ollama embedder as default) lives in the
-CLI Setup guide's "Optional: Semantic Code Search (grepai)" section.
