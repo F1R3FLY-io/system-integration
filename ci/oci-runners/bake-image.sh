@@ -8,7 +8,7 @@
 # Flow:
 #   1. Launch a golden instance from the stock Ubuntu image
 #   2. Cloud-init installs every dependency, downloads the runner agent,
-#      pre-pulls the staging image, then `shutdown -h`
+#      pre-pulls the node test image, then `shutdown -h`
 #   3. Wait for the instance to reach STOPPED
 #   4. Create a custom image from its boot volume
 #   5. Wait for the image to be AVAILABLE
@@ -79,7 +79,7 @@ INSTANCE_OCID=$(oci compute instance launch \
 echo "  Instance: $INSTANCE_OCID"
 
 echo "=== [2/6] Waiting for golden bootstrap to complete (instance reaches STOPPED) ==="
-echo "    Expected ~6-10 min: apt installs, Docker, Python, Rust, OCI CLI, runner agent, staging image pull"
+echo "    Expected ~6-10 min: apt installs, Docker, Python, Rust, OCI CLI, runner agent, node test image pull"
 # Poll for STOPPED. cloud-init ends with `shutdown -h +1` (1-min grace).
 # Two-stage wait:
 #   * up to ~15 min for OCI to natively see STOPPED

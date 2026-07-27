@@ -17,7 +17,7 @@ Each launched VM boots, registers with GitHub using a short-lived token, picks u
 
 ## Status
 
-- ✓ amd64 baked image (`Canonical Ubuntu 22.04` + Docker, Python 3.10, Poetry 1.8.5, Rust, OCI CLI, GH runner agent 2.334.0, staging Docker image pre-pulled)
+- ✓ amd64 baked image (`Canonical Ubuntu 22.04` + Docker, Python 3.10, Poetry 1.8.5, Rust, OCI CLI, GH runner agent 2.334.0, node test Docker image pre-pulled)
 - ✓ arm64 baked image (same stack)
 - ✓ Wired into `f1r3node`'s `build-test-and-deploy.yml` as the integration test pool
 - ✓ OCI CLI secrets configured on `F1R3FLY-io/f1r3node` (5 secrets, `OCI_*`)
@@ -51,9 +51,9 @@ Both arches use **16 OCPU / 32 GB / boot from baked image**:
 |---|---|
 | `state.env` | All OCIDs + config (image OCIDs, compartment, VCN, subnet, shapes, runner version, SSH key paths). Sourced by every script. |
 | `ssh-authorized-key.pub` | SSH public key authorized for launched runner VMs. Committed in-repo (safe — public keys are designed to be public). The private key lives only on the operator's laptop. |
-| `cloud-init-golden.yml` | Bake-target cloud-init. Installs every dependency, downloads the runner agent, pre-pulls the staging Docker image, symlinks tools into `/usr/local/bin`, then `shutdown -h`. Used by `bake-image.sh` only. |
+| `cloud-init-golden.yml` | Bake-target cloud-init. Installs every dependency, downloads the runner agent, pre-pulls the node test Docker image, symlinks tools into `/usr/local/bin`, then `shutdown -h`. Used by `bake-image.sh` only. |
 | `cloud-init-runner.yml.tmpl` | Production cloud-init template. Assumes the baked image; runs only the runner-specific steps (config.sh, run.sh, self-terminate). An idle watchdog self-terminates the VM if no job arrives within 45 min, so over-provisioned/cancelled-run runners don't leak. Variables (`__REG_TOKEN__`, `__GH_REPO__`, etc.) substituted at launch time by `launch-runner.sh`. |
-| `bake-image.sh` | One-shot bake. Launches a golden VM, waits for it to STOP, snapshots its boot volume to a custom image, terminates the golden VM. Re-run when the runner agent version is deprecated or the staging Docker image needs refreshing. |
+| `bake-image.sh` | One-shot bake. Launches a golden VM, waits for it to STOP, snapshots its boot volume to a custom image, terminates the golden VM. Re-run when the runner agent version is deprecated or the pre-pulled node test Docker image needs refreshing. |
 | `launch-runner.sh` | Launches one ephemeral runner VM. Mints a short-lived (1-hour) registration token via `gh api`, renders cloud-init, calls `oci compute instance launch`. Called by the CI workflow + can be invoked manually for debugging. |
 | `reap-stale-runners.sh` | Safety net: terminates `ci-runner` VMs older than `MAX_AGE_HOURS` (default 6h, well past the ~45-min pipeline) and deregisters offline `ci-eph-*` runner entries. Run automatically every 30 min by `.github/workflows/reap-runners.yml`; safe to run manually. Supersedes the old `cleanup-orphan-runners.sh`. |
 | `destroy-all.sh` | Emergency: interactively force-terminates every instance in `ci-runner` compartment. |
@@ -143,11 +143,12 @@ The baked image freezes a snapshot of:
 - Python 3.10 + Poetry 1.8.5
 - Rust stable toolchain
 - OCI CLI
-- `f1r3flyindustries/f1r3fly-rust:staging` Docker image
+- `f1r3flyindustries/f1r3fly-rust:dev` Docker image (images baked before the
+  `staging` branch deprecation contain `:staging` instead — re-bake to refresh)
 - `/etc/sysctl.d/99-ci-port-reservation.conf` reserving the test
   PortAllocator's range (41000-49000) from kernel ephemeral
   assignment (`net.ipv4.ip_local_reserved_ports`). Eliminates the
   ephemeral-port race that surfaces as `Address already in use` at
   rnode bind time under subprocess provider.
 
-The runner agent self-updates at registration if newer (no `--disableupdate` flag), so a stale baked agent is auto-recovered. But the **staging test image** is frozen as baked — re-bake when the node image is bumped or every quarter.
+The runner agent self-updates at registration if newer (no `--disableupdate` flag), so a stale baked agent is auto-recovered. But the **node test image** is frozen as baked — re-bake when the node image is bumped or every quarter.
