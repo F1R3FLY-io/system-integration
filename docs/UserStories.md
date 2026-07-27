@@ -1,22 +1,10 @@
 ---
 doc_type: user_stories
 version: "1.0"
-last_updated: "[DATE]"
+last_updated: "2026-07-27"
 ---
 
 # User Stories
-
-<!--
-TEMPLATE USAGE INSTRUCTIONS:
-0. Update frontmatter: set last_updated to current date, increment version for structural changes
-1. Add completed stories under "Completed Stories" section
-2. Add planned stories under "Planned Stories" section
-3. Move completed stories from "Planned" to "Completed" sections
-4. Update epic links when implementation begins
-5. Check acceptance criteria as features are verified
-6. (Optional) Update reference URLs if using a fork with modified standards
-7. Remove these usage instruction comments before committing
--->
 
 This document captures user stories that drive feature development. User stories are reverse-engineered from completed epics and updated as new features are planned.
 

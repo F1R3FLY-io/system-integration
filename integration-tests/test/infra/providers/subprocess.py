@@ -620,7 +620,10 @@ class SubprocessProvider:
         for idx, (identity, _stake) in enumerate(config.bonds):
             slot = idx + 1
             role_key = f"validator{slot}"
-            cert_subdir = f"validator{slot}" if slot <= 3 else None  # certs shipped for v1-v3
+            # Use the shipped TLS keypair for this slot when one exists; slots beyond
+            # the shipped set let the node self-generate (see certs/README.md).
+            cert_dir = Path(self._paths.certs_dir) / role_key
+            cert_subdir = role_key if cert_dir.is_dir() else None
             v_cli = [
                 f"--bootstrap={bootstrap_url}",
                 f"--validator-public-key={identity.public_hex}",
