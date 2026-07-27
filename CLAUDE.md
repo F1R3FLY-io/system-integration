@@ -156,12 +156,13 @@ Test framework lives at [integration-tests/](integration-tests/). Canonical invo
 
 | Document | Purpose | Location |
 |----------|---------|----------|
-| User Stories | Business needs and acceptance criteria | `docs/UserStories.md` |
 | Tasks/Epics | Implementation tracking | `docs/ToDos.md` |
-| Completed Work | Historical reference | `docs/CompletedTasks.md` |
-| Backlog | Deferred items | `docs/Backlog.md` |
-| Work Logs | Session progress | `docs/work-logs/*.md` |
-| Discoveries | Shared findings | `docs/discoveries/*.md` |
+| Work Logs | Session progress | `docs/work-logs/*.md` (local-only, git-ignored) |
+| Discoveries | Shared findings | `docs/discoveries/*.md` (local-only, git-ignored) |
+
+Backlog, user-story, user-flow, and completed-work documents are not currently
+kept in this repo. Add them (via `/harmonize`) when there is real content to
+record, rather than carrying empty scaffolding.
 
 ### Before Starting Work
 
