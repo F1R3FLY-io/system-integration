@@ -57,11 +57,22 @@ keys are reused, only the certificate is re-issued):
 ```sh
 cd integration-tests/certs
 for d in bootstrap validator*; do
-  cn=$(openssl x509 -in "$d/node.certificate.pem" -noout -subject | sed 's/.*CN=//')
+  # -nameopt RFC2253 pins the subject format: without it some builds
+  # (LibreSSL, i.e. macOS /usr/bin/openssl) print "subject=CN = <id>" with
+  # spaces, the strip silently no-ops, and the re-issued cert gets a garbage
+  # CN — changing the node ID this procedure exists to preserve.
+  cn=$(openssl x509 -in "$d/node.certificate.pem" -noout -subject -nameopt RFC2253 |
+    sed 's/^subject=CN=//')
+  case "$cn" in
+    ""|*[!0-9a-f]*) echo "unexpected CN for $d: '$cn'" >&2; exit 1 ;;
+  esac
   openssl req -x509 -new -key "$d/node.key.pem" -subj "/CN=$cn" \
     -days 3650 -sha256 -out "$d/node.certificate.pem"
 done
 ```
+
+Node IDs are 40 lowercase hex characters; the guard above aborts rather than
+issuing a certificate under a malformed CN.
 
 Generating a **new key** changes that node's ID and requires updating every
 hardcoded reference to it (for `bootstrap/`, the `BOOTSTRAP_NODE_ID` defaults in

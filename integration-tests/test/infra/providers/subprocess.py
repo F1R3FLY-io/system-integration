@@ -620,10 +620,15 @@ class SubprocessProvider:
         for idx, (identity, _stake) in enumerate(config.bonds):
             slot = idx + 1
             role_key = f"validator{slot}"
-            # Use the shipped TLS keypair for this slot when one exists; slots beyond
-            # the shipped set let the node self-generate (see certs/README.md).
+            # Use the shipped TLS keypair for this slot when both halves are present;
+            # slots without a complete fixture let the node self-generate. Requiring
+            # both files keeps a partial/empty validator{N}/ dir from suppressing
+            # self-generation and failing startup (see certs/README.md).
             cert_dir = Path(self._paths.certs_dir) / role_key
-            cert_subdir = role_key if cert_dir.is_dir() else None
+            has_fixture = (cert_dir / "node.certificate.pem").is_file() and (
+                cert_dir / "node.key.pem"
+            ).is_file()
+            cert_subdir = role_key if has_fixture else None
             v_cli = [
                 f"--bootstrap={bootstrap_url}",
                 f"--validator-public-key={identity.public_hex}",

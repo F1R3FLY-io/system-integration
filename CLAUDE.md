@@ -311,8 +311,6 @@ This applies to all slash commands and scripts that create configuration files.
 - `/harmonize` - Sync workspace policies into this repo
 - `/multi-repo-sync` - Workspace-wide sync orchestration
 
-[OPTIONAL_COMMANDS]
-
 ### PII Guidelines for Contributors
 
 **CRITICAL - Before submitting any contribution:**
