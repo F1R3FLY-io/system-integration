@@ -75,3 +75,6 @@ integration-tests/.pytest_cache/
 integration-tests/data/
 docs/discoveries/
 docs/work-logs/
+
+# Per-developer AI assistant configuration (settings, local slash commands)
+.claude/

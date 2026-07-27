@@ -14,7 +14,7 @@ All AI coding assistants in this project use CLAUDE.md as the single source of t
 
 ## Why CLAUDE.md?
 
-Smart Assets maintains vendor-neutral documentation. CLAUDE.md serves as the canonical reference because:
+This project maintains vendor-neutral documentation. CLAUDE.md serves as the canonical reference because:
 1. It was the first comprehensive AI assistant guidance format adopted
 2. All other AI assistant files (AGENTS.md, GEMINI.md) reference it
 3. This prevents documentation drift across multiple files

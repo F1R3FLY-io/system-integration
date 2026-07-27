@@ -1,3 +1,5 @@
+# F1R3FLY System Integration
+
 ## Project Overview
 
 This is a microservices integration repository for the F1R3FLY blockchain ecosystem. It provides tooling and orchestration for managing multiple service repositories (f1r3node, f1r3sky, embers, etc.) as independent nested git repositories with docker-compose coordination.
@@ -38,8 +40,6 @@ This is a microservices integration repository for the F1R3FLY blockchain ecosys
 ├── .env.f1r3sky                # F1R3Sky configuration
 └── README.md                   # Welcome + Quick Start + pointers
 ```
-
-# F1R3FLY System Integration
 
 ## Key Concepts
 
@@ -226,88 +226,23 @@ next_steps:
 
 **Output guidance:** When creating artifacts, ask whether HTML interactivity is needed. Default to clean Markdown with embedded Mermaid unless specified.
 
-## UI Test Assertions
+## Slash Commands
 
-React UI tests should prove user-observable DOM structure and state, not incidental copy or formatted sample values. Treat exact text/value assertions as a last resort unless the behavior under test is specifically copy, formatting, or content transformation.
+These are provided by the maintainer's personal Claude configuration and are not
+shipped in this repository (`.claude/` is git-ignored). They are listed for
+reference; a fresh clone will not have them.
 
-- **Preferred:** Accessibility-first queries for DOM elements and states: `getByRole`, `getByLabelText`, `aria-label`, `aria-labelledby`, `aria-selected`, `aria-expanded`, `aria-disabled`, focus state, and ARIA relationships.
-- **Preferred:** Assert semantic regions/components are present and wired correctly (tabs, tabpanels, dialogs, forms, buttons, lists), then assert behavior through state changes or callback/data-source calls.
-- **Acceptable:** `data-testid` attributes when no accessible handle exists, the element is purely presentational, or the test needs to identify a stable component boundary rather than text content.
-- **Acceptable:** HTML `id` attributes for form elements and ARIA relationships.
-- **Avoid:** `getByText`/`queryByText` for literal strings that are merely display copy, repeated metrics, formatted numbers, or mock-data values.
-- **Avoid:** `getAllByText(...).length` as a substitute for a meaningful DOM assertion; it couples tests to duplicated visual text rather than behavior.
-- **Avoid:** CSS class selectors that may change with styling updates.
-
-Examples:
-
-```tsx
-// GOOD: accessibility-first DOM element + state
-expect(screen.getByRole("button", { name: "Refresh agents" })).toBeEnabled();
-
-// ACCEPTABLE: fallback when no accessible role/name fits
-expect(screen.getByTestId("cost-optimization-panel")).toBeInTheDocument();
-
-// GOOD for data-flow behavior: verify source + rendered component boundary,
-// not a duplicated metric string like "7.5%".
-expect(fetchQualityPipeline).toHaveBeenCalledTimes(1);
-expect(screen.getByRole("tablist", { name: "Quality Pipeline tabs" })).toBeInTheDocument();
-expect(screen.getByRole("tab", { name: /overview/i })).toHaveAttribute("aria-selected", "true");
-
-// BAD: brittle copy assertion
-expect(screen.getByText("Priority set by BountyForge routing")).toBeInTheDocument();
-
-// BAD: brittle mock-value / duplicated visual text assertion
-expect(screen.getByText("7.5%")).toBeInTheDocument();
-expect(screen.getAllByText("7.5%").length).toBeGreaterThan(0);
-```
-
-**When exact text is appropriate:** Use exact text assertions only when the acceptance criteria is about user-facing copy, accessibility name computation, validation messages, formatting rules, or transformed content. Prefer scoping with `within(...)` to a semantic container so the assertion remains tied to the behavior under test.
-
-### Configuration File Conventions
-
-When creating or modifying configuration files, follow these conventions to respect existing project preferences:
-
-**JSON Format Preference Order:**
-
-1. **Check for existing files first**: Before creating any `.json` file, check if `.jsonc` or `.json5` variants exist
-2. **Prefer existing format**: If `config.jsonc` or `config.json5` exists, use that format instead of creating `config.json`
-3. **Default to JSONC**: When creating new config files, prefer `.jsonc` (JSON with Comments) for better maintainability
-
-**Why This Matters:**
-- Projects may have established preferences for comment-supporting JSON formats
-- Creating duplicate configs (e.g., both `biome.json` and `biome.jsonc`) causes confusion
-- JSONC allows inline documentation which improves maintainability
-
-**Examples:**
-
-| If exists... | Don't create... | Instead... |
-|--------------|-----------------|------------|
-| `biome.jsonc` | `biome.json` | Edit the existing `biome.jsonc` |
-| `tsconfig.json5` | `tsconfig.json` | Edit the existing `tsconfig.json5` |
-| `eslint.config.jsonc` | `eslint.config.json` | Edit the existing file |
-| Nothing | - | Create new file as `.jsonc` when comments are useful |
-
-**File Discovery Pattern:**
-
-Before creating any config file, check for variants:
-```bash
-# Check for config variants (example for biome)
-ls biome.json biome.jsonc biome.json5 2>/dev/null
-```
-
-This applies to all slash commands and scripts that create configuration files.
-
-#### Git Operations
+### Git Operations
 - `/quick-commit` - Stage and commit changes (required in safe mode)
 - `/recursive-push` - Push across repositories
 
-#### Task Management
+### Task Management
 - `/nextTask` - Find and select next task to work on
 - `/implement` - Begin implementation of a task
 - `/epic-review` - Preview and summarize epics
 - `/epic-hygiene` - Archive completed epics
 
-#### Workspace Sync
+### Workspace Sync
 - `/harmonize` - Sync workspace policies into this repo
 - `/multi-repo-sync` - Workspace-wide sync orchestration
 
@@ -355,10 +290,3 @@ tools. It is recommended but never required. Nothing here is harness-specific -
 substitute your tool's equivalents for the generic actions described below.
 Setup (with the privacy-first local Ollama embedder as default) lives in the
 CLI Setup guide's "Optional: Semantic Code Search (grepai)" section.
-
-# important-instruction-reminders
-Do what has been asked; nothing more, nothing less.
-NEVER create files unless they're absolutely necessary for achieving your goal.
-ALWAYS prefer editing an existing file to creating a new one.
-NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
-Before making any code changes, first state: (1) which files you plan to modify, (2) what approach you'll take, (3) any assumptions you're making. Wait for my confirmation before proceeding. For simple single-file edits, a one-line summary is sufficient.
