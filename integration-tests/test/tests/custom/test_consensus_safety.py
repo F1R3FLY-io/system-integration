@@ -121,6 +121,12 @@ def test_validator_failure_recovery(provider, timeouts) -> None:
         # advancing while V3 is still catching up, and the loop manufactures
         # the very spread the assertion then measures. See
         # wait_for_lfb_converged for the full rationale.
+        #
+        # Note this also collapses the timeout budget: the old loop gave each
+        # node its own finalization*3 window sequentially, so the worst case
+        # was N times that. Convergence now has to happen inside one such
+        # window. If CI ever times out here, extend this timeout rather than
+        # raising max_spread — the tolerance is the part that must stay honest.
         post_restart_baseline = lfb_number(v1)
         final_lfbs = wait_for_lfb_converged(
             all_nodes,

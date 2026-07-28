@@ -192,8 +192,9 @@ def wait_for_lfb_converged(
     ``max_spread``.
 
     Raises ``AssertionError`` (not ``TimeoutError``) on timeout, carrying the
-    last observed LFB values — without them a reviewer cannot tell a slow
-    shard from a diverged one.
+    last polled sample plus its min/max/spread — without them a reviewer
+    cannot tell a slow shard from a diverged one, nor which of the two
+    conditions actually failed.
 
     Known property: the sample is N sequential RPCs, so on a live chain the
     measured spread includes the time to walk ``nodes``. If this proves too
@@ -208,8 +209,11 @@ def wait_for_lfb_converged(
         + (f" with all nodes >= #{min_height}" if min_height is not None else "")
     )
 
+    last_seen: Dict[str, int] = {}
+
     def _sample() -> Optional[Dict[str, int]]:
         lfbs = {n.name: lfb_number(n) for n in nodes}
+        last_seen.update(lfbs)
         if min_height is not None and min(lfbs.values()) < min_height:
             return None
         if max(lfbs.values()) - min(lfbs.values()) > max_spread:
@@ -224,10 +228,16 @@ def wait_for_lfb_converged(
             description=what,
         )
     except TimeoutError:
-        final = {n.name: lfb_number(n) for n in nodes}
-        spread = max(final.values()) - min(final.values())
+        # Report the last sample actually polled, not a fresh read. Re-reading
+        # here would describe the shard *after* the deadline — and if it caught
+        # up in the interim the message would look converged while the test
+        # fails, which is precisely the confusion this error exists to prevent.
+        if not last_seen:
+            raise AssertionError(f"{what}: no LFB sample was taken within {timeout}s")
+        low, high = min(last_seen.values()), max(last_seen.values())
         raise AssertionError(
-            f"{what}: not satisfied within {timeout}s — " f"observed spread {spread}: {final}"
+            f"{what}: not satisfied within {timeout}s — last sample min #{low}, "
+            f"max #{high}, spread {high - low}: {last_seen}"
         )
 
 
