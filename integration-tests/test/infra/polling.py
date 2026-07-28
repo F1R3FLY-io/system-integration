@@ -46,6 +46,7 @@ __all__ = [
     "wait_for_block_visible_on_all_nodes",
     "lfb_number",
     "wait_for_lfb_at_least",
+    "wait_for_lfb_converged",
     "wait_for_node_quiet",
     "DeployError",
 ]
@@ -161,6 +162,73 @@ def wait_for_lfb_at_least(
         interval=interval,
         description=f"{node.name} LFB >= #{height}",
     )
+
+
+def wait_for_lfb_converged(
+    nodes,
+    timeout: int,
+    min_height: Optional[int] = None,
+    max_spread: int = 3,
+    interval: float = 3.0,
+    description: str = "",
+) -> Dict[str, int]:
+    """Poll until every node's LFB is within ``max_spread`` of the highest —
+    and, when ``min_height`` is given, at or above it — with both conditions
+    satisfied by the **same** sample. Returns that ``{name: lfb}`` mapping.
+
+    Use this instead of a per-node ``wait_for_lfb_at_least`` loop followed by
+    a spread assertion. That shape waits on a *lower bound*, which exits the
+    instant each node crosses it, so nothing bounds how far a fast node runs
+    ahead while the remaining nodes are still being polled — the loop's own
+    serialization manufactures the spread that is then asserted against, and
+    the result measures scheduling luck rather than consensus.
+
+    The deeper reason is that a lower bound **cannot distinguish "still
+    catching up" from "permanently diverged"** — a shard that never converges
+    reads identically to one mid-convergence. Requiring both conditions in one
+    sample makes the timeout the signal for genuine non-convergence, which is
+    the property these tests exist to assert. For the same reason, a spread
+    failure here should be fixed by investigating convergence, not by raising
+    ``max_spread``.
+
+    Raises ``AssertionError`` (not ``TimeoutError``) on timeout, carrying the
+    last observed LFB values — without them a reviewer cannot tell a slow
+    shard from a diverged one.
+
+    Known property: the sample is N sequential RPCs, so on a live chain the
+    measured spread includes the time to walk ``nodes``. If this proves too
+    tight on loaded runners, require the predicate to hold on two consecutive
+    passes rather than loosening ``max_spread``.
+    """
+    if not nodes:
+        raise ValueError("wait_for_lfb_converged requires at least one node")
+
+    what = description or (
+        f"LFB spread <= {max_spread}"
+        + (f" with all nodes >= #{min_height}" if min_height is not None else "")
+    )
+
+    def _sample() -> Optional[Dict[str, int]]:
+        lfbs = {n.name: lfb_number(n) for n in nodes}
+        if min_height is not None and min(lfbs.values()) < min_height:
+            return None
+        if max(lfbs.values()) - min(lfbs.values()) > max_spread:
+            return None
+        return lfbs
+
+    try:
+        return poll_until(
+            predicate=_sample,
+            timeout=timeout,
+            interval=interval,
+            description=what,
+        )
+    except TimeoutError:
+        final = {n.name: lfb_number(n) for n in nodes}
+        spread = max(final.values()) - min(final.values())
+        raise AssertionError(
+            f"{what}: not satisfied within {timeout}s — " f"observed spread {spread}: {final}"
+        )
 
 
 def wait_for_node_quiet(node, timeout: int, interval: float = 1.0) -> None:

@@ -23,7 +23,7 @@ import pytest
 
 from ...infra.assertions import assert_deploy_errored
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import poll_until, wait_for_deploy_included
+from ...infra.polling import poll_until, wait_for_deploy_included, wait_for_lfb_converged
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -53,7 +53,15 @@ def _get_lfb_number(node) -> int:
 
 
 def _poll_lfb_all_nodes(nodes, target, timeout):
-    """Poll until LFB reaches target on all nodes."""
+    """Poll until LFB reaches target on all nodes.
+
+    Lower bound only. Each node is dropped from the polling set the first
+    time it crosses ``target`` and is never re-read — sound here because LFB
+    is monotonic, so "has crossed" stays true. **Do not follow a call to this
+    with a spread assertion**: it confirms each node crossed at some point,
+    not that they were ever close together at the same instant. Use
+    ``wait_for_lfb_converged`` when a spread matters.
+    """
     remaining = set(n.name for n in nodes)
 
     def _check():
@@ -205,22 +213,20 @@ def test_network_converges_after_slow_deploy(shared_shard, node_conf, timeouts) 
         target_lfb,
     )
 
-    _poll_lfb_all_nodes(
+    # Poll the height and spread conditions together. Waiting per-node on a
+    # lower bound and then snapshotting the spread measures scheduling luck:
+    # nothing stops a fast node running ahead while the slower ones are still
+    # being polled, and a lower bound alone cannot tell "still catching up"
+    # from "permanently diverged". See wait_for_lfb_converged.
+    final_lfbs = wait_for_lfb_converged(
         all_nodes,
-        target_lfb,
         timeout=timeouts.finalization * 3,
+        min_height=target_lfb,
+        max_spread=2,
+        description=f"LFB >= #{target_lfb} and spread <= 2 after slow deploy",
     )
-
-    # Report final LFB spread across all nodes
-    final_lfbs = {n.name: _get_lfb_number(n) for n in all_nodes}
-    logging.info("Final LFBs after slow deploy: %s", final_lfbs)
-
-    max_lfb = max(final_lfbs.values())
-    min_lfb = min(final_lfbs.values())
-    spread = max_lfb - min_lfb
-    assert spread <= 2, (
-        f"LFB spread across nodes is {spread} (max allowed: 2). " f"Values: {final_lfbs}"
-    )
+    spread = max(final_lfbs.values()) - min(final_lfbs.values())
+    logging.info("Final LFBs after slow deploy: %s (spread: %d)", final_lfbs, spread)
 
     # Verify FT >= FTT on post-recovery LFB
     for node in all_nodes:
