@@ -218,9 +218,14 @@ def test_network_converges_after_slow_deploy(shared_shard, node_conf, timeouts) 
     # nothing stops a fast node running ahead while the slower ones are still
     # being polled, and a lower bound alone cannot tell "still catching up"
     # from "permanently diverged". See wait_for_lfb_converged.
+    #
+    # Timeout is *5 for the same reason as the consensus-safety call site: the
+    # previous helper latched, finishing once each node had crossed target at
+    # any past instant, whereas this must observe a simultaneous tight band.
+    # max_spread stays at 2 — extend the timeout, never the tolerance.
     final_lfbs = wait_for_lfb_converged(
         all_nodes,
-        timeout=timeouts.finalization * 3,
+        timeout=timeouts.finalization * 5,
         min_height=target_lfb,
         max_spread=2,
         description=f"LFB >= #{target_lfb} and spread <= 2 after slow deploy",
