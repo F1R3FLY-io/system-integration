@@ -125,7 +125,11 @@ def generate_compose(
         ],
         "environment": [
             "OPENAI_ENABLED=false",
-            f"RUST_LOG={os.environ.get('RUST_LOG', 'info')}",
+            # RUST_LOG only passes through when the caller set it; RUST_LOG fully
+            # overrides the node's logging.filter (conf/rust.conf), which
+            # otherwise drives log levels — same contract as the subprocess
+            # provider.
+            *([f"RUST_LOG={os.environ['RUST_LOG']}"] if "RUST_LOG" in os.environ else []),
         ],
     }
     registry.register_container(bootstrap_host)
@@ -183,7 +187,11 @@ def generate_compose(
             ],
             "environment": [
                 "OPENAI_ENABLED=false",
-                f"RUST_LOG={os.environ.get('RUST_LOG', 'info')}",
+                # RUST_LOG only passes through when the caller set it; RUST_LOG fully
+                # overrides the node's logging.filter (conf/rust.conf), which
+                # otherwise drives log levels — same contract as the subprocess
+                # provider.
+                *([f"RUST_LOG={os.environ['RUST_LOG']}"] if "RUST_LOG" in os.environ else []),
             ],
         }
         registry.register_container(host)
@@ -230,7 +238,11 @@ def generate_compose(
             ],
             "environment": [
                 "OPENAI_ENABLED=false",
-                f"RUST_LOG={os.environ.get('RUST_LOG', 'info')}",
+                # RUST_LOG only passes through when the caller set it; RUST_LOG fully
+                # overrides the node's logging.filter (conf/rust.conf), which
+                # otherwise drives log levels — same contract as the subprocess
+                # provider.
+                *([f"RUST_LOG={os.environ['RUST_LOG']}"] if "RUST_LOG" in os.environ else []),
             ],
         }
         registry.register_container(ro_host)
