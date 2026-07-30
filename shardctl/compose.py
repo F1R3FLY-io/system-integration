@@ -367,5 +367,7 @@ class ComposeManager:
                 )
             raise SystemExit(1)
 
-        # Unreachable: the loop either returns or raises.
-        raise SystemExit(1)
+        # `attempts` is clamped to >= 1, so the loop body always runs and either
+        # returns or raises. Assert rather than leaving a dead `raise` that reads
+        # like a real fallback path.
+        raise AssertionError("pull_single_file loop exited without returning")

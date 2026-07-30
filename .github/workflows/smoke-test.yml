@@ -34,6 +34,13 @@ jobs:
         run: |
           pip install poetry
           poetry install
+      - name: Unit tests (shardctl + CI scripts)
+        # unit-tests/ holds pure unit tests — no Docker, no shard, no OCI —
+        # as distinct from integration-tests/. The explicit path is required:
+        # pyproject's testpaths points at integration-tests/test/tests, so a
+        # bare `pytest` would not collect these. Runs before the slower compose
+        # validation so a logic regression fails fast.
+        run: poetry run pytest unit-tests/ -q
       - name: Validate all compose files
         run: |
           FAIL=0

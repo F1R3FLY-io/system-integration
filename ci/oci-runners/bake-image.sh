@@ -78,32 +78,55 @@ fi
 #     with OCI credentials and never once ran).
 #
 # A leaked instance bills indefinitely; a leaked STOPPED one still bills its boot
-# volume. Hence: terminate on any unclean exit. Idempotent with step [4/6], which
-# clears the trap on success.
+# volume. Hence: terminate on any unclean exit.
+#
+# "Reaped" here means the terminate REQUEST was accepted (the instance moves to
+# TERMINATING and stops billing). It is not a poll for lifecycle-state
+# TERMINATED — that would add minutes to every exit path, including the happy
+# one. If a request is accepted and the instance nonetheless fails to tear down,
+# only the compartment sweep catches it; that is the residual risk recorded in
+# docs/ToDos.md TASK-008.
 GOLDEN_INSTANCE_OCID=""
 
 _reap_golden_on_exit() {
   local rc=$?
+  # Disarm every trap first. Without this, the INT/TERM handler's own `exit`
+  # re-enters via the EXIT trap and terminates twice — the second call then
+  # fails against an already-TERMINATING instance and prints a bogus
+  # TERMINATE FAILED, which is exactly the warning an operator must be able to
+  # trust.
+  trap - EXIT INT TERM
+
   [ -n "$GOLDEN_INSTANCE_OCID" ] || exit "$rc"
+
   echo
-  echo "!!! Bake did not complete (exit $rc). Terminating golden instance to avoid a billing leak."
-  echo "    $GOLDEN_INSTANCE_OCID"
+  echo "!!! Bake exiting (status $rc) with golden instance still armed."
+  echo "    Terminating to avoid a billing leak: $GOLDEN_INSTANCE_OCID"
   if oci compute instance terminate \
     --instance-id "$GOLDEN_INSTANCE_OCID" \
     --force \
     --preserve-boot-volume false >/dev/null 2>&1; then
-    echo "    Terminate call submitted."
-  else
-    # Never leave this silent: an unreaped VM is the expensive failure mode, so
-    # the operator must be told exactly what to remove by hand.
-    echo "    TERMINATE FAILED. Remove it manually or it will bill indefinitely:"
-    echo "      oci compute instance terminate --instance-id $GOLDEN_INSTANCE_OCID \\"
-    echo "        --force --preserve-boot-volume false"
-    echo "    Or run ./destroy-all.sh to clear the whole ci-runner compartment."
+    echo "    Terminate request accepted."
+    exit "$rc"
   fi
-  exit "$rc"
+
+  # Never leave this silent, and never let it pass as success. Reaching here on
+  # an otherwise-clean run (rc=0, step [4/6] failed and this retry failed too)
+  # would otherwise exit 0 over a live VM — the precise failure this guard
+  # exists to prevent. Force a non-zero status so callers and CI see it.
+  echo "    TERMINATE FAILED. Remove it manually or it will bill indefinitely:"
+  echo "      oci compute instance terminate --instance-id $GOLDEN_INSTANCE_OCID \\"
+  echo "        --force --preserve-boot-volume false"
+  echo "    Or run ./destroy-all.sh to clear the whole ci-runner compartment."
+  [ "$rc" -ne 0 ] && exit "$rc"
+  exit 1
 }
-trap _reap_golden_on_exit EXIT INT TERM
+# EXIT only for the reap; INT/TERM re-enter it via `exit` so it runs exactly
+# once, while preserving the conventional 130/143 signal statuses that a bare
+# `exit $?` in the handler would have masked.
+trap _reap_golden_on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "=== [1/6] Launching golden instance $GOLDEN_NAME ==="
 INSTANCE_OCID=$(oci compute instance launch \
@@ -172,7 +195,9 @@ terminate_rc=${PIPESTATUS[0]}
 set -e
 
 if [ "$terminate_rc" -eq 0 ]; then
-  # Confirmed gone — disarm the cost guard so the EXIT trap is a no-op.
+  # Request accepted (instance is TERMINATING and no longer billing compute).
+  # Disarm the cost guard so the EXIT trap is a no-op. Not a poll for
+  # lifecycle-state TERMINATED — see the guard comment above for why.
   GOLDEN_INSTANCE_OCID=""
 else
   # Deliberately leave the guard armed. This step used to end in `|| true`,

@@ -638,3 +638,61 @@ step with it) closes the class. Raised in the hand-off note at
 `f1r3node-rust/docs/discoveries/2026-07-30-soak-system-integration-pin-bump.md`.
 Not done here because this repo cannot schedule it — no OCI credentials, which is
 the same reason the deleted workflow never worked.
+
+### 4. Review fixes: the first cost guard had two real bugs
+
+The multi-agent review of PR #68 (openai + xai, escalated **critical**) found that
+the guard as first written did not uphold its own guarantee. Both bugs were then
+**confirmed reproducible against `8995d10`**, not just argued:
+
+| Bug | Old behaviour at `8995d10` | Now |
+|---|---|---|
+| Clean run whose terminate failed | **exit 0 over a live VM** | exit 1 |
+| SIGINT | **2 terminate calls**, status `0` | 1 call, status `130` |
+
+**Bug 1 (critical).** If step `[4/6]`'s terminate failed, the script continued to
+a normal end, so `$?` was `0` when the EXIT trap fired. The trap retried, failed,
+printed the manual-recovery text — and then `exit "$rc"` exited **0**. A bake
+reported success over a billing instance, which is precisely what the guard's own
+comment claimed it prevented. The handler now forces a non-zero status whenever it
+could not confirm the terminate request was accepted.
+
+**Bug 2.** One handler registered for `EXIT INT TERM` meant the INT path's `exit`
+re-entered through the EXIT trap and terminated twice. The second call fails
+against an already-`TERMINATING` instance and prints a bogus `TERMINATE FAILED` —
+poisoning the one warning an operator has to be able to trust. Now `EXIT` alone
+carries the reap, with `INT`/`TERM` re-entering via `exit 130`/`exit 143`, which
+also stops the conventional signal statuses being masked.
+
+Also corrected an overclaim openai flagged: a terminate returning 0 means the
+*request was accepted* (instance moves to `TERMINATING`, compute billing stops),
+not that lifecycle-state `TERMINATED` was observed. Polling for that would add
+minutes to every exit path including the happy one, so the comments now say what
+the guard actually guarantees rather than implying more.
+
+**Tests are now committed, which was the other fair criticism.** The original
+verification lived in a scratchpad, so none of the claimed guarantees were
+reproducible. Added `unit-tests/` (27 pytest cases, no Docker or OCI):
+
+- `unit-tests/test_pull_retry.py` — transient vs. permanent classification,
+  attempt limits, env-override clamping. The negative cases carry the weight:
+  retrying a missing image or bad credential converts an honest instant failure
+  into a slow one.
+- `unit-tests/test_bake_image_guard.py` — extracts the guard from the real script
+  and runs it under bash with a stubbed `oci`, so it tests shipped code rather
+  than a copy. Includes both regressions above as named tests.
+
+Named `unit-tests/` rather than `tests/` to pair with the existing
+`integration-tests/`: a bare `tests/` sitting beside it invites the question of
+whether integration tests are not tests. Wired into `smoke-test.yml`'s
+`Validate & CLI` job as `poetry run pytest unit-tests/ -q`. **The explicit path is
+required** — `pyproject.toml:54` sets `testpaths = ["integration-tests/test/tests"]`,
+so a bare `poetry run pytest` (the documented integration invocation) does not
+collect these. Left that way deliberately: unit tests need no Docker, integration
+tests do, and conflating them would make the canonical command's requirements
+depend on which suite you meant.
+
+Note for the future: `test_bake_image_guard.py` locates the guard by the marker
+lines `GOLDEN_INSTANCE_OCID=""` and `trap 'exit 143' TERM`. If the guard is
+restructured, update those constants — the test fails loudly with that instruction
+rather than silently passing on an empty extraction.

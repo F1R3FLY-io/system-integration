@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Pre-push: run the pure unit tests before anything leaves the machine.
+#
+# Scoped to unit-tests/ deliberately. Those need no Docker, no shard and no OCI
+# credentials, and finish in well under a second — cheap enough to run on every
+# push. integration-tests/ is NOT run here: it needs a live shard and takes
+# minutes, which would make pushing unusable and train people into
+# --no-verify.
+#
+# This repo sets core.hooksPath=hooks, so this file is the live pre-push hook
+# and is version-controlled. A fresh clone must opt in once:
+#
+#     git config core.hooksPath hooks
+#
+# Bypass for a single push with the built-in `git push --no-verify`.
+set -uo pipefail
+
+# Hooks run from the top level of the working tree, but be explicit rather than
+# relying on it — a wrong cwd would silently collect nothing and "pass".
+repo_root="$(git rev-parse --show-toplevel)" || exit 0
+cd "$repo_root" || exit 0
+
+# Nothing to verify when every ref being pushed is a deletion: git sends a
+# local sha of all zeros for those, and there is no new code to test.
+only_deletions=1
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  [ -n "${local_sha:-}" ] || continue
+  case "$local_sha" in
+    0000000000000000000000000000000000000000) ;;
+    *) only_deletions=0 ;;
+  esac
+done
+if [ "$only_deletions" = "1" ]; then
+  exit 0
+fi
+
+if [ ! -d unit-tests ]; then
+  # Not a failure: an older commit may predate the directory.
+  exit 0
+fi
+
+# Prefer poetry (the project's documented entrypoint), fall back to whatever
+# python3 is on PATH so the hook still works outside the poetry env.
+if command -v poetry >/dev/null 2>&1; then
+  runner=(poetry run pytest)
+elif command -v pytest >/dev/null 2>&1; then
+  runner=(pytest)
+elif command -v python3 >/dev/null 2>&1; then
+  runner=(python3 -m pytest)
+else
+  # Announce rather than silently pass: a hook that cannot verify must not look
+  # like a hook that verified.
+  echo "pre-push: no poetry/pytest/python3 found — SKIPPING unit tests." >&2
+  echo "pre-push: install poetry, or push with --no-verify to acknowledge." >&2
+  exit 0
+fi
+
+echo "pre-push: running unit tests (unit-tests/)..."
+# Capture the runner's status directly. Do NOT wrap this in `if ... fi` and read
+# $? afterwards: that yields the `if` statement's status (0), not pytest's, which
+# silently discards the exit code this hook branches on.
+"${runner[@]}" unit-tests/ -q
+rc=$?
+
+if [ "$rc" -eq 0 ]; then
+  exit 0
+fi
+
+# Distinguish "tests failed" from "the runner could not start". pytest exits 5
+# when it collected nothing, which here means the suite silently vanished —
+# treat that as a failure too, since a green push over zero tests is the
+# outcome this hook exists to prevent.
+if [ "$rc" = "5" ]; then
+  echo >&2
+  echo "pre-push: pytest collected NO tests from unit-tests/ — refusing the push." >&2
+  echo "pre-push: that usually means the path or pytest config changed." >&2
+else
+  echo >&2
+  echo "pre-push: unit tests failed (pytest exit $rc) — push aborted." >&2
+fi
+echo "pre-push: fix them, or bypass this once with: git push --no-verify" >&2
+exit 1
