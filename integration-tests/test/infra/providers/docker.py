@@ -4,6 +4,7 @@ Implements the ``Provider`` protocol for Docker-based test environments.
 All container/volume/network names are prefixed with the session ID to
 prevent collisions across parallel runs and with v1 tests.
 """
+
 from __future__ import annotations
 
 import logging
@@ -362,7 +363,7 @@ class DockerNodeHandle:
             logger.warning("DockerNodeHandle.archive_log: %s failed: %s", self._name, e)
             try:
                 dest_path.write_text(
-                    f"archive_log: exception raised: {e!r}\n" f"  container name: {self._name}\n"
+                    f"archive_log: exception raised: {e!r}\n  container name: {self._name}\n"
                 )
             except Exception:
                 pass
@@ -646,7 +647,7 @@ class DockerProvider:
         genesis_dir = generate_genesis(config, self._paths, self._registry)
 
         # Allocate ports: boot + N validators + optional readonly
-        roles = ["boot"] + [f"validator{i+1}" for i in range(len(config.bonds))]
+        roles = ["boot"] + [f"validator{i + 1}" for i in range(len(config.bonds))]
         if config.include_readonly:
             roles.append("readonly")
 
@@ -1102,8 +1103,7 @@ class DockerProvider:
         volume_name = f"test-{self._session_id}-{role_key}-data"
 
         bootstrap_url = (
-            f"rnode://{BOOTSTRAP_NODE_ID}@{bootstrap_handle.name}"
-            f"?protocol=40400&discovery=40404"
+            f"rnode://{BOOTSTRAP_NODE_ID}@{bootstrap_handle.name}?protocol=40400&discovery=40404"
         )
 
         image = resolve_node_image()
@@ -1252,8 +1252,7 @@ class DockerProvider:
         result = _docker("ps", "--filter", f"name={prefix}", "--format", "{{.Names}}")
         if result.returncode != 0:
             raise RuntimeError(
-                f"docker ps failed while adopting session {session_id!r}: "
-                f"{result.stderr.strip()}"
+                f"docker ps failed while adopting session {session_id!r}: {result.stderr.strip()}"
             )
         names = sorted((result.stdout or "").strip().splitlines())
         if not names:

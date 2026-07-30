@@ -22,6 +22,7 @@ data directories are tracked in instance state, not in the Docker-specific
 ``pytest_sessionstart``) discovers prior runs by scanning the
 session-scoped data-dir base.
 """
+
 from __future__ import annotations
 
 import logging
@@ -734,8 +735,7 @@ class SubprocessProvider:
             )
         if self._keep_running:
             logger.info(
-                "Subprocess shard for session %s kept running (--keep-running). "
-                "PIDs: %s. Data: %s",
+                "Subprocess shard for session %s kept running (--keep-running). PIDs: %s. Data: %s",
                 self._session_id,
                 ", ".join(str(h.pid) for h in handles),
                 self._session_root,
@@ -1319,7 +1319,7 @@ class SubprocessProvider:
         session_dir = self._session_data_root(self._paths, session_id)
         if not session_dir.is_dir():
             raise ValueError(
-                f"No subprocess session data at {session_dir} " f"for session_id={session_id!r}"
+                f"No subprocess session data at {session_dir} for session_id={session_id!r}"
             )
 
         # Each subdir corresponds to a role (boot, validator1, …, readonly).
@@ -1536,7 +1536,7 @@ class _AdoptedHandle(SubprocessNodeHandle):
 
     def restart(self) -> None:
         raise NotImplementedError(
-            "restart() unsupported for adopted handles. " "Run a fresh `shardctl test` invocation."
+            "restart() unsupported for adopted handles. Run a fresh `shardctl test` invocation."
         )
 
     def _stop_once(self) -> None:

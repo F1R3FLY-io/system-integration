@@ -132,9 +132,7 @@ def clone_services(service_repos: Dict[str, Dict], services_dir: Path, force: bo
                 console.print(success_msg)
 
             except subprocess.CalledProcessError as e:
-                console.print(
-                    f"[red]✗ Failed to clone {service_name}[/red]\n" f"[dim]{e.stderr}[/dim]"
-                )
+                console.print(f"[red]✗ Failed to clone {service_name}[/red]\n[dim]{e.stderr}[/dim]")
             except Exception as e:
                 console.print(f"[red]✗ Error cloning {service_name}: {e}[/red]")
 

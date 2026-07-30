@@ -1256,7 +1256,7 @@ def test_cmd(
         )
         if not [n for n in result.stdout.strip().splitlines() if n]:
             console.print(
-                f"[red]ERROR: no running containers found for session-id " f"'{session_id}'[/red]"
+                f"[red]ERROR: no running containers found for session-id '{session_id}'[/red]"
             )
             console.print(
                 "[dim]Pass a session-id from a prior `shardctl test "

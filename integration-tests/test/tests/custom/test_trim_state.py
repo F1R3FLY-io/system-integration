@@ -150,8 +150,7 @@ def test_trim_state(provider, timeouts) -> None:
                 joiner_final_lfb,
             )
             assert joiner_final_lfb >= v1_final_lfb - 2, (
-                f"Joiner final LFB #{joiner_final_lfb} too far behind "
-                f"V1 final LFB #{v1_final_lfb}"
+                f"Joiner final LFB #{joiner_final_lfb} too far behind V1 final LFB #{v1_final_lfb}"
             )
 
             # Verify post-state agreement on the most recent block
@@ -160,7 +159,7 @@ def test_trim_state(provider, timeouts) -> None:
             v1_state = latest_v1_block.postStateHash
             joiner_state = joiner_view.blockInfo.postStateHash
             assert v1_state == joiner_state, (
-                f"Post-state mismatch: V1={v1_state[:16]}... " f"joiner={joiner_state[:16]}..."
+                f"Post-state mismatch: V1={v1_state[:16]}... joiner={joiner_state[:16]}..."
             )
             logging.info("Post-state agreement confirmed: %s", v1_state[:16])
 

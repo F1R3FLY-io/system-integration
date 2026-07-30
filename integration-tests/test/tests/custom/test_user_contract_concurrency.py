@@ -48,6 +48,7 @@ finalization the merge must survive. Forbidden node-log patterns (including
 ``StaleConsume`` and the single-value-cell invariant) are enforced on every
 node by the autouse ``check_node_logs_after_test`` fixture.
 """
+
 import logging
 import threading
 import time
@@ -502,9 +503,7 @@ def test_single_cell_map_concurrent_adds_all_resolve(user_shard, timeouts):
                         f'for (@m <- @"ucc_map_cell") {{ '
                         f'@"ucc_map_cell"!(m.set("{op[1]}", {op[2]})) }}'
                     )
-                return (
-                    f'for (@m <- @"ucc_map_cell") {{ ' f'@"ucc_map_cell"!(m.delete("{op[1]}")) }}'
-                )
+                return f'for (@m <- @"ucc_map_cell") {{ @"ucc_map_cell"!(m.delete("{op[1]}")) }}'
 
             ids = _deploy_on_each(shard, term_for, timeouts)
             _assert_all_finalized(producers, all_nodes, ids, timeouts, f"map-round-{rnd}")
@@ -920,8 +919,9 @@ def test_concurrent_delete_and_set_same_key(user_shard, timeouts):
             settled = _await_map_settles(
                 all_nodes,
                 "ucc_delset",
-                accept=lambda m, sv=set_val, yv=y_val: m.get("y") == yv
-                and m.get("x") in (None, sv),
+                accept=lambda m, sv=set_val, yv=y_val: (
+                    m.get("y") == yv and m.get("x") in (None, sv)
+                ),
                 allowed_keys={"x", "y"},
                 timeout=timeouts.finalization * 3,
                 label=f"del-set-{rnd}",
@@ -1017,9 +1017,7 @@ def test_set_cell_concurrent_distinct_elements_union(user_shard, timeouts):
             }
             ids = _deploy_on_each(
                 shard,
-                lambda name, e=elems: (
-                    f'for (@s <- @"ucc_set") {{ ' f'@"ucc_set"!(s.add({e[name]})) }}'
-                ),
+                lambda name, e=elems: f'for (@s <- @"ucc_set") {{ @"ucc_set"!(s.add({e[name]})) }}',
                 timeouts,
             )
             _assert_all_finalized(producers, all_nodes, ids, timeouts, f"set-union-{rnd}")
@@ -1080,7 +1078,7 @@ def test_scalar_value_conflict_resolves_deterministically(user_shard, timeouts):
                 ids = _deploy_on_each(
                     shard,
                     lambda name, c=cell, lts=lits: (
-                        f'for (@m <- @"{c}") {{ ' f'@"{c}"!(m.set("v", {lts[name]})) }}'
+                        f'for (@m <- @"{c}") {{ @"{c}"!(m.set("v", {lts[name]})) }}'
                     ),
                     timeouts,
                 )

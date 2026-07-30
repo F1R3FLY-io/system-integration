@@ -8,6 +8,7 @@ Using ``typing_extensions.Protocol`` for structural subtyping — provider
 implementations don't need to inherit from these classes, just match
 the method signatures.
 """
+
 from __future__ import annotations
 
 import logging

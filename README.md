@@ -68,6 +68,204 @@ poetry run shardctl reset -y         # Stop and wipe data volumes
 
 See [CLAUDE.md](CLAUDE.md#repository-structure) for the full directory layout.
 
+
+
+### Blockchain Issues
+
+#### F1R3node won't accept deployments (Casper not ready)
+
+**Symptom:** Embers API crashes with "casper instance was not available yet"
+
+**Cause:** Blockchain needs time to initialize after genesis
+
+**Solution:**
+1. Wait 2-3 minutes after `shardctl up` for Casper to fully initialize
+2. Check logs for "Making a transition to Running state":
+   ```bash
+   poetry run shardctl logs rnode.bootstrap | grep "Running state"
+   ```
+3. Restart Embers after blockchain is ready:
+   ```bash
+   poetry run shardctl restart embers-api
+   ```
+
+#### Blockchain stuck or won't start properly
+
+**Symptom:** Nodes stay unhealthy, or blockchain doesn't complete genesis
+
+**Cause:** Corrupted data from previous run
+
+**Solution:**
+```bash
+# Stop all services
+poetry run shardctl down
+
+# Clean blockchain data
+sudo rm -rf services/f1r3node/docker/data
+
+# Restart (will trigger fresh genesis)
+poetry run shardctl up
+```
+
+**Note:** This is a fresh private blockchain, so cleaning data is safe for development.
+
+### Container Issues
+
+#### Permission denied removing files
+
+**Symptom:** Cannot delete `services/f1r3node/docker/data` files
+
+**Cause:** Docker containers created files as root
+
+**Solution:**
+```bash
+sudo rm -rf services/f1r3node/docker/data
+```
+
+#### Services Won't Start
+
+```bash
+# Check compose configuration
+poetry run shardctl compose config
+
+# View service logs
+poetry run shardctl logs service-name
+
+# Check if ports are already in use
+poetry run shardctl ps
+```
+
+#### Permission Issues
+
+```bash
+# Shell into container to check
+poetry run shardctl shell service-name
+
+# Check file ownership
+poetry run shardctl exec service-name ls -la /app
+```
+
+### Network Issues
+
+```bash
+# Restart with fresh network
+poetry run shardctl down
+poetry run shardctl up
+
+# For advanced network diagnostics, you can use docker directly:
+docker network inspect system-integration_f1r3fly
+```
+
+### Complete Clean Slate
+
+If nothing else works, start completely fresh:
+
+```bash
+# Stop everything
+poetry run shardctl down
+
+# Remove all containers and data volumes
+poetry run shardctl reset -y
+
+# Remove and re-clone services
+rm -rf services/*
+poetry run shardctl clone
+
+# Rebuild all Docker images
+poetry run shardctl build-service -a
+
+# Start fresh
+poetry run shardctl up
+# Wait 2-3 minutes for blockchain initialization
+poetry run shardctl logs --follow rnode.bootstrap
+```
+
+## Advanced Usage
+
+### Custom Compose Files
+
+Add additional compose files to `config.py`:
+
+```python
+def get_compose_files_for_profile(self, profile: Optional[str] = None) -> List[Path]:
+    files = [self.compose_file]
+
+    if profile == "staging":
+        files.append(self.root_dir / "docker-compose.staging.yml")
+
+    return [f for f in files if f.exists()]
+```
+
+### Environment Variables
+
+Create `.env` file in repository root:
+
+```env
+# Environment-specific settings
+DATABASE_URL=postgresql://user:pass@postgres:5432/db
+REDIS_URL=redis://redis:6379
+API_KEY=your-api-key
+```
+
+Docker Compose automatically loads this file.
+
+### Custom Scripts
+
+Add convenience scripts that use shardctl:
+
+```bash
+#!/bin/bash
+# scripts/dev-up.sh
+
+poetry run shardctl up --profile dev --build
+poetry run shardctl logs --follow
+```
+
+### Poetry Development Commands
+
+```bash
+# Install dependencies
+poetry install
+
+# Add a new dependency
+poetry add package-name
+
+# Add a dev dependency
+poetry add --group dev package-name
+
+# Update dependencies
+poetry update
+
+# Show installed packages
+poetry show
+
+# Run unit tests (fast, no Docker required)
+poetry run pytest integration-tests/test/test_internal.py -v --tb=short
+
+# Run full integration tests (requires Docker, 10-30+ min)
+poetry run shardctl test
+
+# Format code with ruff
+poetry run ruff format shardctl/
+
+# Lint with ruff
+poetry run ruff check shardctl/
+
+# Activate virtual environment
+poetry shell
+```
+
+## Best Practices
+
+1. **Never commit service directories**: They're git-ignored for a reason
+2. **Use profiles**: Keep prod and dev configurations separate
+3. **Document service dependencies**: Update compose files with proper `depends_on`
+4. **Pin image versions**: Use specific tags, not `latest`
+5. **Use volume mounts in dev**: Enable hot reload for faster development
+6. **Run builds explicitly**: Use `--build` when you've changed dependencies
+7. **Monitor logs**: Use `--follow` during development
+8. **Clean up regularly**: Run `down --volumes` to free space
+
 ## Contributing
 
 1. Only commit changes to integration tooling (compose files, shardctl code, docs)

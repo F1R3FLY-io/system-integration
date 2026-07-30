@@ -567,16 +567,16 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
             logging.info("Post-epoch LFB: #%d", post_epoch_lfb)
 
             # Verify finalization continued throughout (no stall)
-            assert (
-                post_epoch_lfb >= target_lfb
-            ), f"LFB #{post_epoch_lfb} should have reached #{target_lfb}"
+            assert post_epoch_lfb >= target_lfb, (
+                f"LFB #{post_epoch_lfb} should have reached #{target_lfb}"
+            )
 
             # Verify V2 and readonly also advanced
             for node in all_nodes:
                 node_lfb = lfb_number(node)
-                assert (
-                    node_lfb >= target_lfb - 3
-                ), f"{node.name} LFB #{node_lfb} too far behind target #{target_lfb}"
+                assert node_lfb >= target_lfb - 3, (
+                    f"{node.name} LFB #{node_lfb} too far behind target #{target_lfb}"
+                )
 
             # Check if joiner produced any blocks (appeared in justifications)
             latest_blocks = v1.get_blocks(20)

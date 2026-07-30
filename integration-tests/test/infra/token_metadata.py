@@ -4,6 +4,7 @@ On-chain queries are delegated to ``f1r3fly.system_contracts`` (pyf1r3fly
 upstream). This module adds the HTTP ``/api/status`` helper which is
 test-specific (validates response shape for proto drift detection).
 """
+
 from __future__ import annotations
 
 import requests

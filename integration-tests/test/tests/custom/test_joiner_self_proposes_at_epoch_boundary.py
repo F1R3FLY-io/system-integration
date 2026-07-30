@@ -274,7 +274,7 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
         for n in (v1, v2, joiner, ro):
             wait_for_block_visible(n, b3, t)
         assert _expect(v1, b3).blockNumber == 3, (
-            f"Block-numbering invariant broken: expected #3, got " f"#{_expect(v1, b3).blockNumber}"
+            f"Block-numbering invariant broken: expected #3, got #{_expect(v1, b3).blockNumber}"
         )
 
         # ── Block #4: V1 proposes bond.rho — bond block AT epoch boundary ──
@@ -290,7 +290,7 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
             wait_for_block_visible(n, b4, t)
         b4_info = _expect(v1, b4)
         assert b4_info.blockNumber == 4, (
-            f"Bond block expected at #4 (epoch boundary), got " f"#{b4_info.blockNumber}"
+            f"Bond block expected at #4 (epoch boundary), got #{b4_info.blockNumber}"
         )
         assert b4_info.blockNumber % _EPOCH_LENGTH == 0
         # closeBlock at #4 activates V4 — bond block's bonds map includes V4.

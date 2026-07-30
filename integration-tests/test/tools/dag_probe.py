@@ -25,6 +25,7 @@ Usage:
 Hashes may be given as prefixes (>= 6 hex chars); they are resolved against the
 node's recent blocks. Exit code 0 = ancestor / success, 1 = not-ancestor / error.
 """
+
 from __future__ import annotations
 
 import argparse

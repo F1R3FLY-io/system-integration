@@ -15,6 +15,7 @@ All test resources are identified by a prefix pattern (``rnode.test.*``,
 ``f1r3fly-test-*``, ``test-*``) so this never touches v1 resources or
 production containers.
 """
+
 from __future__ import annotations
 
 import atexit
@@ -125,7 +126,7 @@ class DockerCleanupRegistry:
                     "--keep-running" if self.keep_running else "--keep-on-failure (a test failed)"
                 )
                 logger.info(
-                    "DockerCleanupRegistry: %s, skipping cleanup of " "%d resources for session %s",
+                    "DockerCleanupRegistry: %s, skipping cleanup of %d resources for session %s",
                     reason,
                     total,
                     self.session_id,

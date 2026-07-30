@@ -15,6 +15,7 @@ Lives in its OWN file (not woven into ``test_validator_lifecycle``) because:
 Reuses the lifecycle module's shard helpers (`_attach_prebond`, `_validators_on`, etc.)
 rather than duplicating them.
 """
+
 import logging
 
 import pytest
@@ -121,9 +122,9 @@ def test_active_validator_cap(cap_shard, timeouts) -> None:
     bonded = ro.pos.get_bonds()
     active = _validators_on(ro)
     assert len(bonded) == 5, f"expected 5 bonded, got {len(bonded)}: {bonded}"
-    assert (
-        len(active) == _ACTIVE_CAP
-    ), f"active set must cap at {_ACTIVE_CAP} despite 5 bonded, got {len(active)}: {active}"
+    assert len(active) == _ACTIVE_CAP, (
+        f"active set must cap at {_ACTIVE_CAP} despite 5 bonded, got {len(active)}: {active}"
+    )
     assert set(active) <= set(bonded), f"active not a subset of bonded: {active} vs {bonded}"
 
     # The capped shard must still finalize — prove via an ACTIVE genesis (at most 2 of 5

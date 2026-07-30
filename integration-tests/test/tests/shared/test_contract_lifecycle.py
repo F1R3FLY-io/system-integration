@@ -494,9 +494,9 @@ def test_contract_to_contract_interaction(
 
     assert consumer_pars, "Consumer deploy returned no data"
     consumer_result = par_as_string(consumer_pars[0])
-    assert (
-        consumer_result == "hello_from_provider"
-    ), f"Consumer got '{consumer_result}', expected 'hello_from_provider'"
+    assert consumer_result == "hello_from_provider", (
+        f"Consumer got '{consumer_result}', expected 'hello_from_provider'"
+    )
     logging.info("Consumer received from provider: %s", consumer_result)
 
     # Verify cross-node agreement
@@ -596,7 +596,7 @@ def test_transfers_interleaved_with_queries(
     # Verify balances
     v2_balance_after = ro.vault.get_balance(v2_vault)
     assert v2_balance_after == v2_balance_before + transfer_amount, (
-        f"V2 balance: expected {v2_balance_before + transfer_amount}, " f"got {v2_balance_after}"
+        f"V2 balance: expected {v2_balance_before + transfer_amount}, got {v2_balance_after}"
     )
     logging.info(
         "Transfer verified: V2 %d -> %d (+%d)",

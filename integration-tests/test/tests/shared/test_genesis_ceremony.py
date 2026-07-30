@@ -56,13 +56,12 @@ def test_successful_genesis_ceremony(shared_shard, node_conf) -> None:
 
     # Genesis block has no parents
     assert len(genesis_info.parentsHashList) == 0, (
-        f"Genesis block should have no parents, got: " f"{list(genesis_info.parentsHashList)}"
+        f"Genesis block should have no parents, got: {list(genesis_info.parentsHashList)}"
     )
 
     # shardId matches node config
     assert genesis_info.shardId == node_conf.shard_id, (
-        f"Genesis block shardId '{genesis_info.shardId}' != "
-        f"config shard_id '{node_conf.shard_id}'"
+        f"Genesis block shardId '{genesis_info.shardId}' != config shard_id '{node_conf.shard_id}'"
     )
 
     # Bonds match shard config
