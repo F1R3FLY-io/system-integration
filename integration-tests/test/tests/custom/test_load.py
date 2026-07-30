@@ -119,6 +119,11 @@ def _current_block_number(node, monitor=None) -> int:
     """
     try:
         return node.get_current_block_number()
+    # Deliberately broad. A watchdog kill arrives as grpc.RpcError, but a dead
+    # node also surfaces as connection resets and client-wrapper errors, and all
+    # of them want the same attribution. Narrowing this to grpc.RpcError would
+    # quietly restore the misdiagnosis path for the other shapes. The original
+    # exception is chained, so nothing is hidden.
     except Exception as exc:
         breach = getattr(monitor, "breach", None) if monitor is not None else None
         if breach:
@@ -128,11 +133,22 @@ def _current_block_number(node, monitor=None) -> int:
                 f"suit this host, or reduce the load profile — the nodes did not "
                 f"crash on their own. Underlying error: {exc}"
             ) from exc
+        # Distinguish "asked the monitor, it said no" from "never asked it".
+        # Claiming no breach when no monitor was consulted is the same class of
+        # misleading attribution this helper exists to remove.
+        if monitor is None:
+            diagnosis = (
+                "No resource monitor was attached to this call, so a "
+                "host-protection kill cannot be ruled out here"
+            )
+        else:
+            diagnosis = (
+                "The resource monitor reports no breach, so this is a node-side "
+                "failure rather than a watchdog kill — check that node's logs"
+            )
         raise AssertionError(
             f"Node {node.name} became unreachable while querying the last "
-            f"finalized block. The resource monitor reports no breach, so this "
-            f"is a node-side failure rather than a watchdog kill — check that "
-            f"node's logs. Underlying error: {exc}"
+            f"finalized block. {diagnosis}. Underlying error: {exc}"
         ) from exc
 
 

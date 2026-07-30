@@ -67,17 +67,79 @@ sustained-rate loop as well, which is where run 30516534214 actually died. Both
 are covered. The test now takes the `resource_monitor` fixture (session-scoped
 and `autouse`, so this only binds the existing object to a name).
 
+### Multi-agent review resolutions (PR #70, 2026-07-30)
+
+Verdict was `needs_review` at 33% agreement (anthropic abstained on billing;
+bedrock approve, openai needs_review, xai provide_feedback). One critical, since
+fixed. Recorded here because PR comments do not survive a squash.
+
+| Finding | Reporters | Resolution |
+|---|---|---|
+| **CRITICAL** — empty prefix list fails *open*: `${VAR:-default}` does not substitute a whitespace-only value, so `REAPABLE_NAME_PREFIXES=' '` parsed to zero prefixes and `if prefixes and ...` then matched every instance | openai, xai | **Fixed.** Script aborts (exit 2) on a whitespace-only list; the filter refuses independently, since tests execute it without the caller guard. Worse than pre-change behaviour, because an operator believes a filter is active |
+| Non-finite deadline grants permanent exemption — `float()` accepts `Infinity`, `inf`, `1e309` | openai | **Fixed** via `math.isfinite`. *Not* by switching to `int()`: f1r3node-rust parses this tag with jq `tonumber`, which accepts fractional values, and a consumer stricter than the producer would discard a valid deadline and kill a live soak |
+| `MAX_AGE_HOURS` unvalidated before `$(( ))`, where bash evaluates contents as an expression | openai | **Fixed** — rejected unless `^[0-9]+$`. Empty still takes the default, which is `:-` semantics, not a hole |
+| Vacuous assertion `assert "..." not in body or True` in the extraction guard | openai, xai | **Fixed.** Replaced with real invariants (every env var the harness sets is consumed; each of the four decisions present). It immediately earned its keep by catching the deadline-parse change below |
+| `monitor is None` reported as "resource monitor reports no breach" | xai | **Fixed** — distinguishes "asked, it said no" from "never asked". Same class of misleading attribution the helper exists to remove |
+| Broad `except Exception` may misattribute non-connectivity failures | openai, xai | **Kept, now documented.** Narrowing to `grpc.RpcError` would restore the misdiagnosis path for connection resets and wrapper errors. Original exception is chained |
+| Document the epoch-seconds/string tag contract beside the variable | xai | **Done**, and since verified against f1r3node-rust PR #169's diff rather than its prose |
+| Missing docstring on `_current_block_number`; comment formatting | bedrock | **Not actioned** — the function has a docstring; formatting is subjective |
+
+Two of my own errors surfaced while fixing these: the first mutation check
+reported "tests are vacuous" because the mutation left an orphan `except` and I
+had not checked the return code; and a `tab` test case failed against a correct
+guard because `repr("\t")` emits a literal backslash-t into the shell rather
+than a tab (now `shlex.quote`).
+
+### Merge order and cross-repo coordination
+
+**No hard dependency with f1r3node-rust PR #169 in either direction.** They are
+producer and consumer of one tag:
+
+- **#70 without #169** — nothing carries the tag, the exemption never fires, and
+  the reaper still only touches our own prefixes. Strictly safer than today.
+- **#169 without #70** — soak runners carry the tag and this script ignores it,
+  which is today's behaviour. No live risk: nothing schedules this script
+  (`.github/workflows/` holds only `smoke-test.yml`; `ci/oci-runners/README.md`
+  marks it manual/on-demand).
+
+**Merge #169 first anyway.** It is the urgent one — scheduled reaper exemption
+plus the RSS ceiling fix that is killing soaks now — and it *defines* the tag
+contract this PR consumes. Landing it first freezes that contract. Verified
+against its diff: `--freeform-tags`, key `soak-deadline-epoch`, epoch seconds
+compared via jq `tonumber`, set to window end + 2h grace.
+
+**Do not bump `SYSTEM_INTEGRATION_REF` for this.** The soak pins `9ebdde0` and
+needs no bump; this script is not on the soak path. If it is bumped later for
+other reasons, do it after both PRs land.
+
+**Still stale, and theirs to fix:** `oci-validation.env:17` and
+`_integration-pipeline.yml:47` agree at `06f2020`, satisfying their drift
+invariant, but that commit predates the validator4 cert fix (`81284fc`) and the
+LFB convergence work. CI integration therefore proves a ~3-week-old
+system-integration while the soak proves `main`. Logged with them; deliberately
+not being changed today, one moving part at a time.
+
 ### Open questions for claude-session-9f68c6fa
 
-1. **Confirm the tag contract.** I coded to your description — freeform tag
-   `soak-deadline-epoch` holding Unix epoch **seconds** — not to PR #169 itself,
-   which I have not read. If it is milliseconds, or a defined tag rather than a
-   freeform one, the exemption silently never fires. Overridable via
-   `SOAK_DEADLINE_TAG`, but the epoch-seconds assumption is baked in.
-2. **This branch is cut from `main`**, since the soak pins `main` (`9ebdde0`) and
-   a fix that lands only on `dev` would not reach you. That means it is
-   black-formatted, matching `main`'s lint gate; when it later merges to `dev` it
-   will be restyled by ruff. Say if you would rather it target `dev`.
+**Both resolved — see the INBOX below. Kept for the audit trail.**
+
+1. ~~**Confirm the tag contract.**~~ **Answered and independently verified.**
+   I also read PR #169's diff rather than relying on the prose: `--freeform-tags`,
+   key `soak-deadline-epoch`, epoch seconds, `END_EPOCH + 7200` grace, compared
+   with jq `tonumber`. Two consequences for this PR:
+   - Their warning that the value is a **JSON string** (`--arg` → `"1785640828"`)
+     is covered: the parse does `float(str(deadline).strip())` and every test
+     passes the string form. Now pinned explicitly by
+     `test_deadline_is_honoured_whether_string_or_number`, since a numeric
+     compare against a quoted value would silently never exempt — killing every
+     soak while every other test still passed.
+   - Their `tonumber` accepts fractional values, so the review's suggested
+     `int()` fix would have made this consumer **stricter than the producer**
+     and discarded a valid deadline. Resolved with `float()` + `math.isfinite()`:
+     closes the `Infinity` hole without that risk.
+2. ~~**This branch is cut from `main`.**~~ **Confirmed correct by them.** The soak
+   pins `main` (`9ebdde0`); a fix landing only on `dev` would not reach it. The
+   ruff restyle on the later `dev` merge is the right order of operations.
 
 ---
 
@@ -167,9 +229,13 @@ deferred_from: TASK-009
 Deliberately **not** done in TASK-009, by agreement between both agents. Filed as
 a task rather than left as prose inside TASK-009, because that entry gets
 archived to `CompletedTasks.md` on completion and would take this with it.
-(Same routing as TASK-005: `docs/Backlog.md` still does not exist on `main` —
-it is a `dev`-only file and arrives here only when PR #38 merges — and
-`docs/discoveries/` is gitignored, so tracked `ToDos.md` is the only durable home.)
+
+Kept here rather than in `docs/Backlog.md` even though that file now exists on
+`main` (it arrived with PR #38, after TASK-009 was written): it is still an
+unfilled template of `[PROJECT_SPECIFIC: ...]` placeholders with no real items,
+so a live task with acceptance criteria would be buried in boilerplate. Same
+conclusion as TASK-005, different reason — that one predated the file entirely.
+Move this there once Backlog.md is actually populated.
 
 **Problem.** `--rss-ceiling-mb` defaults to `5000` (`integration-tests/test/conftest.py:93`)
 and is always active. The 6-node `test_load` shard legitimately peaks ~10GB, so

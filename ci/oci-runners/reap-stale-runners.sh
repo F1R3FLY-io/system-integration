@@ -33,15 +33,38 @@
 set -euo pipefail
 
 MAX_AGE_HOURS="${MAX_AGE_HOURS:-6}"
+# Validated before use: it is fed to $(( )) below, and bash evaluates variable
+# contents there as an arithmetic expression, so an unchecked value is both an
+# injection surface and a confusing crash on ordinary typos.
+if ! [[ "$MAX_AGE_HOURS" =~ ^[0-9]+$ ]]; then
+  echo "MAX_AGE_HOURS must be a non-negative integer, got: '$MAX_AGE_HOURS'" >&2
+  exit 2
+fi
 
 # Space-separated display-name prefixes this reaper may terminate. `ci-eph-` is
 # launch-runner.sh's job/soak runners; `ci-runner-golden-` is bake-image.sh's
 # image-bake VM, which f1r3node-rust's reaper skips by design (it scopes to
 # ci-eph-*), leaving this script as the only backstop for a bake that died
 # before its own trap could fire.
+#
+# `:-` only substitutes when unset or empty, so a whitespace-only value such as
+# REAPABLE_NAME_PREFIXES=' ' survives it and parses to zero prefixes. That must
+# abort rather than match everything: an operator who mis-set this believes the
+# name filter is protecting them, which is strictly more dangerous than the old
+# reap-by-age-alone behaviour. Fail closed here; the deadline tag fails open, on
+# purpose (see _select_reapable).
 REAPABLE_NAME_PREFIXES="${REAPABLE_NAME_PREFIXES:-ci-eph- ci-runner-golden-}"
+if [ -z "${REAPABLE_NAME_PREFIXES//[[:space:]]/}" ]; then
+  echo "REAPABLE_NAME_PREFIXES parsed to no entries; refusing to run." >&2
+  echo "Set it to a space-separated prefix list, or unset it for the default." >&2
+  exit 2
+fi
 
-# Freeform tag carrying a Unix epoch past which the instance may be reaped.
+# Freeform tag exempting an instance until its deadline passes. OCI freeform
+# tags are string->string, so the value is a decimal string holding Unix epoch
+# **seconds** — matching what f1r3node-rust stamps on soak runners. Milliseconds
+# would exempt effectively forever; a defined tag would never be seen here at
+# all. Unparseable or absent => reapable.
 SOAK_DEADLINE_TAG="${SOAK_DEADLINE_TAG:-soak-deadline-epoch}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,13 +88,19 @@ _select_reapable() {
   NOW_EPOCH="$NOW_EPOCH" CUTOFF_EPOCH="$CUTOFF_EPOCH" \
   PREFIXES="$REAPABLE_NAME_PREFIXES" DEADLINE_TAG="$SOAK_DEADLINE_TAG" \
   python3 -c '
-import json, os, sys
+import json, math, os, sys
 from datetime import datetime, timezone
 
 prefixes = tuple(p for p in os.environ.get("PREFIXES", "").split() if p)
 deadline_tag = os.environ["DEADLINE_TAG"]
 now = int(os.environ["NOW_EPOCH"])
 cutoff = int(os.environ["CUTOFF_EPOCH"])
+
+# Belt-and-braces: the caller already refuses to run with an empty prefix list.
+# Repeated here because this function is extracted and executed directly by
+# unit-tests/test_reaper_selection.py, where the caller guard is not present.
+if not prefixes:
+    sys.exit("refusing to select instances with an empty prefix list")
 
 raw = sys.stdin.read().strip()
 instances = (json.loads(raw).get("data") or []) if raw else []
@@ -105,8 +134,18 @@ for inst in instances:
     deadline = (inst.get("freeform-tags") or {}).get(deadline_tag)
     if deadline is not None:
         try:
-            if float(deadline) > now:
-                remaining = int((float(deadline) - now) / 60)
+            # float() accepts "Infinity", "inf" and overflowing exponents like
+            # "1e309"; each compares greater than now and would grant permanent
+            # immunity — the unbounded-exemption billing leak this branch exists
+            # to prevent. Reject those explicitly rather than switching to
+            # int(): f1r3node-rust parses the same tag with jq `tonumber`, which
+            # accepts a fractional value, and a consumer stricter than the
+            # producer would drop a *valid* exemption and kill a live soak.
+            parsed_deadline = float(str(deadline).strip())
+            if not math.isfinite(parsed_deadline):
+                raise ValueError(f"non-finite deadline: {deadline!r}")
+            if parsed_deadline > now:
+                remaining = int((parsed_deadline - now) / 60)
                 print(f"  SKIP {name}: {deadline_tag} {deadline} is {remaining}min in the future", file=sys.stderr)
                 continue
         except (TypeError, ValueError):

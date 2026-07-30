@@ -12,6 +12,7 @@ stdin, exactly as the script pipes it.
 
 import json
 import re
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -40,10 +41,12 @@ def _extract_filter() -> str:
     return text[start:end]
 
 
-def _run_filter(instances, max_age_hours=6, prefixes=None, now=None):
+def _run_filter(instances, max_age_hours=6, prefixes=None, now=None, expect_failure=False):
     """Run the extracted filter over `instances`, returning (ids, stderr).
 
     `instances` is the `data` array of an `oci compute instance list` response.
+    Set `expect_failure` when the filter is supposed to refuse to run at all;
+    the return code is then asserted non-zero instead of zero.
     """
     now = int(now if now is not None else time.time())
     cutoff = now - max_age_hours * HOUR
@@ -69,7 +72,12 @@ def _run_filter(instances, max_age_hours=6, prefixes=None, now=None):
         text=True,
         timeout=30,
     )
-    assert proc.returncode == 0, f"filter exited {proc.returncode}: {proc.stderr}"
+    if expect_failure:
+        assert proc.returncode != 0, (
+            f"filter exited 0 but was expected to refuse; stdout={proc.stdout!r}"
+        )
+    else:
+        assert proc.returncode == 0, f"filter exited {proc.returncode}: {proc.stderr}"
     ids = [line for line in proc.stdout.splitlines() if line.strip()]
     return ids, proc.stderr
 
@@ -175,7 +183,95 @@ def test_unreadable_creation_time_fails_toward_safety(bad_stamp):
     assert "SKIP" in stderr
 
 
+@pytest.mark.parametrize(
+    "non_finite",
+    ["Infinity", "-Infinity", "inf", "1e309", "nan", "NaN"],
+    ids=["Infinity", "neg-Infinity", "inf", "overflow-exponent", "nan", "NaN"],
+)
+def test_non_finite_deadline_cannot_grant_permanent_exemption(non_finite):
+    """`float()` accepts these and they compare > now, exempting forever.
+
+    Found in review of PR #70: the deadline parse used bare `float()`, so a tag
+    of "Infinity" — or an exponent that overflows to inf — bought unbounded
+    immunity, which is precisely the permanent billing leak the fail-toward-
+    cleanup rule exists to prevent. An explicit `math.isfinite` check closes it
+    while still honouring fractional values (see the test below).
+    """
+    now = int(time.time())
+    inst = _instance("ci-eph-x", age_hours=8, tags={"soak-deadline-epoch": non_finite})
+
+    ids, stderr = _run_filter([inst], now=now)
+
+    assert ids == [inst["id"]], f"{non_finite!r} granted an exemption"
+    assert "WARN" in stderr
+
+
+@pytest.mark.parametrize(
+    "as_json_value",
+    [True, False],
+    ids=["json-string-the-real-form", "json-number-defensive"],
+)
+def test_deadline_is_honoured_whether_string_or_number(as_json_value):
+    """OCI freeform tags are a string->string map, so the real value is quoted.
+
+    f1r3node-rust builds it with `jq --arg`, which emits `"1785640828"` — a JSON
+    string. A naive numeric comparison against a quoted value would silently
+    never exempt, killing every soak while every other test still passed. The
+    number case is defensive: `str(deadline)` normalises either shape.
+    """
+    now = int(time.time())
+    deadline = now + 14 * HOUR
+    inst = _instance(
+        "ci-eph-soak",
+        age_hours=8,
+        tags={"soak-deadline-epoch": str(deadline) if as_json_value else deadline},
+    )
+
+    ids, stderr = _run_filter([inst], now=now)
+
+    assert ids == [], "live soak lost its exemption"
+    assert "SKIP" in stderr
+
+
+def test_fractional_deadline_still_exempts():
+    """A fractional deadline is valid, not malformed — it must keep its exemption.
+
+    f1r3node-rust parses this same tag with jq `tonumber`, which accepts a
+    fractional value. A consumer stricter than the producer would treat a valid
+    future deadline as garbage and terminate a live soak, which is the exact
+    failure this guard exists to prevent. So reject non-finite values only.
+    """
+    now = int(time.time())
+    inst = _instance("ci-eph-x", age_hours=8, tags={"soak-deadline-epoch": f"{now + 9 * HOUR}.5"})
+
+    ids, stderr = _run_filter([inst], now=now)
+
+    assert ids == [], "a valid fractional deadline lost its exemption"
+    assert "SKIP" in stderr
+
+
 # --- blast-radius containment ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "empty_prefixes",
+    ["", " ", "   ", "\t"],
+    ids=["empty", "one-space", "spaces", "tab"],
+)
+def test_empty_prefix_list_refuses_to_run(empty_prefixes):
+    """An empty prefix list must abort, never mean "match everything".
+
+    Found in review of PR #70 and rated critical. `${VAR:-default}` does not
+    substitute for a whitespace-only value, so `REAPABLE_NAME_PREFIXES=' '`
+    reached the filter as zero prefixes, and `if prefixes and ...` then skipped
+    the name check for every instance. That is worse than the pre-change
+    reap-by-age behaviour, because the operator believes a filter is active.
+    """
+    inst = _instance("literally-any-production-vm", age_hours=500)
+
+    ids, _ = _run_filter([inst], prefixes=empty_prefixes, expect_failure=True)
+
+    assert ids == [], "no instance may be selected when the prefix list is empty"
 
 
 def test_foreign_instance_is_never_terminated():
@@ -247,13 +343,103 @@ def test_mixed_fleet_selects_only_the_right_instances():
     assert sorted(ids) == sorted(["ocid1.stale", "ocid1.golden"])
 
 
+# --- script-level config guards ---------------------------------------------
+
+
+def _run_config_guards(env):
+    """Execute the script's config-validation block with `env` overrides.
+
+    Extracted between markers like the filter, so it exercises the real guards.
+    """
+    text = REAPER.read_text()
+    start = text.index('MAX_AGE_HOURS="${MAX_AGE_HOURS:-6}"')
+    end = text.index("# Freeform tag exempting", start)
+    guards = text[start:end]
+
+    # shlex.quote, not repr: repr("\t") emits a literal backslash-t, so the
+    # shell would receive a two-character string instead of a tab and the
+    # whitespace-only case would not actually be exercised.
+    assignments = "\n".join(f"export {k}={shlex.quote(v)}" for k, v in env.items())
+    script = "\n".join(["set -euo pipefail", assignments, guards, "echo OK"])
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+
+
+@pytest.mark.parametrize(
+    "bad_age",
+    ["abc", "-1", "6.5", "6; rm -rf /", "$(id)"],
+    ids=["text", "negative", "fractional", "injection", "cmd-subst"],
+)
+def test_invalid_max_age_hours_is_rejected(bad_age):
+    """MAX_AGE_HOURS feeds `$(( ))`, where bash evaluates contents as an
+    expression — an injection surface, and a confusing crash on typos."""
+    proc = _run_config_guards({"MAX_AGE_HOURS": bad_age})
+
+    assert proc.returncode != 0, f"{bad_age!r} was accepted"
+    assert "MAX_AGE_HOURS" in proc.stderr
+
+
+def test_empty_max_age_hours_falls_back_to_the_default():
+    """Empty is NOT invalid: `${VAR:-6}` substitutes for unset *and* empty.
+
+    Asserted explicitly because this is the exact `:-` subtlety behind the
+    critical finding — empty takes the default, whitespace-only does not.
+    """
+    proc = _run_config_guards({"MAX_AGE_HOURS": ""})
+
+    assert proc.returncode == 0, proc.stderr
+    assert "OK" in proc.stdout
+
+
+def test_valid_max_age_hours_is_accepted():
+    proc = _run_config_guards({"MAX_AGE_HOURS": "22"})
+    assert proc.returncode == 0, proc.stderr
+    assert "OK" in proc.stdout
+
+
+@pytest.mark.parametrize("blank_prefixes", [" ", "  ", "\t"], ids=["one-space", "spaces", "tab"])
+def test_script_refuses_whitespace_only_prefix_list(blank_prefixes):
+    """The caller-side half of the empty-prefix guard (the filter has its own).
+
+    Whitespace-only is the dangerous case: `:-` does not substitute for it, so
+    it reaches the filter as zero prefixes and would match every instance.
+    """
+    proc = _run_config_guards({"REAPABLE_NAME_PREFIXES": blank_prefixes})
+
+    assert proc.returncode != 0, f"{blank_prefixes!r} was accepted"
+    assert "REAPABLE_NAME_PREFIXES" in proc.stderr
+
+
+def test_empty_prefix_list_falls_back_to_the_default():
+    """Empty takes the default and is therefore safe — unlike whitespace-only."""
+    proc = _run_config_guards({"REAPABLE_NAME_PREFIXES": ""})
+
+    assert proc.returncode == 0, proc.stderr
+    assert "OK" in proc.stdout
+
+
+def test_default_prefixes_are_accepted():
+    proc = _run_config_guards({})
+    assert proc.returncode == 0, proc.stderr
+
+
 # --- guard against the extraction silently breaking -------------------------
 
 
 def test_extracted_filter_is_the_real_one():
-    """If the markers stop matching, every test above would vacuously pass."""
+    """If the markers stop matching, every test above would vacuously pass.
+
+    Each assertion names a construct the tests above actually depend on, so
+    losing one fails loudly here rather than turning the suite into a no-op.
+    """
     body = _extract_filter()
-    assert "python3" in body
-    assert "REAPABLE_NAME_PREFIXES" not in body or True  # set by caller, not inside
-    assert re.search(r"lifecycle-state", body)
-    assert "DEADLINE_TAG" in body
+    assert "python3" in body, "extraction lost the interpreter invocation"
+    # Every environment variable _run_filter sets must be consumed by the body,
+    # or the tests are configuring something the real script does not read.
+    for var in ("PREFIXES", "DEADLINE_TAG", "NOW_EPOCH", "CUTOFF_EPOCH"):
+        assert var in body, f"filter no longer reads {var}"
+    # The four decisions under test.
+    assert re.search(r"lifecycle-state", body), "state filter gone"
+    assert "startswith" in body, "prefix filter gone"
+    assert "created_epoch" in body, "age filter gone"
+    assert re.search(r"float\(str\(deadline\)", body), "deadline parse gone"
+    assert "isfinite" in body, "non-finite deadline rejection gone"
