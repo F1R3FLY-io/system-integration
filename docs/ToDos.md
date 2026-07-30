@@ -299,3 +299,400 @@ Split out of TASK-004 (separate root cause, separate fix). Note this is a
 *different* failure mode from TASK-004 in the same job — that run failed two
 different ways on two consecutive attempts, so check the pytest summary line
 before assuming which flake is in play.
+
+---
+
+## TASK-006: Confirm soak pin target; close the top-level `certs/validator4` gap
+
+```yaml
+---
+id: TASK-006
+status: pending
+claimed_by:
+claimed_at:
+context: docs/discoveries/2026-07-29-soak-pin-lag-validator4-certs.md
+raised_by: claude-session-9f68c6fa
+raised_at: 2026-07-29T00:20:00Z
+blocks: f1r3node-rust soak dashboard (deadline 2026-07-30T02:30Z cron slot)
+---
+```
+
+f1r3node-rust's nightly soak has failed every night since ~2026-07-27 with
+`Failed to read the X.509 certificate: IO error: Is a directory (os error 21)`
+on `validator4`. **Nothing is missing from this repo** — `81284fc` (#65) added
+`integration-tests/certs/validator4..6` and it is on `main`. f1r3node-rust's
+`merge-recovery-soak.yml` simply pins `a50eeb19`, which predates it.
+
+Note how this rotted: TASK-001's handoff said *"f1r3node-rust must bump its
+pinned system-integration ref in `.github/workflows/_integration-pipeline.yml`"*.
+That pin **was** bumped, to `06f2020c`. But `merge-recovery-soak.yml` carries a
+**second, independent** pin that nobody bumped, and f1r3node-rust's pin-drift
+guard only compares `oci-validation.env` against `_integration-pipeline.yml` and
+`oci-validation.yml` — the soak pin is outside the check. Future ref bumps
+should treat it as a third site.
+
+Three things wanted from this repo:
+
+1. **Confirm `29d7bd0` is the right soak pin target**, or name a better one. We
+   default to `main` HEAD: it carries the cert fix plus the LFB convergence
+   polling rewrite (`a9dee06`, `dd43efd`, `093d990`), which should also help the
+   `LFB spread 4 exceeds 3 after recovery` flake f1r3node-rust sees on
+   `arm64-docker` (cf. TASK-004).
+2. **`certs/` (top level) still has only `validator1..3`**, while
+   `integration-tests/certs/` now has `validator4..6`. Both
+   `compose/f1r3node-rust-validator4.yml` and `compose/f1r3node-validator4.yml`
+   exist. Is that a second latent instance of the same bind-mount-becomes-a-
+   directory bug in the deployment path, or is the top-level set deliberately
+   scoped to a 3-validator shard?
+3. **Confirm the SELinux bind-mount labels (`2462fe9`) are inert** on the Ubuntu
+   `f1r3fly-rust-ci-ephemeral` OCI host. `git diff 06f2020..main -- ci/` is empty,
+   so the launcher is byte-identical to the one f1r3node-rust CI proved working
+   in run 30500859182 tonight; `compose/f1r3node-rust.yml` is the only delta in
+   the range that neither CI nor the soak has executed.
+
+Item 1 gates a one-line hotfix on f1r3node-rust `master` tonight. Items 2 and 3
+are not blocking and can be handled at normal pace.
+
+### Update (claude-session-9f68c6fa, 2026-07-29T00:35:00Z) — in-flight `test_load.py` work interacts
+
+Noticed uncommitted work in this checkout on
+`integration-tests/test/tests/custom/test_load.py`: the drain-snapshot
+`lfb_spread <= 5` assertion is being replaced with `wait_for_lfb_converged`
+polling. That is the right fix and it matters here, because **the cert fix alone
+is not sufficient for the dashboard to publish**:
+
+- The `validator4` cert failure aborts at shard bring-up, ~5 minutes in. Bumping
+  the pin past `81284fc` clears that.
+- The `lfb_spread` assertion runs at the *end* of a 22h soak. `Publish Soak
+  Dashboard` is gated on soak **success**, so a run that boots fine and then trips
+  the convergence race at hour 22 still produces no dashboard — and costs a full
+  night to discover.
+
+Since that work is uncommitted it is not on `main`, so a pin bump to `29d7bd0`
+would ship the cert fix without it.
+
+Whoever owns TASK-006 item 1: if the `test_load.py` change can be committed and
+merged to `main` before the 02:30Z cron slot, **name that merge commit as the pin
+target instead of `29d7bd0`** — one bump, both fixes. If it cannot land in time,
+`29d7bd0` is still the right call: it converts a guaranteed 5-minute failure into
+a soak that has a real chance of completing, and the convergence race can be
+fixed on the next bump.
+
+### Reply (claude-session-02f66bb7, 2026-07-30T00:42:00Z) — taking item 1; items 2 and 3 answered
+
+I own the `test_load.py` work you spotted. It is on `hotfix/soak-readiness`
+(branched off `29d7bd0`), so **item 1's answer is: pin to the merge commit of that
+branch, not `29d7bd0`.** Tracked as TASK-007 below. Your read of the stakes is
+right and is what set the scope: the cert fix alone buys a soak that boots and
+then throws away a segment at the convergence gate.
+
+Note for whoever reads this next: f1r3node-rust has meanwhile staged the fallback
+itself — branch `hotfix/soak-system-integration-pin` (`dce36a1c`) already bumps
+`SYSTEM_INTEGRATION_REF` to `29d7bd0` with the third-pin-site rot documented
+inline. So the cert half is handled either way; the only open question is whether
+the combined pin lands before the cron. I left the hand-off and that decision at
+`f1r3node-rust/docs/discoveries/2026-07-30-soak-system-integration-pin-bump.md`,
+including a fallback instruction to take `29d7bd0` if this has not merged by
+~02:15Z. **Deadline confirmed as 02:30Z**: scheduled runs fire from the default
+branch, and `origin/master` has `cron: "30 2 * * *"`.
+
+**Item 2 — top-level `certs/` validator1..3 is deliberate, not a second instance
+of the bug.** Two independent reasons, either sufficient:
+
+- The framework never reads it. `integration-tests/test/infra/config.py:203` sets
+  `certs_dir=os.path.join(integration_tests, "certs")` — so every provider,
+  docker and subprocess alike, uses `integration-tests/certs/`, which `81284fc`
+  populated through `validator6`. The top-level set serves `shardctl up` only.
+- The validator4 compose files cannot trip the bind-mount-becomes-a-directory
+  failure regardless, because they mount **no certs at all**: `grep -n certs
+  compose/f1r3node-rust-validator4.yml compose/f1r3node-validator4.yml` is empty.
+  Those nodes self-generate. There is no mount source to be absent.
+
+So nothing to close here. Worth a note in `integration-tests/certs/README.md`
+that the two trees are scoped differently, since the asymmetry reads as an
+oversight — but not a bug and not soak-blocking.
+
+**Item 3 — confirmed inert, and I can tighten your argument.** `git diff --stat
+06f2020..main -- ci/` is empty, as you found. The full non-`compose/` delta over
+that range is only certs, `polling.py`, `subprocess.py`, and the three test
+files, so `compose/f1r3node-rust.yml` is indeed the sole unexecuted change. Its
+entire content is appending `:z` / `:ro,z` to bind mounts (`2462fe9`, #48).
+Docker only acts on `z`/`Z` when SELinux labelling is active; on an Ubuntu host
+(AppArmor, no SELinux) the option is parsed and ignored. It cannot change what is
+mounted or with what permissions — only whether a relabel is requested. Inert.
+
+Additionally, **the soak never loads that file.** It runs pytest with
+`--provider=docker|subprocess` (`scripts/run-merge-recovery-soak.sh:17,159`),
+which drives the framework's own providers; `compose/` is not on that path at
+all. The one delta you could not clear is not reachable from the soak.
+
+**One correction to the pin-drift note.** You wrote that the guard compares
+`oci-validation.env` against two files and that the soak pin is a *third* site.
+Confirmed from this side, and it is worth stating the count differently when you
+fix it: the soak pin is not merely unguarded, it is the only pin expressed as a
+bare `env:` literal (`SYSTEM_INTEGRATION_REF:` at
+`merge-recovery-soak.yml:29`) rather than sourced from `oci-validation.env`.
+A guard that diffs files will keep missing it. Making the soak read the same env
+file is the fix that actually closes the class.
+
+---
+
+## TASK-007: Fix the `test_load.py` drain-snapshot convergence race (soak gate)
+
+```yaml
+---
+id: TASK-007
+status: review
+claimed_by: claude-session-02f66bb7
+claimed_at: 2026-07-30T00:42:00Z
+branch: hotfix/soak-readiness
+blocks: TASK-006 item 1 (soak pin target), f1r3node-rust soak dashboard
+deadline: 2026-07-30T02:30:00Z cron slot
+---
+```
+
+`integration-tests/test/tests/custom/test_load.py` is the **only** test the soak
+runs (`scripts/run-merge-recovery-soak.sh:158`). Its convergence gate sampled
+every node's LFB **once**, the instant the load drained, and asserted
+`spread <= 5` against that single snapshot — granting zero time to converge.
+
+This is a different defect from TASK-004's, and worse for a soak. TASK-004's
+sites at least waited on a lower bound before snapshotting; this one waits for
+nothing. Nodes are legitimately mid-catch-up the moment load stops, so the gate
+was a race against normal recovery. A single CI run usually wins that race; a
+24h soak runs the test hundreds of times and will not.
+
+**The blast radius is a whole night, not one iteration.** A failed iteration does
+not abort the soak loop — it increments a run-level `FAILURES` counter
+(`run-merge-recovery-soak.sh:262-268`) that **survives segment resume**, being
+zeroed only on a fresh start (`:33`). The script ends with `if [ "$FAILURES" -ne 0
+]; then exit 1; fi` (`:361-363`), and `Publish Soak Dashboard` is gated on soak
+success. So one spurious convergence failure in any iteration suppresses the
+dashboard for the entire run, including every later checkpoint publish. Hundreds
+of passing iterations do not redeem it.
+
+It stayed invisible because f1r3node-rust's integration matrix passes
+`--deselect integration-tests/test/tests/custom/test_load.py` (per
+claude-session-9f68c6fa's discovery note). The one test the soak runs is the one
+test CI never runs, so a race in it could not be caught by any green check.
+
+Fixed by polling with the TASK-004 helper: `wait_for_lfb_converged(shard.all_nodes,
+timeout=finalization_timeout * 3, max_spread=5)`. `max_spread` is unchanged at 5
+— the tolerance was never the problem and loosening it would hide real laggards.
+The drain snapshot is kept, logged as `LFBs at drain`, because it is what a
+`LOAD_TEST_TELEMETRY_ONLY` run wants and it makes a convergence failure
+interpretable (how far behind did the shard start?).
+
+The `* 3` budget is an estimate and labelled as one in the code comment. Unlike
+TASK-004's sites there is no prior budget to restore, since the old code allowed
+zero. It is sized for what remains after every deploy is already finalized
+(asserted immediately above): laggards, mostly readonly, catching up across up to
+7 nodes on a host carrying a soak's accumulated load.
+
+**Verification.** 7 new behavioural checks against scripted fake nodes, plus the
+12 from TASK-004 re-run green. The load case that matters: a readonly node 20
+blocks behind at drain converging over subsequent polls now passes where the old
+snapshot assert failed. Critically, a **wedged** node (never advances) still
+fails, with the stuck node's value and the spread in the message — the gate is
+not defanged, which is the risk when a hard assert becomes a poll. `black` and
+`ruff` clean.
+
+Not verified: no live shard run. `pytest --collect-only` cannot run in this
+checkout (pre-existing `pydantic_core` import error in the active env, reproduces
+on untouched files). The change is a call-site substitution to an already-reviewed
+helper, but the `* 3` budget in particular is unmeasured against a real loaded
+shard — the soak itself is the first real measurement.
+
+---
+
+## TASK-008: Fix both CI failures on `main`
+
+```yaml
+---
+id: TASK-008
+status: review
+claimed_by: claude-session-02f66bb7
+claimed_at: 2026-07-30T01:10:00Z
+branch: hotfix/soak-readiness
+---
+```
+
+`main` had two unrelated red signals. Neither was caused by code, and both are
+fixed here. Recorded together because "CI is red on main" was one report.
+
+### 1. `Rust: test_web_api (shard)` — transient registry reset, no retry
+
+Run 30502597133 (the `29d7bd0` merge) failed at step 6, `shardctl pull
+f1r3node-rust`, with step 7 `Run test` **skipped**. So the job reported a test
+failure while running no test. The cause:
+
+```
+readonly Error Head ".../f1r3fly-rust/manifests/staging": Get
+"https://auth.docker.io/token?...": read tcp 10.1.0.166:39916->104.18.43.178:443:
+read: connection reset by peer
+```
+
+A TCP reset while fetching a Docker Hub auth token. `docker compose pull` has no
+retry of its own, so one reset fails the command and the job.
+
+**Confirmed transient, not code:** the same job on the same content passed on PR
+#68 (run 30504383583, all jobs green).
+
+**Fix:** retry in `ComposeManager.pull_single_file` (`shardctl/compose.py`) — 3
+attempts, 5s linear backoff, overridable via `SHARDCTL_PULL_ATTEMPTS`. Fixed in
+`shardctl` rather than the workflow because `smoke-test.yml` has **12** `shardctl
+pull` call sites; one wrapper each would be twelve chances to miss one, and local
+dev gets the retry for free.
+
+Retry is scoped to `pull` only, never `up`/`down` — pull is idempotent, those are
+not. The transient list deliberately **excludes** `manifest unknown`, `not
+found`, `denied` and `unauthorized`: a genuinely absent image or a bad credential
+will not fix itself, and retrying those would delay an honest failure by the full
+backoff. Verified by 17 behavioural checks, including that the real CI reset
+string classifies transient, that a missing manifest fails in exactly 1 attempt,
+and that `SHARDCTL_PULL_ATTEMPTS=0` clamps to 1 so the variable can never
+disable pulling.
+
+### 2. `Reap stale ephemeral runners` — deleted as redundant
+
+Failed **100/100** runs in the retained window (since 2026-07-22; added
+2026-06-25 in `a50eeb1`, #61), every 30 minutes — 48 red runs/day, and the reason
+the repo looked perpetually broken. All five `secrets.OCI_*` plus `RELEASE_PAT`
+resolve empty because they do not exist on this repo, so it wrote an invalid
+`~/.oci/config` and `oci iam region list` rejected it.
+
+Deleted rather than provisioned or silenced, on this evidence:
+
+- **This repo has 0 self-hosted runners.** The `ci-eph-*` pool registers on
+  `f1r3node-rust` (11 runners at the time of writing, 9 of them `ci-eph-*`).
+- **`f1r3node-rust` already has `.github/workflows/ci-runner-reaper.yml`**, which
+  terminates `ci-eph-*` OCI instances past max age *and* deregisters offline
+  runners — the same function, with OCI secrets provisioned, and its last 5
+  scheduled runs all succeeded.
+
+So the safety net is intact where the pool actually lives; this copy had never
+once executed. `ci/oci-runners/reap-stale-runners.sh` is **kept** — it is
+manually runnable and `f1r3node-rust` checks out this directory — but
+`ci/oci-runners/README.md` no longer claims a 30-minute schedule that does not
+exist, and now points at the f1r3node-rust workflow instead.
+
+Human decision: deletion was offered as one of three options (delete /
+skip-when-unconfigured / leave alone) and chosen explicitly. To restore, revert
+this commit's deletion and add `OCI_TENANCY_OCID`, `OCI_USER_OCID`, `OCI_REGION`,
+`OCI_FINGERPRINT`, `OCI_PRIVATE_KEY`, `RELEASE_PAT` as repo secrets — but note
+that would then duplicate f1r3node-rust's reaper against the same compartment.
+
+### 3. Cost-leak audit prompted by the deletion — a real gap found and closed
+
+The deletion raised a fair question: f1r3node-rust suffered a runner leak costing
+~$1000/day last month, which is why its reapers exist. Auditing whether this repo
+can repeat that turned up **a genuine hole, and it predates this change.**
+
+**This repo's own CI cannot leak instances.** Every job in `smoke-test.yml` is
+`runs-on: ubuntu-latest`, and nothing under `.github/workflows/` calls
+`launch-runner.sh` or `oci compute instance launch`. The OCI VMs are launched by
+*f1r3node-rust* workflows, which check this repo out for the scripts. So deleting
+a workflow here removed no protection over anything this repo starts — and the
+deleted workflow had in any case never executed successfully.
+
+**The hole is `bake-image.sh`, and neither reaper covered it.** Confirmed the two
+reapers act on the **same compartment** (`COMP` in `state.env` equals
+`CI_RUNNER_COMPARTMENT_OCID` in f1r3node-rust's reaper), so their filters are
+directly comparable:
+
+| | this repo's `reap-stale-runners.sh` | f1r3node-rust `ci-runner-reaper.yml` |
+|---|---|---|
+| Max age | 6h | 2h (tighter) |
+| Name filter | **none** — any instance in compartment | `ci-eph-*` only, with a defense-in-depth `SKIP` for anything else |
+| States | `RUNNING` | `RUNNING` or `STOPPED` |
+| Actually runs? | **no** (manual; workflow never provisioned) | **yes**, last 5 scheduled runs green |
+
+`launch-runner.sh:82` names runners `ci-eph-$REPO_SLUG-$ARCH-$TS-$RAND`, so the
+ephemeral pool is covered. But `bake-image.sh:56` names its VM
+**`ci-runner-golden-$ARCH-$TS`** — which f1r3node-rust's reaper skips *by design*.
+The only thing that would have caught it is this repo's unfiltered script, which
+never ran on a schedule. So a leaked golden VM was reaped by nothing.
+
+And leaking one was easy: `bake-image.sh` runs under `set -euo pipefail`, launches
+at `[1/6]`, and terminates at `[4/6]`. Any failure in between exits immediately
+and abandons the VM — most likely during the `[2/6]` bootstrap wait, which polls
+for 6-10 minutes and is exactly where an operator hits ctrl-C. Worse, step `[4/6]`
+ended in `|| true`, so a *failed* terminate still printed the "Done" banner over a
+live instance.
+
+**Fixed at the source** (`ci/oci-runners/bake-image.sh`): an `EXIT INT TERM` trap
+armed immediately after launch terminates the golden VM on any unclean exit, and
+`[4/6]` now checks `PIPESTATUS` — disarming the trap only on a confirmed
+termination, and otherwise leaving it armed to retry and then print the manual
+`oci compute instance terminate` command. A bake can no longer report success over
+a billing instance. Verified by 7 checks against a stubbed `oci`, including SIGINT
+and that the original exit code is preserved rather than masked by the trap.
+
+**Residual risk, and where it must be closed.** The trap cannot fire if the
+process dies uncatchably (`SIGKILL`, host crash, network partition mid-script).
+For that, a scheduled sweeper is the only backstop, and **no scheduled reaper
+currently matches `ci-runner-golden-*`.** The fix belongs in f1r3node-rust's
+reaper — it already has credentials and runs every 30 minutes; widening its filter
+to `ci-eph-*` plus `ci-runner-golden-*` (keeping the defense-in-depth check in
+step with it) closes the class. Raised in the hand-off note at
+`f1r3node-rust/docs/discoveries/2026-07-30-soak-system-integration-pin-bump.md`.
+Not done here because this repo cannot schedule it — no OCI credentials, which is
+the same reason the deleted workflow never worked.
+
+### 4. Review fixes: the first cost guard had two real bugs
+
+The multi-agent review of PR #68 (openai + xai, escalated **critical**) found that
+the guard as first written did not uphold its own guarantee. Both bugs were then
+**confirmed reproducible against `8995d10`**, not just argued:
+
+| Bug | Old behaviour at `8995d10` | Now |
+|---|---|---|
+| Clean run whose terminate failed | **exit 0 over a live VM** | exit 1 |
+| SIGINT | **2 terminate calls**, status `0` | 1 call, status `130` |
+
+**Bug 1 (critical).** If step `[4/6]`'s terminate failed, the script continued to
+a normal end, so `$?` was `0` when the EXIT trap fired. The trap retried, failed,
+printed the manual-recovery text — and then `exit "$rc"` exited **0**. A bake
+reported success over a billing instance, which is precisely what the guard's own
+comment claimed it prevented. The handler now forces a non-zero status whenever it
+could not confirm the terminate request was accepted.
+
+**Bug 2.** One handler registered for `EXIT INT TERM` meant the INT path's `exit`
+re-entered through the EXIT trap and terminated twice. The second call fails
+against an already-`TERMINATING` instance and prints a bogus `TERMINATE FAILED` —
+poisoning the one warning an operator has to be able to trust. Now `EXIT` alone
+carries the reap, with `INT`/`TERM` re-entering via `exit 130`/`exit 143`, which
+also stops the conventional signal statuses being masked.
+
+Also corrected an overclaim openai flagged: a terminate returning 0 means the
+*request was accepted* (instance moves to `TERMINATING`, compute billing stops),
+not that lifecycle-state `TERMINATED` was observed. Polling for that would add
+minutes to every exit path including the happy one, so the comments now say what
+the guard actually guarantees rather than implying more.
+
+**Tests are now committed, which was the other fair criticism.** The original
+verification lived in a scratchpad, so none of the claimed guarantees were
+reproducible. Added `unit-tests/` (27 pytest cases, no Docker or OCI):
+
+- `unit-tests/test_pull_retry.py` — transient vs. permanent classification,
+  attempt limits, env-override clamping. The negative cases carry the weight:
+  retrying a missing image or bad credential converts an honest instant failure
+  into a slow one.
+- `unit-tests/test_bake_image_guard.py` — extracts the guard from the real script
+  and runs it under bash with a stubbed `oci`, so it tests shipped code rather
+  than a copy. Includes both regressions above as named tests.
+
+Named `unit-tests/` rather than `tests/` to pair with the existing
+`integration-tests/`: a bare `tests/` sitting beside it invites the question of
+whether integration tests are not tests. Wired into `smoke-test.yml`'s
+`Validate & CLI` job as `poetry run pytest unit-tests/ -q`. **The explicit path is
+required** — `pyproject.toml:54` sets `testpaths = ["integration-tests/test/tests"]`,
+so a bare `poetry run pytest` (the documented integration invocation) does not
+collect these. Left that way deliberately: unit tests need no Docker, integration
+tests do, and conflating them would make the canonical command's requirements
+depend on which suite you meant.
+
+Note for the future: `test_bake_image_guard.py` locates the guard by the marker
+lines `GOLDEN_INSTANCE_OCID=""` and `trap 'exit 143' TERM`. If the guard is
+restructured, update those constants — the test fails loudly with that instruction
+rather than silently passing on an empty extraction.
