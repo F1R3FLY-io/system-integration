@@ -67,7 +67,7 @@ For just a node shard (no service stack), see [../README.md#quick-start](../READ
 
 Per-service toolchains required only when building a service from source. If you're using pre-built Docker images, skip these entirely.
 
-Note: f1r3node (Scala) and f1r3node-rust are **separate repositories**: [F1R3FLY-io/f1r3node](https://github.com/F1R3FLY-io/f1r3node) (`dev` branch) and [F1R3FLY-io/f1r3node-rust](https://github.com/F1R3FLY-io/f1r3node-rust) (`staging` branch). See `services.yml` for the current branch mappings.
+Note: f1r3node (Scala) and f1r3node-rust are **separate repositories**: [F1R3FLY-io/f1r3node](https://github.com/F1R3FLY-io/f1r3node) (`dev` branch) and [F1R3FLY-io/f1r3node-rust](https://github.com/F1R3FLY-io/f1r3node-rust) (`dev` branch). See `services.yml` for the current branch mappings.
 
 ### Python 3.10 (pyenv)
 

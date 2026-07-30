@@ -26,7 +26,7 @@ repositories:
     branch: dev
   f1r3node-rust:
     url: git@github.com:F1R3FLY-io/f1r3node-rust.git
-    branch: staging
+    branch: dev
   monitoring:
     enabled: true
   rust-client:
@@ -94,7 +94,7 @@ builds:
     # Standard cargo build (toolchain auto-installed via rust-toolchain.toml)
     environment: "cargo"
 
-    # Docker image produced (CI publishes :latest, :staging, :dev, :VERSION)
+    # Docker image produced (CI publishes :latest, :dev, :VERSION)
     docker_image: "f1r3flyindustries/f1r3fly-rust:latest"
 
     # Build dependencies
