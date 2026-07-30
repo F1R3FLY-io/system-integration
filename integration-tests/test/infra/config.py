@@ -3,6 +3,7 @@
 Pure data — describes what to create, not how to create it.
 The Provider implementations interpret these to build infrastructure.
 """
+
 from __future__ import annotations
 
 import dataclasses

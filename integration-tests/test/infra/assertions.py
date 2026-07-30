@@ -3,6 +3,7 @@
 Par extraction and deploy checking: re-exported from pyf1r3fly.
 Shard assertions: test-specific helpers for multi-node agreement checks.
 """
+
 from __future__ import annotations
 
 import time
@@ -99,7 +100,7 @@ def assert_all_nodes_agree_on_block(nodes, block_hash: str, timeout: int = 0) ->
         post_states[node.name] = block.blockInfo.postStateHash
     unique = set(post_states.values())
     assert len(unique) == 1, (
-        f"Nodes disagree on post-state for block {block_hash[:16]}. " f"States: {post_states}"
+        f"Nodes disagree on post-state for block {block_hash[:16]}. States: {post_states}"
     )
 
 
@@ -469,9 +470,9 @@ def await_value_converges_on_all_nodes(
                     f"full finalized map {cur}"
                 )
         elif non_regression == "up" and water is not None:
-            assert (
-                cur >= water
-            ), f"[{label}] finalized-value REGRESSION: dropped from {water} to {cur}"
+            assert cur >= water, (
+                f"[{label}] finalized-value REGRESSION: dropped from {water} to {cur}"
+            )
         elif non_regression == "down" and water is not None:
             assert cur <= water, f"[{label}] finalized-value REGRESSION: rose from {water} to {cur}"
 

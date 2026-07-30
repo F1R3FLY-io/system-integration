@@ -360,7 +360,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
                 lfb_now = _get_lfb_number(v1)
                 peak_lag = tip_now - lfb_now
                 logging.info(
-                    "  Cone at end of %s submission: tip-LFB lag = %d blocks " "(tip #%d, LFB #%d)",
+                    "  Cone at end of %s submission: tip-LFB lag = %d blocks (tip #%d, LFB #%d)",
                     phase_name,
                     peak_lag,
                     tip_now,
@@ -481,9 +481,9 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
                 finalization_timeout,
             )
         else:
-            assert (
-                total_unfinalized == 0
-            ), f"{total_unfinalized} deploy(s) not finalized within {finalization_timeout}s"
+            assert total_unfinalized == 0, (
+                f"{total_unfinalized} deploy(s) not finalized within {finalization_timeout}s"
+            )
             # Wait for convergence instead of asserting the drain snapshot.
             # Nodes are legitimately still catching up the moment load stops, so
             # asserting the instantaneous spread makes this gate a race against

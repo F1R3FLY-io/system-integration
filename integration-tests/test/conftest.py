@@ -3,6 +3,7 @@
 This file contains ONLY pytest hooks and fixture definitions.
 All infrastructure logic lives in infra/ modules.
 """
+
 from __future__ import annotations
 
 import itertools

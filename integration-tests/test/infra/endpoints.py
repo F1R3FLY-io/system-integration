@@ -5,6 +5,7 @@ collects every node's host + ports into one structure, logs it, and persists
 ``endpoints.json`` under the run's session directory so an adopted shard's
 endpoints are one file read away (and a human can grep them out of the log).
 """
+
 from __future__ import annotations
 
 import json

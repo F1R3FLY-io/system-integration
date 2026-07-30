@@ -22,6 +22,7 @@ with an output directory, writes:
 * ``node-metrics-timeseries.csv``  — per-node subsystem timers from /metrics
 * ``resource-summary.txt``         — peak/avg table
 """
+
 from __future__ import annotations
 
 import csv

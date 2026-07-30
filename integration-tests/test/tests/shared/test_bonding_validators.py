@@ -342,7 +342,7 @@ def _bond_lifecycle(
     current_lfb = v1.last_finalized_block()
     bonds_pre = {b.validator: b.stake for b in current_lfb.blockInfo.bonds}
     assert joiner_identity.public_hex not in bonds_pre, (
-        f"Joiner {joiner_identity.name} already in bonds pre-bond: " f"{sorted(bonds_pre)}"
+        f"Joiner {joiner_identity.name} already in bonds pre-bond: {sorted(bonds_pre)}"
     )
     logging.info(
         "Pre-bond LFB #%d: %d bonded validators, joiner %s not present",
@@ -758,9 +758,7 @@ def test_bonding_validators(shared_shard, timeouts) -> None:
         _drift_within_tolerance,
         timeout=timeouts.finalization * 3,
         interval=3.0,
-        description=(
-            f"observer LFB drift converges to within " f"{lfb_drift_tolerance} blocks of v1"
-        ),
+        description=(f"observer LFB drift converges to within {lfb_drift_tolerance} blocks of v1"),
     )
 
     observer_now = observer.last_finalized_block().blockInfo.blockNumber

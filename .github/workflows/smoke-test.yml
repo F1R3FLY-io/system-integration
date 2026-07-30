@@ -2,9 +2,13 @@ name: Smoke Test
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    # For pull_request this filter matches the BASE branch, so `dev` is
+    # required for PRs targeting dev to get any coverage at all. Without it
+    # a PR into dev runs nothing, since ci.yml (the old dev-only lint gate)
+    # was removed in favour of this workflow's own lint job.
+    branches: [main, dev]
   workflow_dispatch:
 
 env:
@@ -109,10 +113,36 @@ jobs:
         run: poetry check
       - name: Verify poetry.lock matches pyproject.toml
         run: poetry check --lock
+      # ruff does both jobs now (black and pyflakes are gone from pyproject).
+      # unit-tests/ is included here deliberately — it was added after this job
+      # was written and was silently unlinted.
       - name: Ruff (lint)
-        run: poetry run ruff check shardctl/ integration-tests/
-      - name: Black (format check)
-        run: poetry run black --check shardctl/ integration-tests/
+        run: poetry run ruff check shardctl/ integration-tests/ unit-tests/
+      - name: Ruff (format check)
+        run: poetry run ruff format --check shardctl/ integration-tests/ unit-tests/
+      # Carried over from the removed ci.yml, which was the only place these
+      # were syntax-checked. The `Validate all compose files` step uses
+      # `docker compose config` on compose/ only, so services.yml, the
+      # root-level compose files and the workflows themselves went unchecked.
+      # pyyaml comes from the main dependency group, which `--with dev` includes.
+      - name: YAML syntax (services.yml, root, workflows)
+        run: |
+          poetry run python - <<'PY'
+          import glob, sys, yaml
+
+          errors = []
+          for pattern in ("services.yml", "*.yml", "*.yaml", ".github/workflows/*.yml"):
+              for path in glob.glob(pattern):
+                  try:
+                      with open(path) as fh:
+                          yaml.safe_load(fh)
+                  except yaml.YAMLError as exc:
+                      errors.append(f"{path}: {exc}")
+
+          for err in errors:
+              print(err, file=sys.stderr)
+          sys.exit(1 if errors else 0)
+          PY
 
   link-check:
     name: Markdown links
@@ -145,7 +175,7 @@ jobs:
     needs: validate
     timeout-minutes: 20
     env:
-      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:staging
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -273,7 +303,7 @@ jobs:
     needs: validate
     timeout-minutes: 15
     env:
-      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:staging
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -780,7 +810,7 @@ jobs:
     needs: validate
     timeout-minutes: 20
     env:
-      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:staging
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -830,7 +860,7 @@ jobs:
     needs: validate
     timeout-minutes: 20
     env:
-      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:staging
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -877,7 +907,7 @@ jobs:
     needs: validate
     timeout-minutes: 20
     env:
-      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:staging
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -1080,7 +1110,7 @@ jobs:
     needs: validate
     timeout-minutes: 15
     env:
-      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:staging
+      F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5

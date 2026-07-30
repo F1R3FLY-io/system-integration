@@ -137,9 +137,9 @@ def test_deploy_lookup_consistent_across_validators(shared_shard, timeouts) -> N
         )
 
     unique_hashes = set(block_hashes.values())
-    assert (
-        len(unique_hashes) == 1
-    ), f"Deploy {deploy_id[:24]}... resolved to different blocks: {block_hashes}"
+    assert len(unique_hashes) == 1, (
+        f"Deploy {deploy_id[:24]}... resolved to different blocks: {block_hashes}"
+    )
 
     logging.info("Deploy lookup consistent across %d nodes", len(all_nodes))
 

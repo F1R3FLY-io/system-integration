@@ -4,6 +4,7 @@ Core polling logic lives in ``f1r3fly.polling``. This module provides
 Node-aware wrappers and test-specific helpers (e.g. waiting for node
 startup logs).
 """
+
 from __future__ import annotations
 
 import logging
@@ -82,7 +83,7 @@ def wait_for_node_running(
             logs = get_logs()
             tail = "\n".join(logs.splitlines()[-20:])
             raise RuntimeError(
-                f"Node {node_name} exited before reaching Running state. " f"Last logs:\n{tail}"
+                f"Node {node_name} exited before reaching Running state. Last logs:\n{tail}"
             )
 
         use_log_fallback = not status_url
@@ -112,7 +113,7 @@ def wait_for_node_running(
     logs = get_logs()
     tail = "\n".join(logs.splitlines()[-20:])
     raise TimeoutError(
-        f"Node {node_name} did not reach Running state within {timeout}s. " f"Last logs:\n{tail}"
+        f"Node {node_name} did not reach Running state within {timeout}s. Last logs:\n{tail}"
     )
 
 
@@ -157,7 +158,7 @@ def wait_for_lfb_at_least(
     condition fires, not after a fixed wait.
     """
     return poll_until(
-        predicate=lambda: (lfb_number(node) if lfb_number(node) >= height else None),
+        predicate=lambda: lfb_number(node) if lfb_number(node) >= height else None,
         timeout=timeout,
         interval=interval,
         description=f"{node.name} LFB >= #{height}",

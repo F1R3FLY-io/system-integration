@@ -8,6 +8,7 @@ Thread-safe via ``threading.Lock`` for pytest-xdist compatibility.
 Socket-verified: each allocation checks that the base port is
 actually bindable before returning it.
 """
+
 from __future__ import annotations
 
 import logging

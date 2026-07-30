@@ -4,6 +4,7 @@ Provides Prometheus metrics scraping, percentile calculations, and
 background deploy inclusion/finalization tracking for load and
 degradation tests.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -216,7 +217,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
         avg = metrics.get(key, 0)
         count = metrics.get(key + ".count", 0)
         if count > 0:
-            lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} blocks)")
+            lines.append(f"    {label}: {avg * 1000:.0f}ms ({int(count)} blocks)")
     # bonds_cache sub-step breakdown
     bonds_sub = [
         ("reset (load hot store)", "bonds_cache_reset_time"),
@@ -230,7 +231,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             avg = metrics.get(key, 0)
             count = metrics.get(key + ".count", 0)
             if count > 0:
-                lines.append(f"    {label}: {avg*1000:.1f}ms ({int(count)} calls)")
+                lines.append(f"    {label}: {avg * 1000:.1f}ms ({int(count)} calls)")
     # block_summary sub-step breakdown
     summary_steps = [
         ("block_hash", "block_validation_block_hash_time"),
@@ -254,7 +255,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             avg = metrics.get(key, 0)
             count = metrics.get(key + ".count", 0)
             if count > 0:
-                lines.append(f"    {label}: {avg*1000:.2f}ms ({int(count)} calls)")
+                lines.append(f"    {label}: {avg * 1000:.2f}ms ({int(count)} calls)")
     # Checkpoint breakdown (merge vs replay)
     merge_key = "block_processing_stage_parents_post_state_time"
     replay_key = "block_processing_stage_replay_time"
@@ -266,11 +267,11 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
         lines.append("  Checkpoint breakdown (avg per block):")
         if merge_count > 0:
             lines.append(
-                f"    parents_post_state (merge): {merge_avg*1000:.0f}ms ({int(merge_count)} blocks)"
+                f"    parents_post_state (merge): {merge_avg * 1000:.0f}ms ({int(merge_count)} blocks)"
             )
         if replay_count > 0:
             lines.append(
-                f"    replay_block (execution): {replay_avg*1000:.0f}ms ({int(replay_count)} blocks)"
+                f"    replay_block (execution): {replay_avg * 1000:.0f}ms ({int(replay_count)} blocks)"
             )
     # parents_post_state sub-stage breakdown — where the multi-parent merge cost goes
     # (the ~1.8s/multi-parent that used to be lumped under parents_post_state).
@@ -294,7 +295,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             avg = metrics.get(key, 0)
             count = metrics.get(key + ".count", 0)
             if count > 0:
-                lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} blocks)")
+                lines.append(f"    {label}: {avg * 1000:.0f}ms ({int(count)} blocks)")
     # DAG merge breakdown
     dag_metrics = [
         ("dag_merge_total", "dag_merge_total_time"),
@@ -318,7 +319,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             avg = metrics.get(key, 0)
             count = metrics.get(key + ".count", 0)
             if count > 0:
-                lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} merges)")
+                lines.append(f"    {label}: {avg * 1000:.0f}ms ({int(count)} merges)")
     # dag_merger rejection-expansion path: called every merge, fires only
     # when there are rejected source blocks with descendants in scope.
     rej_exp_count = metrics.get("dag_merge_rejection_expansion_time.count", 0)
@@ -326,7 +327,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
     if rej_exp_count > 0:
         rej_exp_avg = metrics.get("dag_merge_rejection_expansion_time", 0)
         lines.append(
-            f"    rejection_expansion: {rej_exp_avg*1000:.2f}ms avg, "
+            f"    rejection_expansion: {rej_exp_avg * 1000:.2f}ms avg, "
             f"called {int(rej_exp_count)}× ({int(rej_exp_fired)} fired)"
         )
     # Replay phases
@@ -341,7 +342,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
         avg = metrics.get(key, 0)
         count = metrics.get(key + ".count", 0)
         if count > 0:
-            lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} blocks)")
+            lines.append(f"    {label}: {avg * 1000:.0f}ms ({int(count)} blocks)")
     # Per-deploy replay breakdown
     deploy_breakdown = [
         ("rig", "block_replay_deploy_rig_time"),
@@ -358,7 +359,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             avg = metrics.get(key, 0)
             count = metrics.get(key + ".count", 0)
             if count > 0:
-                lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} deploys)")
+                lines.append(f"    {label}: {avg * 1000:.0f}ms ({int(count)} deploys)")
     # System-deploy evaluation breakdown — what runs inside every precharge
     # / refund / close-block call. The eval phase = source-parse + reduce
     # + result-consume; check / rig / checkpoint-mergeable are bookkeeping.
@@ -377,7 +378,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             avg = metrics.get(key, 0)
             count = metrics.get(key + ".count", 0)
             if count > 0:
-                lines.append(f"    {label}: {avg*1000:.2f}ms ({int(count)} calls)")
+                lines.append(f"    {label}: {avg * 1000:.2f}ms ({int(count)} calls)")
     # inj_attempt phases — the four steps inside every Rholang `evaluate`
     # call (set initial cost / charge parsing cost / build normalized term
     # = parse / reduce term = run AST through RSpace).
@@ -394,7 +395,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             avg = metrics.get(key, 0)
             count = metrics.get(key + ".count", 0)
             if count > 0:
-                lines.append(f"    {label}: {avg*1000:.2f}ms ({int(count)} calls)")
+                lines.append(f"    {label}: {avg * 1000:.2f}ms ({int(count)} calls)")
     # Block creator (proposer side) breakdown
     creator_metrics = [
         ("prepare_user_deploys", "block_creator_prepare_user_deploys_time"),
@@ -410,7 +411,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             avg = metrics.get(key, 0)
             count = metrics.get(key + ".count", 0)
             if count > 0:
-                lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} blocks)")
+                lines.append(f"    {label}: {avg * 1000:.0f}ms ({int(count)} blocks)")
     # Finalization pipeline
     fin_metrics = [
         ("finalizer.run (top-level)", "finalizer_run_time"),
@@ -423,13 +424,13 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             avg = metrics.get(key, 0)
             count = metrics.get(key + ".count", 0)
             if count > 0:
-                lines.append(f"    {label}: {avg*1000:.1f}ms ({int(count)} calls)")
+                lines.append(f"    {label}: {avg * 1000:.1f}ms ({int(count)} calls)")
     # compute_rejected_buffer_admits (called inside compute_parents_post_state)
     admits_count = metrics.get("compute_rejected_buffer_admits_time.count", 0)
     if admits_count > 0:
         admits_avg = metrics.get("compute_rejected_buffer_admits_time", 0)
         lines.append(
-            f"  compute_rejected_buffer_admits: {admits_avg*1000:.2f}ms avg, "
+            f"  compute_rejected_buffer_admits: {admits_avg * 1000:.2f}ms avg, "
             f"{int(admits_count)} calls"
         )
     # compute_parents_post_state fallback counter
@@ -443,7 +444,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
     if dag_insert_count > 0:
         dag_insert_avg = metrics.get("dag_insert_time", 0)
         lines.append(
-            f"  dag.insert: {dag_insert_avg*1000:.2f}ms avg ({int(dag_insert_count)} inserts)"
+            f"  dag.insert: {dag_insert_avg * 1000:.2f}ms avg ({int(dag_insert_count)} inserts)"
         )
     # is_mergeable_channel call count (per channel produce/consume during deploy execution)
     is_merge_calls = metrics.get("is_mergeable_channel_calls.count", 0)
@@ -461,7 +462,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             avg = metrics.get(key, 0)
             count = metrics.get(key + ".count", 0)
             if count > 0:
-                lines.append(f"    {label}: {avg*1000:.0f}ms ({int(count)} calls)")
+                lines.append(f"    {label}: {avg * 1000:.0f}ms ({int(count)} calls)")
     # RSpace operation timing
     rspace_metrics = [
         ("consume (create)", "comm_consume_time_seconds"),
@@ -477,7 +478,7 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             avg = metrics.get(key, 0)
             count = metrics.get(key + ".count", 0)
             if count > 0:
-                lines.append(f"    {label}: {avg*1000:.1f}ms ({int(count)} calls)")
+                lines.append(f"    {label}: {avg * 1000:.1f}ms ({int(count)} calls)")
     return "\n".join(lines)
 
 

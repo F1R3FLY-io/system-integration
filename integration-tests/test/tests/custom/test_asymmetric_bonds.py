@@ -24,6 +24,7 @@ With FTT=0.33 (standard BFT), a block needs normalized FT > 0.33 to finalize.
 No single validator can finalize alone. V1 + at least one other is needed.
 V2 + V3 alone cannot finalize — they need V1 (the heaviest validator).
 """
+
 import logging
 
 import pytest
@@ -79,16 +80,16 @@ def test_genesis_asymmetric_bonds(asymmetric_shard, node_conf) -> None:
     genesis_info = genesis_block.blockInfo
 
     # shardId from config
-    assert (
-        genesis_info.shardId == node_conf.shard_id
-    ), f"Genesis shardId '{genesis_info.shardId}' != config '{node_conf.shard_id}'"
+    assert genesis_info.shardId == node_conf.shard_id, (
+        f"Genesis shardId '{genesis_info.shardId}' != config '{node_conf.shard_id}'"
+    )
 
     # Bonds match asymmetric config
     expected_bonds = {identity.public_hex: stake for identity, stake in _ASYMMETRIC_BONDS}
     actual_bonds = {b.validator: b.stake for b in genesis_info.bonds}
-    assert len(actual_bonds) == len(
-        expected_bonds
-    ), f"Genesis has {len(actual_bonds)} bonds, expected {len(expected_bonds)}"
+    assert len(actual_bonds) == len(expected_bonds), (
+        f"Genesis has {len(actual_bonds)} bonds, expected {len(expected_bonds)}"
+    )
     for pubkey, expected_stake in expected_bonds.items():
         assert pubkey in actual_bonds, f"Validator {pubkey[:24]}... not found in genesis bonds"
         assert actual_bonds[pubkey] == expected_stake, (

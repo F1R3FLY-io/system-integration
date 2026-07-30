@@ -5,6 +5,7 @@ Every polling function, fixture, and test derives its timeout from a
 (``TimeoutConfig.scale``) so CI runners with slower hardware can
 uniformly inflate all timeouts without per-test adjustments.
 """
+
 from __future__ import annotations
 
 from .config import TimeoutConfig

@@ -112,7 +112,7 @@ def test_validator1_pay_validator2(shared_shard, timeouts) -> None:
     v2_post = ro.vault.get_balance(v2_vault, block_hash=canonical_block_hash)
 
     assert v2_post > v2_pre, (
-        f"V2 balance did not increase across canonical block: " f"{v2_pre} -> {v2_post}"
+        f"V2 balance did not increase across canonical block: {v2_pre} -> {v2_post}"
     )
 
     logging.info(
@@ -161,7 +161,7 @@ def test_validator2_pay_validator3(shared_shard, timeouts) -> None:
     v3_post = ro.vault.get_balance(v3_vault, block_hash=canonical_block_hash)
 
     assert v3_post > v3_pre, (
-        f"V3 balance did not increase across canonical block: " f"{v3_pre} -> {v3_post}"
+        f"V3 balance did not increase across canonical block: {v3_pre} -> {v3_post}"
     )
 
     logging.info(
@@ -222,9 +222,9 @@ def test_transfer_failed_with_insufficient_funds(shared_shard, timeouts) -> None
         all_nodes=shared_shard.all_nodes,
     )
     assert not result.success, "Transfer should have failed with Insufficient funds"
-    assert (
-        result.reason == "Insufficient funds"
-    ), f"Expected 'Insufficient funds', got '{result.reason}'"
+    assert result.reason == "Insufficient funds", (
+        f"Expected 'Insufficient funds', got '{result.reason}'"
+    )
 
 
 def test_block_api_returns_transfer_info(shared_shard, timeouts) -> None:
@@ -298,9 +298,9 @@ def test_block_api_returns_transfer_info(shared_shard, timeouts) -> None:
                 deploy_with_transfers = deploy
                 break
 
-        assert (
-            deploy_with_transfers is not None
-        ), f"{node.name}: block should contain a deploy with transfer records"
+        assert deploy_with_transfers is not None, (
+            f"{node.name}: block should contain a deploy with transfer records"
+        )
 
         # Verify transfer content
         transfer = deploy_with_transfers["transfers"][0]
@@ -308,8 +308,8 @@ def test_block_api_returns_transfer_info(shared_shard, timeouts) -> None:
         assert transfer["toAddr"] == v2_vault, f"{node.name}: toAddr mismatch"
         assert transfer["amount"] == transfer_amount, f"{node.name}: amount mismatch"
         assert transfer["success"] is True, f"{node.name}: transfer not marked successful"
-        assert (
-            transfer["failReason"] == ""
-        ), f"{node.name}: expected empty failReason, got '{transfer['failReason']}'"
+        assert transfer["failReason"] == "", (
+            f"{node.name}: expected empty failReason, got '{transfer['failReason']}'"
+        )
 
     logging.info("Block API transfer info verified on readonly for block %s", block_hash[:16])

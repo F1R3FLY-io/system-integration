@@ -166,13 +166,13 @@ def _set_operations_contract(i):
     return f"""
 new stdout(`rho:io:stdout`) in {{
   new setCh in {{
-    setCh!(Set({i}, {i+1}, {i+2}, {i+3}, {i+4})) |
+    setCh!(Set({i}, {i + 1}, {i + 2}, {i + 3}, {i + 4})) |
     for (@s <- setCh) {{
       stdout!(("set-size", s.size())) |
-      setCh!(s.union(Set({i+5}, {i+6}))) |
+      setCh!(s.union(Set({i + 5}, {i + 6}))) |
       for (@s2 <- setCh) {{
         stdout!(("union-size", s2.size())) |
-        setCh!(s2.diff(Set({i}, {i+1}))) |
+        setCh!(s2.diff(Set({i}, {i + 1}))) |
         for (@s3 <- setCh) {{
           stdout!(("diff-result", s3))
         }}
@@ -592,7 +592,7 @@ def test_shard_degradation(provider, timeouts) -> None:
 
         not_included = [r for r in lifecycle_results if r[4] is None]
         if not_included:
-            details = [f"#{r[0]+1} ({r[2]})" for r in not_included]
+            details = [f"#{r[0] + 1} ({r[2]})" for r in not_included]
             failures.append(
                 f"Deploy inclusion: {len(not_included)}/{len(lifecycle_results)} sampled deploys "
                 f"not included within {deploy_inclusion_timeout}s: {', '.join(details)}"
@@ -602,7 +602,7 @@ def test_shard_degradation(provider, timeouts) -> None:
             r for r in lifecycle_results if r[4] is not None and r[5] is None
         ]
         if included_but_not_finalized:
-            details = [f"#{r[0]+1} ({r[2]}, block #{r[3]})" for r in included_but_not_finalized]
+            details = [f"#{r[0] + 1} ({r[2]}, block #{r[3]})" for r in included_but_not_finalized]
             failures.append(
                 f"Deploy finalization: {len(included_but_not_finalized)}/{len(lifecycle_results)} sampled deploys "
                 f"included but not finalized within {deploy_finalization_timeout}s: {', '.join(details)}"
@@ -610,7 +610,7 @@ def test_shard_degradation(provider, timeouts) -> None:
 
         if max_api_latency > MAX_API_LATENCY_SECS:
             failures.append(
-                f"API latency: {max_api_latency*1000:.0f}ms exceeds {MAX_API_LATENCY_SECS*1000}ms threshold"
+                f"API latency: {max_api_latency * 1000:.0f}ms exceeds {MAX_API_LATENCY_SECS * 1000}ms threshold"
             )
 
         for node in all_nodes:

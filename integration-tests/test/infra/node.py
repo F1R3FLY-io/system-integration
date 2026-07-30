@@ -7,6 +7,7 @@ pointed at the handle's connectivity info.
 Key difference from v1: Node holds a ``NodeHandle`` (provider-agnostic),
 not a ``docker.Container``.
 """
+
 from __future__ import annotations
 
 import logging

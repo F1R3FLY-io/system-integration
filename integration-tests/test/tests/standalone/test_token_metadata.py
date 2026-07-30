@@ -5,6 +5,7 @@ Groups B-F: joiner mismatch, config validation, restart drift,
 multi-shard isolation, genesis ceremony mismatch. All use standalone
 nodes or custom shards with specific token CLI flags.
 """
+
 from __future__ import annotations
 
 import logging
@@ -116,9 +117,9 @@ def test_joiner_mismatch_fails_startup(
             )
         )
         mismatched = set(f for f in (event.get("mismatched_fields") or "").split(",") if f)
-        assert (
-            expected_field in mismatched
-        ), f"Expected {expected_field!r} in mismatched_fields, got {mismatched!r}"
+        assert expected_field in mismatched, (
+            f"Expected {expected_field!r} in mismatched_fields, got {mismatched!r}"
+        )
         logging.info("Joiner mismatch detected: override=%s, mismatched=%s", override, mismatched)
     finally:
         joiner_node.close()
@@ -181,17 +182,17 @@ def test_joiner_matching_config_succeeds(provider, timeouts, group_b_baseline) -
         # An additional API-level sanity check confirms the joiner is
         # actually serving requests.
         api_status = fetch_api_status_token(joiner_node.http_url)
-        assert (
-            api_status.name == BASELINE_NAME
-        ), f"Joiner API reports name={api_status.name!r}, expected {BASELINE_NAME!r}"
-        assert (
-            api_status.symbol == BASELINE_SYMBOL
-        ), f"Joiner API reports symbol={api_status.symbol!r}, expected {BASELINE_SYMBOL!r}"
-        assert (
-            api_status.decimals == BASELINE_DECIMALS
-        ), f"Joiner API reports decimals={api_status.decimals}, expected {BASELINE_DECIMALS}"
+        assert api_status.name == BASELINE_NAME, (
+            f"Joiner API reports name={api_status.name!r}, expected {BASELINE_NAME!r}"
+        )
+        assert api_status.symbol == BASELINE_SYMBOL, (
+            f"Joiner API reports symbol={api_status.symbol!r}, expected {BASELINE_SYMBOL!r}"
+        )
+        assert api_status.decimals == BASELINE_DECIMALS, (
+            f"Joiner API reports decimals={api_status.decimals}, expected {BASELINE_DECIMALS}"
+        )
         logging.info(
-            "Matching joiner reached Running and serves correct token " "metadata: %s/%s/%d",
+            "Matching joiner reached Running and serves correct token metadata: %s/%s/%d",
             BASELINE_NAME,
             BASELINE_SYMBOL,
             BASELINE_DECIMALS,
@@ -218,16 +219,16 @@ def test_special_characters_in_token_name_round_trip(provider, timeouts) -> None
     try:
         api_status = fetch_api_status_token(node.http_url)
         assert api_status.name == weird_name, f"API name '{api_status.name}' != '{weird_name}'"
-        assert (
-            api_status.symbol == weird_symbol
-        ), f"API symbol '{api_status.symbol}' != '{weird_symbol}'"
+        assert api_status.symbol == weird_symbol, (
+            f"API symbol '{api_status.symbol}' != '{weird_symbol}'"
+        )
         assert api_status.decimals == 4, f"API decimals {api_status.decimals} != 4"
 
         on_chain = query_token_metadata_all(node.grpc_host, node.external_grpc_port)
         assert on_chain.name == weird_name, f"On-chain name '{on_chain.name}' != '{weird_name}'"
-        assert (
-            on_chain.symbol == weird_symbol
-        ), f"On-chain symbol '{on_chain.symbol}' != '{weird_symbol}'"
+        assert on_chain.symbol == weird_symbol, (
+            f"On-chain symbol '{on_chain.symbol}' != '{weird_symbol}'"
+        )
         assert on_chain.decimals == 4, f"On-chain decimals {on_chain.decimals} != 4"
         logging.info(
             "Special chars round-trip verified: name=%s symbol=%s decimals=%d",
@@ -491,8 +492,7 @@ def test_genesis_validator_with_wrong_token_blocks_ceremony(provider, timeouts) 
                 break
 
         assert any_rejection, (
-            "Expected the disagreeing validators to log a rejection of the "
-            "candidate genesis block."
+            "Expected the disagreeing validators to log a rejection of the candidate genesis block."
         )
         logging.info("Genesis ceremony correctly blocked by token mismatch")
     finally:

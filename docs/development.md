@@ -244,8 +244,8 @@ poetry add --group dev pkg  # Add a dev dependency
 poetry update               # Update dependencies
 poetry show                 # Show installed packages
 poetry run pytest integration-tests/test/tests/shared/   # Run integration tests
-poetry run black shardctl/  # Format code
-poetry run ruff check shardctl/  # Lint
+poetry run ruff format shardctl/  # Format code
+poetry run ruff check shardctl/   # Lint
 poetry shell                # Activate virtual environment
 ```
 

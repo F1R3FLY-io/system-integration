@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+#
+# pre-commit hook - Run fast lint checks on staged files
+#
+# Checks Python files staged for commit with ruff (lint + format).
+# To bypass (use sparingly): git commit --no-verify
+#
+# Environment variables:
+#   SKIP_LINT=1          - Skip all linting
+#   SKIP_RUFF=1          - Skip ruff linting only
+#   SKIP_FORMAT=1        - Skip ruff formatting check only (legacy: SKIP_BLACK)
+#   SKIP_YAML=1          - Skip YAML validation
+#   VERBOSE=1            - Show all output (not just failures)
+#
+
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Configuration from environment
+SKIP_LINT="${SKIP_LINT:-0}"
+SKIP_RUFF="${SKIP_RUFF:-0}"
+SKIP_FORMAT="${SKIP_FORMAT:-${SKIP_BLACK:-0}}"
+SKIP_YAML="${SKIP_YAML:-0}"
+VERBOSE="${VERBOSE:-0}"
+
+# Skip in CI environments (checks run separately in pipeline)
+if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "Skipping pre-commit hooks in CI environment"
+    exit 0
+fi
+
+if [[ "$SKIP_LINT" == "1" ]]; then
+    echo -e "${YELLOW}Skipping all pre-commit checks (SKIP_LINT=1)${NC}"
+    exit 0
+fi
+
+# Collect staged Python files (only files that exist, exclude deleted)
+mapfile -t py_files < <(git diff --cached --name-only --diff-filter=d -- '*.py')
+
+# Collect staged YAML files
+mapfile -t yaml_files < <(git diff --cached --name-only --diff-filter=d -- '*.yml' '*.yaml')
+
+if [[ ${#py_files[@]} -eq 0 && ${#yaml_files[@]} -eq 0 ]]; then
+    exit 0
+fi
+
+echo ""
+echo -e "${CYAN}Running pre-commit checks...${NC}"
+echo "================================"
+
+FAILED=0
+
+# --- Ruff lint ---
+if [[ ${#py_files[@]} -gt 0 && "$SKIP_RUFF" != "1" ]]; then
+    if command -v poetry &> /dev/null && poetry run ruff --version &> /dev/null; then
+        ruff_cmd="poetry run ruff"
+    elif command -v ruff &> /dev/null; then
+        ruff_cmd="ruff"
+    else
+        ruff_cmd=""
+    fi
+
+    if [[ -n "$ruff_cmd" ]]; then
+        ruff_out=$(mktemp)
+        if $ruff_cmd check "${py_files[@]}" > "$ruff_out" 2>&1; then
+            echo -e "  ${CYAN}[ruff]${NC}  lint ${GREEN}PASS${NC} (${#py_files[@]} files)"
+        else
+            echo -e "  ${CYAN}[ruff]${NC}  lint ${RED}FAIL${NC}"
+            echo ""
+            cat "$ruff_out"
+            echo ""
+            FAILED=1
+        fi
+        rm -f "$ruff_out"
+    else
+        echo -e "  ${CYAN}[ruff]${NC}  lint ${YELLOW}SKIP${NC} (ruff not available)"
+    fi
+fi
+
+# --- Ruff format auto-fix ---
+if [[ ${#py_files[@]} -gt 0 && "$SKIP_FORMAT" != "1" ]]; then
+    if command -v poetry &> /dev/null && poetry run ruff format --version &> /dev/null 2>&1; then
+        fmt_cmd="poetry run ruff format"
+    elif command -v ruff &> /dev/null; then
+        fmt_cmd="ruff format"
+    else
+        fmt_cmd=""
+    fi
+
+    if [[ -n "$fmt_cmd" ]]; then
+        if $fmt_cmd --check --quiet "${py_files[@]}" 2>/dev/null; then
+            echo -e "  ${CYAN}[ruff]${NC}  format ${GREEN}PASS${NC} (${#py_files[@]} files)"
+        else
+            # Auto-format and re-stage
+            $fmt_cmd --quiet "${py_files[@]}" 2>/dev/null
+            git add "${py_files[@]}"
+            echo -e "  ${CYAN}[ruff]${NC}  format ${GREEN}FIXED${NC} (${#py_files[@]} files auto-formatted)"
+        fi
+    else
+        echo -e "  ${CYAN}[ruff]${NC}  format ${YELLOW}SKIP${NC} (ruff not available)"
+    fi
+fi
+
+# --- YAML validation ---
+if [[ ${#yaml_files[@]} -gt 0 && "$SKIP_YAML" != "1" ]]; then
+    # Check if pyyaml is available (try poetry first, then system python)
+    yaml_cmd=""
+    if command -v poetry &> /dev/null && poetry run python3 -c "import yaml" 2>/dev/null; then
+        yaml_cmd="poetry run python3"
+    elif python3 -c "import yaml" 2>/dev/null; then
+        yaml_cmd="python3"
+    fi
+
+    if [[ -z "$yaml_cmd" ]]; then
+        echo -e "  ${CYAN}[yaml]${NC}  validate ${YELLOW}SKIP${NC} (pyyaml not available)"
+    else
+        yaml_failed=0
+        for yaml_file in "${yaml_files[@]}"; do
+            if ! $yaml_cmd -c "import yaml; yaml.safe_load(open('$yaml_file'))" 2>/dev/null; then
+                echo -e "  ${CYAN}[yaml]${NC}  ${yaml_file} ${RED}FAIL${NC} (invalid YAML)"
+                yaml_failed=1
+            fi
+        done
+        if [[ $yaml_failed -eq 0 ]]; then
+            echo -e "  ${CYAN}[yaml]${NC}  validate ${GREEN}PASS${NC} (${#yaml_files[@]} files)"
+        else
+            FAILED=1
+        fi
+    fi
+fi
+
+# Summary
+echo "================================"
+if [[ $FAILED -eq 0 ]]; then
+    echo -e "${GREEN}All pre-commit checks passed.${NC}"
+    echo ""
+    exit 0
+else
+    echo -e "${RED}Pre-commit checks failed! Commit aborted.${NC}"
+    echo ""
+    echo "Fix the issues and try again."
+    echo "To bypass (not recommended): git commit --no-verify"
+    echo ""
+    exit 1
+fi

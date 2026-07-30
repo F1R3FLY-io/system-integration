@@ -14,6 +14,7 @@ Provides two capabilities:
 Both work on raw log strings (from ``node.logs()``), not Docker handles
 directly, keeping this module provider-agnostic.
 """
+
 from __future__ import annotations
 
 import json

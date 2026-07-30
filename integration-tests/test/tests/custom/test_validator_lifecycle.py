@@ -28,6 +28,7 @@ absorb the lumpy, batched finalization that always-on bg_load produces, plus
 the epoch_transition budget for the inherently multi-block epoch-move and
 quarantine polls.
 """
+
 import logging
 import threading
 import time
@@ -218,13 +219,13 @@ def _assert_bond_rejected(
     )
     result = proposer.pos.read_result(deploy_id, block.blockHash)
     assert not result.success, f"expected bond rejection, got success: {result}"
-    assert (
-        expected_reason in result.reason
-    ), f"expected reason containing {expected_reason!r}, got {result.reason!r}"
+    assert expected_reason in result.reason, (
+        f"expected reason containing {expected_reason!r}, got {result.reason!r}"
+    )
     bonds_after = ro.pos.get_bonds()
-    assert (
-        bonds_after == bonds_before
-    ), f"rejected bond changed bonds map: before={bonds_before} after={bonds_after}"
+    assert bonds_after == bonds_before, (
+        f"rejected bond changed bonds map: before={bonds_before} after={bonds_after}"
+    )
     logging.info("Bond correctly rejected (%s): %s", expected_reason, result.reason)
 
 
@@ -240,9 +241,9 @@ def _assert_withdraw_rejected(actor, all_nodes, ro, key, expected_reason: str, t
     )
     result = actor.pos.read_result(deploy_id, block.blockHash)
     assert not result.success, f"expected withdraw rejection, got success: {result}"
-    assert (
-        expected_reason in result.reason
-    ), f"expected reason containing {expected_reason!r}, got {result.reason!r}"
+    assert expected_reason in result.reason, (
+        f"expected reason containing {expected_reason!r}, got {result.reason!r}"
+    )
     assert ro.pos.get_bonds() == bonds_before, "rejected withdraw changed bonds map"
     logging.info("Withdraw correctly rejected (%s): %s", expected_reason, result.reason)
 
@@ -596,9 +597,9 @@ def _assert_bg_load_robust(
         assert cur_src <= src_water, f"[{label}] src balance increased {src_water}->{cur_src}"
         dst_water, src_water = cur_dst, cur_src
         if cur_dst == want_dst:
-            assert (
-                src0 - cur_src >= min_src_debit
-            ), f"[{label}] src debit {src0 - cur_src} < transferred {min_src_debit}"
+            assert src0 - cur_src >= min_src_debit, (
+                f"[{label}] src debit {src0 - cur_src} < transferred {min_src_debit}"
+            )
             logging.info("bg-load reconciled: %d transfers, dst %d->%d", n, dst0, cur_dst)
             return
         time.sleep(timeouts.poll_interval)
@@ -922,9 +923,9 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
             f"pending={sorted(pend)} withdrawers={sorted(wdr_now)}"
         )
     else:
-        assert (
-            "not bonded" in dw_res.reason and v4_pk in wdr_now
-        ), f"post-move double-withdraw should reject not-bonded; got {dw_res.reason!r}"
+        assert "not bonded" in dw_res.reason and v4_pk in wdr_now, (
+            f"post-move double-withdraw should reject not-bonded; got {dw_res.reason!r}"
+        )
     logging.info(
         "Phase 4: V6 bonded concurrently while V4,V5 withdrew; double-withdraw clean (%s)",
         "overwrite" if dw_res.success else "post-move reject",
@@ -961,15 +962,15 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     r2_0 = _rewards(ro)
     _advance_lfb(v1, _EPOCH_LENGTH * 2, timeouts, budget=timeouts.epoch_transition * 2)
     r2_1 = _rewards(ro)
-    assert r2_1.get(v4_pk, 0) == r2_0.get(
-        v4_pk, 0
-    ), f"reward case 3: withdrawn V4 accrued {r2_0.get(v4_pk)}->{r2_1.get(v4_pk)}"
-    assert r2_1.get(v5_pk, 0) == r2_0.get(
-        v5_pk, 0
-    ), f"reward case 3: withdrawn V5 accrued {r2_0.get(v5_pk)}->{r2_1.get(v5_pk)}"
-    assert r2_1.get(v6_pk, 0) > r2_0.get(
-        v6_pk, 0
-    ), f"reward case 3: active V6 should accrue {r2_0.get(v6_pk)}->{r2_1.get(v6_pk)}"
+    assert r2_1.get(v4_pk, 0) == r2_0.get(v4_pk, 0), (
+        f"reward case 3: withdrawn V4 accrued {r2_0.get(v4_pk)}->{r2_1.get(v4_pk)}"
+    )
+    assert r2_1.get(v5_pk, 0) == r2_0.get(v5_pk, 0), (
+        f"reward case 3: withdrawn V5 accrued {r2_0.get(v5_pk)}->{r2_1.get(v5_pk)}"
+    )
+    assert r2_1.get(v6_pk, 0) > r2_0.get(v6_pk, 0), (
+        f"reward case 3: active V6 should accrue {r2_0.get(v6_pk)}->{r2_1.get(v6_pk)}"
+    )
     logging.info("Phase 6: V4,V5 rewards frozen (withdrawn); V6,genesis accrue (case 3)")
 
     # ── Phase 7: post-unbond can't-propose ───────────────────────────────────
@@ -1034,9 +1035,9 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     wait_for_finalized(v1, rb_block.blockNumber, timeouts.finalization * 3)
     assert v1.pos.read_result(rebond_id, rb_block.blockHash).success, "V4 re-bond failed"
     _wait_for_active(ro, v4_pk, True, timeouts, "V4 re-bonded into /validators")
-    assert (
-        _rewards(ro).get(v4_pk, 0) == 0
-    ), f"re-bond net-0: V4 rewards should be 0 after payout+rebond, got {_rewards(ro).get(v4_pk)}"
+    assert _rewards(ro).get(v4_pk, 0) == 0, (
+        f"re-bond net-0: V4 rewards should be 0 after payout+rebond, got {_rewards(ro).get(v4_pk)}"
+    )
     logging.info("Phase 9: V4 re-bonded post-payout at net-0 rewards")
     # NOTE: the re-bond-BEFORE-payout double-credit (the contract does not reconcile a
     # re-bond while still in withdrawers) is a fragile, contract-logic edge that asserts
@@ -1049,12 +1050,12 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     assert len(initial) >= 1, f"getInitialPosVault unexpected shape: {initial}"
     # The contract's epoch/quarantine params must agree with rust.conf (the poll-budget
     # math above assumes these exact values).
-    assert (
-        ro.pos.get_epoch_length() == _EPOCH_LENGTH
-    ), f"getEpochLength {ro.pos.get_epoch_length()} != rust.conf {_EPOCH_LENGTH}"
-    assert (
-        ro.pos.get_quarantine_length() == _QUARANTINE_LENGTH
-    ), f"getQuarantineLength {ro.pos.get_quarantine_length()} != rust.conf {_QUARANTINE_LENGTH}"
+    assert ro.pos.get_epoch_length() == _EPOCH_LENGTH, (
+        f"getEpochLength {ro.pos.get_epoch_length()} != rust.conf {_EPOCH_LENGTH}"
+    )
+    assert ro.pos.get_quarantine_length() == _QUARANTINE_LENGTH, (
+        f"getQuarantineLength {ro.pos.get_quarantine_length()} != rust.conf {_QUARANTINE_LENGTH}"
+    )
     logging.info(
         "Phase 10: getCoopVault (%d-tuple) / getInitialPosVault (%d-tuple) / "
         "epochLength=%d / quarantineLength=%d read sanity OK",
@@ -1078,21 +1079,21 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # Re-commit by the same validator is rejected (one image per validator).
     recommit_id = v1.pos.commit_random_image(VALIDATOR1_ID.private_key(), image_hex)
     r = _pos_call_result(v1, shard.all_nodes, recommit_id, timeouts)
-    assert (
-        not r.success and "already committed" in r.reason.lower()
-    ), f"second commitRandomImage should reject already-committed; got {r}"
+    assert not r.success and "already committed" in r.reason.lower(), (
+        f"second commitRandomImage should reject already-committed; got {r}"
+    )
     # Reveal with no prior commit (V2 never committed) -> not-found.
     nf_id = v2.pos.reveal_random(VALIDATOR2_ID.private_key(), secret_hex)
     r = _pos_call_result(v2, shard.all_nodes, nf_id, timeouts)
-    assert (
-        not r.success and "not found" in r.reason.lower()
-    ), f"revealRandom with no commit should reject not-found; got {r}"
+    assert not r.success and "not found" in r.reason.lower(), (
+        f"revealRandom with no commit should reject not-found; got {r}"
+    )
     # Reveal a wrong preimage (keccak(wrong) != committed image) -> mismatch.
     mismatch_id = v1.pos.reveal_random(VALIDATOR1_ID.private_key(), b"wrong-preimage".hex())
     r = _pos_call_result(v1, shard.all_nodes, mismatch_id, timeouts)
-    assert (
-        not r.success and "match" in r.reason.lower()
-    ), f"revealRandom with wrong preimage should reject mismatch; got {r}"
+    assert not r.success and "match" in r.reason.lower(), (
+        f"revealRandom with wrong preimage should reject mismatch; got {r}"
+    )
     # Reveal the correct preimage -> success (randomNumbers updated).
     ok_id = v1.pos.reveal_random(VALIDATOR1_ID.private_key(), secret_hex)
     r = _pos_call_result(v1, shard.all_nodes, ok_id, timeouts)
@@ -1108,9 +1109,9 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # path without the PoS private key, so the reachable branch is the permission deny.
     xfer_id = v1.pos.pos_vault_transfer(VALIDATOR1_ID.private_key(), _BG_DST_ADDR, 1)
     r = _pos_call_result(v1, shard.all_nodes, xfer_id, timeouts)
-    assert (
-        not r.success and "permission" in r.reason.lower()
-    ), f"posVaultTransfer from a non-PoS key must be denied; got {r}"
+    assert not r.success and "permission" in r.reason.lower(), (
+        f"posVaultTransfer from a non-PoS key must be denied; got {r}"
+    )
     logging.info("Phase 12: posVaultTransfer correctly denied for a non-PoS deployer key")
 
     # ── Phase 13: Mode-A out-of-phlo bond (deploy-failure mode; Issue A territory) ──
@@ -1133,9 +1134,9 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
             f"Fix the replay path, do not skip the case: {e}"
         ) from e
     assert_deploy_errored(v1.get_block(a_block.blockHash), mode_a_id)
-    assert (
-        ro.pos.get_bonds() == bonds_before_a
-    ), f"Mode-A out-of-phlo must not bond: before={bonds_before_a} after={ro.pos.get_bonds()}"
+    assert ro.pos.get_bonds() == bonds_before_a, (
+        f"Mode-A out-of-phlo must not bond: before={bonds_before_a} after={ro.pos.get_bonds()}"
+    )
     logging.info(
         "Phase 13: Mode-A out-of-phlo bond errored, bonds unchanged, finalized on all nodes"
     )
@@ -1147,12 +1148,12 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     for method in ("chargeDeploy", "refundDeploy", "closeBlock"):
         tok_id = v1.pos.call_auth_gated_invalid_token(VALIDATOR1_ID.private_key(), method)
         r = _pos_call_result(v1, shard.all_nodes, tok_id, timeouts)
-        assert (
-            not r.success and "invalid system auth token" in r.reason.lower()
-        ), f"{method} with a bogus token must reject Invalid-system-auth-token; got {r}"
-    assert (
-        ro.pos.get_bonds() == bonds_before_t
-    ), f"bogus-token system calls must not mutate state: {bonds_before_t} -> {ro.pos.get_bonds()}"
+        assert not r.success and "invalid system auth token" in r.reason.lower(), (
+            f"{method} with a bogus token must reject Invalid-system-auth-token; got {r}"
+        )
+    assert ro.pos.get_bonds() == bonds_before_t, (
+        f"bogus-token system calls must not mutate state: {bonds_before_t} -> {ro.pos.get_bonds()}"
+    )
     logging.info(
         "Phase 14: chargeDeploy/refundDeploy/closeBlock reject a bogus auth token, no state change"
     )
