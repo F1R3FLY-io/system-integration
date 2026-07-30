@@ -22,6 +22,7 @@ from ...infra.polling import (
     try_find_deploy,
     wait_for_block_visible,
     wait_for_lfb_at_least,
+    wait_for_lfb_converged,
     wait_for_node_quiet,
 )
 from ...infra.shard import Shard
@@ -113,20 +114,31 @@ def test_validator_failure_recovery(provider, timeouts) -> None:
         v2.deploy_string('@"post-restart-v2"!(200)', VALIDATOR2_ID.private_key())
         v3.deploy_string('@"post-restart-v3"!(300)', VALIDATOR3_ID.private_key())
 
-        # All nodes should converge and advance LFB
+        # All nodes should converge and advance LFB. Poll the height and the
+        # spread together rather than waiting per-node on a lower bound and
+        # then snapshotting: wait_for_lfb_at_least exits the instant each node
+        # crosses the threshold, so V1 (a proposer, never paused) keeps
+        # advancing while V3 is still catching up, and the loop manufactures
+        # the very spread the assertion then measures. See
+        # wait_for_lfb_converged for the full rationale.
+        #
+        # Timeout is *5, not the *3 the old loop used per node: that loop gave
+        # each node its own window sequentially, so the real budget was N times
+        # *3, and convergence must now fit inside a single window. The extra
+        # allowance covers catch-up after the slowest node crosses the floor,
+        # which height-only waiting never had to wait for. If this ever times
+        # out, extend it further — do not raise max_spread. A loose tolerance
+        # silently re-admits the divergence blind spot this test exists to
+        # catch, whereas a timeout is at least a visible, honest failure.
         post_restart_baseline = lfb_number(v1)
-        for node in all_nodes:
-            wait_for_lfb_at_least(node, post_restart_baseline + 3, timeouts.finalization * 3)
-
-        final_lfbs = {n.name: lfb_number(n) for n in all_nodes}
+        final_lfbs = wait_for_lfb_converged(
+            all_nodes,
+            timeout=timeouts.finalization * 5,
+            min_height=post_restart_baseline + 3,
+            max_spread=3,
+            description=(f"LFB >= #{post_restart_baseline + 3} and spread <= 3 after V3 restart"),
+        )
         logging.info("Final LFBs after V3 restart: %s", final_lfbs)
-
-        # All nodes should be close
-        max_lfb = max(final_lfbs.values())
-        min_lfb = min(final_lfbs.values())
-        assert (
-            max_lfb - min_lfb <= 3
-        ), f"LFB spread {max_lfb - min_lfb} exceeds 3 after recovery: {final_lfbs}"
 
         logging.info("Validator failure recovery test passed (FTT=0.1)")
     finally:
@@ -689,25 +701,13 @@ def test_merge_determinism_asymmetric_divergence(provider, timeouts) -> None:
         # block before their finalizers can lift their LFBs to match. On
         # slower CPUs (arm64-docker is ~3x slower per-thread) the message
         # propagation can leave V1 several blocks ahead at the moment of
-        # the initial check. Poll instead of asserting a one-shot snapshot.
-        def _converged():
-            lfbs = {n.name: lfb_number(n) for n in all_nodes}
-            return lfbs if max(lfbs.values()) - min(lfbs.values()) <= 3 else None
-
-        try:
-            final_lfbs = poll_until(
-                predicate=_converged,
-                timeout=timeouts.finalization,
-                interval=3.0,
-                description="LFB spread <= 3 after asymmetric merge",
-            )
-        except TimeoutError:
-            final_lfbs = {n.name: lfb_number(n) for n in all_nodes}
-            spread = max(final_lfbs.values()) - min(final_lfbs.values())
-            raise AssertionError(
-                f"LFB spread {spread} exceeds 3 after asymmetric merge "
-                f"within {timeouts.finalization}s: {final_lfbs}"
-            )
+        # the initial check.
+        final_lfbs = wait_for_lfb_converged(
+            all_nodes,
+            timeout=timeouts.finalization,
+            max_spread=3,
+            description="LFB spread <= 3 after asymmetric merge",
+        )
         spread = max(final_lfbs.values()) - min(final_lfbs.values())
         logging.info("Final LFBs: %s (spread: %d)", final_lfbs, spread)
 
