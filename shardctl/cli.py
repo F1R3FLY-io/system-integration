@@ -1,6 +1,8 @@
 """CLI application for shardctl."""
 
 import os
+import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -18,7 +20,6 @@ from .utils import (
     clean_services,
     clone_services,
     create_services_config_example,
-    get_docker_compose_command,
     run_native_service,
     sync_service_branch,
     validate_environment,
@@ -45,11 +46,8 @@ def _resolve_compose_files(config: Config, services: Optional[List[str]]) -> Lis
             compose_file = config.resolve_compose_file(svc)
             if not compose_file.exists():
                 console.print(f"[red]Compose file not found: {compose_file}[/red]")
-                console.print(
-                    "[dim]Available: "
-                    f"{', '.join(f.stem for f in sorted(config.compose_dir.glob('*.yml')))}"
-                    "[/dim]"
-                )
+                available = ", ".join(f.stem for f in sorted(config.compose_dir.glob("*.yml")))
+                console.print(f"[dim]Available: {available}[/dim]")
                 raise typer.Exit(1)
             files.append(compose_file)
         return files
@@ -81,10 +79,9 @@ def clone(
 ):
     """Clone service repositories with their configured branches.
 
-    By default, only enabled services are cloned. Use --include-disabled
-    to also clone disabled services.
-    Specify service names to clone only specific services
-    (overrides --include-disabled).
+    By default, only enabled services are cloned. Use --include-disabled to also
+    clone disabled services.
+    Specify service names to clone only specific services (overrides --include-disabled).
 
     This command reads repository URLs and branches from services.yml and clones
     them into the services/ directory. Each service becomes an independent git
@@ -119,8 +116,7 @@ def clone(
             if not service_repos:
                 return
     else:
-        # Get service repositories from config
-        # (filter by enabled unless --include-disabled is specified)
+        # Get service repositories (filter by enabled unless --include-disabled is set)
         service_repos = config.get_service_repos(only_enabled=not include_disabled)
 
         if not service_repos:
@@ -133,8 +129,8 @@ def clone(
             else:
                 console.print(
                     "[yellow]No enabled service repositories found.[/yellow]\n"
-                    "[dim]Use --include-disabled to clone disabled "
-                    "services or check your services.yml file.[/dim]"
+                    "[dim]Use --include-disabled to clone disabled services or "
+                    "check your services.yml file.[/dim]"
                 )
             return
 
@@ -470,18 +466,18 @@ def build(
 
         if no_docker:
             console.print(
-                f"[bold blue]Building {len(build_configs)} "
-                "enabled service(s) from source...[/bold blue]\n"
+                f"[bold blue]Building {len(build_configs)} enabled service(s) "
+                f"from source...[/bold blue]\n"
             )
         elif docker_only:
             console.print(
-                "[bold blue]Building Docker images for "
-                f"{len(build_configs)} enabled service(s)...[/bold blue]\n"
+                f"[bold blue]Building Docker images for {len(build_configs)} "
+                f"enabled service(s)...[/bold blue]\n"
             )
         else:
             console.print(
-                f"[bold blue]Building {len(build_configs)} "
-                "enabled service(s) (source + Docker)...[/bold blue]\n"
+                f"[bold blue]Building {len(build_configs)} enabled service(s) "
+                f"(source + Docker)...[/bold blue]\n"
             )
 
         for svc_name, build_config in build_configs.items():
@@ -562,8 +558,8 @@ def build(
                 )
             else:
                 console.print(
-                    "[dim]No Docker build command configured "
-                    f"for {svc_name}, skipping Docker build[/dim]"
+                    f"[dim]No Docker build command configured for {svc_name}, "
+                    f"skipping Docker build[/dim]"
                 )
 
         console.print()
@@ -685,8 +681,8 @@ def setup(
 ):
     """Clone service repositories into the services/ directory.
 
-    By default, only enabled services are cloned. Use --include-disabled
-    to also clone disabled services.
+    By default, only enabled services are cloned. Use --include-disabled to also
+    clone disabled services.
 
     This command reads repository URLs from services.yml and clones them
     into the services/ directory. Each service becomes an independent git
@@ -699,31 +695,29 @@ def setup(
         services_config_file = config.root_dir / "services.yml"
         if services_config_file.exists() and not force:
             console.print(
-                "[yellow]Configuration file already exists at "
-                f"{services_config_file}[/yellow]\n"
+                f"[yellow]Configuration file already exists at {services_config_file}[/yellow]\n"
                 "[dim]Use --force to overwrite[/dim]"
             )
         else:
             create_services_config_example(services_config_file)
         return
 
-    # Get service repositories from config
-    # (filter by enabled unless --include-disabled is specified)
+    # Get service repositories (filter by enabled unless --include-disabled is set)
     service_repos = config.get_service_repos(only_enabled=not include_disabled)
 
     if not service_repos:
         if include_disabled:
             console.print(
                 "[yellow]No service repositories configured.[/yellow]\n"
-                "[dim]Run 'shardctl setup --create-config' to "
-                "create an example configuration.[/dim]"
+                "[dim]Run 'shardctl setup --create-config' to create an "
+                "example configuration.[/dim]"
             )
         else:
             console.print(
                 "[yellow]No enabled service repositories found.[/yellow]\n"
-                "[dim]Use --include-disabled to clone disabled services "
-                "or run 'shardctl setup --create-config' to create an "
-                "example configuration.[/dim]"
+                "[dim]Use --include-disabled to clone disabled services, or run "
+                "'shardctl setup --create-config' to create an example "
+                "configuration.[/dim]"
             )
         return
 
@@ -765,7 +759,8 @@ def build_service_cmd(
 ):
     """Build a service using its configured build commands.
 
-    By default, builds all ENABLED services (source + Docker images).
+    By default, this command builds all ENABLED services (both from source AND
+    creates Docker images).
     Use --no-docker to skip Docker image building.
     Use --docker-only to skip source build and only build Docker images.
     Use --sync to fetch and checkout the branch from services.yml before building.
@@ -776,18 +771,18 @@ def build_service_cmd(
     the appropriate build commands for the specified service(s).
 
     Examples:
-        shardctl build-service                    # Build all (source + Docker)
-        shardctl build-service --no-docker        # Build all (source only)
-        shardctl build-service --docker-only      # Build all (Docker only)
-        shardctl build-service --sync             # Sync branches, then build
-        shardctl build-service --docker-only --sync  # Sync, Docker only
-        shardctl build-service --include-disabled # Build all incl. disabled
-        shardctl build-service f1r3node           # Build f1r3node
-        shardctl build-service f1r3node --no-docker  # f1r3node source only
-        shardctl build-service f1r3node --docker-only  # f1r3node Docker only
-        shardctl build-service f1r3node --sync    # Sync f1r3node, then build
-        shardctl build-service --list             # List enabled services
-        shardctl build-service --list --include-disabled  # List all
+        shardctl build-service                       # Build enabled (source + Docker)
+        shardctl build-service --no-docker           # Build enabled (source only)
+        shardctl build-service --docker-only         # Build enabled (Docker only)
+        shardctl build-service --sync                # Sync branches, then build
+        shardctl build-service --docker-only --sync  # Sync, then build Docker only
+        shardctl build-service --include-disabled    # Build all incl. disabled (source + Docker)
+        shardctl build-service f1r3node                     # Build only f1r3node (source + Docker)
+        shardctl build-service f1r3node --no-docker         # Build only f1r3node (source only)
+        shardctl build-service f1r3node --docker-only       # Build only f1r3node (Docker only)
+        shardctl build-service f1r3node --sync              # Sync f1r3node branch, then build
+        shardctl build-service --list                       # List enabled services
+        shardctl build-service --list --include-disabled    # List all services (including disabled)
     """
     config = Config()
 
@@ -833,20 +828,18 @@ def build_service_cmd(
 
         if no_docker:
             console.print(
-                f"[bold blue]Building {len(build_configs)}"
-                " enabled service(s) from source...[/bold blue]\n"
+                f"[bold blue]Building {len(build_configs)} enabled service(s) "
+                f"from source...[/bold blue]\n"
             )
         elif docker_only:
             console.print(
-                "[bold blue]Building Docker images for"
-                f" {len(build_configs)} enabled service(s)..."
-                "[/bold blue]\n"
+                f"[bold blue]Building Docker images for {len(build_configs)} "
+                f"enabled service(s)...[/bold blue]\n"
             )
         else:
             console.print(
-                f"[bold blue]Building {len(build_configs)}"
-                " enabled service(s) (source + Docker)..."
-                "[/bold blue]\n"
+                f"[bold blue]Building {len(build_configs)} enabled service(s) "
+                f"(source + Docker)...[/bold blue]\n"
             )
 
         # Get repository configs for branch info if syncing
@@ -908,8 +901,8 @@ def build_service_cmd(
     if not service:
         console.print("[red]Error: SERVICE argument is required[/red]")
         console.print(
-            "[dim]Use --list to see available services;"
-            " omit SERVICE to build all enabled services[/dim]"
+            "[dim]Use --list to see available services; "
+            "omit SERVICE to build all enabled services[/dim]"
         )
         raise typer.Exit(1)
 
@@ -918,10 +911,9 @@ def build_service_cmd(
 
     if not build_config:
         console.print(
-            f"[red]No build configuration found for"
-            f" service '{service}'[/red]\n"
-            "[dim]Add build configuration to services.yml"
-            " or use --list to see available services[/dim]"
+            f"[red]No build configuration found for service '{service}'[/red]\n"
+            "[dim]Add build configuration to services.yml or "
+            "use --list to see available services[/dim]"
         )
         raise typer.Exit(1)
 
@@ -962,8 +954,8 @@ def build_service_cmd(
             console.print(f"[dim]No Docker build command configured for {service}, skipping[/dim]")
         else:
             console.print(
-                f"[dim]No Docker build command configured"
-                f" for {service}, skipping Docker build[/dim]"
+                f"[dim]No Docker build command configured for {service}, "
+                f"skipping Docker build[/dim]"
             )
 
 
@@ -1020,41 +1012,135 @@ def wait_cmd(
     node_module.wait_for_ready(timeout=timeout)
 
 
+_PRODUCTION_CONTAINER_NAMES = (
+    "rnode.bootstrap",
+    "rnode.standalone",
+    "rnode.observer",
+    "rnode.readonly",
+    "rnode.validator1",
+    "rnode.validator2",
+    "rnode.validator3",
+    "rnode.validator4",
+)
+# Production volume + network prefixes — match what the compose files declare
+# via top-level `name: f1r3fly-*`. Disjoint from integration-test prefixes
+# (`rnode.test.*`, `f1r3fly-test-*`, `test-*`) so reset and test-reset never
+# touch each other's resources.
+_PRODUCTION_VOLUME_PREFIX = "f1r3fly-"
+_PRODUCTION_NETWORK = "f1r3fly"
+
+
+def _force_cleanup_production_resources() -> int:
+    """Force-remove every production framework container/network/volume.
+
+    Aggressive — ignores container status, runs irrespective of whether the
+    compose project is detectable. Used as the `reset --force` path and as
+    a belt-and-suspenders fallback after `reset`'s normal compose-down path.
+
+    Returns the count of resources removed (0 if there was nothing to do).
+    """
+    import subprocess
+
+    def _docker(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=60)
+
+    removed = 0
+
+    # Containers — exact name match against the production container set.
+    for name in _PRODUCTION_CONTAINER_NAMES:
+        check = _docker("ps", "-aq", "--filter", f"name=^{name}$")
+        if check.returncode == 0 and check.stdout.strip():
+            for cid in check.stdout.strip().splitlines():
+                rm = _docker("rm", "-f", cid)
+                if rm.returncode == 0:
+                    removed += 1
+
+    # Volumes — prefix scan for f1r3fly-* (set by `name:` in each compose file).
+    vol_ls = _docker(
+        "volume", "ls", "--filter", f"name={_PRODUCTION_VOLUME_PREFIX}", "--format", "{{.Name}}"
+    )
+    if vol_ls.returncode == 0 and vol_ls.stdout.strip():
+        for vol in vol_ls.stdout.strip().splitlines():
+            # Skip any volume that's actually a test resource (defense in depth).
+            if vol.startswith("f1r3fly-test-"):
+                continue
+            rm = _docker("volume", "rm", "-f", vol)
+            if rm.returncode == 0:
+                removed += 1
+
+    # Network — single shared `f1r3fly` network (declared explicitly in each
+    # compose file). Removed last so attached containers are gone first.
+    net_ls = _docker(
+        "network", "ls", "--filter", f"name=^{_PRODUCTION_NETWORK}$", "--format", "{{.Name}}"
+    )
+    if net_ls.returncode == 0 and net_ls.stdout.strip():
+        rm = _docker("network", "rm", _PRODUCTION_NETWORK)
+        if rm.returncode == 0:
+            removed += 1
+
+    return removed
+
+
 @app.command(name="reset")
 def reset_cmd(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Skip compose-down detection and go straight to prefix scan. "
+        "Use when compose files have moved or detection isn't finding state.",
+    ),
 ):
     """Stop F1R3FLY containers and remove blockchain data volumes.
 
-    This command stops all running F1R3FLY containers (including validator4, observer)
-    and removes their Docker data volumes.
+    Default path: detects running shards, runs ``docker compose down --volumes``
+    per compose project, then runs an aggressive prefix-scan cleanup as a
+    fallback to catch orphaned resources (volumes whose containers were removed
+    manually, partial-down state from crashed sessions, etc.).
 
-    Example:
-        poetry run shardctl reset       # Stop and remove data (with confirmation)
-        poetry run shardctl reset -y    # Skip confirmation prompt
+    With ``--force``: skip the detection + compose-down path entirely. Just
+    force-remove every container matching the production names, every volume
+    matching ``f1r3fly-*``, and the ``f1r3fly`` network.
+
+    Both paths leave integration-test resources alone (those use disjoint
+    prefixes ``rnode.test.*`` / ``f1r3fly-test-*`` / ``test-*``; use
+    ``shardctl test-reset`` for those).
+
+    Examples:
+        poetry run shardctl reset           # Detect + compose down + fallback scan
+        poetry run shardctl reset -y        # Same, skip confirmation
+        poetry run shardctl reset --force   # Skip detection, just prefix-scan
     """
-    node_config = node_module.NodeConfig()
-
-    all_configs = node_config.detect_all_running_configs()
-    if not all_configs:
-        console.print("[yellow]No F1R3FLY containers found[/yellow]")
-        return
-
     if not yes:
         console.print()
         console.print(
-            "[red]This will stop all containers and permanently"
-            " delete all blockchain data volumes[/red]"
+            "[red]This will stop all containers and permanently delete all "
+            "blockchain data volumes[/red]"
         )
         if not Confirm.ask("Are you sure?"):
             console.print("[yellow]Cancelled[/yellow]")
             return
 
-    for node_type, topology, compose_file in all_configs:
-        console.print(
-            f"[yellow]Stopping {node_type.value} {topology.value} and removing volumes...[/yellow]"
-        )
-        node_module.run_compose_command(node_config, compose_file, ["down", "--volumes"])
+    if not force:
+        node_config = node_module.NodeConfig()
+        all_configs = node_config.detect_all_running_configs()
+        if all_configs:
+            for node_type, topology, compose_file in all_configs:
+                console.print(
+                    f"[yellow]Stopping {node_type.value} {topology.value} "
+                    f"and removing volumes...[/yellow]"
+                )
+                node_module.run_compose_command(node_config, compose_file, ["down", "--volumes"])
+        else:
+            console.print(
+                "[dim]No detected compose projects. Falling through to prefix scan.[/dim]"
+            )
+
+    # Belt-and-suspenders: aggressive prefix scan catches orphaned resources
+    # the compose-down path missed (or was never going to see).
+    removed = _force_cleanup_production_resources()
+    if removed:
+        console.print(f"[dim]Prefix scan removed {removed} additional resource(s).[/dim]")
 
     console.print("[green]Containers stopped and data volumes removed[/green]")
 
@@ -1068,13 +1154,35 @@ def test_cmd(
         None,
         "--image",
         "-i",
-        help="Docker image for test shard nodes (default: f1r3flyindustries/f1r3fly-scala-node)",
+        help="Docker image for test shard nodes (default: f1r3flyindustries/f1r3fly-rust)",
     ),
     scala: bool = typer.Option(False, "--scala", help="Use Scala node image"),
     rust: bool = typer.Option(False, "--rust", help="Use Rust node image"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose pytest output"),
     skip_setup: bool = typer.Option(
-        False, "--skip-setup", help="Skip shard bring-up/teardown (assume shard is already running)"
+        False,
+        "--skip-setup",
+        help="Skip shard bring-up/teardown; adopt the session named by --session-id.",
+    ),
+    session_id: Optional[str] = typer.Option(
+        None,
+        "--session-id",
+        help=(
+            "Session ID of an existing shard to adopt with --skip-setup "
+            "(printed by --keep-running runs)"
+        ),
+    ),
+    keep_running: bool = typer.Option(
+        False,
+        "--keep-running",
+        help="Start shard normally but leave it running after tests (for debugging)",
+    ),
+    keep_on_failure: bool = typer.Option(
+        False,
+        "--keep-on-failure",
+        help="Tear down shards for passing tests, but keep a failing test's "
+        "shard for inspection (avoids the host-load accumulation of "
+        "--keep-running; pair with -x)",
     ),
     extra_args: Optional[List[str]] = typer.Option(
         None, "--pytest-args", "-a", help="Additional arguments to pass to pytest"
@@ -1085,16 +1193,22 @@ def test_cmd(
     Tests bring up a fresh shard using the same configuration as the dev
     setup (conf, genesis, certs), run the test suite, then tear down.
 
-    Use --skip-setup to run tests against an already-running shard.
+    Use --skip-setup to run tests against an already-running shard (no start, no teardown).
+    Use --keep-running to start shard normally but leave it running after tests (for debugging).
+
+    Image priority: F1R3FLY_NODE_IMAGE env > --image flag > --rust/--scala flag > default (Rust).
 
     Examples:
-        poetry run shardctl test                         # Run all tests (Scala image)
-        poetry run shardctl test test_wallets             # Run wallet tests only
-        poetry run shardctl test --scala                  # Explicit Scala image
-        poetry run shardctl test --rust                   # Run against Rust image
-        poetry run shardctl test test_web_api --verbose   # Verbose output
-        poetry run shardctl test --skip-setup             # Test against running shard
-        poetry run shardctl test --image myimage:latest   # Custom image
+        poetry run shardctl test                              # Run all tests (Rust default)
+        poetry run shardctl test test_wallets                 # Run wallet tests only
+        poetry run shardctl test --scala                      # Use Scala node image
+        poetry run shardctl test --rust                       # Use Rust node image
+        poetry run shardctl test test_web_api --verbose       # Verbose output
+        poetry run shardctl test --skip-setup                 # Test against running shard
+        poetry run shardctl test --keep-running               # Leave shard up after tests
+        poetry run shardctl test --keep-on-failure -a -x      # Keep only a failing test's shard
+        poetry run shardctl test --image myimage:latest       # Custom image
+        F1R3FLY_NODE_IMAGE=mynode:dev poetry run shardctl test  # Env var override
     """
     config = Config()
     tests_dir = config.root_dir / "integration-tests"
@@ -1104,13 +1218,17 @@ def test_cmd(
         console.print(f"[dim]Expected: {tests_dir}[/dim]")
         raise typer.Exit(1)
 
-    # Determine the Docker image to use
-    if image:
+    # Resolve the node image.
+    # Priority: F1R3FLY_NODE_IMAGE env var > --image flag > --rust/--scala flag > Rust default.
+    env_image = os.environ.get("F1R3FLY_NODE_IMAGE")
+    if env_image:
+        docker_image = env_image
+    elif image:
         docker_image = image
-    elif rust:
-        docker_image = "f1r3flyindustries/f1r3fly-rust-node:latest"
-    else:
+    elif scala:
         docker_image = "f1r3flyindustries/f1r3fly-scala-node:latest"
+    else:
+        docker_image = "f1r3flyindustries/f1r3fly-rust:latest"
 
     console.print("[bold blue]Running integration tests[/bold blue]")
     console.print(f"  Image: [cyan]{docker_image}[/cyan]")
@@ -1120,9 +1238,37 @@ def test_cmd(
         console.print("  Mode:  [yellow]skip-setup (using running shard)[/yellow]")
     console.print()
 
-    # Build pytest command
+    # When adopting a kept-alive session, verify it actually exists before
+    # spending pytest startup time. Errors here surface a clear message
+    # regardless of which test the user selects (standalone or shared).
+    if skip_setup and session_id:
+        result = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "--filter",
+                f"name=rnode.test.{session_id}",
+                "--format",
+                "{{.Names}}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if not [n for n in result.stdout.strip().splitlines() if n]:
+            console.print(
+                f"[red]ERROR: no running containers found for session-id '{session_id}'[/red]"
+            )
+            console.print(
+                "[dim]Pass a session-id from a prior `shardctl test "
+                "--keep-running` run, or omit --skip-setup to start fresh.[/dim]"
+            )
+            raise typer.Exit(1)
+
+    # Build pytest command.
+    # Export the resolved image via F1R3FLY_NODE_IMAGE — the framework's single
+    # source of truth (read by infra/config.py::resolve_node_image).
     env = os.environ.copy()
-    env["DEFAULT_IMAGE"] = docker_image
+    env["F1R3FLY_NODE_IMAGE"] = docker_image
 
     pytest_args = ["-v", "--tb=short", "--log-cli-level=WARNING"]
     if verbose:
@@ -1134,8 +1280,20 @@ def test_cmd(
     if skip_setup:
         pytest_args.append("--skip-setup")
 
+    if session_id:
+        pytest_args.extend(["--session-id", session_id])
+
+    if keep_running:
+        pytest_args.append("--keep-running")
+
+    if keep_on_failure:
+        pytest_args.append("--keep-on-failure")
+
     if extra_args:
-        pytest_args.extend(extra_args)
+        # shlex-split so a single `--pytest-args "--timeout=600 --monitor"`
+        # becomes two argv elements rather than one.
+        for arg in extra_args:
+            pytest_args.extend(shlex.split(arg))
 
     console.print(f"[dim]$ pytest {' '.join(pytest_args)}[/dim]")
     console.print()
@@ -1156,18 +1314,37 @@ def test_cmd(
 
 
 @app.command(name="test-reset")
-def test_reset_cmd():
-    """Clean up integration test containers and volumes.
+def test_reset_cmd(
+    session_id: Optional[str] = typer.Option(
+        None,
+        "--session-id",
+        help=(
+            "Scope cleanup to one session ID (hex chars). Default: clean "
+            "every test session, regardless of owner. Use this when a "
+            "concurrent agent owns other sessions you must not disturb."
+        ),
+    ),
+):
+    """Force-remove integration test resources from every provider.
 
-    Stops all containers that may have been started by the integration
-    test fixtures (shard, standalone, and custom shard) and removes
-    Docker named volumes used for blockchain data.
+    Without ``--session-id`` (default), aggressively wipes ALL sessions:
+      * Docker: containers ``rnode.test.*``, networks ``f1r3fly-test-*``,
+        volumes ``test-*`` (running containers are force-stopped).
+      * Subprocess: every node process whose argv references the
+        ``.subprocess-data`` token, plus all session data dirs under
+        ``integration-tests/.subprocess-data/``.
+
+    With ``--session-id <id>``, scopes cleanup to that one session only.
+    Useful when running multiple agents in the same repo who shouldn't
+    interfere with each other's sessions. Other sessions are untouched.
+
+    Use this to reset to a clean slate — including when ``--keep-running``
+    left a shard up. Idempotent.
 
     Examples:
         poetry run shardctl test-reset
+        poetry run shardctl test-reset --session-id fec1aee8
     """
-    import docker as docker_py
-
     config = Config()
     tests_dir = config.root_dir / "integration-tests"
 
@@ -1175,102 +1352,45 @@ def test_reset_cmd():
         console.print("[red]Integration tests directory not found[/red]")
         raise typer.Exit(1)
 
-    # ── Compose-managed containers (shard + standalone) ──
-    # Project names must match those used in conftest.py to correctly
-    # identify and stop containers started by the test fixtures.
-    shard_compose_files = [
-        ("docker-compose.scala.yml", "f1r3fly-shard"),
-        ("docker-compose.rust.yml", "f1r3fly-shard"),
-    ]
-    standalone_compose_files = [
-        ("docker-compose.standalone-scala.yml", "f1r3fly-standalone"),
-        ("docker-compose.standalone-rust.yml", "f1r3fly-standalone"),
-    ]
-
-    for compose_file, project_name in shard_compose_files + standalone_compose_files:
-        compose_path = tests_dir / compose_file
-        if compose_path.exists():
+    if session_id is not None:
+        if not re.fullmatch(r"[0-9a-f]{4,}", session_id):
             console.print(
-                f"[dim]Stopping containers from {compose_file} (project: {project_name})...[/dim]"
+                f"[red]Invalid --session-id {session_id!r}: expected hex chars (≥4)[/red]"
             )
-            cmd = get_docker_compose_command()  # Dynamic version detection
-            cmd.extend(
-                [
-                    "--project-name",
-                    project_name,
-                    "--env-file",
-                    str(tests_dir / ".env.node"),
-                    "-f",
-                    str(compose_path),
-                    "down",
-                    "--volumes",
-                    "--remove-orphans",
-                ]
-            )
-            subprocess.run(
-                cmd,
-                cwd=tests_dir,
-                check=False,
-            )
+            raise typer.Exit(1)
+        py_code = (
+            "from test.infra.providers.docker import DockerProvider; "
+            "from test.infra.providers.subprocess import SubprocessProvider; "
+            f"DockerProvider.cleanup_session({session_id!r}); "
+            f"SubprocessProvider.cleanup_session({session_id!r})"
+        )
+        success_msg = f"Test resources for session {session_id} cleaned."
+    else:
+        py_code = (
+            "from test.infra.providers.docker import DockerProvider; "
+            "from test.infra.providers.subprocess import SubprocessProvider; "
+            "DockerProvider.force_cleanup_all_test_resources(); "
+            "SubprocessProvider.force_cleanup_all_test_resources()"
+        )
+        success_msg = "Test resources cleaned."
 
-    # ── Custom shard containers (started via Docker SDK, not compose) ──
-    # These are created by start_custom_shard() and add_peer_to_shard()
-    # in conftest.py. Container names match the constants defined there.
-    custom_containers = [
-        "rnode.custom.boot",
-        "rnode.custom.validator1",
-        "rnode.custom.validator2",
-        "rnode.custom.validator3",
-        "rnode.custom.joiner",
-    ]
-    try:
-        client = docker_py.from_env()
-        for name in custom_containers:
-            try:
-                container = client.containers.get(name)
-                console.print(f"[dim]Stopping custom container {name}...[/dim]")
-                try:
-                    container.stop(timeout=10)
-                except Exception:
-                    pass
-                container.remove(force=True)
-            except docker_py.errors.NotFound:
-                pass
-            except Exception as e:
-                console.print(f"[dim]Warning: could not remove {name}: {e}[/dim]")
-
-        # Remove the custom shard Docker network if it exists
-        try:
-            network = client.networks.get("f1r3fly-test-custom")
-            console.print("[dim]Removing custom shard network f1r3fly-test-custom...[/dim]")
-            network.remove()
-        except docker_py.errors.NotFound:
-            pass
-        except Exception as e:
-            console.print(f"[dim]Warning: could not remove network: {e}[/dim]")
-
-        # Remove custom shard named volumes. The custom compose uses project
-        # name 'f1r3fly-custom', so Docker prefixes volume names accordingly.
-        # The joiner volume is created directly via Docker SDK (no prefix).
-        custom_volume_names = [
-            "f1r3fly-custom_boot-data",
-            "f1r3fly-custom_validator1-data",
-            "f1r3fly-custom_validator2-data",
-            "f1r3fly-custom_validator3-data",
-            "joiner-data",
-        ]
-        for vol_name in custom_volume_names:
-            try:
-                client.volumes.get(vol_name).remove()
-                console.print(f"[dim]Removed volume {vol_name}[/dim]")
-            except docker_py.errors.NotFound:
-                pass
-            except Exception as e:
-                console.print(f"[dim]Warning: could not remove volume {vol_name}: {e}[/dim]")
-
-        client.close()
-    except Exception as e:
-        console.print(f"[dim]Warning: could not connect to Docker for custom cleanup: {e}[/dim]")
+    # Dispatch via the active provider's classmethod — keeps the cleanup
+    # contract provider-agnostic at the seam. Running from a subprocess
+    # (with PYTHONPATH pointing at integration-tests/) keeps shardctl free
+    # of pytest/test-module imports.
+    result = subprocess.run(
+        [sys.executable, "-c", py_code],
+        cwd=config.root_dir,
+        env={**os.environ, "PYTHONPATH": str(config.root_dir / "integration-tests")},
+        capture_output=True,
+        text=True,
+    )
+    if result.stdout:
+        console.print(result.stdout, end="")
+    if result.returncode != 0:
+        console.print(f"[yellow]Cleanup reported errors:[/yellow]\n{result.stderr}")
+        raise typer.Exit(result.returncode)
+    console.print(f"[green]{success_msg}[/green]")
 
 
 @app.command(name="test-report")

@@ -1,0 +1,122 @@
+#cloud-config
+# Production runner bootstrap. Assumes the base image is a baked
+# golden image with all deps (Docker, Python, Poetry, Rust, OCI CLI,
+# GH runner agent) already installed. This script only does the
+# runner-specific steps: register, run one job, self-terminate.
+#
+# For the dep-install boot path (used to BAKE the golden image), see
+# cloud-init-golden.yml.
+#
+# Template variables substituted by launch-runner.sh before submission:
+#   __REG_TOKEN__       Short-lived runner registration token (`gh api`)
+#   __GH_REPO__         GitHub owner/repo
+#   __RUNNER_NAME__     Unique runner name (matches OCI instance name)
+#   __RUNNER_LABELS__   Comma-separated labels
+
+write_files:
+  - path: /opt/runner-bootstrap.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euxo pipefail
+
+      REG_TOKEN="__REG_TOKEN__"
+      GH_REPO="__GH_REPO__"
+      RUNNER_NAME="__RUNNER_NAME__"
+      RUNNER_LABELS="__RUNNER_LABELS__"
+
+      RUNNER_USER="runner"
+      RUNNER_HOME="/opt/actions-runner"
+
+      log() { echo "[$(date -Iseconds)] $*"; }
+
+      log "=== Configure runner as ephemeral, repo-scoped ==="
+      # No --disableupdate: if the baked image's runner version gets
+      # deprecated by GitHub before the image is replaced, the runner
+      # self-updates to the latest before listening for jobs.
+      cd "$RUNNER_HOME"
+      sudo -u "$RUNNER_USER" ./config.sh \
+        --url "https://github.com/$GH_REPO" \
+        --token "$REG_TOKEN" \
+        --name "$RUNNER_NAME" \
+        --labels "$RUNNER_LABELS" \
+        --work "_work" \
+        --ephemeral \
+        --unattended \
+        --replace
+
+      log "=== Run runner (--ephemeral: one job, then exits) ==="
+      # Idle watchdog. run.sh blocks indefinitely waiting for a job. If this
+      # runner was over-provisioned (more runners launched than matrix jobs) or
+      # its run was cancelled, no job ever arrives, run.sh never returns, and the
+      # self-terminate below never runs — the VM leaks (this is exactly how the
+      # fleet of idle runners accumulated). Generous cap: once a job is picked up
+      # we let it finish; if none arrives within the timeout we kill run.sh and
+      # fall through to self-terminate.
+      IDLE_TIMEOUT_SECS=2700   # 45 min with no job
+      # Forced-update retry. When the baked agent version falls below GitHub's
+      # enforced minimum, the service triggers a self-update at job-assignment
+      # time ("Runner update in progress"). The update restart can kill run.sh
+      # before the job executes; without a retry the bootstrap would read that
+      # exit as "job complete" and self-terminate a jobless VM (2026-07-07
+      # incident: entire 20-VM batches died this way and starved the CI queue).
+      # The ephemeral registration stays valid until a job completes, so
+      # re-running run.sh (now on the updated agent) resumes listening. Retry
+      # ONLY on the update signature — any other exit falls through to
+      # self-terminate exactly as before.
+      MAX_RUN_ATTEMPTS=3
+      attempt=1
+      while :; do
+        : > /var/log/runner-run.log
+        sudo -u "$RUNNER_USER" ./run.sh > /var/log/runner-run.log 2>&1 &
+        RUN_PID=$!
+        rm -f /run/runner-idle-timeout
+        (
+          elapsed=0
+          while kill -0 "$RUN_PID" 2>/dev/null; do
+            if grep -q "Running job:" /var/log/runner-run.log 2>/dev/null; then
+              exit 0   # a job started — let it run to completion
+            fi
+            if [ "$elapsed" -ge "$IDLE_TIMEOUT_SECS" ]; then
+              log "Idle ${IDLE_TIMEOUT_SECS}s with no job; killing runner to self-terminate."
+              touch /run/runner-idle-timeout
+              kill "$RUN_PID" 2>/dev/null || true
+              exit 0
+            fi
+            sleep 15
+            elapsed=$((elapsed + 15))
+          done
+        ) &
+        WATCHDOG_PID=$!
+        wait "$RUN_PID" 2>/dev/null || true
+        kill "$WATCHDOG_PID" 2>/dev/null || true
+        if grep -q "completed with result:" /var/log/runner-run.log 2>/dev/null; then
+          break   # job ran to completion — the normal ephemeral exit
+        fi
+        if [ -f /run/runner-idle-timeout ]; then
+          break   # idle timeout — proceed to self-terminate
+        fi
+        if grep -q "Runner update in progress" /var/log/runner-run.log 2>/dev/null \
+          && [ "$attempt" -lt "$MAX_RUN_ATTEMPTS" ]; then
+          attempt=$((attempt + 1))
+          log "run.sh exited during forced self-update; retrying (attempt $attempt/$MAX_RUN_ATTEMPTS)"
+          continue
+        fi
+        break   # unrecognized exit — preserve pre-existing terminate behavior
+      done
+
+      log "=== Job complete (or idle timeout); self-terminating instance via instance principal ==="
+      INSTANCE_ID=$(curl -fsSL -H "Authorization: Bearer Oracle" \
+        http://169.254.169.254/opc/v2/instance/id)
+      /usr/local/bin/oci --auth instance_principal \
+        compute instance terminate \
+        --instance-id "$INSTANCE_ID" \
+        --force \
+        --preserve-boot-volume false 2>&1 || {
+          log "WARN: instance-principal terminate failed; falling back to shutdown -h"
+          shutdown -h now
+        }
+
+runcmd:
+  - bash -lc '/opt/runner-bootstrap.sh 2>&1 | tee /var/log/runner-bootstrap.log'

@@ -1,0 +1,165 @@
+#cloud-config
+# Golden-image bootstrap. Installs every dependency the ephemeral runner
+# needs, downloads the GitHub Actions runner agent binary, pre-pulls the
+# staging test image, then halts. Run once to bake; the resulting image
+# replaces the stock Ubuntu image for production runner launches.
+#
+# Production runners use cloud-init.yml.tmpl, which only does the
+# runner-specific steps (config + run + self-terminate) and skips all
+# of this because the image already has it.
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - git
+  - gnupg
+  - jq
+  - lsb-release
+  - software-properties-common
+  - unzip
+  - make
+  - cmake
+  - autoconf
+  - libtool
+  - protobuf-compiler
+  - build-essential
+  - pkg-config
+  - libssl-dev
+
+write_files:
+  - path: /opt/golden-bootstrap.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euxo pipefail
+
+      # Keep RUNNER_VERSION in lockstep with state.env. If GitHub deprecates
+      # this version before the image is used, the production cloud-init
+      # path (without --disableupdate) lets the runner self-update on launch,
+      # so a stale image is still functional.
+      RUNNER_VERSION="2.335.1"
+      RUNNER_ARCH_AMD64="x64"
+      RUNNER_ARCH_ARM64="arm64"
+
+      RUNNER_USER="runner"
+      RUNNER_HOME="/opt/actions-runner"
+
+      log() { echo "[$(date -Iseconds)] $*"; }
+
+      log "=== Install Docker CE ==="
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      chmod a+r /etc/apt/keyrings/docker.gpg
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+        > /etc/apt/sources.list.d/docker.list
+      apt-get update -qq
+      apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+      log "=== Configure Docker daemon (containerd-snapshotter + live-restore + log rotation) ==="
+      mkdir -p /etc/docker
+      cat > /etc/docker/daemon.json <<'EOF'
+      {
+        "features": {"containerd-snapshotter": true},
+        "live-restore": true,
+        "log-driver": "json-file",
+        "log-opts": {"max-size": "20m", "max-file": "3"}
+      }
+      EOF
+      systemctl enable docker
+      systemctl restart docker
+      sleep 3
+
+      log "=== Reserve test PortAllocator range from kernel ephemeral assignment ==="
+      # The integration-test framework's PortAllocator hands out ports in
+      # 41000-49000 to nodes-under-test (rnode gRPC + transport servers).
+      # Linux's default ephemeral range (32768-60999, per
+      # /proc/sys/net/ipv4/ip_local_port_range) overlaps with this. Without
+      # reservation, an outbound TCP connection from any host process can
+      # transiently grab a port between the allocator's pre-bind probe
+      # and the test process's actual bind, surfacing as
+      # "Address already in use" at the test node and causing the node to
+      # exit before reaching Running. Reserving the range tells the kernel
+      # never to pick these ports for ephemeral assignment, leaving them
+      # exclusively for the allocator.
+      mkdir -p /etc/sysctl.d
+      cat > /etc/sysctl.d/99-ci-port-reservation.conf <<'EOF'
+      # PortAllocator-managed range for integration tests. See
+      # integration-tests/test/infra/ports.py for the allocator's range.
+      net.ipv4.ip_local_reserved_ports = 41000-49000
+      EOF
+      sysctl -p /etc/sysctl.d/99-ci-port-reservation.conf
+      # Sanity-check the reservation took.
+      sysctl net.ipv4.ip_local_reserved_ports
+
+      log "=== Install docker-compose v2 standalone ==="
+      curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-$(uname -s)-$(uname -m)" \
+        -o /usr/local/bin/docker-compose
+      chmod +x /usr/local/bin/docker-compose
+
+      log "=== Install Python 3.10 + Poetry ==="
+      add-apt-repository -y ppa:deadsnakes/ppa
+      apt-get update -qq
+      apt-get install -y -qq python3.10 python3.10-venv python3.10-dev python3-pip
+      update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 || true
+      update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 || true
+
+      log "=== Create runner user (passwordless sudo, docker group) ==="
+      useradd -m -s /bin/bash "$RUNNER_USER"
+      usermod -aG docker "$RUNNER_USER"
+      echo "${RUNNER_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${RUNNER_USER}
+      chmod 440 /etc/sudoers.d/${RUNNER_USER}
+
+      log "=== Install Poetry 1.8.5 as runner user ==="
+      # Pin to 1.8.5 to match system-integration's poetry.lock and the persistent
+      # runners' workflow (build-test-and-deploy.yml's snok/install-poetry step).
+      # Poetry 2.x renamed/removed 'poetry lock --no-update' which the
+      # integration-tests workflow relies on.
+      sudo -u "$RUNNER_USER" bash -c "curl -sSL https://install.python-poetry.org | python3.10 - --version 1.8.5"
+
+      log "=== Install Rust toolchain as runner user ==="
+      sudo -u "$RUNNER_USER" bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable"
+
+      log "=== Symlink runner-user tools into /usr/local/bin (so they're in default PATH) ==="
+      # sudo -u runner ./run.sh resets PATH to the system default, which doesn't
+      # include /home/runner/.local/bin or /home/runner/.cargo/bin. Symlink the
+      # tools that workflow steps invoke directly.
+      ln -sf /home/runner/.local/bin/poetry /usr/local/bin/poetry
+      ln -sf /home/runner/.cargo/bin/cargo  /usr/local/bin/cargo
+      ln -sf /home/runner/.cargo/bin/rustc  /usr/local/bin/rustc
+
+      log "=== Install OCI CLI ==="
+      bash -c "$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)" -- \
+        --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
+
+      log "=== Pre-pull staging test image ==="
+      docker pull "f1r3flyindustries/f1r3fly-rust:staging"
+
+      log "=== Install GitHub Actions runner v$RUNNER_VERSION ==="
+      ARCH=$(uname -m)
+      case "$ARCH" in
+        x86_64)  RUNNER_ARCH="$RUNNER_ARCH_AMD64" ;;
+        aarch64) RUNNER_ARCH="$RUNNER_ARCH_ARM64" ;;
+        *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
+      esac
+      mkdir -p "$RUNNER_HOME"
+      chown "$RUNNER_USER":"$RUNNER_USER" "$RUNNER_HOME"
+      cd "$RUNNER_HOME"
+      sudo -u "$RUNNER_USER" curl -fsSL -o actions-runner.tar.gz \
+        "https://github.com/actions/runner/releases/download/v$RUNNER_VERSION/actions-runner-linux-$RUNNER_ARCH-$RUNNER_VERSION.tar.gz"
+      sudo -u "$RUNNER_USER" tar xzf actions-runner.tar.gz
+      rm actions-runner.tar.gz
+      ./bin/installdependencies.sh
+
+      log "=== Golden bootstrap complete; halting for image capture ==="
+      # Drop a marker file so we can verify the bootstrap actually finished.
+      echo "$(date -Iseconds) v$RUNNER_VERSION" > /opt/golden-baked.marker
+      sync
+      shutdown -h +1 "Golden image bootstrap complete"
+
+runcmd:
+  - bash -lc '/opt/golden-bootstrap.sh 2>&1 | tee /var/log/golden-bootstrap.log'

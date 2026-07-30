@@ -15,6 +15,9 @@ setuptools = "*"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0.0"
+# ruff replaces black (format) and pyflakes (lint) — one tool, one config.
+# >=0.9 is required: the lint/format settings below live under [tool.ruff.lint]
+# and [tool.ruff.format], which ruff 0.1.x does not read.
 ruff = ">=0.9.0"
 
 [tool.poetry.group.integration.dependencies]
@@ -26,9 +29,12 @@ urllib3 = ">=1.24.2"
 ecdsa = "*"
 eth-hash = { version = "*", extras = ["pycryptodome"] }
 pycryptodome = "*"
-pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git" }
+pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git", rev = "175f2aa5b53e" }
 requests = "*"
 pytest-timeout = "^2.4.0"
+pytest-instafail = "^0.5.0"
+websocket-client = "^1.9.0"
+pyhocon = "^0.3.63"
 
 [tool.poetry.scripts]
 shardctl = "shardctl.cli:app"
@@ -46,65 +52,42 @@ log_file_level = "debug"
 log_file_format = "%(message)s"
 json_report = "integration-tests/report.json"
 jsonapi = "anything"
-testpaths = ["integration-tests/test"]
-# Parallel execution: use "pytest -n 3 --dist=loadgroup" to run 3 workers,
-# one per infrastructure group (shard, standalone, custom). Each test is
-# tagged with @pytest.mark.xdist_group() so all tests sharing the same
-# Docker environment run on the same worker.
-# NOTE: test_consensus_health.py MUST remain the last shard test -- it
-# scans shard logs from ALL preceding shard tests. It is placed just before
-# the custom tests so the shard can be torn down (by the
-# pytest_runtest_teardown hook in conftest.py) before the resource-heavy
-# custom shard tests begin.
-python_files = [
-	"test_web_api.py",
-	"test_wallets.py",
-	"test_heartbeat.py",
-	"test_deployment.py",
-	"test_storage.py",
-	"test_genesis_ceremony.py",
-	"test_internal.py",
-	"test_dag_correctness.py",
-	"test_finalization.py",
-	"test_propose.py",
-	"test_consensus_health.py",
-	"test_synchrony_constraint.py",
-	"test_asymmetric_bonds.py",
-	"test_bonding_validators.py",
-	"test_trim_state.py",
-	"test_slash.py",
-	"test_unbond.py",
-]
+testpaths = ["integration-tests/test/tests"]
 markers = [
-	"xdist_group: assign test to an xdist load group (shard, standalone, custom)",
+	"xdist_group: assign test to an xdist load group (shared, custom, standalone)",
 ]
 # Per-test timeout (seconds). Includes fixture setup time, so session-scoped
 # fixtures (shard startup: compose up + 5 containers reaching Running state)
 # must fit within this budget alongside the test body.
 # Individual tests can override with @pytest.mark.timeout(N).
-# CI overrides this with --timeout=600 to accommodate slower runners.
-timeout = 300
+timeout = 1800
 
 [tool.ruff]
 line-length = 100
+target-version = "py310"
 
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+# N999 (Invalid module name) fires on every file under integration-tests/
+# because the directory has a hyphen. Renaming the directory would churn
+# 50+ external references; the lint complaint is unactionable in practice.
+ignore = ["N999"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+# Tests legitimately carry long deploy/error strings and table-shaped
+# data layouts; keep shardctl/ strict at 100 but allow integration-tests
+# to exceed for readability where wrapping would hurt.
+"integration-tests/**/*.py" = ["E501"]
+# conftest.py must set GRPC_ENABLE_FORK_SUPPORT before the .infra imports load
+# gRPC (transitively via pyf1r3fly.client), so its module-level imports
+# legitimately follow that os.environ call.
+"integration-tests/test/conftest.py" = ["E402"]
+
+# These are ruff's defaults, pinned explicitly so a future ruff release cannot
+# silently reformat the whole tree. quote-style="double" matches what black
+# produced, so the migration is not a restyling.
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "N", "W"]
-ignore = [
-    "N999",   # Invalid module name (integration-tests directory uses hyphen)
-]
-
-[tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401"]
-# gRPC/protobuf interface code must match upstream naming conventions
-"integration-tests/test/node_client.py" = ["N802", "N803", "N806", "N818"]
-# Test function names and protobuf field iteration variables
-"integration-tests/test/test_slash.py" = ["N802", "N806"]
-# Exception classes follow existing codebase conventions (used across many files)
-"integration-tests/test/common.py" = ["N818"]
-"integration-tests/test/http_client.py" = ["N818"]

@@ -1,0 +1,107 @@
+# test_token_metadata
+
+## Purpose
+
+Comprehensive test suite for the native token metadata feature (Option B: on-chain TokenMetadata contract). Covers 6 groups spanning the full feature surface: happy path, joiner mismatch detection, special-character round-trip, restart drift, multi-shard isolation, and genesis ceremony blocking. Pure validation-rejection cases live as Rust unit tests (see Group C below).
+
+## Architecture
+
+Group A (happy path) uses the session-scoped `shared_shard` fixture, asserting against token values from the `node_conf` fixture (`shard_id`, `native_token_name`, `native_token_symbol`, `native_token_decimals` parsed from `defaults.conf` + `conf/rust.conf` via pyhocon). No hardcoded `DEFAULT_NAME`/`DEFAULT_SYMBOL`/`DEFAULT_DECIMALS` constants. Groups B-F use standalone nodes and custom shards with failure-mode extensions:
+
+- `provider.create_standalone(config, wait_running=False)` — nodes expected to fail at startup
+- `provider.recreate_standalone(handle, new_config, wait_running=False)` — restart drift tests
+- `provider.add_node(..., wait_running=False)` — joiners expected to fail
+- `handle.wait_for_exit(timeout)` / `handle.exit_code()` — exit code tracking
+- `log_events.find_event(node.logs(), event="...")` — structured log event parsing
+
+## Tests (14 integration + 10 Rust unit)
+
+### Group A -- Happy path (5 tests, shared shard)
+
+Uses the session-scoped `shared_shard` with token metadata from the `node_conf` fixture.
+
+| Test | What it verifies |
+|------|-----------------|
+| `test_api_status_returns_configured_token` | `/api/status` reports default name/symbol/decimals on all nodes |
+| `test_on_chain_all_exploratory` | `TokenMetadata!("all", ret)` via exploratory deploy on readonly matches config |
+| `test_on_chain_all_real_deploy` | `TokenMetadata!("all", ret)` via real deploy on V1 matches config |
+| `test_on_chain_individual_methods_match_all` | `name`/`symbol`/`decimals` methods individually match `all` tuple (exploratory on readonly) |
+| `test_startup_log_announces_token_metadata` | Boot + all validators log `native_token_metadata_startup` event with default values (boot as `ceremony_master`, validators as `genesis_validator`; readonly excluded — it doesn't emit this event) |
+
+### Group B -- Joiner mismatch (5 tests, standalone baseline + joiners)
+
+Uses a module-scoped baseline standalone. Joiners with mismatched configs must emit `native_token_metadata_mismatch` events naming the disagreeing fields.
+
+| Test | Override | Expected mismatch field |
+|------|----------|------------------------|
+| `test_joiner_mismatch_fails_startup[name_only]` | name | `native-token-name` |
+| `test_joiner_mismatch_fails_startup[symbol_only]` | symbol | `native-token-symbol` |
+| `test_joiner_mismatch_fails_startup[decimals_only]` | decimals | `native-token-decimals` |
+| `test_joiner_mismatch_all_three_fields` | all three | all three fields |
+| `test_joiner_matching_config_succeeds` | none (control) | `native_token_metadata_verified` event |
+
+### Group C -- Special character round-trip (1 test, standalone)
+
+| Test | Input | Expected behavior |
+|------|-------|-------------------|
+| `test_special_characters_in_token_name_round_trip` | `F1R3-CAP/v2!` | Survives CLI -> template -> on-chain -> API |
+
+**Pure validation-rejection cases moved to Rust unit tests** (deterministic,
+microsecond runtime, no subprocess spawn / log race):
+
+| Test | Layer | Location |
+|------|-------|----------|
+| `accepts_valid_baseline` | `validate_native_token` | `casper/src/rust/casper_conf.rs` |
+| `rejects_empty_name`, `rejects_whitespace_only_name` | `validate_native_token` | `casper/src/rust/casper_conf.rs` |
+| `rejects_empty_symbol`, `rejects_whitespace_only_symbol` | `validate_native_token` | `casper/src/rust/casper_conf.rs` |
+| `rejects_decimals_above_max`, `accepts_decimals_at_max` | `validate_native_token` | `casper/src/rust/casper_conf.rs` |
+| `rejects_negative_decimals`, `rejects_decimals_above_clap_range`, `accepts_decimals_at_max` | clap parse | `node/src/rust/configuration/commandline/options.rs` |
+
+Run via `cargo test -p casper --lib native_token_validation_tests` and
+`cargo test -p node --lib native_token_clap_tests`. These were originally
+four standalone integration tests (`test_decimals_negative_rejected`,
+`test_decimals_above_max_rejected`, `test_empty_string_name_rejected`,
+`test_whitespace_only_symbol_rejected`) — moved because the assertions
+read process logs from disk to verify *which* error path fired, exposing
+a race when fast-failing nodes wrote their error string after the parent
+read the (still-empty) log file. Validation logic is a pure function;
+testing it at the unit-test layer eliminates the race entirely.
+
+### Group D -- Restart drift (1 test)
+
+`test_restart_with_changed_token_config_fails_verification` — starts a node with INITIAL token, stops it, restarts with DIFFERENT token against the same data volume. The immutable on-chain contract disagrees with the new config, triggering `native_token_metadata_mismatch` and a non-zero exit.
+
+### Group E -- Multi-shard isolation (1 test)
+
+`test_two_shards_with_different_tokens_dont_interfere` — two concurrent standalone nodes with different tokens (ALPHA/BETA) each report their own values correctly via both API and on-chain queries.
+
+### Group F -- Genesis ceremony mismatch (1 test)
+
+`test_genesis_validator_with_wrong_token_blocks_ceremony` — bootstrap + V1 use MASTER_TOKEN, V2 + V3 use WRONG. With `--required-signatures=2`, the ceremony needs 2/3 validator signatures. The disagreeing validators refuse to sign (blessed-contract hash mismatch), stalling the ceremony so no node reaches Running.
+
+## What it proves
+
+- Token metadata is correctly threaded from CLI -> config -> genesis -> on-chain contract -> API
+- All four contract methods (name, symbol, decimals, all) are consistent
+- All nodes report identical metadata via HTTP API; on-chain queries verified via exploratory (readonly) and real deploy (V1)
+- Mismatched joiners are detected and logged with specific field names
+- CLI validation catches invalid inputs (negative/above-max decimals, empty/whitespace name/symbol) — verified at the unit-test layer in `casper_conf.rs` and `options.rs`
+- Special characters survive the full round-trip without corruption
+- Immutable on-chain contracts prevent config drift after genesis
+- Genesis ceremony blocks when validators disagree on token metadata
+- Multiple shards with different tokens coexist without interference
+
+## Infrastructure used
+
+- `node_conf` — session-scoped fixture providing parsed config values (name, symbol, decimals, shard_id, ftt)
+- `shared_shard` — session-scoped shard for Group A happy-path tests
+- `provider.create_standalone()` — standalone nodes for Groups B-E
+- `provider.add_node(..., wait_running=False)` — observer joiners for Group B
+- `provider.recreate_standalone()` — restart drift for Group D
+- `provider.create_shard(wait_running=False)` — ceremony mismatch for Group F
+- `infra/log_events.py` — structured log event parsing
+- `infra/token_metadata.py` — `fetch_api_status_token()`, on-chain query helpers via pyf1r3fly
+
+## Related
+
+- f1r3node-rust PR #481 — on-chain contract, config, API, startup verification

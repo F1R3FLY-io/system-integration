@@ -1,5 +1,18 @@
 # Troubleshooting
 
+## Quick fixes
+
+| Symptom | Quick fix |
+|---|---|
+| "casper instance was not available yet" | `shardctl wait` — blockchain needs 2-3 min |
+| Nodes stuck, won't complete genesis | `shardctl reset -y` then `shardctl up` |
+| Volumes/containers left behind from a crashed `shardctl up` | `shardctl reset --force` (skips compose detection, prefix-scans `rnode.*` + `f1r3fly-*`) |
+| Integration test framework state stuck | `shardctl test-reset` (force-removes `rnode.test.*` / `f1r3fly-test-*` / `test-*` regardless of status). Add `--session-id <id>` to scope cleanup to one session when other agents own concurrent sessions. |
+| Docker "outside of rootfs" on macOS | Switch Docker to gRPC FUSE ([details below](#docker-outside-of-rootfs-error)) |
+| Build fails with "better-sqlite3" | Docker build: `shardctl build-service f1r3sky-backend-bsky` |
+
+`shardctl reset` (production) and `shardctl test-reset` (integration tests) are scope-disjoint — running one will never touch the other's resources.
+
 ## macOS Specific Issues
 
 ### Docker "Outside of rootfs" Error
@@ -93,6 +106,33 @@ brew install protobuf
 
 ## Blockchain Issues
 
+### Controlling log verbosity (RUST_LOG)
+
+The `RUST_LOG` environment variable sets the structured log filter and takes the highest priority over any config-file setting. It applies to production nodes (`shardctl up`) and integration-test nodes alike.
+
+```bash
+# Default — info level
+poetry run shardctl up
+
+# Verbose — debug everything
+RUST_LOG=debug poetry run shardctl up
+
+# Targeted — debug only consensus events
+RUST_LOG=info,f1r3fly.casper=debug poetry run shardctl up
+
+# Integration tests
+RUST_LOG=info,f1r3fly.casper.mem_profile=debug poetry run pytest integration-tests/
+```
+
+Node logs are written to `<data-dir>/logs/node.log` inside each container (Docker: `/var/lib/rnode/logs/node.log`) and also to stdout. To watch logs live:
+
+```bash
+poetry run shardctl logs --follow
+docker logs -f rnode.validator1
+```
+
+The integration-test framework reads from the file (via `docker exec cat`) for log scanning and artifact archiving; stdout is for live developer inspection only.
+
 ### F1R3node won't accept deployments (Casper not ready)
 
 **Symptom:** Embers API crashes with "casper instance was not available yet"
@@ -180,8 +220,15 @@ docker network inspect f1r3fly
 If nothing else works, start completely fresh:
 
 ```bash
-# Stop everything and remove data volumes
+# Stop everything and remove data volumes (production)
 poetry run shardctl reset -y
+
+# If reset reports "No F1R3FLY containers found" but you still see leftover state,
+# bypass detection and prefix-scan everything:
+poetry run shardctl reset --force -y
+
+# Also wipe any integration-test framework state (rnode.test.* / f1r3fly-test-* / test-*)
+poetry run shardctl test-reset
 
 # Remove and re-clone services
 rm -rf services/*
