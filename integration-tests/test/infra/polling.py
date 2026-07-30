@@ -158,7 +158,7 @@ def wait_for_lfb_at_least(
     condition fires, not after a fixed wait.
     """
     return poll_until(
-        predicate=lambda: (lfb_number(node) if lfb_number(node) >= height else None),
+        predicate=lambda: lfb_number(node) if lfb_number(node) >= height else None,
         timeout=timeout,
         interval=interval,
         description=f"{node.name} LFB >= #{height}",

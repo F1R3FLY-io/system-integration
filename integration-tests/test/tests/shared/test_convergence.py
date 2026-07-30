@@ -165,9 +165,9 @@ def test_network_converges_after_slow_deploy(shared_shard, node_conf, timeouts) 
     if baseline_lfb == 0:
         logging.info("Waiting for initial LFB advancement...")
         poll_until(
-            predicate=lambda: _get_lfb_number(validators[0])
-            if _get_lfb_number(validators[0]) > 0
-            else None,
+            predicate=lambda: (
+                _get_lfb_number(validators[0]) if _get_lfb_number(validators[0]) > 0 else None
+            ),
             timeout=timeouts.finalization,
             interval=5.0,
             description="initial LFB > 0",

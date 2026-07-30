@@ -25,7 +25,7 @@ This document captures deferred work, future ideas, and low-priority items that 
 - Deferred work: This file (`docs/Backlog.md`)
 
 **For LLM assistance in multi-repo workspace:**
-See [Task Tracking Standard]([RELATIVE_PATH]/top-level-gitlab-profile/docs/common/task-tracking-standard.md)
+See `top-level-gitlab-profile/docs/common/task-tracking-standard.md` in the workspace root.
 
 **For reference (GitLab):**
 [Task Tracking Standard](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/task-tracking-standard.md)

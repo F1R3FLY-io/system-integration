@@ -919,8 +919,9 @@ def test_concurrent_delete_and_set_same_key(user_shard, timeouts):
             settled = _await_map_settles(
                 all_nodes,
                 "ucc_delset",
-                accept=lambda m, sv=set_val, yv=y_val: m.get("y") == yv
-                and m.get("x") in (None, sv),
+                accept=lambda m, sv=set_val, yv=y_val: (
+                    m.get("y") == yv and m.get("x") in (None, sv)
+                ),
                 allowed_keys={"x", "y"},
                 timeout=timeouts.finalization * 3,
                 label=f"del-set-{rnd}",
@@ -1016,9 +1017,7 @@ def test_set_cell_concurrent_distinct_elements_union(user_shard, timeouts):
             }
             ids = _deploy_on_each(
                 shard,
-                lambda name, e=elems: (
-                    f'for (@s <- @"ucc_set") {{ @"ucc_set"!(s.add({e[name]})) }}'
-                ),
+                lambda name, e=elems: f'for (@s <- @"ucc_set") {{ @"ucc_set"!(s.add({e[name]})) }}',
                 timeouts,
             )
             _assert_all_finalized(producers, all_nodes, ids, timeouts, f"set-union-{rnd}")

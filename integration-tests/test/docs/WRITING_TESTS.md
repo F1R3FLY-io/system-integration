@@ -34,7 +34,7 @@ pytestmark = pytest.mark.xdist_group("shared")  # pin to one xdist worker
 def test_something(validator1_node, readonly_node, timeouts):
     """Short description of what this verifies."""
     deploy_id = validator1_node.deploy_string(
-        '@1!(42)',
+        "@1!(42)",
         VALIDATOR1_ID.private_key(),
     )
     wait_for_deploy_finalized(validator1_node, deploy_id, timeouts.finalization)
@@ -141,7 +141,7 @@ For deploy tracking, prefer `wait_for_deploy_finalized` over `wait_for_finalized
 ```python
 from ...infra.polling import wait_for_deploy_finalized
 
-deploy_id = node.deploy_string('@1!(42)', key.private_key())
+deploy_id = node.deploy_string("@1!(42)", key.private_key())
 status = wait_for_deploy_finalized(node, deploy_id, timeouts.finalization)
 # status.latestBlockHash points at the canonical-state block
 ```
