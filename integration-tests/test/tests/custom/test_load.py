@@ -20,9 +20,11 @@ fold / scope walk / mergeable recompute / dag merge), so the O(cone) climber is
 visible. Scraped on EVERY validator (not just v1).
 
 Telemetry-first (measure, not gate) for latency. Hard assertions: zero deploy
-failures; all deploys finalized within timeout; all-node LFB convergence (spread
-<= 5 after drain); no node crashes. Set LOAD_TEST_TELEMETRY_ONLY=1 to collect the
-runaway metrics without the finalization/convergence gates.
+failures; all deploys finalized within timeout; all-node LFB convergence (every
+node polled to within a spread of 5, not sampled once at drain — nodes are still
+catching up the instant load stops); no node crashes. Set
+LOAD_TEST_TELEMETRY_ONLY=1 to collect the runaway metrics without the
+finalization/convergence gates.
 """
 
 import logging
@@ -49,7 +51,7 @@ from ...infra.metrics import (
     percentiles,
     scrape_metrics,
 )
-from ...infra.polling import poll_until
+from ...infra.polling import poll_until, wait_for_lfb_converged
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
@@ -423,13 +425,18 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                     format_node_metrics(report.node_metrics),
                 )
 
-        # All-node LFB convergence (robust): after the load drains, every node —
-        # all validators + readonly — should be within a few blocks of the max LFB.
-        # A persistent spread is a node failing to finalize / falling behind (the
-        # runaway leaves laggards). Logged always; asserted below unless telemetry-only.
-        all_lfbs = {n.name: _get_lfb_number(n) for n in shard.all_nodes}
-        lfb_spread = max(all_lfbs.values()) - min(all_lfbs.values())
-        logging.info("All-node LFBs after load: %s (spread %d blocks)", all_lfbs, lfb_spread)
+        # All-node LFB convergence: after the load drains, every node — all
+        # validators + readonly — should settle within a few blocks of the max
+        # LFB. A persistent spread is a node failing to finalize / falling
+        # behind (the runaway leaves laggards).
+        #
+        # Snapshot at drain first, for the record only. This is the state at the
+        # instant load stopped: it is what a telemetry-only run wants, and it
+        # makes a later convergence failure interpretable by showing how far
+        # behind the shard started from.
+        drain_lfbs = {n.name: _get_lfb_number(n) for n in shard.all_nodes}
+        drain_spread = max(drain_lfbs.values()) - min(drain_lfbs.values())
+        logging.info("All-node LFBs at drain: %s (spread %d blocks)", drain_lfbs, drain_spread)
 
         # Hard assertions. Set LOAD_TEST_TELEMETRY_ONLY=1 to skip the
         # finalization gate when collecting metrics across capacity limits.
@@ -445,9 +452,36 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
             assert (
                 total_unfinalized == 0
             ), f"{total_unfinalized} deploy(s) not finalized within {finalization_timeout}s"
-            assert lfb_spread <= 5, (
-                f"Nodes failed to converge after load: LFB spread {lfb_spread} > 5 blocks; "
-                f"{all_lfbs}"
+            # Wait for convergence instead of asserting the drain snapshot.
+            # Nodes are legitimately still catching up the moment load stops, so
+            # asserting the instantaneous spread makes this gate a race against
+            # normal catch-up: it fails whenever the sample happens to land
+            # mid-recovery. A single test run mostly gets away with that; a soak
+            # runs this hundreds of times and will hit it. Polling asserts the
+            # property actually meant — "the shard converges after load" — rather
+            # than "it had already converged at the microsecond load drained".
+            #
+            # Budget is *3 rather than a single finalization window. Unlike the
+            # sibling convergence tests there is no prior budget to restore here
+            # — the old code allowed zero — so this is an estimate, chosen from
+            # what the check has to cover: every deploy is already finalized by
+            # this point (asserted above), so what remains is laggards, mostly
+            # readonly, catching up across up to 7 nodes on a host carrying a
+            # soak's accumulated load. One 45s window is a tight floor for that.
+            #
+            # max_spread stays 5. If this times out the shard genuinely failed to
+            # converge within the budget, which is the signal the soak exists to
+            # surface; widen the timeout, never the tolerance.
+            converged_lfbs = wait_for_lfb_converged(
+                shard.all_nodes,
+                timeout=finalization_timeout * 3,
+                max_spread=5,
+                description="all-node LFB spread <= 5 after load drains",
+            )
+            logging.info(
+                "All-node LFBs converged: %s (spread %d blocks)",
+                converged_lfbs,
+                max(converged_lfbs.values()) - min(converged_lfbs.values()),
             )
         for node in shard.all_nodes:
             assert node.is_running(), f"{node.name} is not running after load test"
