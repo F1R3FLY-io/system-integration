@@ -87,7 +87,7 @@ poetry run shardctl down
 Services are defined in `services.yml` with their git URLs and branches.
 Default-enabled (cloned by `shardctl clone`):
 - **f1r3node**: Scala blockchain node (`dev` branch)
-- **f1r3node-rust**: Rust blockchain node (`staging` branch)
+- **f1r3node-rust**: Rust blockchain node (`dev` branch)
 - **rust-client**: CLI tool for blockchain interaction (`dev` branch)
 - **f1r3drive**: F1r3Drive FUSE app (`dev` branch)
 
