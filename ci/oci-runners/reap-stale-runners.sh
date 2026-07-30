@@ -6,10 +6,23 @@
 # reaper catches anything that slips through: a cloud-init failure, a hung job,
 # or a watchdog that never ran. Run it on a schedule (see reap-runners.yml).
 #
-# Thresholds are deliberately generous so a live run is never reaped — the heavy
-# pipeline is ~45 min, so a VM older than MAX_AGE_HOURS cannot be a live job.
+# Age alone is NOT a safe liveness proxy. That assumption held while the only
+# workload was the ~45-min pipeline, but the merge-recovery soak in f1r3node-rust
+# runs 22h (daily) and 60h (weekend) on a runner this repo's launch-runner.sh
+# creates. A bare age filter would kill a daily soak at hour 6, hours before its
+# first checkpoint. Two guards therefore gate every termination:
 #
-#   1. OCI : terminate ci-runner-compartment instances older than MAX_AGE_HOURS.
+#   * display-name must match REAPABLE_NAME_PREFIXES, so this can only ever
+#     terminate VMs this system created; and
+#   * a `soak-deadline-epoch` freeform tag in the future exempts the instance.
+#     f1r3node-rust stamps this on soak runners (window end + grace).
+#
+# The name filter is blast-radius containment, NOT soak protection: soak runners
+# are named `ci-eph-*` by launch-runner.sh, exactly like job runners, so the tag
+# is the only thing distinguishing them. Do not drop the tag check on the theory
+# that the prefix filter covers it.
+#
+#   1. OCI : terminate matching compartment instances older than MAX_AGE_HOURS.
 #   2. GitHub: deregister offline ci-eph-* runners (dead VMs). Their VMs have
 #      already been terminated by step 1 here or on a prior run, so they show
 #      offline; this supersedes the old cleanup-orphan-runners.sh.
@@ -21,20 +34,92 @@ set -euo pipefail
 
 MAX_AGE_HOURS="${MAX_AGE_HOURS:-6}"
 
+# Space-separated display-name prefixes this reaper may terminate. `ci-eph-` is
+# launch-runner.sh's job/soak runners; `ci-runner-golden-` is bake-image.sh's
+# image-bake VM, which f1r3node-rust's reaper skips by design (it scopes to
+# ci-eph-*), leaving this script as the only backstop for a bake that died
+# before its own trap could fire.
+REAPABLE_NAME_PREFIXES="${REAPABLE_NAME_PREFIXES:-ci-eph- ci-runner-golden-}"
+
+# Freeform tag carrying a Unix epoch past which the instance may be reaped.
+SOAK_DEADLINE_TAG="${SOAK_DEADLINE_TAG:-soak-deadline-epoch}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/state.env"
 export SUPPRESS_LABEL_WARNING=True
 
-# ISO8601 cutoff; OCI time-created sorts lexicographically by this, so a string
-# comparison in JMESPath is a valid age filter. GNU date first, BSD/macOS fallback.
-CUTOFF_ISO="$(date -u -d "${MAX_AGE_HOURS} hours ago" +%Y-%m-%dT%H:%M:%S 2>/dev/null \
-  || date -u -v-"${MAX_AGE_HOURS}"H +%Y-%m-%dT%H:%M:%S)"
+NOW_EPOCH="$(date -u +%s)"
+CUTOFF_EPOCH=$(( NOW_EPOCH - MAX_AGE_HOURS * 3600 ))
 
-echo "=== 1. Terminating ci-runner VMs created before ${CUTOFF_ISO} (>${MAX_AGE_HOURS}h old) ==="
-IDS="$(oci compute instance list -c "$COMP" --all \
-  --query "data[?\"lifecycle-state\"=='RUNNING' && \"time-created\" < '${CUTOFF_ISO}'].id" \
-  --raw-output 2>/dev/null | tr -d '[]," ' | grep -v '^$' || true)"
+# Reads `oci compute instance list` JSON on stdin, writes reapable instance ids
+# on stdout and one human-readable line per exemption on stderr.
+#
+# The two failure directions are deliberately opposite:
+#   * unparseable/absent deadline tag -> REAPABLE. A garbage tag must not buy
+#     an unbounded exemption, or a typo becomes a permanent billing leak.
+#   * unparseable/absent time-created -> SKIP. Unknown age must never authorise
+#     a termination. Worst case we leak one VM, which the next run with a valid
+#     timestamp collects; the opposite error destroys live work.
+_select_reapable() {
+  NOW_EPOCH="$NOW_EPOCH" CUTOFF_EPOCH="$CUTOFF_EPOCH" \
+  PREFIXES="$REAPABLE_NAME_PREFIXES" DEADLINE_TAG="$SOAK_DEADLINE_TAG" \
+  python3 -c '
+import json, os, sys
+from datetime import datetime, timezone
+
+prefixes = tuple(p for p in os.environ.get("PREFIXES", "").split() if p)
+deadline_tag = os.environ["DEADLINE_TAG"]
+now = int(os.environ["NOW_EPOCH"])
+cutoff = int(os.environ["CUTOFF_EPOCH"])
+
+raw = sys.stdin.read().strip()
+instances = (json.loads(raw).get("data") or []) if raw else []
+
+
+def created_epoch(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+for inst in instances:
+    name = inst.get("display-name") or "<unnamed>"
+    if inst.get("lifecycle-state") != "RUNNING":
+        continue
+    if prefixes and not name.startswith(prefixes):
+        print(f"  SKIP {name}: display-name outside REAPABLE_NAME_PREFIXES", file=sys.stderr)
+        continue
+    created = created_epoch(inst.get("time-created"))
+    if created is None:
+        print(f"  SKIP {name}: unreadable time-created, refusing to terminate", file=sys.stderr)
+        continue
+    if created >= cutoff:
+        continue
+    deadline = (inst.get("freeform-tags") or {}).get(deadline_tag)
+    if deadline is not None:
+        try:
+            if float(deadline) > now:
+                remaining = int((float(deadline) - now) / 60)
+                print(f"  SKIP {name}: {deadline_tag} {deadline} is {remaining}min in the future", file=sys.stderr)
+                continue
+        except (TypeError, ValueError):
+            print(f"  WARN {name}: unparseable {deadline_tag}={deadline!r}; treating as reapable", file=sys.stderr)
+    ident = inst.get("id")
+    if ident:
+        print(ident)
+'
+}
+
+echo "=== 1. Terminating VMs >${MAX_AGE_HOURS}h old (prefixes: ${REAPABLE_NAME_PREFIXES}; ${SOAK_DEADLINE_TAG} exempts) ==="
+IDS="$(oci compute instance list -c "$COMP" --all --output json 2>/dev/null \
+  | _select_reapable || true)"
 
 if [ -z "$IDS" ]; then
   echo "  No OCI instances older than ${MAX_AGE_HOURS}h."

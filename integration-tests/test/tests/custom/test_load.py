@@ -105,7 +105,38 @@ def _submit_deploy(node, key, index, vabn, phase):
     )
 
 
-def _run_phase(nodes, tracker, phase, start_index):
+def _current_block_number(node, monitor=None) -> int:
+    """``node.get_current_block_number()``, but explaining itself when it fails.
+
+    When the host-protection watchdog trips it SIGKILLs every node, so the next
+    query dies with a bare ``grpc StatusCode.UNAVAILABLE / Connection refused``.
+    That traceback is what the run *presents* as, while the actual cause — the
+    monitor's breach line — is thousands of log lines earlier and only reaches
+    the report at fixture teardown (``conftest.py``'s ``resource_monitor``).
+    Diagnosing run 30516534214 from the raw traceback took ~40 minutes; the
+    breach line answers it immediately. So attribute it here, at the point of
+    failure, instead of leaving the two halves to be correlated by hand.
+    """
+    try:
+        return node.get_current_block_number()
+    except Exception as exc:
+        breach = getattr(monitor, "breach", None) if monitor is not None else None
+        if breach:
+            raise AssertionError(
+                f"Node {node.name} is unreachable because the host-protection "
+                f"watchdog killed the nodes: {breach}. Raise --rss-ceiling-mb to "
+                f"suit this host, or reduce the load profile — the nodes did not "
+                f"crash on their own. Underlying error: {exc}"
+            ) from exc
+        raise AssertionError(
+            f"Node {node.name} became unreachable while querying the last "
+            f"finalized block. The resource monitor reports no breach, so this "
+            f"is a node-side failure rather than a watchdog kill — check that "
+            f"node's logs. Underlying error: {exc}"
+        ) from exc
+
+
+def _run_phase(nodes, tracker, phase, start_index, monitor=None):
     """Submit deploys for a phase, tracking each immediately.
 
     Returns (deploy_count, errors, submission_duration).
@@ -120,7 +151,7 @@ def _run_phase(nodes, tracker, phase, start_index):
         (nodes[v_name], identity.private_key()) for identity, v_name in VALIDATORS_AND_KEYS
     ]
 
-    vabn = max(0, node_list[0][0].get_current_block_number() - 1)
+    vabn = max(0, _current_block_number(node_list[0][0], monitor) - 1)
 
     deploy_count = 0
     errors: List[str] = []
@@ -153,7 +184,7 @@ def _run_phase(nodes, tracker, phase, start_index):
         for i in range(total_deploys):
             now = time.time()
             if now - vabn_refreshed_at > VABN_REFRESH_INTERVAL:
-                vabn = max(0, node_list[0][0].get_current_block_number() - 1)
+                vabn = max(0, _current_block_number(node_list[0][0], monitor) - 1)
                 vabn_refreshed_at = now
             node, key = node_list[i % len(node_list)]
             idx = start_index + i
@@ -214,7 +245,7 @@ def _get_tip(node) -> int:
 # ---------------------------------------------------------------------------
 
 
-def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
+def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor) -> None:
     """Measure deploy throughput and finalization latency under increasing load."""
     config = ShardConfig(
         # 4 genesis validators (6 nodes total with boot + readonly): enough concurrent
@@ -304,6 +335,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                     tracker,
                     phase,
                     deploy_index,
+                    resource_monitor,
                 )
                 deploy_index += deploy_count + len(errors)
                 total_failures += len(errors)
