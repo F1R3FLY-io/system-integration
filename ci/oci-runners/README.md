@@ -55,7 +55,7 @@ Both arches use **16 OCPU / 32 GB / boot from baked image**:
 | `cloud-init-runner.yml.tmpl` | Production cloud-init template. Assumes the baked image; runs only the runner-specific steps (config.sh, run.sh, self-terminate). An idle watchdog self-terminates the VM if no job arrives within 45 min, so over-provisioned/cancelled-run runners don't leak. Variables (`__REG_TOKEN__`, `__GH_REPO__`, etc.) substituted at launch time by `launch-runner.sh`. |
 | `bake-image.sh` | One-shot bake. Launches a golden VM, waits for it to STOP, snapshots its boot volume to a custom image, terminates the golden VM. Re-run when the runner agent version is deprecated or the staging Docker image needs refreshing. |
 | `launch-runner.sh` | Launches one ephemeral runner VM. Mints a short-lived (1-hour) registration token via `gh api`, renders cloud-init, calls `oci compute instance launch`. Called by the CI workflow + can be invoked manually for debugging. |
-| `reap-stale-runners.sh` | Safety net: terminates `ci-runner` VMs older than `MAX_AGE_HOURS` (default 6h, well past the ~45-min pipeline) and deregisters offline `ci-eph-*` runner entries. Run automatically every 30 min by `.github/workflows/reap-runners.yml`; safe to run manually. Supersedes the old `cleanup-orphan-runners.sh`. |
+| `reap-stale-runners.sh` | Safety net: terminates `ci-runner` VMs older than `MAX_AGE_HOURS` (default 6h, well past the ~45-min pipeline) and deregisters offline `ci-eph-*` runner entries. **Manual / on-demand only from this repo** — the scheduled reaping runs in `f1r3node-rust` (`.github/workflows/ci-runner-reaper.yml`), which is where the `ci-eph-*` pool registers and where the OCI credentials are provisioned. Supersedes the old `cleanup-orphan-runners.sh`. |
 | `destroy-all.sh` | Emergency: interactively force-terminates every instance in `ci-runner` compartment. |
 | `README.md` | This file. |
 
@@ -102,7 +102,7 @@ Useful for triaging an issue without going through the full PR pipeline. The run
 ### Emergency cleanup
 
 ```bash
-./reap-stale-runners.sh        # terminate VMs >6h old + deregister offline GH runners (also auto-runs every 30m via reap-runners.yml)
+./reap-stale-runners.sh        # terminate VMs >6h old + deregister offline GH runners (manual; the scheduled reaper lives in f1r3node-rust)
 ./destroy-all.sh               # nuke EVERY instance in ci-runner now (interactive) — only when no run is active
 ```
 

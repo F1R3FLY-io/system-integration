@@ -502,3 +502,139 @@ checkout (pre-existing `pydantic_core` import error in the active env, reproduce
 on untouched files). The change is a call-site substitution to an already-reviewed
 helper, but the `* 3` budget in particular is unmeasured against a real loaded
 shard — the soak itself is the first real measurement.
+
+---
+
+## TASK-008: Fix both CI failures on `main`
+
+```yaml
+---
+id: TASK-008
+status: review
+claimed_by: claude-session-02f66bb7
+claimed_at: 2026-07-30T01:10:00Z
+branch: hotfix/soak-readiness
+---
+```
+
+`main` had two unrelated red signals. Neither was caused by code, and both are
+fixed here. Recorded together because "CI is red on main" was one report.
+
+### 1. `Rust: test_web_api (shard)` — transient registry reset, no retry
+
+Run 30502597133 (the `29d7bd0` merge) failed at step 6, `shardctl pull
+f1r3node-rust`, with step 7 `Run test` **skipped**. So the job reported a test
+failure while running no test. The cause:
+
+```
+readonly Error Head ".../f1r3fly-rust/manifests/staging": Get
+"https://auth.docker.io/token?...": read tcp 10.1.0.166:39916->104.18.43.178:443:
+read: connection reset by peer
+```
+
+A TCP reset while fetching a Docker Hub auth token. `docker compose pull` has no
+retry of its own, so one reset fails the command and the job.
+
+**Confirmed transient, not code:** the same job on the same content passed on PR
+#68 (run 30504383583, all jobs green).
+
+**Fix:** retry in `ComposeManager.pull_single_file` (`shardctl/compose.py`) — 3
+attempts, 5s linear backoff, overridable via `SHARDCTL_PULL_ATTEMPTS`. Fixed in
+`shardctl` rather than the workflow because `smoke-test.yml` has **12** `shardctl
+pull` call sites; one wrapper each would be twelve chances to miss one, and local
+dev gets the retry for free.
+
+Retry is scoped to `pull` only, never `up`/`down` — pull is idempotent, those are
+not. The transient list deliberately **excludes** `manifest unknown`, `not
+found`, `denied` and `unauthorized`: a genuinely absent image or a bad credential
+will not fix itself, and retrying those would delay an honest failure by the full
+backoff. Verified by 17 behavioural checks, including that the real CI reset
+string classifies transient, that a missing manifest fails in exactly 1 attempt,
+and that `SHARDCTL_PULL_ATTEMPTS=0` clamps to 1 so the variable can never
+disable pulling.
+
+### 2. `Reap stale ephemeral runners` — deleted as redundant
+
+Failed **100/100** runs in the retained window (since 2026-07-22; added
+2026-06-25 in `a50eeb1`, #61), every 30 minutes — 48 red runs/day, and the reason
+the repo looked perpetually broken. All five `secrets.OCI_*` plus `RELEASE_PAT`
+resolve empty because they do not exist on this repo, so it wrote an invalid
+`~/.oci/config` and `oci iam region list` rejected it.
+
+Deleted rather than provisioned or silenced, on this evidence:
+
+- **This repo has 0 self-hosted runners.** The `ci-eph-*` pool registers on
+  `f1r3node-rust` (11 runners at the time of writing, 9 of them `ci-eph-*`).
+- **`f1r3node-rust` already has `.github/workflows/ci-runner-reaper.yml`**, which
+  terminates `ci-eph-*` OCI instances past max age *and* deregisters offline
+  runners — the same function, with OCI secrets provisioned, and its last 5
+  scheduled runs all succeeded.
+
+So the safety net is intact where the pool actually lives; this copy had never
+once executed. `ci/oci-runners/reap-stale-runners.sh` is **kept** — it is
+manually runnable and `f1r3node-rust` checks out this directory — but
+`ci/oci-runners/README.md` no longer claims a 30-minute schedule that does not
+exist, and now points at the f1r3node-rust workflow instead.
+
+Human decision: deletion was offered as one of three options (delete /
+skip-when-unconfigured / leave alone) and chosen explicitly. To restore, revert
+this commit's deletion and add `OCI_TENANCY_OCID`, `OCI_USER_OCID`, `OCI_REGION`,
+`OCI_FINGERPRINT`, `OCI_PRIVATE_KEY`, `RELEASE_PAT` as repo secrets — but note
+that would then duplicate f1r3node-rust's reaper against the same compartment.
+
+### 3. Cost-leak audit prompted by the deletion — a real gap found and closed
+
+The deletion raised a fair question: f1r3node-rust suffered a runner leak costing
+~$1000/day last month, which is why its reapers exist. Auditing whether this repo
+can repeat that turned up **a genuine hole, and it predates this change.**
+
+**This repo's own CI cannot leak instances.** Every job in `smoke-test.yml` is
+`runs-on: ubuntu-latest`, and nothing under `.github/workflows/` calls
+`launch-runner.sh` or `oci compute instance launch`. The OCI VMs are launched by
+*f1r3node-rust* workflows, which check this repo out for the scripts. So deleting
+a workflow here removed no protection over anything this repo starts — and the
+deleted workflow had in any case never executed successfully.
+
+**The hole is `bake-image.sh`, and neither reaper covered it.** Confirmed the two
+reapers act on the **same compartment** (`COMP` in `state.env` equals
+`CI_RUNNER_COMPARTMENT_OCID` in f1r3node-rust's reaper), so their filters are
+directly comparable:
+
+| | this repo's `reap-stale-runners.sh` | f1r3node-rust `ci-runner-reaper.yml` |
+|---|---|---|
+| Max age | 6h | 2h (tighter) |
+| Name filter | **none** — any instance in compartment | `ci-eph-*` only, with a defense-in-depth `SKIP` for anything else |
+| States | `RUNNING` | `RUNNING` or `STOPPED` |
+| Actually runs? | **no** (manual; workflow never provisioned) | **yes**, last 5 scheduled runs green |
+
+`launch-runner.sh:82` names runners `ci-eph-$REPO_SLUG-$ARCH-$TS-$RAND`, so the
+ephemeral pool is covered. But `bake-image.sh:56` names its VM
+**`ci-runner-golden-$ARCH-$TS`** — which f1r3node-rust's reaper skips *by design*.
+The only thing that would have caught it is this repo's unfiltered script, which
+never ran on a schedule. So a leaked golden VM was reaped by nothing.
+
+And leaking one was easy: `bake-image.sh` runs under `set -euo pipefail`, launches
+at `[1/6]`, and terminates at `[4/6]`. Any failure in between exits immediately
+and abandons the VM — most likely during the `[2/6]` bootstrap wait, which polls
+for 6-10 minutes and is exactly where an operator hits ctrl-C. Worse, step `[4/6]`
+ended in `|| true`, so a *failed* terminate still printed the "Done" banner over a
+live instance.
+
+**Fixed at the source** (`ci/oci-runners/bake-image.sh`): an `EXIT INT TERM` trap
+armed immediately after launch terminates the golden VM on any unclean exit, and
+`[4/6]` now checks `PIPESTATUS` — disarming the trap only on a confirmed
+termination, and otherwise leaving it armed to retry and then print the manual
+`oci compute instance terminate` command. A bake can no longer report success over
+a billing instance. Verified by 7 checks against a stubbed `oci`, including SIGINT
+and that the original exit code is preserved rather than masked by the trap.
+
+**Residual risk, and where it must be closed.** The trap cannot fire if the
+process dies uncatchably (`SIGKILL`, host crash, network partition mid-script).
+For that, a scheduled sweeper is the only backstop, and **no scheduled reaper
+currently matches `ci-runner-golden-*`.** The fix belongs in f1r3node-rust's
+reaper — it already has credentials and runs every 30 minutes; widening its filter
+to `ci-eph-*` plus `ci-runner-golden-*` (keeping the defense-in-depth check in
+step with it) closes the class. Raised in the hand-off note at
+`f1r3node-rust/docs/discoveries/2026-07-30-soak-system-integration-pin-bump.md`.
+Not done here because this repo cannot schedule it — no OCI credentials, which is
+the same reason the deleted workflow never worked.

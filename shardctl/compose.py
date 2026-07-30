@@ -1,6 +1,8 @@
 """Docker Compose management wrapper."""
 
+import os
 import subprocess
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -10,6 +12,62 @@ from .config import Config
 from .utils import get_docker_compose_command
 
 console = Console()
+
+# Registry/network failures a retry can plausibly clear. ``docker compose pull``
+# has no retry of its own, so a single TCP reset while fetching a Docker Hub
+# auth token fails the whole command. In CI that skips the test step and the job
+# is reported as a test failure, which is doubly misleading: no test ran, and
+# nothing about the code was wrong.
+#
+# Matched case-insensitively against combined stdout+stderr. Deliberately does
+# NOT include "manifest unknown", "not found", "denied" or "unauthorized" — a
+# genuinely absent image or a bad credential will not fix itself, and retrying
+# those just delays an honest failure by the full backoff.
+_TRANSIENT_PULL_ERRORS = (
+    "connection reset by peer",
+    "unexpected eof",
+    "tls handshake timeout",
+    "i/o timeout",
+    "timeout awaiting response headers",
+    "temporary failure in name resolution",
+    "no such host",
+    "toomanyrequests",
+    "too many requests",
+    "500 internal server error",
+    "502 bad gateway",
+    "503 service unavailable",
+    "504 gateway time-out",
+    "context deadline exceeded",
+)
+
+_PULL_ATTEMPTS_DEFAULT = 3
+_PULL_BACKOFF_SECONDS = 5
+
+
+def _pull_attempts() -> int:
+    """Number of pull attempts, overridable via ``SHARDCTL_PULL_ATTEMPTS``.
+
+    Values below 1 are clamped to 1 so the variable can never disable pulling
+    outright, only reduce it to a single no-retry attempt.
+    """
+    raw = os.environ.get("SHARDCTL_PULL_ATTEMPTS")
+    if not raw:
+        return _PULL_ATTEMPTS_DEFAULT
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        console.print(
+            f"[yellow]Ignoring SHARDCTL_PULL_ATTEMPTS={raw!r} (not an integer); "
+            f"using {_PULL_ATTEMPTS_DEFAULT}.[/yellow]"
+        )
+        return _PULL_ATTEMPTS_DEFAULT
+
+
+def _is_transient_pull_error(output: str) -> bool:
+    """True when ``output`` looks like a retryable registry/network failure."""
+    lowered = output.lower()
+    return any(marker in lowered for marker in _TRANSIENT_PULL_ERRORS)
+
 
 # Mapping from compose file base name to env file name.
 # For f1r3node variants (f1r3node.yml, f1r3node-standalone.yml, etc.), use .env.node.
@@ -265,7 +323,7 @@ class ComposeManager:
         compose_file: Path,
         services: Optional[List[str]] = None,
     ):
-        """Pull images for a single compose file.
+        """Pull images for a single compose file, retrying transient registry errors.
 
         Args:
             compose_file: Path to the compose file.
@@ -276,4 +334,38 @@ class ComposeManager:
         if services:
             args.extend(services)
 
-        return self._run_single_file_command(compose_file, args)
+        attempts = _pull_attempts()
+
+        for attempt in range(1, attempts + 1):
+            # check=False so a transient failure returns here instead of
+            # exiting the process inside _run_single_file_command.
+            result = self._run_single_file_command(compose_file, args, check=False)
+            if result.returncode == 0:
+                return result
+
+            output = f"{result.stderr or ''}\n{result.stdout or ''}"
+            transient = _is_transient_pull_error(output)
+
+            if attempt < attempts and transient:
+                delay = _PULL_BACKOFF_SECONDS * attempt
+                console.print(
+                    f"[yellow]Pull failed with a transient registry error "
+                    f"(attempt {attempt}/{attempts}); retrying in {delay}s.[/yellow]"
+                )
+                time.sleep(delay)
+                continue
+
+            console.print(
+                f"\n[red]Error running docker compose pull for {compose_file.name}:[/red]"
+            )
+            if output.strip():
+                console.print(f"[yellow]{output.strip()}[/yellow]")
+            if transient:
+                console.print(
+                    f"[yellow]Gave up after {attempts} attempts; the registry error "
+                    f"persisted. Set SHARDCTL_PULL_ATTEMPTS to raise the limit.[/yellow]"
+                )
+            raise SystemExit(1)
+
+        # Unreachable: the loop either returns or raises.
+        raise SystemExit(1)

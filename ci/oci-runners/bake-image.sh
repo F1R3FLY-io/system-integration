@@ -63,6 +63,48 @@ if [[ "$SSH_KEY_PUB_RESOLVED" != /* ]]; then
   SSH_KEY_PUB_RESOLVED="$SCRIPT_DIR/$SSH_KEY_PUB_RESOLVED"
 fi
 
+# Cost guard. The golden VM is terminated in step [4/6], but every step between
+# the launch below and that point can abort under `set -euo pipefail` — the
+# step [2/6] bootstrap wait most of all, since it polls for minutes and is the
+# step an operator is most likely to interrupt. On any such exit the instance
+# leaks, and NOTHING reaps it:
+#
+#   * f1r3node-rust's ci-runner-reaper.yml is the only scheduled reaper with
+#     credentials, and it filters on display-name `ci-eph-*` with an explicit
+#     defense-in-depth SKIP for anything else. A `ci-runner-golden-*` VM is
+#     skipped by design.
+#   * this repo's reap-stale-runners.sh has no name filter and would have caught
+#     it, but it is manual-only (its scheduled workflow was never provisioned
+#     with OCI credentials and never once ran).
+#
+# A leaked instance bills indefinitely; a leaked STOPPED one still bills its boot
+# volume. Hence: terminate on any unclean exit. Idempotent with step [4/6], which
+# clears the trap on success.
+GOLDEN_INSTANCE_OCID=""
+
+_reap_golden_on_exit() {
+  local rc=$?
+  [ -n "$GOLDEN_INSTANCE_OCID" ] || exit "$rc"
+  echo
+  echo "!!! Bake did not complete (exit $rc). Terminating golden instance to avoid a billing leak."
+  echo "    $GOLDEN_INSTANCE_OCID"
+  if oci compute instance terminate \
+    --instance-id "$GOLDEN_INSTANCE_OCID" \
+    --force \
+    --preserve-boot-volume false >/dev/null 2>&1; then
+    echo "    Terminate call submitted."
+  else
+    # Never leave this silent: an unreaped VM is the expensive failure mode, so
+    # the operator must be told exactly what to remove by hand.
+    echo "    TERMINATE FAILED. Remove it manually or it will bill indefinitely:"
+    echo "      oci compute instance terminate --instance-id $GOLDEN_INSTANCE_OCID \\"
+    echo "        --force --preserve-boot-volume false"
+    echo "    Or run ./destroy-all.sh to clear the whole ci-runner compartment."
+  fi
+  exit "$rc"
+}
+trap _reap_golden_on_exit EXIT INT TERM
+
 echo "=== [1/6] Launching golden instance $GOLDEN_NAME ==="
 INSTANCE_OCID=$(oci compute instance launch \
   -c "$COMP" \
@@ -77,6 +119,8 @@ INSTANCE_OCID=$(oci compute instance launch \
   --user-data-file "$SCRIPT_DIR/cloud-init-golden.yml" \
   --query 'data.id' --raw-output 2>/dev/null)
 echo "  Instance: $INSTANCE_OCID"
+# Arm the cost guard as early as possible: from here on, any exit reaps this VM.
+GOLDEN_INSTANCE_OCID="$INSTANCE_OCID"
 
 echo "=== [2/6] Waiting for golden bootstrap to complete (instance reaches STOPPED) ==="
 echo "    Expected ~6-10 min: apt installs, Docker, Python, Rust, OCI CLI, runner agent, staging image pull"
@@ -119,10 +163,24 @@ NEW_IMAGE_OCID=$(oci compute image create \
 echo "  Image: $NEW_IMAGE_OCID"
 
 echo "=== [4/6] Terminating golden instance + boot volume ==="
+set +e
 oci compute instance terminate \
   --instance-id "$INSTANCE_OCID" \
   --force \
-  --preserve-boot-volume false 2>&1 | tail -3 || true
+  --preserve-boot-volume false 2>&1 | tail -3
+terminate_rc=${PIPESTATUS[0]}
+set -e
+
+if [ "$terminate_rc" -eq 0 ]; then
+  # Confirmed gone — disarm the cost guard so the EXIT trap is a no-op.
+  GOLDEN_INSTANCE_OCID=""
+else
+  # Deliberately leave the guard armed. This step used to end in `|| true`,
+  # which printed the "Done" banner while the instance kept billing. Now the
+  # exit trap retries the terminate and, failing that, prints the manual
+  # command — a bake must never report success over a live VM.
+  echo "  WARNING: terminate returned $terminate_rc; the exit guard will retry it."
+fi
 
 echo
 echo "=== [5/6] Done. Update state.env ==="
