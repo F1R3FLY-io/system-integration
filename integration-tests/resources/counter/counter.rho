@@ -1,0 +1,27 @@
+new counterCh, ctrl, uriCh,
+    insertArbitrary(`rho:registry:insertArbitrary`),
+    deployId(`rho:system:deployId`)
+in {
+  counterCh!(0) |
+  contract ctrl(@op, ret) = {
+    match op {
+      "inc" => {
+        for (@n <- counterCh) {
+          counterCh!(n + 1) | ret!(n + 1)
+        }
+      }
+      "get" => {
+        for (@n <<- counterCh) {
+          ret!(n)
+        }
+      }
+      _ => {
+        ret!(-1)
+      }
+    }
+  } |
+  insertArbitrary!(bundle+{*ctrl}, *uriCh) |
+  for (@uri <- uriCh) {
+    deployId!(uri)
+  }
+}

@@ -67,6 +67,19 @@ Each test spins up a single node with no peers. Used for heartbeat timing, stand
 
 ---
 
+## `soak/` — manual long-running tests
+
+These tests live outside normal pytest discovery and CI. Run them by explicit
+path when validating long-term node stability.
+
+| Tests | File | Summary |
+|---|---|---|
+| 1 | [test_counter_liveness](test_counter_liveness.md) | 1,000 sequential finalized counter increments, with an exploratory state assertion after every round |
+
+**Total: 1 manual soak test.**
+
+---
+
 ## Summary
 
 | Directory | Files | Tests |
@@ -74,4 +87,6 @@ Each test spins up a single node with no peers. Used for heartbeat timing, stand
 | `tests/shared/` | 14 | 69 |
 | `tests/custom/` | 11 | 25 |
 | `tests/standalone/` | 3 | 14 |
-| **Total** | **28** | **108** |
+| `soak/` (manual) | 1 | 1 |
+| **Default suite** | **28** | **108** |
+| **Including manual soak** | **29** | **109** |

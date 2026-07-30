@@ -90,6 +90,24 @@ How it works:
 
 Each worker gets a non-overlapping host port range automatically. No coordination needed.
 
+### Manual counter stability soak
+
+The 1,000-round counter test is outside normal pytest discovery because a full
+run takes several hours. It creates an isolated three-validator shard with a
+readonly observer, finalizes one increment at a time on every node, and
+exploratory-queries the exact counter value after every round.
+
+```bash
+F1R3FLY_NODE_BINARY=/absolute/path/to/f1r3node-rust/target/release/node \
+F1R3FLY_NODE_DEFAULTS_CONF=/absolute/path/to/f1r3node-rust/node/src/main/resources/defaults.conf \
+poetry run pytest integration-tests/test/soak/test_counter_liveness.py \
+  --provider=subprocess -v -s --keep-on-failure
+```
+
+For harness validation only, set `F1R3FLY_COUNTER_ITERATIONS=3`. A reduced run
+does not count as the 1,000-round acceptance result. See
+[test_counter_liveness](test/docs/test_counter_liveness.md).
+
 ---
 
 ## Flags
