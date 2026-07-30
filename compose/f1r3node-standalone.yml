@@ -11,9 +11,11 @@
 #
 # NOTE: For Rust nodes, use f1r3node-rust-standalone.yml instead.
 
+name: f1r3fly-scala-standalone
+
 services:
   standalone:
-    image: ${F1R3FLY_SCALA_IMAGE:-f1r3flyindustries/f1r3fly-scala-node}
+    image: ${F1R3FLY_NODE_IMAGE:-f1r3flyindustries/f1r3fly-scala-node:latest}
     user: root
     restart: always
     networks:
@@ -36,7 +38,7 @@ services:
       - "40405:40405"
     volumes:
       - standalone-data:/var/lib/rnode
-      - ../conf/standalone-dev.conf:/var/lib/rnode/rnode.conf
+      - ../conf/standalone-scala.conf:/var/lib/rnode/rnode.conf
       - ../genesis/standalone-wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/standalone-bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml

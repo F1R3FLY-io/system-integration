@@ -417,8 +417,8 @@ def down():
     all_ok = True
     for node_type, topology, compose_file in all_configs:
         console.print(
-            f"[yellow]Stopping {node_type.value} {topology.value}"
-            f" using {compose_file.name}...[/yellow]"
+            f"[yellow]Stopping {node_type.value} {topology.value} "
+            f"using {compose_file.name}...[/yellow]"
         )
         result = run_compose_command(config, compose_file, ["down"])
         if result.returncode != 0:
@@ -598,8 +598,8 @@ def reset(
     if not yes:
         console.print()
         console.print(
-            "[red]This will stop all containers and permanently"
-            " delete all blockchain data volumes[/red]"
+            "[red]This will stop all containers and permanently delete all "
+            "blockchain data volumes[/red]"
         )
         if not Confirm.ask("Are you sure?"):
             console.print("[yellow]Cancelled[/yellow]")
@@ -625,7 +625,7 @@ def pull(node_type: Optional[NodeType] = None):
     if node_type is None or node_type == NodeType.SCALA:
         images_to_pull.append(("Scala", "f1r3flyindustries/f1r3fly-scala-node:latest"))
     if node_type is None or node_type == NodeType.RUST:
-        images_to_pull.append(("Rust", "f1r3flyindustries/f1r3fly-rust-node:latest"))
+        images_to_pull.append(("Rust", "f1r3flyindustries/f1r3fly-rust:latest"))
 
     label = images_to_pull[0][0] if len(images_to_pull) == 1 else "all"
     console.print(f"[blue]Pulling latest {label} node image(s)...[/blue]")

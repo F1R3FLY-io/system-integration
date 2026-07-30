@@ -83,12 +83,14 @@ def clone_services(service_repos: Dict[str, Dict], services_dir: Path, force: bo
             service_path = services_dir / service_name
 
             # Extract URL and branch
-            repo_url = (
-                repo_config.get("url", repo_config)
-                if isinstance(repo_config, dict)
-                else repo_config
-            )
+            repo_url = repo_config.get("url") if isinstance(repo_config, dict) else repo_config
             branch = repo_config.get("branch") if isinstance(repo_config, dict) else None
+
+            # Some entries in services.yml have no `url` (e.g. monitoring — a
+            # compose-only service that lives in this repo). Nothing to clone.
+            if not repo_url:
+                console.print(f"[dim]Skipping {service_name}: no repository URL configured[/dim]")
+                continue
 
             # Check if service already exists
             if service_path.exists():
@@ -306,8 +308,8 @@ def build_service(
     node18_prefix = ""
     #        'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"; '
     #        '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; '
-    #        'if command -v nvm >/dev/null 2>&1; then '
-    #        'nvm install 18 >/dev/null && nvm use 18 >/dev/null; fi; '
+    #        'if command -v nvm >/dev/null 2>&1; then nvm install 18 '
+    #        '>/dev/null && nvm use 18 >/dev/null; fi; '
     #        'corepack enable >/dev/null 2>&1; '
     #    )
 
@@ -330,9 +332,9 @@ def build_service(
             if use_nix:
                 # Run the command directly in nix develop environment
                 step_cmd = (
-                    f"nix --extra-experimental-features nix-command"
-                    f" --extra-experimental-features flakes"
-                    f' develop --command bash -c "{step_core}"'
+                    "nix --extra-experimental-features nix-command "
+                    "--extra-experimental-features flakes develop "
+                    f'--command bash -c "{step_core}"'
                 )
             else:
                 step_cmd = step_core
@@ -392,9 +394,9 @@ def build_service(
 
     if use_nix:
         build_command = (
-            f"nix --extra-experimental-features nix-command"
-            f" --extra-experimental-features flakes"
-            f' develop --command bash -c "{build_command}"'
+            "nix --extra-experimental-features nix-command "
+            "--extra-experimental-features flakes develop "
+            f'--command bash -c "{build_command}"'
         )
 
     # Run the build command
@@ -571,11 +573,11 @@ def clean_services(
     """Remove service directories from services/ folder.
 
     Args:
-        services_to_clean: List of specific services to clean. If None
-            or empty, cleans based on all_services flag.
+        services_to_clean: Specific services to clean. If None or empty,
+            falls back to ``all_services``.
         services_dir: Path to services directory.
-        all_services: If True (and no services_to_clean specified),
-            remove all services. If False, remove nothing.
+        all_services: If True (and ``services_to_clean`` is empty), remove
+            all services. If False, remove nothing.
     """
     import shutil
 

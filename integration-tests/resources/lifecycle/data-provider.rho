@@ -1,0 +1,21 @@
+// Data provider contract for contract-to-contract interaction test.
+// Registers a persistent query method in the registry.
+// Returns the registered URI via deployId.
+new
+  providerCh,
+  insertArbitrary(`rho:registry:insertArbitrary`),
+  deployId(`rho:system:deployId`)
+in {
+  contract providerCh(@"getData", ret) = {
+    ret!("hello_from_provider")
+  } |
+  contract providerCh(@"getNumber", ret) = {
+    ret!(42)
+  } |
+  new uriCh in {
+    insertArbitrary!(bundle+{*providerCh}, *uriCh) |
+    for (@uri <- uriCh) {
+      deployId!(uri)
+    }
+  }
+}

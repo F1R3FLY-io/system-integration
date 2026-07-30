@@ -14,9 +14,11 @@
 #
 # NOTE: For Rust nodes, use f1r3node-rust-validator4.yml instead.
 
+name: f1r3fly-scala-validator4
+
 services:
   validator4:
-    image: ${F1R3FLY_SCALA_IMAGE:-f1r3flyindustries/f1r3fly-scala-node}
+    image: ${F1R3FLY_NODE_IMAGE:-f1r3flyindustries/f1r3fly-scala-node:latest}
     user: root
     restart: always
     networks:
@@ -39,7 +41,7 @@ services:
       - "40445:40405"
     volumes:
       - validator4-data:/var/lib/rnode
-      - ../conf/default.conf:/var/lib/rnode/rnode.conf
+      - ../conf/scala.conf:/var/lib/rnode/rnode.conf
       - ../genesis/wallets.txt:/var/lib/rnode/genesis/wallets.txt
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
       - ../conf/logback.xml:/var/lib/rnode/logback.xml
