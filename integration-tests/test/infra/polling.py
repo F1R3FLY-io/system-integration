@@ -67,7 +67,7 @@ def wait_for_node_running(
 
     Primary signal: ``/api/status`` ``isReady == true`` (Rust nodes).
     Fallback signal: log marker — used when ``status_url`` is unset OR
-    when the status response is missing ``isReady`` (Scala nodes, whose
+    when the status response is missing ``isReady`` (older nodes, whose
     ``/api/status`` schema predates that field).
 
     Also checks if the container/pod has exited — if so, raises
@@ -98,7 +98,7 @@ def wait_for_node_running(
                             return
                     else:
                         # Status returned but no isReady field — this node
-                        # doesn't expose the readiness flag (e.g. Scala).
+                        # doesn't expose the readiness flag.
                         # Use the log marker for the remainder of this poll.
                         use_log_fallback = True
             except (requests.ConnectionError, requests.Timeout, Exception):

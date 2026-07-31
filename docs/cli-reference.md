@@ -111,7 +111,6 @@ shardctl compose ARGS...          Generic passthrough to docker compose
 shardctl test [SUITE]             Run integration tests via pytest
   --image, -i TEXT                Custom Docker image (sets F1R3FLY_NODE_IMAGE)
   --rust                          Shortcut: resolve to default Rust node image
-  --scala                         Shortcut: resolve to default Scala node image
   --skip-setup                    Adopt an existing shard (requires --session-id)
   --session-id TEXT               Session ID of an existing shard (printed by
                                   --keep-running runs)
@@ -124,7 +123,7 @@ shardctl test [SUITE]             Run integration tests via pytest
                                   with -x (e.g. `--keep-on-failure -a -x`)
   --verbose, -v                   Verbose pytest output
   --pytest-args, -a TEXT          Additional pytest arguments
-  Image priority: F1R3FLY_NODE_IMAGE env > --image > --rust/--scala > default
+  Image priority: F1R3FLY_NODE_IMAGE env > --image > default
 shardctl test-report              Parse and display report.json from the last run
   --failures                      Show failed tests only
 shardctl test-reset               (See "Cleanup" section above)

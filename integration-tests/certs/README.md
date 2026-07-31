@@ -15,7 +15,7 @@ no security value:
 They are checked in rather than generated per-run because several node IDs are
 **derived from these keys and hardcoded elsewhere** — most importantly the
 bootstrap node ID `1e780e5dfbe0a3d9470a2b414f502d59402e09c2`, which appears as
-the `BOOTSTRAP_NODE_ID` default in `docker-compose.yml` and every
+the `BOOTSTRAP_NODE_ID` default in every
 `compose/*.yml` shard file. Regenerating the *keys* would break those; see
 "Regenerating" below.
 
@@ -76,6 +76,6 @@ issuing a certificate under a malformed CN.
 
 Generating a **new key** changes that node's ID and requires updating every
 hardcoded reference to it (for `bootstrap/`, the `BOOTSTRAP_NODE_ID` defaults in
-`docker-compose.yml` and `compose/*.yml`).
+`compose/*.yml`).
 
 All fixtures currently expire 2036-07-24.

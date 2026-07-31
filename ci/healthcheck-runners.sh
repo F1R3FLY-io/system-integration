@@ -7,7 +7,6 @@
 #
 # Usage:
 #   ./healthcheck-runners.sh --type rust  IP1 IP2
-#   ./healthcheck-runners.sh --type scala IP1 IP2
 #   ./healthcheck-runners.sh IP                     # auto-detects type
 #
 # Requires SSH access via the f1r3fly-ci-oracle key (override with --key).
@@ -24,15 +23,14 @@ IPS=()
 
 usage() {
     cat <<EOF
-Usage: $0 [--type rust|scala] [--key SSH_KEY_PATH] IP [IP ...]
+Usage: $0 [--type rust] [--key SSH_KEY_PATH] IP [IP ...]
 
-  --type   Runner type (rust or scala). If omitted, auto-detects.
+  --type   Runner type (rust). If omitted, auto-detects.
   --key    Path to SSH private key (default: ~/.ssh/f1r3fly-ci-oracle)
   IP       One or more instance IPs to check.
 
 Examples:
   $0 --type rust  10.0.0.1 10.0.0.2
-  $0 --type scala 10.0.0.3 10.0.0.4
   $0 10.0.0.1                           # auto-detect type
 EOF
     exit 1
@@ -40,7 +38,16 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --type)  RUNNER_TYPE="$2"; shift 2 ;;
+        --type)
+            # Only 'rust' remains after the Scala node was retired. Reject anything
+            # else rather than silently falling through to a partial check set —
+            # `--type scala` from a stale script must fail loudly, not quietly skip
+            # the toolchain checks it thinks it is running.
+            case "$2" in
+                rust) RUNNER_TYPE="$2" ;;
+                *) echo "ERROR: unsupported --type '$2' (only 'rust' is supported)"; exit 2 ;;
+            esac
+            shift 2 ;;
         --key)   SSH_KEY="$2"; shift 2 ;;
         --help)  usage ;;
         -*)      echo "Unknown option: $1"; usage ;;
@@ -69,18 +76,19 @@ warn() { echo -e "  ${YELLOW}WARN${NC}  $1"; }
 # -- Auto-detect runner type via SSH --------------------------------
 detect_type() {
     local ip="$1"
-    # Check if Rust is installed for runner user
+    # Only one runner flavour remains; the probe is kept so a host that is
+    # not a provisioned runner at all still reports something meaningful.
     if ssh $SSH_OPTS "$SSH_USER@$ip" \
         "sudo -u runner bash -c 'test -f ~/.cargo/env'" 2>/dev/null; then
         echo "rust"
     else
-        echo "scala"
+        echo "unknown"
     fi
 }
 
 # -- Remote check script generator ---------------------------------
 # Returns a bash script that runs on the remote instance.
-# $1 = runner type (scala|rust)
+# $1 = runner type (rust)
 remote_check_script() {
     local rtype="$1"
     cat <<'COMMON'
@@ -157,41 +165,6 @@ else
     FAIL=$((FAIL+1))
 fi
 RUST
-    elif [ "$rtype" = "scala" ]; then
-        cat <<'SCALA'
-# Java
-check "java" java -version
-
-# SBT
-SBT_OUT=$(sbt --version 2>&1 | tail -1) || true
-if [ -n "$SBT_OUT" ]; then
-    echo "OK|sbt|$SBT_OUT"
-    PASS=$((PASS+1))
-else
-    echo "FAIL|sbt|not found"
-    FAIL=$((FAIL+1))
-fi
-
-# GHC (as runner user)
-GHC_OUT=$(sudo -u runner bash -lc 'export PATH=~/.ghcup/bin:$PATH && ghc --version' 2>&1) || true
-if [ -n "$GHC_OUT" ]; then
-    echo "OK|ghc|$GHC_OUT"
-    PASS=$((PASS+1))
-else
-    echo "FAIL|ghc|not found for runner user"
-    FAIL=$((FAIL+1))
-fi
-
-# BNFC (as runner user)
-BNFC_OUT=$(sudo -u runner bash -lc 'export PATH=~/.ghcup/bin:~/.cabal/bin:$PATH && bnfc --version' 2>&1) || true
-if [ -n "$BNFC_OUT" ]; then
-    echo "OK|bnfc|$BNFC_OUT"
-    PASS=$((PASS+1))
-else
-    echo "FAIL|bnfc|not found for runner user"
-    FAIL=$((FAIL+1))
-fi
-SCALA
     fi
 
     cat <<'DISK'
@@ -241,6 +214,20 @@ for ip in "${IPS[@]}"; do
     rtype="$RUNNER_TYPE"
     if [[ -z "$rtype" ]]; then
         rtype=$(detect_type "$ip")
+    fi
+
+    # A host we cannot identify is a FAILURE, not a partial pass. remote_check_script
+    # only emits the Rust toolchain checks when rtype is exactly "rust", so letting
+    # "unknown" through would run the common checks, skip the toolchain ones, and
+    # report healthy — while the most likely cause of the failed probe is the very
+    # thing being skipped (a missing Cargo install).
+    if [[ "$rtype" != "rust" ]]; then
+        hostname=$(ssh $SSH_OPTS "$SSH_USER@$ip" "hostname" 2>/dev/null || echo "unknown")
+        echo -e "${BOLD}=== $hostname ($rtype) === ${NC}$ip"
+        fail "runner type: could not identify this host as a provisioned runner (~/.cargo/env absent)"
+        echo
+        TOTAL_FAIL=$((TOTAL_FAIL+1))
+        continue
     fi
 
     # Get hostname for display

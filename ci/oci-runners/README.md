@@ -99,6 +99,34 @@ After baking, update `AMD64_BAKED_IMAGE_OCID` / `ARM64_BAKED_IMAGE_OCID` in `sta
 
 Useful for triaging an issue without going through the full PR pipeline. The runner will sit idle waiting for a queued job that matches its labels; cancel by manually terminating the instance (`destroy-all.sh`) if no job arrives.
 
+### Exclusive runners (`RUNNER_LABELS`)
+
+By default every VM registers with the same labels, so GitHub routes each queued job to whichever matching runner claims it first — regardless of which workflow paid to launch it. For a long-running job that must own its VM, override the label set:
+
+```bash
+RUNNER_LABELS="self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud" ./launch-runner.sh amd64
+```
+
+The override replaces the **whole** set, but in practice you are only swapping the pool label (`f1r3fly-rust-ci-ephemeral` → your own). The script refuses the launch rather than let a bad set through silently:
+
+| Refused | Why |
+|---|---|
+| Missing `oracle-cloud` | **The one that actually breaks routing.** Nothing else supplies this label, so a runner without it matches no `runs-on` in f1r3node-rust. Nothing errors — the job just queues until it times out. |
+| Missing `self-hosted`, `linux` or `<arch>` | Routing would still work: GitHub assigns these itself. Required anyway, so the set stays honest about what the VM is — a caller dropping them has misunderstood something worth stopping on. |
+| Still contains `f1r3fly-rust-ci-ephemeral` | Adding your label without dropping the shared one leaves the VM claimable by ordinary CI. The race is reopened while the config reads as though it were closed. |
+| No pool label at all — only the four required | Matches every `runs-on` that does not name a pool, so the runner is not exclusive. |
+| Blank or whitespace-only | Would register a VM with no labels: billed, running, and unmatchable. Unset the variable to get the default. |
+
+Only `oracle-cloud` is a custom label. `gh api .../actions/runners` shows every runner carrying `self-hosted(read-only)`, `Linux(read-only)`, `X64(read-only)`, `oracle-cloud(custom)`, `<pool>(custom)` — the `linux` and `x64` passed to `config.sh` never become custom labels, because GitHub absorbs them into its own auto-assigned read-only set.
+
+The absorption is **silent**; nothing warns about it. (`SUPPRESS_LABEL_WARNING` is unrelated — it is an OCI CLI variable set in the launcher's environment, and `config.sh` runs on the VM where it is never in scope.)
+
+Exclusivity is enforced, not merely documented — the shared-label and no-pool-label checks exist because presence of the required labels does not by itself make a runner exclusive.
+
+Keep this in step with the consuming `runs-on`. The two have to be edited together, or the soak queues forever.
+
+Prefer this over registering with the shared label and relabelling afterwards. Relabelling leaves a window between registration and the label removal in which any queued job can still claim the VM. That window cost the merge-recovery soak run 30606130771, and it has a second, quieter effect: the soak then runs on whatever cloud-init the *other* workflow pinned, so `SYSTEM_INTEGRATION_REF` stops describing the machine the soak actually runs on. Launching with the dedicated label from the start is what makes that pin binding.
+
 ### Emergency cleanup
 
 ```bash
@@ -118,7 +146,7 @@ The current matrix is 5+5 = 10 samples per PR push. If you need more samples (e.
 
 The persistent runners (documented in [`../CLAUDE.md`](../CLAUDE.md)) live in compartment `f1r3fly-devops` with labels `[..., f1r3fly-rust-ci]` (no `-ephemeral` suffix). After this PR merges:
 
-- **Persistent runners** still run: `build_rust_docker_image` (the Docker image build itself) + the smoke tests + Scala CI workflows.
+- **Persistent runners** still run: `build_rust_docker_image` (the Docker image build itself) + the smoke tests.
 - **Ephemeral runners** now run: the integration test matrix (was `required_rust_integration_tests`).
 - The two pools coexist by distinct labels.
 
