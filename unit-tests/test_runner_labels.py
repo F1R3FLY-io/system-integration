@@ -39,9 +39,18 @@ def _resolve_labels(runner_labels=None, label_arch="x64"):
     """Run the real block and report what it decided.
 
     Returns (exit_code, resolved_labels_or_None, combined_output).
+
+    `unset RUNNER_LABELS` is unconditional: subprocess inherits the parent
+    environment, so a developer or CI shell that exports RUNNER_LABELS would
+    otherwise silently turn the default-path tests into override-path tests and
+    they would still pass, for the wrong reason.
     """
     body = _extract_label_block()
-    lines = ["set -uo pipefail", f"LABEL_ARCH={shlex.quote(label_arch)}"]
+    lines = [
+        "set -euo pipefail",
+        "unset RUNNER_LABELS",
+        f"LABEL_ARCH={shlex.quote(label_arch)}",
+    ]
     if runner_labels is not None:
         lines.append(f"export RUNNER_LABELS={shlex.quote(runner_labels)}")
     lines.append(body)
@@ -165,11 +174,75 @@ def test_substring_match_does_not_count_as_the_required_label():
 
     The check is comma-delimited on both sides for this reason. A substring test
     would let a typo through and reopen the exact routing failure being fixed.
+
+    Every OTHER required label is present, so the only thing that can trigger a
+    rejection here is the delimiter check. An earlier version of this test also
+    omitted `oracle-cloud`, which meant it passed whether or not the delimiter
+    guard worked — the loop rejected the input on the missing cloud label first.
+    The assertion is on the exact error text for the same reason: `"self-hosted"
+    in out` was satisfied by the echoed `self-hosted-x` value itself. Reported by
+    the xai reviewer on PR #75.
     """
-    rc, _, out = _resolve_labels(runner_labels="self-hosted-x,linux,x64,f1r3fly-rust-soak")
+    rc, _, out = _resolve_labels(
+        runner_labels="self-hosted-x,linux,x64,f1r3fly-rust-soak,oracle-cloud"
+    )
 
     assert rc != 0, "a substring of the required label was accepted"
-    assert "self-hosted" in out
+    assert "missing the required label 'self-hosted'" in out, (
+        f"rejected, but not for the delimiter reason under test:\n{out}"
+    )
+
+
+def test_override_keeping_the_shared_pool_label_is_refused():
+    """Presence of the invariants is not exclusivity, and exclusivity is the point.
+
+    An override that adds `f1r3fly-rust-soak` but keeps `f1r3fly-rust-ci-ephemeral`
+    passes every required-label check and is still claimable by ordinary CI — the
+    race reopened, while the config reads as though it were closed. Reported by
+    the openai reviewer on PR #75, against a version that accepted exactly this.
+    """
+    both = "self-hosted,linux,x64,f1r3fly-rust-ci-ephemeral,f1r3fly-rust-soak,oracle-cloud"
+    rc, _, out = _resolve_labels(runner_labels=both)
+
+    assert rc != 0, "an override carrying the shared pool label was accepted"
+    assert "shared pool label" in out
+
+
+def test_override_with_no_pool_label_is_refused():
+    """The other half: invariants only, matching any `runs-on` that names no pool."""
+    rc, _, out = _resolve_labels(runner_labels="self-hosted,linux,x64,oracle-cloud")
+
+    assert rc != 0, "an override with no pool label was accepted"
+    assert "no pool label" in out
+
+
+def test_the_shared_label_guard_follows_the_default():
+    """The guard derives the shared label from DEFAULT_LABELS, not a literal.
+
+    If the default pool is renamed and the check is hard-coded, it silently stops
+    guarding anything. This asserts the two agree.
+    """
+    _, default, _ = _resolve_labels(runner_labels=None)
+    invariants = {"self-hosted", "linux", "x64", "oracle-cloud"}
+    pool = [lbl for lbl in default.split(",") if lbl not in invariants]
+
+    assert len(pool) == 1, f"expected exactly one pool label in the default, got {pool}"
+
+    keeps_shared = f"self-hosted,linux,x64,{pool[0]},f1r3fly-rust-soak,oracle-cloud"
+    rc, _, out = _resolve_labels(runner_labels=keeps_shared)
+
+    assert rc != 0
+    assert pool[0] in out
+
+
+def test_exclusive_override_still_passes():
+    """The guards must not block the case they exist to enable."""
+    rc, labels, out = _resolve_labels(
+        runner_labels="self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud"
+    )
+
+    assert rc == 0, out
+    assert labels == "self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud"
 
 
 def test_extracted_block_is_the_real_one():

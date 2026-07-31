@@ -123,21 +123,68 @@ if [[ -n "${RUNNER_LABELS+x}" ]]; then
   # every `runs-on` requires. Fail here, loudly, rather than 15 minutes later
   # with a healthy VM idling next to a job that will never be routed to it.
   #
-  # Everything below is a FACT about any VM this script launches -- it is always
-  # self-hosted, always linux, always this arch, always OCI. Only the pool label
-  # ("f1r3fly-rust-ci-ephemeral" by default) is the caller's to choose. Requiring
-  # the invariants makes the trap unreachable rather than merely documented:
-  # claude-session-9f68c6fa caught an earlier draft of this whose own header
-  # example dropped `oracle-cloud`, which every `runs-on` in f1r3node-rust asks
-  # for. Copying that example would have produced a runner nothing matched, with
-  # validation passing.
-  for required in "self-hosted" "linux" "$LABEL_ARCH" "oracle-cloud"; do
+  # Everything in REQUIRED_LABELS is a FACT about any VM this script launches --
+  # it is always self-hosted, always linux, always this arch, always OCI. Only
+  # the pool label is the caller's to choose. Requiring the invariants makes the
+  # trap unreachable rather than merely documented: claude-session-9f68c6fa
+  # caught an earlier draft of this whose own header example dropped
+  # `oracle-cloud`, which every `runs-on` in f1r3node-rust asks for. Copying that
+  # example would have produced a runner nothing matched, with validation
+  # passing.
+  REQUIRED_LABELS=("self-hosted" "linux" "$LABEL_ARCH" "oracle-cloud")
+  for required in "${REQUIRED_LABELS[@]}"; do
     if [[ ",$LABELS," != *",$required,"* ]]; then
       echo "ERROR: RUNNER_LABELS ('$LABELS') is missing the required label '$required'." >&2
       echo "       Without it no 'runs-on' can match this runner." >&2
       exit 1
     fi
   done
+
+  # Presence of the invariants is not the same as exclusivity, and exclusivity is
+  # the entire point of this override. Two ways to satisfy the check above and
+  # still get a shared runner:
+  #
+  #   1. Keep the shared pool label alongside the exclusive one. The VM is then
+  #      claimable by ordinary CI exactly as before -- the race is reopened while
+  #      the config reads as if it were closed.
+  #   2. Supply only the invariants and no pool label at all, which matches every
+  #      `runs-on` that does not name a pool.
+  #
+  # The shared label is derived from DEFAULT_LABELS rather than hard-coded, so
+  # this guard follows if the default pool is ever renamed.
+  SHARED_POOL_LABEL=""
+  IFS=',' read -r -a _default_parts <<< "$DEFAULT_LABELS"
+  for _lbl in "${_default_parts[@]}"; do
+    _is_invariant=0
+    for required in "${REQUIRED_LABELS[@]}"; do
+      [[ "$_lbl" == "$required" ]] && { _is_invariant=1; break; }
+    done
+    [[ "$_is_invariant" -eq 0 ]] && SHARED_POOL_LABEL="$_lbl"
+  done
+
+  if [[ -n "$SHARED_POOL_LABEL" && ",$LABELS," == *",$SHARED_POOL_LABEL,"* ]]; then
+    echo "ERROR: RUNNER_LABELS ('$LABELS') still carries the shared pool label" >&2
+    echo "       '$SHARED_POOL_LABEL'. Any queued CI job can then claim this VM," >&2
+    echo "       which is the race the override exists to close. Drop it." >&2
+    exit 1
+  fi
+
+  _pool_count=0
+  IFS=',' read -r -a _parts <<< "$LABELS"
+  for _lbl in "${_parts[@]}"; do
+    _is_invariant=0
+    for required in "${REQUIRED_LABELS[@]}"; do
+      [[ "$_lbl" == "$required" ]] && { _is_invariant=1; break; }
+    done
+    [[ "$_is_invariant" -eq 0 ]] && _pool_count=$((_pool_count + 1))
+  done
+
+  if [[ "$_pool_count" -eq 0 ]]; then
+    echo "ERROR: RUNNER_LABELS ('$LABELS') has no pool label -- only the labels" >&2
+    echo "       every runner carries. This runner would match any 'runs-on'" >&2
+    echo "       that does not name a pool, so it is not exclusive. Add one." >&2
+    exit 1
+  fi
 else
   LABELS="$DEFAULT_LABELS"
 fi

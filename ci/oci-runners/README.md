@@ -107,7 +107,16 @@ By default every VM registers with the same labels, so GitHub routes each queued
 RUNNER_LABELS="self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud" ./launch-runner.sh amd64
 ```
 
-The override replaces the **whole** set, but in practice you are only swapping the pool label (`f1r3fly-rust-ci-ephemeral` → your own). The other four are facts about any VM this script launches — always self-hosted, always linux, always that arch, always OCI — so the script *enforces* them: omit one and the launch is refused. Without that, a set missing `oracle-cloud` would register a runner no `runs-on` in f1r3node-rust can match, and nothing would report an error; the job would simply queue until it timed out. A blank or whitespace-only value is refused for the same reason — unset the variable to get the default.
+The override replaces the **whole** set, but in practice you are only swapping the pool label (`f1r3fly-rust-ci-ephemeral` → your own). The script refuses the launch rather than let a bad set through silently:
+
+| Refused | Why |
+|---|---|
+| Missing `self-hosted`, `linux`, `<arch>` or `oracle-cloud` | Each is a fact about any VM this script launches. A set missing `oracle-cloud` registers a runner no `runs-on` in f1r3node-rust matches — nothing errors, the job just queues until it times out. |
+| Still contains `f1r3fly-rust-ci-ephemeral` | Adding your label without dropping the shared one leaves the VM claimable by ordinary CI. The race is reopened while the config reads as though it were closed. |
+| No pool label at all — only the four invariants | Matches every `runs-on` that does not name a pool, so the runner is not exclusive. |
+| Blank or whitespace-only | Would register a VM with no labels: billed, running, and unmatchable. Unset the variable to get the default. |
+
+Exclusivity is enforced, not merely documented — the first three checks exist because presence of the required labels does not by itself make a runner exclusive.
 
 Keep this in step with the consuming `runs-on`. The two have to be edited together, or the soak queues forever.
 
