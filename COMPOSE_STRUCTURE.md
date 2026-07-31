@@ -140,11 +140,9 @@ Config files: `monitoring/prometheus.yml`, `monitoring/prometheus-rules.yml`, `m
 
 ```bash
 # Start a single topology (most common)
-poetry run shardctl up f1r3node-rust       # Rust shard
-poetry run shardctl up f1r3node-rust               # Shard
+poetry run shardctl up f1r3node-rust               # Shard (3 validators + observer)
 poetry run shardctl up f1r3node-rust-shard-light   # Light shard (2 validators)
 poetry run shardctl up f1r3node-rust-standalone    # Single node
-poetry run shardctl up f1r3node-rust-standalone  # Single Rust node
 
 # Service stacks (require a running shard for the f1r3fly network)
 poetry run shardctl up embers

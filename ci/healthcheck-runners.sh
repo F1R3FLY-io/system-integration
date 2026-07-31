@@ -38,7 +38,16 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --type)  RUNNER_TYPE="$2"; shift 2 ;;
+        --type)
+            # Only 'rust' remains after the Scala node was retired. Reject anything
+            # else rather than silently falling through to a partial check set —
+            # `--type scala` from a stale script must fail loudly, not quietly skip
+            # the toolchain checks it thinks it is running.
+            case "$2" in
+                rust) RUNNER_TYPE="$2" ;;
+                *) echo "ERROR: unsupported --type '$2' (only 'rust' is supported)"; exit 2 ;;
+            esac
+            shift 2 ;;
         --key)   SSH_KEY="$2"; shift 2 ;;
         --help)  usage ;;
         -*)      echo "Unknown option: $1"; usage ;;
@@ -205,6 +214,20 @@ for ip in "${IPS[@]}"; do
     rtype="$RUNNER_TYPE"
     if [[ -z "$rtype" ]]; then
         rtype=$(detect_type "$ip")
+    fi
+
+    # A host we cannot identify is a FAILURE, not a partial pass. remote_check_script
+    # only emits the Rust toolchain checks when rtype is exactly "rust", so letting
+    # "unknown" through would run the common checks, skip the toolchain ones, and
+    # report healthy — while the most likely cause of the failed probe is the very
+    # thing being skipped (a missing Cargo install).
+    if [[ "$rtype" != "rust" ]]; then
+        hostname=$(ssh $SSH_OPTS "$SSH_USER@$ip" "hostname" 2>/dev/null || echo "unknown")
+        echo -e "${BOLD}=== $hostname ($rtype) === ${NC}$ip"
+        fail "runner type: could not identify this host as a provisioned runner (~/.cargo/env absent)"
+        echo
+        TOTAL_FAIL=$((TOTAL_FAIL+1))
+        continue
     fi
 
     # Get hostname for display

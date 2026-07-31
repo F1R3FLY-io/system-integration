@@ -1611,10 +1611,15 @@ rather than silently passing on an empty extraction.
 
 ## EPOCH-001: Migrate to Rust-Only f1r3node
 
-**Status: implemented on `chore/remove-scala-checks`.** The Scala node was
-deprecated in favour of `../f1r3node-rust/`, so this removes it rather than
-migrating around it. See US-001 for per-criterion status — two criteria were
-deliberately superseded by a naming decision and two remain unverified.
+**Status: implemented in system-integration — NOT fully done. Blocked on
+f1r3node-rust genesis alignment (TASK-001-1), which cannot be closed from this
+repo.** Do not read this epic as "the migration is finished": the Scala node is
+gone from *here*, but `genesis/wallets.txt` parity between the two repos is
+outstanding and lives on the other side.
+
+Also unverified from here: whether the integration suite passes against the Rust
+image (needs a CI run). And two US-001 criteria were **deliberately superseded**
+by a naming decision, not met — see US-001 for the per-criterion breakdown.
 
 What was removed: 6 Scala CI jobs (smoke-test.yml drops 15 jobs to 9), 5 Scala
 compose files plus the legacy root `docker-compose.yml`, `conf/scala.conf`,
