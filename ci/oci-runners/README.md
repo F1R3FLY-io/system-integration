@@ -117,7 +117,9 @@ The override replaces the **whole** set, but in practice you are only swapping t
 | No pool label at all — only the four required | Matches every `runs-on` that does not name a pool, so the runner is not exclusive. |
 | Blank or whitespace-only | Would register a VM with no labels: billed, running, and unmatchable. Unset the variable to get the default. |
 
-Only `oracle-cloud` is a custom label. `gh api .../actions/runners` shows every runner carrying `self-hosted(read-only)`, `Linux(read-only)`, `X64(read-only)`, `oracle-cloud(custom)`, `<pool>(custom)` — the `linux` and `x64` passed to `config.sh` never become custom labels, because GitHub absorbs them into its own auto-assigned read-only set. That is the warning `SUPPRESS_LABEL_WARNING` in `launch-runner.sh` silences.
+Only `oracle-cloud` is a custom label. `gh api .../actions/runners` shows every runner carrying `self-hosted(read-only)`, `Linux(read-only)`, `X64(read-only)`, `oracle-cloud(custom)`, `<pool>(custom)` — the `linux` and `x64` passed to `config.sh` never become custom labels, because GitHub absorbs them into its own auto-assigned read-only set.
+
+The absorption is **silent**; nothing warns about it. (`SUPPRESS_LABEL_WARNING` is unrelated — it is an OCI CLI variable set in the launcher's environment, and `config.sh` runs on the VM where it is never in scope.)
 
 Exclusivity is enforced, not merely documented — the shared-label and no-pool-label checks exist because presence of the required labels does not by itself make a runner exclusive.
 

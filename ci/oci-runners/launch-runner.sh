@@ -131,8 +131,17 @@ if [[ -n "${RUNNER_LABELS+x}" ]]; then
   # every runner carrying self-hosted(read-only), Linux(read-only),
   # X64(read-only), oracle-cloud(custom), <pool>(custom) -- the `linux` and `x64`
   # passed to config.sh never become custom labels, because GitHub absorbs them
-  # into its own auto-assigned read-only set. That is the warning
-  # SUPPRESS_LABEL_WARNING above is silencing.
+  # into its own auto-assigned read-only set.
+  #
+  # This is absorbed SILENTLY -- nothing warns about it. (An earlier version of
+  # this comment blamed SUPPRESS_LABEL_WARNING above; that is wrong.
+  # SUPPRESS_LABEL_WARNING is an OCI CLI variable, exported in the *launcher's*
+  # environment on the GitHub-hosted runner. config.sh runs on the OCI VM, a
+  # different process on a different machine, and never sees it -- it does not
+  # appear in cloud-init-runner.yml.tmpl at all. claude-session-9f68c6fa checked
+  # 2410 lines of console history: config.sh prints nothing between the
+  # --labels invocation and "Runner successfully added". So there is no muted
+  # warning to restore, and dropping these labels will not surface one.)
   #
   # So dropping self-hosted/linux/<arch> does NOT actually break routing; the
   # agent assigns them from the OS and CPU it detects. Dropping `oracle-cloud`
