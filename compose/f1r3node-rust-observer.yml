@@ -9,7 +9,6 @@
 # PREREQUISITES:
 #   - A running shard network to connect to (f1r3fly network)
 #
-# NOTE: For Scala nodes, use f1r3node-observer.yml instead.
 
 name: f1r3fly-rust-observer
 

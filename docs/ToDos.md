@@ -1611,28 +1611,61 @@ rather than silently passing on an empty extraction.
 
 ## EPOCH-001: Migrate to Rust-Only f1r3node
 
+**Status: implemented in system-integration — NOT fully done. Blocked on
+f1r3node-rust genesis alignment (TASK-001-1), which cannot be closed from this
+repo.** Do not read this epic as "the migration is finished": the Scala node is
+gone from *here*, but `genesis/wallets.txt` parity between the two repos is
+outstanding and lives on the other side.
+
+Also unverified from here: whether the integration suite passes against the Rust
+image (needs a CI run). And two US-001 criteria were **deliberately superseded**
+by a naming decision, not met — see US-001 for the per-criterion breakdown.
+
+What was removed: 6 Scala CI jobs (smoke-test.yml drops 15 jobs to 9), 5 Scala
+compose files plus the legacy root `docker-compose.yml`, `conf/scala.conf`,
+`conf/standalone-scala.conf`, `conf/logback.xml`, `ci/setup-f1r3node-scala-runner.sh`,
+the `NodeType` enum and `--scala`/`--node-type` flags, the `f1r3node` repo and
+build entries in `services.yml`, the Scala branch of `ci/healthcheck-runners.sh`,
+and Scala references across 17 markdown files.
+
+What was **added**, because deletion alone would have lost a capability: the
+2-validator light shard had no Rust equivalent, so
+`compose/f1r3node-rust-shard-light.yml` is a faithful port of the retired Scala
+one — same validators, ports, genesis and `--required-signatures`. Only the
+runtime changed. Without it, the only low-memory topology would have disappeared.
+
+Scala references that were **kept** on purpose: `docs/slashing-mechanism.md` and
+`docs/slashing-test-plan.md` describe the Rust implementation as a 1:1 port from
+Scala and record log-format differences and tests still to port. That is
+provenance, not live infrastructure — scrubbing it would destroy meaning.
+
+
 ```yaml
 ---
 epoch_id: EPOCH-001
 title: "Migrate to Rust-Only f1r3node"
-status: pending
+status: review
 priority: p1
 user_story: US-001
 blocked_by: []
 created_at: 2026-03-19
-claimed_by: null
-claimed_at: null
+claimed_by: claude-session-02f66bb7
+claimed_at: 2026-07-31T01:30:00Z
+completed_at: 2026-07-31T02:00:00Z
+branch: chore/remove-scala-checks
 tasks:
   - id: TASK-001-1
     title: "Align genesis state in f1r3node-rust repo"
-    status: pending
+    status: blocked
+    note: "genesis alignment lives in the f1r3node-rust repo, not here"
     acceptance:
       - "wallets.txt in f1r3node-rust matches system-integration (20 lines, correct amounts)"
       - "Shard starts successfully with updated wallets.txt"
 
   - id: TASK-001-2
     title: "Switch services.yml to f1r3node-rust repo"
-    status: pending
+    status: complete
+    note: "f1r3node repo + build entries removed from services.yml"
     blocked_by: [TASK-001-1]
     acceptance:
       - "services.yml points to f1r3node-rust.git branch dev"
@@ -1641,7 +1674,8 @@ tasks:
 
   - id: TASK-001-3
     title: "Replace compose files with upstream versions"
-    status: pending
+    status: complete
+    note: "Scala composes deleted; shard-light ported to Rust. The '-rust' filenames were kept by decision, superseding this task's wording"
     blocked_by: [TASK-001-2]
     acceptance:
       - "compose/f1r3node.yml uses Rust node image"
@@ -1651,7 +1685,8 @@ tasks:
 
   - id: TASK-001-4
     title: "Simplify shardctl (remove Scala/Rust duality)"
-    status: pending
+    status: complete
+    note: "NodeType enum, --scala and --node-type removed; --rust retained as an accepted no-op"
     blocked_by: [TASK-001-3]
     acceptance:
       - "NodeType enum removed from shardctl/node.py"
@@ -1660,7 +1695,8 @@ tasks:
 
   - id: TASK-001-5
     title: "Update integration test infrastructure"
-    status: pending
+    status: complete
+    note: "the suite already targets the Rust image; no Scala paths remain"
     blocked_by: [TASK-001-3]
     acceptance:
       - "Test compose files use Rust node image"
@@ -1668,7 +1704,8 @@ tasks:
 
   - id: TASK-001-6
     title: "Update documentation and clean up"
-    status: pending
+    status: complete
+    note: "17 markdown files scrubbed; slashing docs keep Scala provenance deliberately"
     blocked_by: [TASK-001-4, TASK-001-5]
     acceptance:
       - "README.md has no Scala references"

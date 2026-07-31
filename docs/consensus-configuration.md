@@ -25,7 +25,7 @@ normalized_fault_tolerance = (agreeing_weight * 2 - total_weight) / total_weight
 
 A block is finalized when `normalized_fault_tolerance > fault-tolerance-threshold`. The value ranges from -1.0 (no agreement) to 1.0 (unanimous).
 
-From the original design documentation (SafetyOracle.scala):
+From the original design documentation (`SafetyOracle`):
 > "The fault tolerance threshold is a subjective value that the user sets to 'secretly' state that they tolerate up to fault_tolerance_threshold fraction of the total weight to equivocate."
 >
 > "In the extreme case when your normalized fault tolerance threshold is 1, all validators must be part of the clique that supports the candidate in order to state that it is finalized."
@@ -38,7 +38,7 @@ From the original design documentation (SafetyOracle.scala):
 | 0.0 | 0% | >50% of weight | Standalone/dev, trusted validator set |
 | 0.1 | 10% | ~60% of weight | Trusted testnet |
 | 0.33 | 33% (BFT classic) | >2/3 of weight | Standard BFT — tolerates <1/3 byzantine |
-| 0.67 | 67% | >5/6 of weight | Very conservative (both Scala and Rust default) |
+| 0.67 | 67% | >5/6 of weight | Very conservative (the default) |
 | 0.99 | 99% | Near-unanimity | Effectively broken for small validator sets |
 
 ### FT caching at finalization time
@@ -177,8 +177,8 @@ Same as dev — tests need 2/3 finalization to verify shard recovery from valida
 
 ## Related
 
-- `conf/rust.conf` / `conf/scala.conf` — where these values are set for docker shard
-- `node/src/main/resources/defaults.conf` — hardcoded defaults (FTT=0.67 for both Scala and Rust)
+- `conf/rust.conf` — where these values are set for the docker shard
+- `node/src/main/resources/defaults.conf` — hardcoded defaults (FTT=0.67)
 - `casper/src/rust/finality/finalizer.rs` — finalization algorithm, FT formula, and FT caching
 - `casper/src/rust/safety/clique_oracle.rs` — weight map calculation
 - `casper/src/rust/api/block_api.rs` — returns cached FT for finalized blocks

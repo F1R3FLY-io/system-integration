@@ -50,16 +50,29 @@ Stories below are candidates for future epochs. Move to "Completed Stories" when
 **Implemented in:** EPOCH-001
 
 **Acceptance Criteria:**
-- [ ] `services.yml` points to `f1r3node-rust.git` (not `f1r3node.git rust/dev`)
-- [ ] `shardctl up` starts Rust nodes by default without `--rust` flag
-- [ ] `--scala`/`--rust`/`--node-type` flags removed from shardctl CLI
-- [ ] All `compose/f1r3node-rust-*.yml` files removed; `compose/f1r3node*.yml` uses Rust image
-- [ ] Genesis files (wallets.txt, bonds.txt) are identical between repos
-- [ ] Integration tests pass against the Rust node image
-- [ ] Scala-specific files removed (logback.xml, SBT build config, Scala CI runner scripts)
-- [ ] Documentation updated (README, CLAUDE.md) with no Scala references
+- [x] `services.yml` points to `f1r3node-rust.git` (not `f1r3node.git rust/dev`) — the
+      `f1r3node` repository entry and its `builds:` block are removed entirely
+- [x] `shardctl up` starts Rust nodes by default without `--rust` flag
+- [~] `--scala`/`--rust`/`--node-type` flags removed from shardctl CLI — `--scala`
+      and `--node-type` are gone; **`--rust` is deliberately retained** as an
+      accepted no-op so existing invocations keep working (see the naming
+      decision below)
+- [~] ~~All `compose/f1r3node-rust-*.yml` files removed; `compose/f1r3node*.yml`
+      uses Rust image~~ — **decided the other way.** The `-rust` filenames are
+      kept and the bare `f1r3node*.yml` files were deleted. Renaming would break
+      any script or doc naming a compose file for no functional gain; the
+      redundant infix is the cheaper price.
+- [ ] Genesis files (wallets.txt, bonds.txt) are identical between repos — not
+      verified as part of this work
+- [ ] Integration tests pass against the Rust node image — requires a CI run
+- [x] Scala-specific files removed (logback.xml, SBT build config, Scala CI runner scripts)
+- [x] Documentation updated (README, CLAUDE.md) with no Scala references
 
-**Completed:** Planned
+**Note on the two deviations:** both were explicit calls, not oversights. Keeping
+`--rust` and the `-rust` filenames trades a cosmetic inconsistency for zero
+breakage in callers this repo cannot see.
+
+**Completed:** 2026-07-31 (partial — two criteria deliberately superseded, two unverified)
 
 **Migration plan:** [docs/migration-to-rust-node.md](migration-to-rust-node.md)
 

@@ -50,7 +50,6 @@ poetry run shardctl down
 ```
 .
 ├── services/                    # Service repos (git-ignored)
-│   ├── f1r3node/               # F1R3FLY blockchain node (Scala)
 │   ├── f1r3node-rust/          # F1R3FLY blockchain node (Rust)
 │   ├── rust-client/            # Rust CLI client
 │   ├── f1r3drive/              # F1r3Drive FUSE app (Java)
@@ -59,7 +58,6 @@ poetry run shardctl down
 │   └── f1r3sky-backend/        # AT Protocol backend (Node.js, opt-in)
 ├── shardctl/                   # CLI tool package
 ├── compose/                    # Docker Compose files (one per service)
-│   ├── f1r3node.yml            # Scala shard
 │   ├── f1r3node-rust.yml       # Rust shard (default)
 │   ├── embers.yml              # Embers API + frontend
 │   ├── f1r3sky.yml             # F1R3Sky AT Protocol services
@@ -86,7 +84,6 @@ poetry run shardctl down
 
 Services are defined in `services.yml` with their git URLs and branches.
 Default-enabled (cloned by `shardctl clone`):
-- **f1r3node**: Scala blockchain node (`dev` branch)
 - **f1r3node-rust**: Rust blockchain node (`dev` branch)
 - **rust-client**: CLI tool for blockchain interaction (`dev` branch)
 - **f1r3drive**: F1r3Drive FUSE app (`dev` branch)
@@ -102,9 +99,8 @@ Opt-in (`enabled: false`; clone with `--include-disabled` or by name):
 1. **Never commit service directories** - they're independent git repos
 2. **Use `shardctl clone`** to set up service repositories with the correct branches
 3. **Each compose file is independent** - start only what you need:
-   - `compose/f1r3node.yml` - F1R3node Scala shard
    - `compose/f1r3node-rust.yml` - F1R3node Rust shard (default)
-   - `compose/f1r3node-shard-light.yml` - Lightweight 2-validator Scala shard (~7.5 GB RAM)
+   - `compose/f1r3node-rust-shard-light.yml` - Lightweight 2-validator shard (lower memory)
    - `compose/embers.yml` - Embers API and frontend
    - `compose/f1r3sky.yml` - F1R3Sky AT Protocol services
    - `compose/monitoring.yml` - Prometheus + Grafana
