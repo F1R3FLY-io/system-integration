@@ -113,7 +113,13 @@ write_files:
             # as a secondary signal: it costs nothing, and it still catches the
             # case where a worker has exited but the listener has not yet
             # returned.
-            if pgrep -f "Runner.Worker" >/dev/null 2>&1 \
+            # Scoped to $RUNNER_USER: the worker runs as that user (run.sh is
+            # started with `sudo -u`), while this watchdog runs as root. Without
+            # -u, any process on the box whose command line happens to contain
+            # the pattern reads as "a job is running" and the watchdog stands
+            # down forever — the VM then never self-terminates and leaks.
+            # The dot is escaped because -f takes an ERE, where "." is any char.
+            if pgrep -u "$RUNNER_USER" -f 'Runner\.Worker' >/dev/null 2>&1 \
               || grep -q "Running job:" /var/log/runner-run.log 2>/dev/null; then
               log "Job detected; idle watchdog standing down for this run."
               exit 0   # a job started — let it run to completion
