@@ -141,7 +141,7 @@ The current matrix is 5+5 = 10 samples per PR push. If you need more samples (e.
 
 The persistent runners (documented in [`../CLAUDE.md`](../CLAUDE.md)) live in compartment `f1r3fly-devops` with labels `[..., f1r3fly-rust-ci]` (no `-ephemeral` suffix). After this PR merges:
 
-- **Persistent runners** still run: `build_rust_docker_image` (the Docker image build itself) + the smoke tests + Scala CI workflows.
+- **Persistent runners** still run: `build_rust_docker_image` (the Docker image build itself) + the smoke tests.
 - **Ephemeral runners** now run: the integration test matrix (was `required_rust_integration_tests`).
 - The two pools coexist by distinct labels.
 

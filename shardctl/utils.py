@@ -225,7 +225,7 @@ def format_ports(publishers: list) -> str:
 
 
 def _docker_platform_for_f1r3node() -> str:
-    """Resolve PLATFORM for f1r3node (Scala) Docker build: env override or host arch."""
+    """Resolve PLATFORM for the f1r3node Docker build: env override or host arch."""
     if os.environ.get("PLATFORM"):
         return os.environ["PLATFORM"]
     machine = platform.machine().lower()

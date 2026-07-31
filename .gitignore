@@ -47,7 +47,6 @@ ENV/
 *.swo
 *~
 .metals/
-.scala-build/
 
 # OS
 .DS_Store
