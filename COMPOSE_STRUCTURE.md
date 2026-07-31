@@ -10,15 +10,11 @@ Canonical reference for the production compose files in `compose/`. Each file is
 
 | File | Topology | Validators | Image default |
 |---|---|---|---|
-| `compose/f1r3node.yml` | Scala shard | bootstrap + 3 + readonly | `f1r3flyindustries/f1r3fly-scala-node:latest` |
-| `compose/f1r3node-rust.yml` | Rust shard | bootstrap + 3 + readonly | `f1r3flyindustries/f1r3fly-rust:latest` |
-| `compose/f1r3node-standalone.yml` | Scala standalone | 1 (single-node, no peers) | scala-node:latest |
-| `compose/f1r3node-rust-standalone.yml` | Rust standalone | 1 | rust-node:latest |
-| `compose/f1r3node-shard-light.yml` | Scala light shard | bootstrap + 2 (~7.5 GB RAM) | scala-node:latest |
-| `compose/f1r3node-observer.yml` | Scala read-only observer | (joins existing shard) | scala-node:latest |
-| `compose/f1r3node-rust-observer.yml` | Rust read-only observer | (joins existing shard) | rust-node:latest |
-| `compose/f1r3node-validator4.yml` | Scala 4th validator | (joins existing shard) | scala-node:latest |
-| `compose/f1r3node-rust-validator4.yml` | Rust 4th validator | (joins existing shard) | rust-node:latest |
+| `compose/f1r3node-rust.yml` | Shard | bootstrap + 3 + readonly | `f1r3flyindustries/f1r3fly-rust:latest` |
+| `compose/f1r3node-rust-shard-light.yml` | Light shard | bootstrap + 2 (lower memory) | rust:latest |
+| `compose/f1r3node-rust-standalone.yml` | Standalone | 1 (single-node, no peers) | rust:latest |
+| `compose/f1r3node-rust-observer.yml` | Read-only observer | (joins existing shard) | rust:latest |
+| `compose/f1r3node-rust-validator4.yml` | 4th validator | (joins existing shard) | rust:latest |
 
 ### Service stacks
 
@@ -38,11 +34,10 @@ Every compose file's `image:` line uses the same env var:
 image: ${F1R3FLY_NODE_IMAGE:-<file's-own-default>}
 ```
 
-When `F1R3FLY_NODE_IMAGE` is unset, each file falls back to its own default — Rust files get the Rust default, Scala files get the Scala default. To override:
+When `F1R3FLY_NODE_IMAGE` is unset, each file falls back to its own default. To override:
 
 ```bash
 F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust:dev poetry run shardctl up f1r3node-rust
-F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-scala-node:v1.2.3 poetry run shardctl up f1r3node
 ```
 
 `F1R3FLY_NODE_IMAGE` is the **same env var** the integration-test framework reads (via `infra/config.py:resolve_node_image`). One variable, one mental model across `shardctl up` and `shardctl test`.
@@ -55,14 +50,10 @@ Each compose file declares an explicit top-level `name:` so Docker Compose uses 
 
 | File | `name:` | Volume prefix |
 |---|---|---|
-| `f1r3node.yml` | `f1r3fly-scala` | `f1r3fly-scala_*-data` |
 | `f1r3node-rust.yml` | `f1r3fly-rust` | `f1r3fly-rust_*-data` |
-| `f1r3node-standalone.yml` | `f1r3fly-scala-standalone` | `f1r3fly-scala-standalone_*-data` |
+| `f1r3node-rust-shard-light.yml` | `f1r3fly-rust-light` | `f1r3fly-rust-light_*-data` |
 | `f1r3node-rust-standalone.yml` | `f1r3fly-rust-standalone` | `f1r3fly-rust-standalone_*-data` |
-| `f1r3node-shard-light.yml` | `f1r3fly-scala-light` | `f1r3fly-scala-light_*-data` |
-| `f1r3node-observer.yml` | `f1r3fly-scala-observer` | `f1r3fly-scala-observer_*-data` |
 | `f1r3node-rust-observer.yml` | `f1r3fly-rust-observer` | `f1r3fly-rust-observer_*-data` |
-| `f1r3node-validator4.yml` | `f1r3fly-scala-validator4` | `f1r3fly-scala-validator4_*-data` |
 | `f1r3node-rust-validator4.yml` | `f1r3fly-rust-validator4` | `f1r3fly-rust-validator4_*-data` |
 
 Cleanup convention: `shardctl reset` (and `shardctl reset --force`) prefix-scan for `f1r3fly-*` volumes and the `f1r3fly` network. Disjoint from integration-test prefixes (`f1r3fly-test-*` networks, `test-*` volumes).
@@ -150,8 +141,9 @@ Config files: `monitoring/prometheus.yml`, `monitoring/prometheus-rules.yml`, `m
 ```bash
 # Start a single topology (most common)
 poetry run shardctl up f1r3node-rust       # Rust shard
-poetry run shardctl up f1r3node            # Scala shard
-poetry run shardctl up f1r3node-standalone # Single Scala node
+poetry run shardctl up f1r3node-rust               # Shard
+poetry run shardctl up f1r3node-rust-shard-light   # Light shard (2 validators)
+poetry run shardctl up f1r3node-rust-standalone    # Single node
 poetry run shardctl up f1r3node-rust-standalone  # Single Rust node
 
 # Service stacks (require a running shard for the f1r3fly network)

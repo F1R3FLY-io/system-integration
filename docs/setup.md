@@ -18,7 +18,7 @@ When you want everything (blockchain + Embers API + F1R3Sky AT Protocol stack + 
 poetry run shardctl clone
 ```
 
-Clones every enabled service from `services.yml`. By default that's f1r3node (Scala), f1r3node-rust (Rust), rust-client, and f1r3drive. Each becomes an independent git repo under `services/` (git-ignored from this parent repo).
+Clones every enabled service from `services.yml`. By default that's f1r3node-rust, rust-client, and f1r3drive. Each becomes an independent git repo under `services/` (git-ignored from this parent repo).
 
 Service-stack repos (embers, embers-frontend, f1r3sky-backend, f1r3sky) are `enabled: false` in `services.yml` and won't clone with the default command. To include them, pass `--include-disabled` or name them explicitly:
 
@@ -67,7 +67,7 @@ For just a node shard (no service stack), see [../README.md#quick-start](../READ
 
 Per-service toolchains required only when building a service from source. If you're using pre-built Docker images, skip these entirely.
 
-Note: f1r3node (Scala) and f1r3node-rust are **separate repositories**: [F1R3FLY-io/f1r3node](https://github.com/F1R3FLY-io/f1r3node) (`dev` branch) and [F1R3FLY-io/f1r3node-rust](https://github.com/F1R3FLY-io/f1r3node-rust) (`dev` branch). See `services.yml` for the current branch mappings.
+Note: the node lives in its own repository, [F1R3FLY-io/f1r3node-rust](https://github.com/F1R3FLY-io/f1r3node-rust) (`dev` branch). See `services.yml` for the current branch mappings.
 
 ### Python 3.10 (pyenv)
 
@@ -120,31 +120,6 @@ The Rust node builds with standard Rust tooling — no Nix required.
   ```
 
 - **Optional:** [`just`](https://github.com/casey/just) (task runner), [`grpcurl`](https://github.com/fullstorydev/grpcurl) (gRPC CLI)
-
-### F1R3node Scala (Scala blockchain node)
-
-**Option 1: Nix (recommended)** — provides the complete dev environment with all dependencies pinned:
-
-```bash
-sh <(curl -L https://nixos.org/nix/install) --daemon
-```
-
-Then use `nix develop` or `direnv allow` inside the f1r3node repo.
-
-**Option 2: Manual install:**
-
-- **Java 17** (OpenJDK/Temurin)
-- **SBT** (Scala Build Tool)
-- **System packages:**
-
-  Debian/Ubuntu:
-  ```bash
-  sudo apt install autoconf cmake curl git jflex libtool make protobuf-compiler sbt unzip
-  ```
-- **BNFC** (parser generator, from Haskell):
-  ```bash
-  cabal install alex happy BNFC
-  ```
 
 ### Embers (Rust API service)
 

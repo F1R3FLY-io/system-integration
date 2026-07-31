@@ -83,7 +83,7 @@ Start a shard with shardctl — the default port mapping works out of the box:
 # Rust shard (recommended)
 shardctl up f1r3node-rust
 
-# OR: Scala shard
+# OR: the light shard
 shardctl up f1r3node
 ```
 

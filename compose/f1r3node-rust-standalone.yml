@@ -9,7 +9,6 @@
 # Or directly:
 #   docker compose --env-file ../.env.node -f compose/f1r3node-rust-standalone.yml up -d
 #
-# NOTE: For Scala nodes, use f1r3node-standalone.yml instead.
 
 name: f1r3fly-rust-standalone
 

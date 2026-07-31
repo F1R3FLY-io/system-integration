@@ -1,10 +1,27 @@
 # Migration: Scala Node to Rust-Only f1r3node
 
+> **DONE — 2026-07-31. This is a historical record, not a plan.**
+>
+> The migration is complete: the Scala node, its compose files, its CI jobs and
+> its shardctl support are gone, and this repo builds and tests only
+> `f1r3node-rust`. See EPOCH-001 in [ToDos.md](ToDos.md) for what was removed and
+> US-001 in [UserStories.md](UserStories.md) for per-criterion status.
+>
+> **Everything below describes the pre-migration world** and is retained because
+> it explains *why* the layout looks the way it does — particularly the two
+> decisions that diverged from the original plan: compose files keep their
+> `-rust` infix, and `--rust` survives as an accepted no-op. Read it as
+> archaeology; do not follow it as instructions.
+>
+> One capability was added rather than removed: the 2-validator light shard had
+> no Rust equivalent, so `compose/f1r3node-rust-shard-light.yml` is a faithful
+> port of the retired Scala one.
+
 ## Overview
 
 This document describes the migration from the dual Scala/Rust f1r3node setup to a Rust-only implementation using the standalone `f1r3node-rust` repository.
 
-### Current State
+### Current State (as of writing — now historical)
 
 - **f1r3node** (Scala): `github.com:F1R3FLY-io/f1r3node.git` branch `dev`
   - Built with SBT + Nix, produces `f1r3flyindustries/f1r3fly-scala-node:latest`

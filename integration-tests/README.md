@@ -15,7 +15,7 @@ Three layers of documentation:
 - **Docker + Docker Compose** (containers managed by the test fixtures)
 - **Python 3.10** (see the [main README](../README.md) for pyenv setup)
 - **Poetry** (Python dependency manager)
-- **Memory (Docker allocation)** — 4 GB for Rust 3-validator shards, 16 GB for Scala 3-validator shards, 12 GB for the Scala light shard
+- **Memory (Docker allocation)** — 4 GB for a 3-validator shard; less for the 2-validator light shard
 
 ```bash
 # From the repo root
@@ -117,7 +117,6 @@ F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust:dev poetry run pytest ...
 
 # Via shardctl shortcuts (all set F1R3FLY_NODE_IMAGE internally)
 poetry run shardctl test --rust   # f1r3flyindustries/f1r3fly-rust:latest
-poetry run shardctl test --scala  # f1r3flyindustries/f1r3fly-scala-node:latest
 poetry run shardctl test --image myrepo/custom:tag
 ```
 

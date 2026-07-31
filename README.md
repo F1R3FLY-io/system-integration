@@ -51,7 +51,7 @@ poetry run shardctl reset -y         # Stop and wipe data volumes
 
 | Goal | Doc |
 |---|---|
-| Different topology (Scala, standalone, observer, validator4, light shard) | [COMPOSE_STRUCTURE.md](COMPOSE_STRUCTURE.md) |
+| Different topology (standalone, light shard, observer, validator4) | [COMPOSE_STRUCTURE.md](COMPOSE_STRUCTURE.md) |
 | Custom node Docker image | [COMPOSE_STRUCTURE.md#image-selection](COMPOSE_STRUCTURE.md#image-selection) |
 | Full multi-service setup (clone all repos, build images, start everything) | [docs/setup.md#full-multi-service-setup](docs/setup.md#full-multi-service-setup) |
 | Every `shardctl` command + flag | [docs/cli-reference.md](docs/cli-reference.md) |
