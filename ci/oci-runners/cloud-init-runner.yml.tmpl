@@ -29,7 +29,27 @@ write_files:
       RUNNER_USER="runner"
       RUNNER_HOME="/opt/actions-runner"
 
-      log() { echo "[$(date -Iseconds)] $*"; }
+      # Tee to /dev/console as well as stdout. Everything this bootstrap writes
+      # otherwise lands only in files on the VM (/var/log/runner-bootstrap.log,
+      # /var/log/runner-run.log), which are destroyed with the instance — so a
+      # runner that dies takes the only explanation with it. Serial console
+      # output is captured by `oci compute instance-console-history`, a separate
+      # OCI resource with its own lifecycle that survives termination and can be
+      # read the next day.
+      #
+      # This is not hypothetical: soak run 30590630059 lost its runner 19
+      # minutes in, and neither GitHub (no log uploaded) nor the VM (already
+      # gone) could say why. f1r3node-rust's capture_diagnostics job greps
+      # console history for the idle-watchdog kill line below; without this tee
+      # that grep can never match.
+      #
+      # `|| true` so a missing/unwritable console can never abort the bootstrap
+      # under `set -e` — diagnostics must not be load-bearing.
+      log() {
+        local line="[$(date -Iseconds)] $*"
+        echo "$line"
+        echo "$line" > /dev/console 2>/dev/null || true
+      }
 
       log "=== Configure runner as ephemeral, repo-scoped ==="
       # No --disableupdate: if the baked image's runner version gets
@@ -75,7 +95,27 @@ write_files:
         (
           elapsed=0
           while kill -0 "$RUN_PID" 2>/dev/null; do
-            if grep -q "Running job:" /var/log/runner-run.log 2>/dev/null; then
+            # Is a job running? Ask the process table, not the log.
+            #
+            # This used to grep /var/log/runner-run.log for "Running job:".
+            # run.sh's stdout is redirected to a FILE, so .NET block-buffers it
+            # (~4KB) while the runner's startup output is only a few hundred
+            # bytes — the line can sit unflushed indefinitely. The watchdog then
+            # reads an apparently jobless runner and kills run.sh mid-job at the
+            # timeout, which puts EVERY job longer than
+            # IDLE_TIMEOUT_SECS-minus-boot at risk. The merge-recovery soak is
+            # exactly that shape, and this is the leading explanation for soak
+            # run 30590630059 losing its runner 19 minutes in (VM healthy,
+            # agent gone, no GitHub log).
+            #
+            # Runner.Listener forks a Runner.Worker per job, so the process
+            # table answers immediately and cannot buffer. The log grep is kept
+            # as a secondary signal: it costs nothing, and it still catches the
+            # case where a worker has exited but the listener has not yet
+            # returned.
+            if pgrep -f "Runner.Worker" >/dev/null 2>&1 \
+              || grep -q "Running job:" /var/log/runner-run.log 2>/dev/null; then
+              log "Job detected; idle watchdog standing down for this run."
               exit 0   # a job started — let it run to completion
             fi
             if [ "$elapsed" -ge "$IDLE_TIMEOUT_SECS" ]; then
