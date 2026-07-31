@@ -119,23 +119,39 @@ if [[ -n "${RUNNER_LABELS+x}" ]]; then
   fi
   LABELS="$RUNNER_LABELS"
 
-  # An override supplies the COMPLETE set, so a caller can omit a label that
-  # every `runs-on` requires. Fail here, loudly, rather than 15 minutes later
+  # An override supplies the COMPLETE set, so a caller can omit a label the
+  # consuming `runs-on` requires. Fail here, loudly, rather than 15 minutes later
   # with a healthy VM idling next to a job that will never be routed to it.
+  # claude-session-9f68c6fa caught an earlier draft whose own header example
+  # dropped `oracle-cloud`, which every `runs-on` in f1r3node-rust asks for:
+  # copying the documented example would have produced a runner nothing matched,
+  # with validation passing.
   #
-  # Everything in REQUIRED_LABELS is a FACT about any VM this script launches --
-  # it is always self-hosted, always linux, always this arch, always OCI. Only
-  # the pool label is the caller's to choose. Requiring the invariants makes the
-  # trap unreachable rather than merely documented: claude-session-9f68c6fa
-  # caught an earlier draft of this whose own header example dropped
-  # `oracle-cloud`, which every `runs-on` in f1r3node-rust asks for. Copying that
-  # example would have produced a runner nothing matched, with validation
-  # passing.
+  # Of the four, only `oracle-cloud` is ours. `gh api .../actions/runners` shows
+  # every runner carrying self-hosted(read-only), Linux(read-only),
+  # X64(read-only), oracle-cloud(custom), <pool>(custom) -- the `linux` and `x64`
+  # passed to config.sh never become custom labels, because GitHub absorbs them
+  # into its own auto-assigned read-only set. That is the warning
+  # SUPPRESS_LABEL_WARNING above is silencing.
+  #
+  # So dropping self-hosted/linux/<arch> does NOT actually break routing; the
+  # agent assigns them from the OS and CPU it detects. Dropping `oracle-cloud`
+  # does, because nothing else supplies it. All four stay required -- a caller
+  # who omits self-hosted has misunderstood something worth stopping on -- but
+  # the messages must not claim a consequence that is not real. A right check
+  # with a wrong reason is how the next person talks themselves into deleting it.
   REQUIRED_LABELS=("self-hosted" "linux" "$LABEL_ARCH" "oracle-cloud")
   for required in "${REQUIRED_LABELS[@]}"; do
     if [[ ",$LABELS," != *",$required,"* ]]; then
       echo "ERROR: RUNNER_LABELS ('$LABELS') is missing the required label '$required'." >&2
-      echo "       Without it no 'runs-on' can match this runner." >&2
+      if [[ "$required" == "oracle-cloud" ]]; then
+        echo "       Nothing else supplies it, so no 'runs-on' asking for it can" >&2
+        echo "       match this runner -- the job queues until it times out." >&2
+      else
+        echo "       GitHub assigns this one automatically, so routing would still" >&2
+        echo "       work; it is required to keep the set honest about what the VM" >&2
+        echo "       is. If you meant to drop it, you probably meant something else." >&2
+      fi
       exit 1
     fi
   done
