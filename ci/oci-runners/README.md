@@ -111,12 +111,15 @@ The override replaces the **whole** set, but in practice you are only swapping t
 
 | Refused | Why |
 |---|---|
-| Missing `self-hosted`, `linux`, `<arch>` or `oracle-cloud` | Each is a fact about any VM this script launches. A set missing `oracle-cloud` registers a runner no `runs-on` in f1r3node-rust matches — nothing errors, the job just queues until it times out. |
+| Missing `oracle-cloud` | **The one that actually breaks routing.** Nothing else supplies this label, so a runner without it matches no `runs-on` in f1r3node-rust. Nothing errors — the job just queues until it times out. |
+| Missing `self-hosted`, `linux` or `<arch>` | Routing would still work: GitHub assigns these itself. Required anyway, so the set stays honest about what the VM is — a caller dropping them has misunderstood something worth stopping on. |
 | Still contains `f1r3fly-rust-ci-ephemeral` | Adding your label without dropping the shared one leaves the VM claimable by ordinary CI. The race is reopened while the config reads as though it were closed. |
-| No pool label at all — only the four invariants | Matches every `runs-on` that does not name a pool, so the runner is not exclusive. |
+| No pool label at all — only the four required | Matches every `runs-on` that does not name a pool, so the runner is not exclusive. |
 | Blank or whitespace-only | Would register a VM with no labels: billed, running, and unmatchable. Unset the variable to get the default. |
 
-Exclusivity is enforced, not merely documented — the first three checks exist because presence of the required labels does not by itself make a runner exclusive.
+Only `oracle-cloud` is a custom label. `gh api .../actions/runners` shows every runner carrying `self-hosted(read-only)`, `Linux(read-only)`, `X64(read-only)`, `oracle-cloud(custom)`, `<pool>(custom)` — the `linux` and `x64` passed to `config.sh` never become custom labels, because GitHub absorbs them into its own auto-assigned read-only set. That is the warning `SUPPRESS_LABEL_WARNING` in `launch-runner.sh` silences.
+
+Exclusivity is enforced, not merely documented — the shared-label and no-pool-label checks exist because presence of the required labels does not by itself make a runner exclusive.
 
 Keep this in step with the consuming `runs-on`. The two have to be edited together, or the soak queues forever.
 
