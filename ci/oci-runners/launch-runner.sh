@@ -11,6 +11,10 @@
 #   2. Creates `runner` user (matches setup-f1r3node-rust-runner.sh)
 #   3. Registers as repo-level ephemeral runner with labels
 #        self-hosted,linux,<arch>,f1r3fly-rust-ci-ephemeral,oracle-cloud
+#      Override the whole set with RUNNER_LABELS to get an exclusive runner:
+#        RUNNER_LABELS="self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud" \
+#          ./launch-runner.sh amd64
+#      Swap only the pool label; the rest are facts about the VM and are enforced.
 #   4. Runs exactly one queued job
 #   5. Self-terminates via instance-principal auth
 #
@@ -88,8 +92,55 @@ if [[ -z "$REG_TOKEN" || "$REG_TOKEN" == "null" ]]; then
   exit 1
 fi
 
-# Labels: distinct -ephemeral suffix so workflows opt in explicitly
-LABELS="self-hosted,linux,$LABEL_ARCH,f1r3fly-rust-ci-ephemeral,oracle-cloud"
+# Labels: distinct -ephemeral suffix so workflows opt in explicitly.
+#
+# RUNNER_LABELS overrides the whole set. This exists so a workflow that needs an
+# *exclusive* runner can register the VM under a label nothing else requests,
+# rather than registering it as shared CI capacity and relabelling afterwards.
+# Relabelling leaves a real window: between the runner registering and the label
+# removal landing, any queued job matching the shared label can claim the VM.
+# That is how the merge-recovery soak lost run 30606130771 -- it ran on a VM a PR
+# CI run had launched, and died when that run finished with the runner.
+#
+# The scheduling loss is the visible half. The quieter half: the soak then runs
+# on whatever cloud-init the OTHER workflow pinned, so SYSTEM_INTEGRATION_REF
+# stops describing the machine the soak actually runs on. Launching with the
+# dedicated label from the start is what makes that pin binding.
+DEFAULT_LABELS="self-hosted,linux,$LABEL_ARCH,f1r3fly-rust-ci-ephemeral,oracle-cloud"
+if [[ -n "${RUNNER_LABELS+x}" ]]; then
+  # Note the `+x` test above and the explicit blank check here: `${VAR:-default}`
+  # does NOT substitute for a whitespace-only value, so the shorthand would hand
+  # cloud-init an empty label set. GitHub accepts that registration, and the
+  # result is a VM no `runs-on` can ever match -- a silent paid-for no-op.
+  if [[ -z "${RUNNER_LABELS//[[:space:]]/}" ]]; then
+    echo "ERROR: RUNNER_LABELS is set but empty/whitespace-only. Unset it to use the default:" >&2
+    echo "       $DEFAULT_LABELS" >&2
+    exit 1
+  fi
+  LABELS="$RUNNER_LABELS"
+
+  # An override supplies the COMPLETE set, so a caller can omit a label that
+  # every `runs-on` requires. Fail here, loudly, rather than 15 minutes later
+  # with a healthy VM idling next to a job that will never be routed to it.
+  #
+  # Everything below is a FACT about any VM this script launches -- it is always
+  # self-hosted, always linux, always this arch, always OCI. Only the pool label
+  # ("f1r3fly-rust-ci-ephemeral" by default) is the caller's to choose. Requiring
+  # the invariants makes the trap unreachable rather than merely documented:
+  # claude-session-9f68c6fa caught an earlier draft of this whose own header
+  # example dropped `oracle-cloud`, which every `runs-on` in f1r3node-rust asks
+  # for. Copying that example would have produced a runner nothing matched, with
+  # validation passing.
+  for required in "self-hosted" "linux" "$LABEL_ARCH" "oracle-cloud"; do
+    if [[ ",$LABELS," != *",$required,"* ]]; then
+      echo "ERROR: RUNNER_LABELS ('$LABELS') is missing the required label '$required'." >&2
+      echo "       Without it no 'runs-on' can match this runner." >&2
+      exit 1
+    fi
+  done
+else
+  LABELS="$DEFAULT_LABELS"
+fi
 
 # Render cloud-init from template
 CLOUD_INIT_TMPL="$SCRIPT_DIR/cloud-init-runner.yml.tmpl"

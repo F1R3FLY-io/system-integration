@@ -99,6 +99,20 @@ After baking, update `AMD64_BAKED_IMAGE_OCID` / `ARM64_BAKED_IMAGE_OCID` in `sta
 
 Useful for triaging an issue without going through the full PR pipeline. The runner will sit idle waiting for a queued job that matches its labels; cancel by manually terminating the instance (`destroy-all.sh`) if no job arrives.
 
+### Exclusive runners (`RUNNER_LABELS`)
+
+By default every VM registers with the same labels, so GitHub routes each queued job to whichever matching runner claims it first — regardless of which workflow paid to launch it. For a long-running job that must own its VM, override the label set:
+
+```bash
+RUNNER_LABELS="self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud" ./launch-runner.sh amd64
+```
+
+The override replaces the **whole** set, but in practice you are only swapping the pool label (`f1r3fly-rust-ci-ephemeral` → your own). The other four are facts about any VM this script launches — always self-hosted, always linux, always that arch, always OCI — so the script *enforces* them: omit one and the launch is refused. Without that, a set missing `oracle-cloud` would register a runner no `runs-on` in f1r3node-rust can match, and nothing would report an error; the job would simply queue until it timed out. A blank or whitespace-only value is refused for the same reason — unset the variable to get the default.
+
+Keep this in step with the consuming `runs-on`. The two have to be edited together, or the soak queues forever.
+
+Prefer this over registering with the shared label and relabelling afterwards. Relabelling leaves a window between registration and the label removal in which any queued job can still claim the VM. That window cost the merge-recovery soak run 30606130771, and it has a second, quieter effect: the soak then runs on whatever cloud-init the *other* workflow pinned, so `SYSTEM_INTEGRATION_REF` stops describing the machine the soak actually runs on. Launching with the dedicated label from the start is what makes that pin binding.
+
 ### Emergency cleanup
 
 ```bash
