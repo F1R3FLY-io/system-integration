@@ -117,11 +117,22 @@ def test_no_live_references_to_removed_files(deleted):
     Historical records are exempt: migration-to-rust-node.md, ToDos.md and
     UserStories.md describe what the layout *used to be*, and scrubbing them
     would destroy the explanation of why things look the way they do.
+
+    This file is exempt from itself — it has to name the paths it is checking
+    for, and `git grep` searches tracked files, so once committed it matches
+    every one of them.
     """
     historical = {
         "docs/migration-to-rust-node.md",
         "docs/ToDos.md",
         "docs/UserStories.md",
+        "unit-tests/test_repo_invariants.py",
+    }
+    # A file may name its own predecessor in a provenance note. Allowed per
+    # (deleted path, referring file) pair rather than by substring, so an
+    # unrelated live reference in a similarly-named file still fails.
+    provenance = {
+        ("compose/f1r3node-shard-light.yml", "compose/f1r3node-rust-shard-light.yml"),
     }
 
     proc = subprocess.run(
@@ -131,8 +142,7 @@ def test_no_live_references_to_removed_files(deleted):
         text=True,
     )
     hits = {line for line in proc.stdout.splitlines() if line.strip()}
-    # A file may legitimately mention its own predecessor in a provenance note.
-    hits = {h for h in hits if h not in historical and "shard-light" not in h}
+    hits = {h for h in hits if h not in historical and (deleted, h) not in provenance}
 
     assert hits == set(), f"{deleted} was deleted but is still referenced by: {sorted(hits)}"
 
