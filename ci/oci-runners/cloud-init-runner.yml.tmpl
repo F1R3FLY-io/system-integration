@@ -51,6 +51,109 @@ write_files:
         echo "$line" > /dev/console 2>/dev/null || true
       }
 
+      # Heartbeat: one compact console line every 2 minutes for the VM's whole
+      # life. Console history only ever held the ~49s of boot output — serial
+      # writes stop when the bootstrap goes quiet, so a failure at hour four of
+      # a soak left nothing to read. (The pgrep watchdog fix made this worse:
+      # the old buffered-log grep loop kept echoing until detection at ~226s;
+      # the fixed one exits the moment a job starts.) This loop is the
+      # deliberate replacement for that accidental visibility.
+      #
+      # Budget: the console-history buffer holds ~1MB. One line every 120s at
+      # <=256 bytes is ~185KB over a 60h soak — fits with headroom. Do not
+      # shrink the interval or widen the line without redoing that arithmetic.
+      # Every field is best-effort (|| true / fallbacks): diagnostics must
+      # never become load-bearing.
+      heartbeat() {
+        while :; do
+          sleep 120
+          local up load mem worker last
+          up=$(cut -d. -f1 /proc/uptime 2>/dev/null) || up="?"
+          load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null) || load="?"
+          mem=$(awk '/MemAvailable/{printf "%dM", $2/1024}' /proc/meminfo 2>/dev/null) || mem="?"
+          if pgrep -u "$RUNNER_USER" -f 'Runner\.Worker' >/dev/null 2>&1; then
+            worker="worker=up"
+          else
+            worker="worker=down"
+          fi
+          last=$(tail -n 1 /var/log/runner-run.log 2>/dev/null | tr -d '\n' | cut -c1-100) || last=""
+          log "HEARTBEAT up=${up}s load=[$load] mem=$mem $worker last='$last'"
+        done
+      }
+      heartbeat &
+
+      # Post-mortem dump: the bounded tail of every log that would otherwise
+      # die with the instance, written to console at the exact moment run.sh
+      # has exited — which is where the unexplained runner losses live.
+      # f1r3node-rust's capture_diagnostics greps console history; the
+      # POST-MORTEM prefix is its anchor. Bounded (~60 lines) so one dump
+      # cannot evict the heartbeat trail from the 1MB buffer.
+      post_mortem() {
+        log "POST-MORTEM begin (run.sh exited, attempt $attempt)"
+        tail -n 30 /var/log/runner-run.log 2>/dev/null | while IFS= read -r l; do
+          log "POST-MORTEM runner-run: $l"
+        done || true
+        # The Listener's own session log — the file that names a session error
+        # when GitHub drops the runner server-side. Newest _diag file only,
+        # bounded: session losses land at the END of the current Runner log.
+        find "$RUNNER_HOME/_diag" -name '*.log' -newer /var/log/runner-run.log 2>/dev/null \
+          | head -n 1 | while IFS= read -r f; do
+          tail -n 25 "$f" 2>/dev/null | while IFS= read -r l; do
+            log "POST-MORTEM diag: $l"
+          done
+        done || true
+        # Fallback when no _diag file is newer than the run log: newest overall.
+        ls -t "$RUNNER_HOME"/_diag/Runner_*.log 2>/dev/null | head -n 1 \
+          | while IFS= read -r f; do
+          tail -n 15 "$f" 2>/dev/null | while IFS= read -r l; do
+            log "POST-MORTEM diag2: $l"
+          done
+        done || true
+        dmesg 2>/dev/null | tail -n 20 | while IFS= read -r l; do
+          log "POST-MORTEM dmesg: $l"
+        done || true
+        # kern.log persists via rsyslog where the dmesg ring buffer is
+        # volatile; on c7fd9f it was kern.log, not the ring, that held the
+        # OOM-kill line that named the root cause.
+        tail -n 15 /var/log/kern.log 2>/dev/null | while IFS= read -r l; do
+          log "POST-MORTEM kern: $l"
+        done || true
+        docker ps -a --format '{{.Names}} {{.Status}}' 2>/dev/null | head -n 10 | while IFS= read -r l; do
+          log "POST-MORTEM docker: $l"
+        done || true
+        log "POST-MORTEM end"
+      }
+
+      # Wedge escape. Live-VM evidence from soak c7fd9f (2026-08-01): GitHub
+      # deregistered the runner and failed the job, but Runner.Listener never
+      # exited — run.sh blocked the bootstrap's `wait` forever, so
+      # self-terminate never ran and the VM idled until the reaper (16 OCPU,
+      # hours of burn; the leaked-VM pattern all week fits this signature).
+      # Console showed nothing because every exit-path log sits AFTER `wait`.
+      #
+      # Once a job has started, Runner.Worker exists within seconds; on an
+      # ephemeral runner the listener exits promptly after the worker finishes.
+      # A listener alive with the worker continuously absent for 10 minutes is
+      # wedged or session-lost — kill run.sh so the normal ephemeral exit path
+      # (post_mortem, then self-terminate) runs instead of leaking the VM.
+      WEDGE_TIMEOUT_SECS=600
+      wedge_watch() {
+        local absent=0
+        while kill -0 "$RUN_PID" 2>/dev/null; do
+          if pgrep -u "$RUNNER_USER" -f 'Runner\.Worker' >/dev/null 2>&1; then
+            absent=0
+          else
+            absent=$((absent + 60))
+          fi
+          if [ "$absent" -ge "$WEDGE_TIMEOUT_SECS" ]; then
+            log "WEDGE: worker absent ${absent}s with listener still up; killing run.sh to force the ephemeral exit path."
+            kill "$RUN_PID" 2>/dev/null || true
+            return 0
+          fi
+          sleep 60
+        done
+      }
+
       log "=== Configure runner as ephemeral, repo-scoped ==="
       # No --disableupdate: if the baked image's runner version gets
       # deprecated by GitHub before the image is replaced, the runner
@@ -121,8 +224,11 @@ write_files:
             # The dot is escaped because -f takes an ERE, where "." is any char.
             if pgrep -u "$RUNNER_USER" -f 'Runner\.Worker' >/dev/null 2>&1 \
               || grep -q "Running job:" /var/log/runner-run.log 2>/dev/null; then
-              log "Job detected; idle watchdog standing down for this run."
-              exit 0   # a job started — let it run to completion
+              log "Job detected; idle watchdog standing down; wedge watch engaged."
+              # Phase 2: don't just exit — a wedged/session-lost listener would
+              # block `wait` forever with no one watching (see wedge_watch).
+              wedge_watch
+              exit 0
             fi
             if [ "$elapsed" -ge "$IDLE_TIMEOUT_SECS" ]; then
               log "Idle ${IDLE_TIMEOUT_SECS}s with no job; killing runner to self-terminate."
@@ -151,6 +257,8 @@ write_files:
         fi
         break   # unrecognized exit — preserve pre-existing terminate behavior
       done
+
+      post_mortem || true
 
       log "=== Job complete (or idle timeout); self-terminating instance via instance principal ==="
       INSTANCE_ID=$(curl -fsSL -H "Authorization: Bearer Oracle" \
