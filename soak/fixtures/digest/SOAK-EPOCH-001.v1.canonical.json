@@ -1,0 +1,1 @@
+{"catalog_schema_version":1,"definition":{"invariants":["all_accepted_operations_finalize","shard_converges"],"providers":["docker","subprocess"],"safety_limits":{},"topologies":["six-node-single-shard"],"workload":{"kind":"steady_valid_deploy_stream","parameters":{}}},"epoch_id":"SOAK-EPOCH-001","epoch_revision":1,"fixtures":[]}

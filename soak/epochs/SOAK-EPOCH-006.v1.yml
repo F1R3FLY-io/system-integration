@@ -1,0 +1,15 @@
+catalog_schema_version: 1
+epoch_id: SOAK-EPOCH-006
+epoch_revision: 1
+definition:
+  providers: [docker, subprocess]
+  topologies: [six-node-single-shard]
+  workload:
+    kind: mixed_contract_workload
+    parameters: {}
+  safety_limits: {}
+  invariants: [all_accepted_operations_finalize, mixed_state_is_consistent]
+fixtures: []
+annotations:
+  title: Mixed contract workload
+  implementation_status: planned

@@ -1,0 +1,32 @@
+catalog_schema_version: 1
+epochs:
+  - epoch_id: SOAK-EPOCH-001
+    epoch_revision: 1
+    path: epochs/SOAK-EPOCH-001.v1.yml
+    definition_digest: acfdf7fa5c9a2b9b90f95ff9598877d9e619d6bb77f67f0a7c733f2205d1d404
+    implementation_status: planned
+  - epoch_id: SOAK-EPOCH-002
+    epoch_revision: 1
+    path: epochs/SOAK-EPOCH-002.v1.yml
+    definition_digest: 82a07b2490d380f4ae932f1e6fe9487d0195d2a2f39a27361e79a3e9dd17a7d7
+    implementation_status: planned
+  - epoch_id: SOAK-EPOCH-003
+    epoch_revision: 1
+    path: epochs/SOAK-EPOCH-003.v1.yml
+    definition_digest: 20058a6db0ce80364f47ff5dfdc673e750646a4882a6e9533d35c3e3444a82a8
+    implementation_status: planned
+  - epoch_id: SOAK-EPOCH-004
+    epoch_revision: 1
+    path: epochs/SOAK-EPOCH-004.v1.yml
+    definition_digest: 27a185e9623a4f655d862004f97ef10b8cc5fff8c59c23495fdc6318cc2ea5f3
+    implementation_status: planned
+  - epoch_id: SOAK-EPOCH-005
+    epoch_revision: 1
+    path: epochs/SOAK-EPOCH-005.v1.yml
+    definition_digest: dff71f0ebd79154119558f6fd8d7f29f1a9c29b64b71c616aa1e1bb42d194821
+    implementation_status: planned
+  - epoch_id: SOAK-EPOCH-006
+    epoch_revision: 1
+    path: epochs/SOAK-EPOCH-006.v1.yml
+    definition_digest: e7c5727f3ab2d23f5799ac1507b459f8ddc42989cf80640f8c4f6cfb5b910f52
+    implementation_status: planned

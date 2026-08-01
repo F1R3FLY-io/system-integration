@@ -1,0 +1,15 @@
+catalog_schema_version: 1
+epoch_id: SOAK-EPOCH-001
+epoch_revision: 1
+definition:
+  providers: [docker, subprocess]
+  topologies: [six-node-single-shard]
+  workload:
+    kind: steady_valid_deploy_stream
+    parameters: {}
+  safety_limits: {}
+  invariants: [all_accepted_operations_finalize, shard_converges]
+fixtures: []
+annotations:
+  title: Steady valid deploy stream
+  implementation_status: planned

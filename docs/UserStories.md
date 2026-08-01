@@ -101,7 +101,7 @@ breakage in callers this repo cannot see.
 
 **Contract:** [Randomized Exercise Soak Contract](specs/randomized-exercise-soak-contract.md)
 
-**Canonical pin contract:** [f1r3node-rust Trusted CI Pin Registry](https://github.com/F1R3FLY-io/f1r3node-rust/blob/dev/docs/ci-pins.md)
+**Canonical pin contract:** [f1r3node-rust Trusted CI Pin Registry](https://github.com/F1R3FLY-io/f1r3node-rust/blob/6d1120ce8fb179dee3a80517254f9fbcd1485a70/docs/ci-pins.md)
 
 ---
 
@@ -134,7 +134,7 @@ User stories capture the **why** (user need and benefit). Epics capture the **wh
 | ---------- | --------- | ---------- |
 | User Story | Business/user need | `docs/UserStories.md` |
 | Epic | Implementation scope | `docs/ToDos.md` |
-| Task | Technical work item | Nested in epoch YAML |
+| Task | Technical work item | Nested in epic YAML |
 | Acceptance Criteria | Definition of done | In user story |
 
 **Workflow:**

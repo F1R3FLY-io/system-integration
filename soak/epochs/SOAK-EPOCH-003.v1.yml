@@ -1,0 +1,15 @@
+catalog_schema_version: 1
+epoch_id: SOAK-EPOCH-003
+epoch_revision: 1
+definition:
+  providers: [docker, subprocess]
+  topologies: [six-node-single-shard]
+  workload:
+    kind: concurrent_channel_contention
+    parameters: {}
+  safety_limits: {}
+  invariants: [all_accepted_operations_finalize, contended_state_is_consistent]
+fixtures: []
+annotations:
+  title: Concurrent channel contention
+  implementation_status: planned
