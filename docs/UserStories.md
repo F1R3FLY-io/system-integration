@@ -1,7 +1,7 @@
 ---
 doc_type: user_stories
 version: "1.0"
-last_updated: "[DATE]"
+last_updated: "2026-08-01"
 ---
 
 # User Stories
@@ -12,17 +12,18 @@ TEMPLATE USAGE INSTRUCTIONS:
 1. Add completed stories under "Completed Stories" section
 2. Add planned stories under "Planned Stories" section
 3. Move completed stories from "Planned" to "Completed" sections
-4. Update epoch links when implementation begins
+4. Update epic links when implementation begins
 5. Check acceptance criteria as features are verified
 6. (Optional) Update reference URLs if using a fork with modified standards
 7. Remove these usage instruction comments before committing
 -->
 
-This document captures user stories that drive feature development. User stories are reverse-engineered from completed epochs and updated as new features are planned.
+This document captures user stories that drive feature development. User stories are reverse-engineered from completed epics and updated as new features are planned.
 
 **Document Structure**
+
 - Active stories: This file (`docs/UserStories.md`)
-- Implementation tracking: `docs/ToDos.md` (epochs and tasks)
+- Implementation tracking: `docs/ToDos.md` (epics and tasks)
 - Completed work: `docs/CompletedTasks.md`
 
 **Format:** Each story follows the standard template:
@@ -41,7 +42,7 @@ This document captures user stories that drive feature development. User stories
 
 ## Planned Stories
 
-Stories below are candidates for future epochs. Move to "Completed Stories" when implemented.
+Stories below are candidates for future epics. Move to "Completed Stories" when implemented.
 
 #### US-001: Migrate to Rust-Only f1r3node
 
@@ -50,6 +51,7 @@ Stories below are candidates for future epochs. Move to "Completed Stories" when
 **Implemented in:** EPOCH-001
 
 **Acceptance Criteria:**
+
 - [x] `services.yml` points to `f1r3node-rust.git` (not `f1r3node.git rust/dev`) — the
       `f1r3node` repository entry and its `builds:` block are removed entirely
 - [x] `shardctl up` starts Rust nodes by default without `--rust` flag
@@ -78,6 +80,31 @@ breakage in callers this repo cannot see.
 
 ---
 
+#### US-002: Reproducible Randomized Exercise Soaks
+
+> As a **release operator**, I want **weekend soaks to execute a seeded catalogue of bounded, valid operational workloads** so that **broad behavior is exercised continuously while every failure remains exactly replayable and attributable**.
+
+**Implemented in:** EPIC-011, EPIC-012
+
+**Acceptance Criteria:**
+
+- [ ] The pinned executor catalogue is schema-validated before shard or OCI resources launch
+- [ ] Every execution records immutable definition, orchestrator, seed, provider, topology, and safety-limit identity
+- [ ] The initial six required valid-operation epochs run deterministically on Docker and subprocess providers
+- [ ] Success and failure are evaluated from finalized state with workload, safety, host, reset, and infrastructure failures classified separately
+- [ ] A recorded manifest replays without silently substituting newer definitions or limits
+- [ ] Required, experimental, and gating policy is machine-readable for the f1r3node-rust scheduler
+- [ ] A compatible experimental epoch publishes evidence for a one-line `systemIntegration.catalogRef` bump without changing privileged `runnerRef`
+- [ ] Incompatible schema/capability changes and gating promotion are identified as coordinated, explicitly reviewed changes
+
+**Completed:** Planned
+
+**Contract:** [Randomized Exercise Soak Contract](specs/randomized-exercise-soak-contract.md)
+
+**Canonical pin contract:** [f1r3node-rust Trusted CI Pin Registry](https://github.com/F1R3FLY-io/f1r3node-rust/blob/dev/docs/ci-pins.md)
+
+---
+
 ## Story Template
 
 Use this template when adding new user stories:
@@ -87,7 +114,7 @@ Use this template when adding new user stories:
 
 > As a **[persona]**, I want **[capability]** so that **[benefit]**.
 
-**Implemented in:** [EPOCH-ID or "Planned"]
+**Implemented in:** [EPIC-ID or "Planned"]
 
 **Acceptance Criteria:**
 - [ ] Criterion 1
@@ -99,22 +126,23 @@ Use this template when adding new user stories:
 
 ---
 
-## Relationship to Epochs
+## Relationship to Epics
 
-User stories capture the **why** (user need and benefit). Epochs capture the **what** (technical implementation tasks).
+User stories capture the **why** (user need and benefit). Epics capture the **what** (technical implementation tasks).
 
 | Artifact | Purpose | Location |
-|----------|---------|----------|
+| ---------- | --------- | ---------- |
 | User Story | Business/user need | `docs/UserStories.md` |
-| Epoch | Implementation scope | `docs/ToDos.md` |
+| Epic | Implementation scope | `docs/ToDos.md` |
 | Task | Technical work item | Nested in epoch YAML |
 | Acceptance Criteria | Definition of done | In user story |
 
 **Workflow:**
+
 1. Identify user need -> Create user story
-2. Design solution -> Create epoch with tasks
+2. Design solution -> Create epic with tasks
 3. Implement -> Work through tasks via `/nextTask` and `/implement`
-4. Complete -> Mark epoch complete, update story status
+4. Complete -> Mark epic complete, update story status
 
 ---
 

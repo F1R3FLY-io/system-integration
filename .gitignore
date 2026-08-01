@@ -74,3 +74,4 @@ integration-tests/.pytest_cache/
 integration-tests/data/
 docs/discoveries/
 docs/work-logs/
+docs/handoffs/*.md

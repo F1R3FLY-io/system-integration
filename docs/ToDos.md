@@ -1,6 +1,221 @@
+---
+mr_status:
+  ready: false
+  target_branch: dev
+  title: "feat(soak): add randomized exercise catalogue"
+  description: |
+    ## Summary
+    - Define the cross-repository randomized-soak contract.
+    - Add the executor catalogue and first six valid-operation workloads.
+    - Verify deterministic replay and Docker/subprocess parity.
+  labels: ["enhancement", "testing"]
+---
+
 # ToDos — system-integration
 
 Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
+
+## Active Handoff: Randomized Exercise Soak Catalogue
+
+The `f1r3node-rust` branch `feature/randomized-exercise-soak` has handed off the executor/catalogue work to this branch, `feature/randomized-exercise-soak-catalogue`. The durable transfer is recorded in `docs/handoffs/agent-session-f1r3node-rust--pi-session-019fa4ad--20260801T165513Z.md`; the shared contract is tracked in `docs/specs/randomized-exercise-soak-contract.md`. The reciprocal canonical pin and trust design is [`f1r3node-rust/docs/ci-pins.md`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/dev/docs/ci-pins.md).
+
+---
+
+## EPIC-011: Randomized Soak Contract and Executor Interface
+
+**User Story:** [US-002: Reproducible Randomized Exercise Soaks](UserStories.md#us-002-reproducible-randomized-exercise-soaks)
+
+```yaml
+epic_id: EPIC-011
+title: "Randomized Soak Contract and Executor Interface"
+status: in_progress
+priority: p1
+blocked_by: []
+user_story: US-002
+branch: feature/randomized-exercise-soak-catalogue
+tasks:
+  - id: TODO-011-001
+    title: "Negotiate and freeze the executor interface contract"
+    description: |
+      Define the catalogue identity, executor inputs, structured result,
+      failure classes, and replay contract consumed by f1r3node-rust.
+    status: in_progress
+    claimed_by: pi-session-019fa4ad
+    claimed_at: 2026-08-01T17:04:51Z
+    acceptance:
+      - "The contract records catalogue schema, epoch ID/revision, definition SHA/digest, orchestrator SHA, seed, provider, topology, deadline, output directory, and effective safety limits"
+      - "Unknown schemas, revisions, digest mismatches, and incompatible replay manifests fail closed"
+      - "Workload, assertion, safety, host, reset, and infrastructure failures are distinct result classes"
+      - "Open interface questions and cross-repository ownership are explicit"
+
+  - id: TODO-011-002
+    title: "Implement the machine-readable catalogue schema and validator"
+    description: |
+      Add versioned catalogue definitions, normalized digest calculation, and
+      validation for identity, policy, provider, topology, and safety limits.
+    status: blocked
+    blocked_by: [TODO-011-001]
+    acceptance:
+      - "Catalogue definitions validate against catalog_schema_version 1"
+      - "Semantic changes require an epoch_revision increment"
+      - "The normalized definition and fixtures produce a stable SHA-256 digest"
+      - "Invalid or incompatible definitions are rejected before shard or OCI resources start"
+
+  - id: TODO-011-003
+    title: "Implement the stable epoch executor entry point and result manifest"
+    description: |
+      Provide a CLI or pytest entry point that executes one bounded epoch and
+      writes a structured manifest plus evidence references.
+    status: blocked
+    blocked_by: [TODO-011-001, TODO-011-002]
+    acceptance:
+      - "Inputs include epoch ID, revision, seed, provider, topology, deadline, output directory, and effective safety limits"
+      - "Results count submitted, accepted, rejected, included, and finalized operations"
+      - "Results include effective image, timing, limits, invariants, metrics, reset outcome, evidence checksums, failure class, and first failing operation"
+      - "Epoch limits can tighten but never raise orchestrator-supplied host protections"
+
+  - id: TODO-011-004
+    title: "Publish cross-repository catalogue compatibility tests"
+    description: |
+      Expose deterministic contract tests that f1r3node-rust can run before
+      launching an OCI soak runner.
+    status: blocked
+    blocked_by: [TODO-011-002, TODO-011-003]
+    acceptance:
+      - "Tests verify schema compatibility and required executor capabilities"
+      - "Tests fail before resource launch when the pinned systemIntegration.catalogRef is incompatible"
+      - "The verification command is documented for both repositories"
+
+  - id: TODO-011-005
+    title: "Implement manifest replay and epoch provenance metadata"
+    description: |
+      Replay an execution from its immutable identity tuple and track whether
+      an epoch is required, experimental, or gating.
+    status: blocked
+    blocked_by: [TODO-011-003, TODO-011-004]
+    acceptance:
+      - "Replay requires the recorded definition SHA, digest, seed, provider, topology, and effective limits"
+      - "Unavailable or incompatible historical inputs fail closed rather than substituting newer behavior"
+      - "Provenance links the originating run or issue and records promotion history in Git"
+
+  - id: TODO-011-006
+    title: "Publish catalog pin-bump metadata and compatibility evidence"
+    description: |
+      Make a merged catalog change consumable through f1r3node-rust's single
+      .github/ci-pins.jsonc catalogRef update without coupling it to runner code.
+    status: blocked
+    blocked_by: [TODO-011-002, TODO-011-004]
+    acceptance:
+      - "Catalog release evidence includes merged 40-character SHA, schema version, added/revised epoch IDs and revisions, definition digests, and compatibility-test result"
+      - "Backward-compatible experimental additions require no orchestrator code or gating-policy change beyond catalogRef"
+      - "Incompatible schema or scheduler capability changes are identified as coordinated-branch changes"
+      - "Future automation may propose a catalogRef-only PR but cannot merge, change runnerRef, or promote gating policy"
+      - "Canonical system-integration contract links to f1r3node-rust's docs/ci-pins.md and that document links back"
+```
+
+---
+
+## EPIC-012: Initial Valid-Operation Soak Catalogue
+
+**User Story:** [US-002: Reproducible Randomized Exercise Soaks](UserStories.md#us-002-reproducible-randomized-exercise-soaks)
+
+```yaml
+epic_id: EPIC-012
+title: "Initial Valid-Operation Soak Catalogue"
+status: blocked
+priority: p1
+blocked_by: [EPIC-011]
+user_story: US-002
+branch: feature/randomized-exercise-soak-catalogue
+tasks:
+  - id: TODO-012-001
+    title: "Build deterministic valid-operation generation primitives"
+    description: |
+      Generate valid signatures, funded accounts, phlo and payload bounds,
+      dependencies, shard routing, and seeded operation sequences.
+    status: blocked
+    blocked_by: [TODO-011-003]
+    acceptance:
+      - "The same definition, seed, provider inputs, and limits produce the same operation plan"
+      - "Generated operations are valid production-shaped traffic, not invalid-input fuzzing"
+      - "Dependent operations wait for finalized prerequisite state"
+
+  - id: TODO-012-002
+    title: "Implement SOAK-EPOCH-001 steady valid deploy stream"
+    status: blocked
+    blocked_by: [TODO-012-001]
+    acceptance:
+      - "Runs a sustained bounded deploy rate followed by a finalization drain"
+      - "Registered as required and gating"
+
+  - id: TODO-012-003
+    title: "Implement SOAK-EPOCH-002 burst and cooldown"
+    status: blocked
+    blocked_by: [TODO-012-001]
+    acceptance:
+      - "Alternates bounded valid bursts with quiescent convergence checks"
+      - "Registered as required and experimental"
+
+  - id: TODO-012-004
+    title: "Implement SOAK-EPOCH-003 concurrent channel contention"
+    status: blocked
+    blocked_by: [TODO-012-001]
+    acceptance:
+      - "Runs concurrent valid contracts competing over shared channels or state"
+      - "Registered as required and experimental"
+
+  - id: TODO-012-005
+    title: "Implement SOAK-EPOCH-004 large valid deploys"
+    status: blocked
+    blocked_by: [TODO-012-001]
+    acceptance:
+      - "Exercises deploys near approved phlo and payload bounds without exceeding effective limits"
+      - "Registered as required and experimental"
+
+  - id: TODO-012-006
+    title: "Implement SOAK-EPOCH-005 dependent transaction chains"
+    status: blocked
+    blocked_by: [TODO-012-001]
+    acceptance:
+      - "Each chain step waits for the preceding finalized state"
+      - "Registered as required and experimental"
+
+  - id: TODO-012-007
+    title: "Implement SOAK-EPOCH-006 mixed contract workload"
+    status: blocked
+    blocked_by: [TODO-012-001]
+    acceptance:
+      - "Uses a deterministic weighted interleave of independent valid contract families"
+      - "Registered as required and experimental"
+
+  - id: TODO-012-008
+    title: "Evaluate finalized-state invariants and classify failures"
+    status: blocked
+    blocked_by: [TODO-011-003, TODO-012-001]
+    acceptance:
+      - "Success is based on finalized state rather than submission acceptance"
+      - "Safety and convergence invariants run after every active workload phase"
+      - "The first failing operation and evidence are preserved"
+
+  - id: TODO-012-009
+    title: "Prove clean shard lifecycle and reset between epochs"
+    status: blocked
+    blocked_by: [TODO-011-003]
+    acceptance:
+      - "Each epoch starts from a fresh or provably reset six-node single shard"
+      - "Reset failure is classified as environment corruption and stops the segment"
+      - "No state, process, port, or artifact collision leaks between epochs"
+
+  - id: TODO-012-010
+    title: "Verify complete catalogue parity across Docker and subprocess providers"
+    status: blocked
+    blocked_by: [TODO-012-002, TODO-012-003, TODO-012-004, TODO-012-005, TODO-012-006, TODO-012-007, TODO-012-008, TODO-012-009]
+    acceptance:
+      - "All six epochs execute under Docker and subprocess providers"
+      - "Equivalent seeds and definitions produce equivalent operation plans and invariant outcomes"
+      - "Provider-specific limitations are explicit in catalogue metadata and test evidence"
+      - "Replay is demonstrated from a recorded manifest on both providers"
+```
 
 ---
 
@@ -513,6 +728,7 @@ weekend.
 Please commit this entry — my three previous ToDos entries have vanished from
 the shared working trees (the `ba76eae` history is gone from every branch);
 the reasoning keeps having to be re-derived.
+
 ## REPLY: fixed, and my three guesses were all wrong (2026-08-01T00:40Z)
 
 <!-- claude-session-02f66bb7, branch fix/dag-correctness-reliability off dev -->
@@ -656,7 +872,7 @@ sufficient.
 **2. `deploy_inclusion: 10` is a conspicuous outlier.**
 
 | timeout | value |
-|---|---|
+| --- | --- |
 | `node_startup` | 300 |
 | `command` | 60 |
 | `finalization` | 45 |
@@ -694,7 +910,7 @@ None of it is mine to make — it is all `integration-tests/test/infra/`.
 f1r3node-rust.**
 
 | # | Repo | Action |
-|---|---|---|
+| --- | --- | --- |
 | 1 | system-integration | PR #75 (`fix/soak-postmortem-narrow-race`) → `dev` |
 | 2 | system-integration | `dev` → `main` |
 | 3 | — | Merged `main` SHA handed to claude-session-9f68c6fa |
@@ -742,7 +958,7 @@ and the full exchange: `docs/discoveries/2026-07-31-runner-label-exclusivity-and
 (ephemeral, not tracked). Only the outcomes are recorded here.
 
 | # | Decision | State |
-|---|---|---|
+| --- | --- | --- |
 | 1 | `RUNNER_LABELS` overrides the label set in `launch-runner.sh`, so a workflow registers its VM exclusively from the start instead of relabelling afterwards | **done**, PR #75 |
 | 2 | The override is refused if it keeps the shared pool label, carries no pool label, is blank, or drops a required one | **done**, PR #75 |
 | 3 | Unscoped `pgrep -f "Runner.Worker"` in `cloud-init-runner.yml.tmpl` → `pgrep -u "$RUNNER_USER" -f 'Runner\.Worker'` | **done**, PR #75 |
@@ -938,7 +1154,7 @@ bedrock approve, openai needs_review, xai provide_feedback). One critical, since
 fixed. Recorded here because PR comments do not survive a squash.
 
 | Finding | Reporters | Resolution |
-|---|---|---|
+| --- | --- | --- |
 | **CRITICAL** — empty prefix list fails *open*: `${VAR:-default}` does not substitute a whitespace-only value, so `REAPABLE_NAME_PREFIXES=' '` parsed to zero prefixes and `if prefixes and ...` then matched every instance | openai, xai | **Fixed.** Script aborts (exit 2) on a whitespace-only list; the filter refuses independently, since tests execute it without the caller guard. Worse than pre-change behaviour, because an operator believes a filter is active |
 | Non-finite deadline grants permanent exemption — `float()` accepts `Infinity`, `inf`, `1e309` | openai | **Fixed** via `math.isfinite`. *Not* by switching to `int()`: f1r3node-rust parses this tag with jq `tonumber`, which accepts fractional values, and a consumer stricter than the producer would discard a valid deadline and kill a live soak |
 | `MAX_AGE_HOURS` unvalidated before `$(( ))`, where bash evaluates contents as an expression | openai | **Fixed** — rejected unless `^[0-9]+$`. Empty still takes the default, which is `:-` semantics, not a hole |
@@ -1255,7 +1471,7 @@ bedrock approve, openai needs_review, xai provide_feedback). One critical, since
 fixed. Recorded here because PR comments do not survive a squash.
 
 | Finding | Reporters | Resolution |
-|---|---|---|
+| --- | --- | --- |
 | **CRITICAL** — empty prefix list fails *open*: `${VAR:-default}` does not substitute a whitespace-only value, so `REAPABLE_NAME_PREFIXES=' '` parsed to zero prefixes and `if prefixes and ...` then matched every instance | openai, xai | **Fixed.** Script aborts (exit 2) on a whitespace-only list; the filter refuses independently, since tests execute it without the caller guard. Worse than pre-change behaviour, because an operator believes a filter is active |
 | Non-finite deadline grants permanent exemption — `float()` accepts `Infinity`, `inf`, `1e309` | openai | **Fixed** via `math.isfinite`. *Not* by switching to `int()`: f1r3node-rust parses this tag with jq `tonumber`, which accepts fractional values, and a consumer stricter than the producer would discard a valid deadline and kill a live soak |
 | `MAX_AGE_HOURS` unvalidated before `$(( ))`, where bash evaluates contents as an expression | openai | **Fixed** — rejected unless `^[0-9]+$`. Empty still takes the default, which is `:-` semantics, not a hole |
@@ -1501,6 +1717,7 @@ floor. Deriving from `MemTotal` and reserving headroom for OS/Docker/harness,
 never dropping below the current 5000 so laptop behaviour is unchanged.
 
 **Acceptance:**
+
 - Default derives from host RAM; falls back to 5000 when `MemTotal` is
   unreadable (unknown host must not silently disable host protection)
 - Never resolves below 5000, so no existing caller gets a weaker guard
@@ -1698,6 +1915,7 @@ work_done_at: 2026-07-08T00:25:00Z
 ```
 
 **Bakes complete — new image OCIDs are written into `ci/oci-runners/state.env`:**
+
 - amd64: `...aaaaaaaavvpezsyfucvi2wlf24qirmlvh4bt34oebklmf2sqhhrct32bsnpq`
 - arm64: `...aaaaaaaabyiomzojnoskkkmpelbgqshrnvsqqtiaqhkxaudyl7p4d3vhttga`
 
@@ -1727,6 +1945,7 @@ self-terminate jobless, starving the CI queue and tripping the OCI daily
 resource-creation limit.
 
 **Completion signal (for waiting agents):**
+
 1. Flip `status: complete` here, and/or
 2. Update image OCIDs in `ci/oci-runners/state.env`, and/or
 3. Drop a discovery note in `docs/discoveries/`.
@@ -2280,7 +2499,7 @@ reapers act on the **same compartment** (`COMP` in `state.env` equals
 directly comparable:
 
 | | this repo's `reap-stale-runners.sh` | f1r3node-rust `ci-runner-reaper.yml` |
-|---|---|---|
+| --- | --- | --- |
 | Max age | 6h | 2h (tighter) |
 | Name filter | **none** — any instance in compartment | `ci-eph-*` only, with a defense-in-depth `SKIP` for anything else |
 | States | `RUNNING` | `RUNNING` or `STOPPED` |
@@ -2325,7 +2544,7 @@ the guard as first written did not uphold its own guarantee. Both bugs were then
 **confirmed reproducible against `8995d10`**, not just argued:
 
 | Bug | Old behaviour at `8995d10` | Now |
-|---|---|---|
+| --- | --- | --- |
 | Clean run whose terminate failed | **exit 0 over a live VM** | exit 1 |
 | SIGINT | **2 terminate calls**, status `0` | 1 call, status `130` |
 
@@ -2408,12 +2627,11 @@ Scala references that were **kept** on purpose: `docs/slashing-mechanism.md` and
 Scala and record log-format differences and tests still to port. That is
 provenance, not live infrastructure — scrubbing it would destroy meaning.
 
-
 ```yaml
 ---
 epoch_id: EPOCH-001
 title: "Migrate to Rust-Only f1r3node"
-status: review
+status: blocked
 priority: p1
 user_story: US-001
 blocked_by: []
@@ -2487,12 +2705,14 @@ tasks:
 **Context:** The Scala and Rust node implementations are maintained in parallel, creating complexity in shardctl (dual NodeType enum, doubled compose files, conditional build configs). The standalone f1r3node-rust repo builds with standard Cargo (no Nix/SBT), is actively developed, and has feature parity.
 
 **Scope:**
+
 - Switch repository source from f1r3node `rust/dev` branch to standalone f1r3node-rust repo
 - Remove all Scala node support from shardctl, compose files, and tests
 - Align genesis files between repos (critical: wallets.txt mismatch)
 - NOT in scope: changes to the f1r3node-rust repo itself (except genesis fix)
 
 **Notes:**
+
 - See [migration plan](migration-to-rust-node.md) for detailed phase breakdown
 - wallets.txt in f1r3node-rust has 8 lines vs 20 in system-integration (critical fix)
 - Compose files need path adjustments when copying from upstream
