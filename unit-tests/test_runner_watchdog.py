@@ -98,6 +98,9 @@ def _run_watchdog(
                 "set -uo pipefail",
                 'log() { echo "LOG: $*"; }',
                 'kill() { echo "KILLED: $*"; }',
+                # Phase 2 is exercised by its own tests below; here it must
+                # only be observably engaged on the job-detected path.
+                'wedge_watch() { echo "WEDGE-WATCH-ENGAGED"; }',
                 pgrep_stub,
                 f"RUNNER_USER={shlex.quote(runner_user)}",
                 "RUN_PID=4242",
@@ -276,3 +279,109 @@ def test_watchdog_timeout_is_long_enough_to_be_a_backstop_not_a_limit():
 
     assert m, "IDLE_TIMEOUT_SECS not found"
     assert int(m.group(1)) >= 1800, "timeout too short to be a safe idle backstop"
+
+
+# --- phase 2: the wedge escape (live-VM evidence, c7fd9f 2026-08-01) ---------
+#
+# GitHub deregistered the runner and failed the job while Runner.Listener
+# stayed alive on the VM — run.sh blocked `wait` forever, self-terminate never
+# ran, and the VM leaked until the reaper. Every exit-path log sat after
+# `wait`, so the console showed nothing. The wedge watch is the only path that
+# turns that state back into the normal ephemeral exit.
+
+_WEDGE_START = "WEDGE_TIMEOUT_SECS="
+_WEDGE_END = 'log "=== Configure runner'
+
+
+def _wedge_body() -> str:
+    text = TEMPLATE.read_text()
+    start = text.index(_WEDGE_START)
+    end = text.index(_WEDGE_END, start)
+    body = text[start:end]
+    return "\n".join(line[6:] if line.startswith("      ") else line for line in body.splitlines())
+
+
+def _run_wedge(*, worker_absent_iters: int, runpid_alive_checks: int = 30):
+    """Drive wedge_watch with time compressed to zero.
+
+    ``worker_absent_iters``: how many consecutive pgrep calls report no worker
+    before the worker "appears" (a huge value = wedged forever).
+    ``runpid_alive_checks``: how many `kill -0` liveness checks succeed before
+    run.sh "exits on its own".
+    """
+    script = "\n".join(
+        [
+            "set -uo pipefail",
+            'log() { echo "LOG: $*"; }',
+            "RUN_PID=4242",
+            "RUNNER_USER=runner",
+            "CHECKS=0; PGREPS=0",
+            "kill() {",
+            '  if [ "$1" = "-0" ]; then',
+            "    CHECKS=$((CHECKS+1));"
+            f' [ "$CHECKS" -le {runpid_alive_checks} ] && return 0 || return 1',
+            "  fi",
+            '  echo "KILLED: $*"',
+            "}",
+            "pgrep() {",
+            "  PGREPS=$((PGREPS+1));"
+            f' [ "$PGREPS" -le {worker_absent_iters} ] && return 1 || return 0',
+            "}",
+            "sleep() { :; }",
+            _wedge_body(),
+            "wedge_watch",
+            "echo WEDGE-RETURNED",
+        ]
+    )
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+    return proc.stdout + proc.stderr
+
+
+def test_wedged_listener_is_killed_after_the_timeout():
+    """The c7fd9f case: worker never comes back, run.sh never exits."""
+    out = _run_wedge(worker_absent_iters=10_000)
+
+    assert "KILLED: 4242" in out, "a wedged listener was never killed — the VM leaks"
+    assert "WEDGE:" in out, "the kill must announce itself on the console"
+    assert "WEDGE-RETURNED" in out
+
+
+def test_healthy_job_is_never_wedge_killed():
+    """Worker present throughout: the watch waits for a natural exit."""
+    out = _run_wedge(worker_absent_iters=0, runpid_alive_checks=15)
+
+    assert "KILLED: 4242" not in out, "wedge watch killed a healthy job"
+    assert "WEDGE:" not in out
+
+
+def test_brief_worker_gaps_reset_the_wedge_clock():
+    """Worker absent for 5 minutes then back (job phases, worker restart):
+    the absence counter must reset rather than accumulate toward a kill."""
+    out = _run_wedge(worker_absent_iters=5, runpid_alive_checks=20)
+
+    assert "KILLED: 4242" not in out, "a transient worker gap was treated as a wedge"
+
+
+def test_natural_run_exit_ends_the_watch_without_killing():
+    out = _run_wedge(worker_absent_iters=3, runpid_alive_checks=4)
+
+    assert "KILLED: 4242" not in out
+    assert "WEDGE-RETURNED" in out, "the watch must end when run.sh exits"
+
+
+def test_watchdog_engages_the_wedge_watch_on_job_detection():
+    """Stand-down must hand off to phase 2, not just exit — a wedged listener
+    with no one watching is exactly how c7fd9f leaked."""
+    run = _run_watchdog(worker_running=True, log_contents="")
+
+    assert run.stood_down
+    assert "WEDGE-WATCH-ENGAGED" in run.out, "job detection exited without engaging the wedge watch"
+
+
+def test_wedge_timeout_is_long_enough_for_real_worker_gaps():
+    """10 minutes: long past any assignment->spawn or between-phase gap, short
+    enough to stop a 16-OCPU leak well before the reaper's hours-later pass."""
+    m = re.search(r"WEDGE_TIMEOUT_SECS=(\d+)", TEMPLATE.read_text())
+
+    assert m, "WEDGE_TIMEOUT_SECS not found"
+    assert 300 <= int(m.group(1)) <= 1800, "wedge timeout outside sane bounds"
