@@ -313,7 +313,11 @@ class ResourceMonitor:
         # a child process independently enforces the RSS ceiling + host free-RAM
         # floor + load cap and SIGKILLs the nodes on breach, surviving a freeze
         # that starves this in-process monitor. Providers that return no token
-        # (Docker/K8s — platform-capped) keep the in-process ceiling.
+        # (Docker/K8s) keep the in-process ceiling — which dies with this
+        # process: the docker provider sets no per-container memory limit, so
+        # if pytest is killed (kernel OOM on run 30713818751) the containers
+        # run on uncapped and unwatched. Host-level protection independent of
+        # pytest is the orchestrator's job (run-merge-recovery-soak.sh).
         self._guardian_token = guardian_token
         self._host_free_floor_mb = host_free_floor_mb
         self._host_load_factor = host_load_factor
@@ -405,6 +409,17 @@ class ResourceMonitor:
                 (self._output_dir / "resource-summary.txt").write_text(self.report())
             except Exception:  # noqa: BLE001
                 pass
+            # Machine-readable breach marker for the orchestrator. The soak
+            # driver otherwise has to grep pytest logs for the breach message
+            # strings, which couples it to human-facing wording; a marker file
+            # in the data dir is a stable contract.
+            if self._breach is not None:
+                try:
+                    (self._output_dir / "host-protection-breach.txt").write_text(
+                        self._breach + "\n"
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
         for fh in (self._ts_fh, self._metrics_fh):
             if fh is not None:
                 try:
