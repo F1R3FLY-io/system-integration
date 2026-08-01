@@ -107,7 +107,13 @@ class TimeoutConfig:
     # plus headroom; tests against shallow/empty DAGs unaffected
     # since the sync just completes faster.
     node_startup: int = 300
-    deploy_inclusion: int = 10
+    # 30s (was 10s) — this gates on *block production*, not network latency:
+    # the deploy has to land in a proposed block, so the floor is heartbeat
+    # cadence. At 10s it was 3x smaller than the next smallest timeout here and
+    # on the same order as a single gRPC probe under `-n 16` load, which let
+    # poll_until degenerate to one attempt (see infra/polling.py). 30s puts it
+    # in line with port_release/finalization/command.
+    deploy_inclusion: int = 30
     finalization: int = 45
     command: int = 60
     port_release: int = 30
