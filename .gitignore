@@ -47,7 +47,6 @@ ENV/
 *.swo
 *~
 .metals/
-.scala-build/
 
 # OS
 .DS_Store
@@ -73,3 +72,5 @@ integration-tests/report.json
 integration-tests/.mypy_cache/
 integration-tests/.pytest_cache/
 integration-tests/data/
+docs/discoveries/
+docs/work-logs/

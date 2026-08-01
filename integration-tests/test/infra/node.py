@@ -7,6 +7,7 @@ pointed at the handle's connectivity info.
 Key difference from v1: Node holds a ``NodeHandle`` (provider-agnostic),
 not a ``docker.Container``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -15,6 +16,7 @@ from typing import Dict, Optional
 from f1r3fly.client import F1r3flyClient
 from f1r3fly.const import DEFAULT_PHLO_LIMIT, DEFAULT_PHLO_PRICE
 from f1r3fly.crypto import PrivateKey
+from f1r3fly.pos import PosAPI
 from f1r3fly.vault import VaultAPI
 
 from .types import NodeRole, PortMapping, ValidatorIdentity
@@ -53,6 +55,7 @@ class Node:
         self._grpc_external_client: Optional[F1r3flyClient] = None
         self._grpc_internal_client: Optional[F1r3flyClient] = None
         self._vault_api: Optional[VaultAPI] = None
+        self._pos_api: Optional[PosAPI] = None
 
     @property
     def name(self) -> str:
@@ -97,6 +100,13 @@ class Node:
     @property
     def network_name(self) -> str:
         return self._handle.network_name
+
+    @property
+    def data_dir(self):
+        """The node's on-disk data directory, if the provider exposes one
+        (subprocess sessions). ``None`` otherwise. Its parent is the run's
+        session directory."""
+        return getattr(self._handle, "data_dir", None)
 
     # ── HTTP API helpers ──
 
@@ -157,6 +167,7 @@ class Node:
             self._grpc_internal_client.close()
             self._grpc_internal_client = None
         self._vault_api = None
+        self._pos_api = None
 
     def get_vault(self, shard_id: str = "root") -> VaultAPI:
         """Construct a VaultAPI with the given shard ID."""
@@ -172,6 +183,22 @@ class Node:
         if self._vault_api is None:
             self._vault_api = VaultAPI(self._external_client())
         return self._vault_api
+
+    def get_pos(self, shard_id: str = "root") -> PosAPI:
+        """Construct a PosAPI with the given shard ID."""
+        return PosAPI(self._external_client(), shard_id=shard_id)
+
+    @property
+    def pos(self) -> PosAPI:
+        """Lazily construct a PosAPI backed by this node's gRPC client.
+
+        Exploratory reads (get_bonds/get_rewards/get_withdrawers/
+        get_pending_withdrawer) only work on a read-only node. Bond/withdraw
+        deploys work on any node and are signed by the acting validator's key.
+        """
+        if self._pos_api is None:
+            self._pos_api = PosAPI(self._external_client())
+        return self._pos_api
 
     def exit_code(self) -> Optional[int]:
         """Return the container's exit code, or None if still running."""
@@ -269,6 +296,12 @@ class Node:
     def exploratory_deploy(self, rholang_code: str, block_hash: str = "") -> list:
         """Execute a read-only deploy. Returns list of Par results."""
         return self._external_client().exploratory_deploy(rholang_code, block_hash)
+
+    def read_channel(self, channel: str, block_hash: str = ""):
+        """Peek a named channel's current value via a non-consuming read,
+        auto-typed to a Python value (``dict``/``int``/``str``/...), or
+        ``None`` when empty. Delegates to ``F1r3flyClient.read_channel``."""
+        return self._external_client().read_channel(channel, block_hash)
 
     def registry_lookup(self, uri: str, block_hash: str = "") -> list:
         """Look up a value in the registry via exploratory deploy.

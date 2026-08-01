@@ -108,9 +108,31 @@ poetry run shardctl test --keep-running test_wallets   # iterative debug loop
 
 Full docs at [../integration-tests/README.md](../integration-tests/README.md). Framework internals at [../integration-tests/test/docs/ARCHITECTURE.md](../integration-tests/test/docs/ARCHITECTURE.md).
 
+### Running Unit Tests
+
+`unit-tests/` holds pure unit tests for `shardctl` and the CI scripts — no Docker, no shard, no OCI credentials, and they finish in well under a second. This is deliberately separate from `integration-tests/`, which needs a live shard.
+
+```bash
+poetry run pytest unit-tests/ -q
+```
+
+The path is required: `pyproject.toml` sets `testpaths` to the integration suite, so a bare `poetry run pytest` will **not** collect these.
+
+### Git Hooks
+
+This repo keeps its hooks in a tracked `hooks/` directory. `pre-push` runs the unit tests and refuses the push if they fail (or if they collect nothing). Because `core.hooksPath` is per-clone local config, each clone opts in once:
+
+```bash
+git config core.hooksPath hooks
+```
+
+Verify with `git config --get core.hooksPath` — it should print `hooks`. Bypass for a single push with `git push --no-verify`.
+
+Only the unit tests run here, on purpose: the integration suite takes minutes and needs a shard, which would make pushing unusable and train everyone into `--no-verify`.
+
 ### CI Pipeline
 
-The CI workflow (`.github/workflows/smoke-test.yml`) runs automatically on PRs to `main`. It validates compose files, starts all topologies (checking for 10 finalized blocks), and runs representative integration tests — all in parallel across 12 runners.
+The CI workflow (`.github/workflows/smoke-test.yml`) runs automatically on PRs to `main`. It validates compose files, runs the unit tests, starts all topologies (checking for 10 finalized blocks), and runs representative integration tests — all in parallel across 12 runners.
 
 ### Rebuilding After Changes
 
@@ -222,8 +244,8 @@ poetry add --group dev pkg  # Add a dev dependency
 poetry update               # Update dependencies
 poetry show                 # Show installed packages
 poetry run pytest integration-tests/test/tests/shared/   # Run integration tests
-poetry run black shardctl/  # Format code
-poetry run ruff check shardctl/  # Lint
+poetry run ruff format shardctl/  # Format code
+poetry run ruff check shardctl/   # Lint
 poetry shell                # Activate virtual environment
 ```
 

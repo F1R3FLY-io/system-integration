@@ -3,6 +3,7 @@
 Pure data — describes what to create, not how to create it.
 The Provider implementations interpret these to build infrastructure.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -106,10 +107,22 @@ class TimeoutConfig:
     # plus headroom; tests against shallow/empty DAGs unaffected
     # since the sync just completes faster.
     node_startup: int = 300
-    deploy_inclusion: int = 10
+    # 30s (was 10s) — this gates on *block production*, not network latency:
+    # the deploy has to land in a proposed block, so the floor is heartbeat
+    # cadence. At 10s it was 3x smaller than the next smallest timeout here and
+    # on the same order as a single gRPC probe under `-n 16` load, which let
+    # poll_until degenerate to one attempt (see infra/polling.py). 30s puts it
+    # in line with port_release/finalization/command.
+    deploy_inclusion: int = 30
     finalization: int = 45
     command: int = 60
     port_release: int = 30
+    # Budget for an inherently multi-block consensus transition to complete:
+    # an epoch boundary moving pending withdrawers out of the active set, and a
+    # quarantine elapsing so withdrawn validators are paid out. These span
+    # ~quarantine-length + epoch-length blocks by construction (not contention),
+    # so they need a budget larger than a single finalization. Used unscaled.
+    epoch_transition: int = 45
     poll_interval: float = 2.0
     scale: float = 1.0
 

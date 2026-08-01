@@ -15,9 +15,10 @@ setuptools = "*"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0.0"
-black = "^23.0.0"
-ruff = "^0.1.0"
-pyflakes = "^3.0.0"
+# ruff replaces black (format) and pyflakes (lint) — one tool, one config.
+# >=0.9 is required: the lint/format settings below live under [tool.ruff.lint]
+# and [tool.ruff.format], which ruff 0.1.x does not read.
+ruff = ">=0.9.0"
 
 [tool.poetry.group.integration.dependencies]
 docker = "*"
@@ -28,7 +29,7 @@ urllib3 = ">=1.24.2"
 ecdsa = "*"
 eth-hash = { version = "*", extras = ["pycryptodome"] }
 pycryptodome = "*"
-pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git", rev = "946b3a7" }
+pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git", rev = "175f2aa5b53e" }
 requests = "*"
 pytest-timeout = "^2.4.0"
 pytest-instafail = "^0.5.0"
@@ -61,21 +62,32 @@ markers = [
 # Individual tests can override with @pytest.mark.timeout(N).
 timeout = 1800
 
-[tool.black]
-line-length = 100
-target-version = ["py310"]
-
 [tool.ruff]
 line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
 # N999 (Invalid module name) fires on every file under integration-tests/
 # because the directory has a hyphen. Renaming the directory would churn
 # 50+ external references; the lint complaint is unactionable in practice.
 ignore = ["N999"]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 # Tests legitimately carry long deploy/error strings and table-shaped
 # data layouts; keep shardctl/ strict at 100 but allow integration-tests
 # to exceed for readability where wrapping would hurt.
 "integration-tests/**/*.py" = ["E501"]
+# conftest.py must set GRPC_ENABLE_FORK_SUPPORT before the .infra imports load
+# gRPC (transitively via pyf1r3fly.client), so its module-level imports
+# legitimately follow that os.environ call.
+"integration-tests/test/conftest.py" = ["E402"]
+
+# These are ruff's defaults, pinned explicitly so a future ruff release cannot
+# silently reformat the whole tree. quote-style="double" matches what black
+# produced, so the migration is not a restyling.
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"

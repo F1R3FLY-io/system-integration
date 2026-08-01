@@ -15,6 +15,7 @@ All test resources are identified by a prefix pattern (``rnode.test.*``,
 ``f1r3fly-test-*``, ``test-*``) so this never touches v1 resources or
 production containers.
 """
+
 from __future__ import annotations
 
 import atexit
@@ -61,9 +62,18 @@ class DockerCleanupRegistry:
     Thread-safe: all mutations are on sets (GIL-protected for add/discard).
     """
 
-    def __init__(self, session_id: str, keep_running: bool = False) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        keep_running: bool = False,
+        keep_on_failure: bool = False,
+    ) -> None:
         self.session_id = session_id
         self.keep_running = keep_running
+        self.keep_on_failure = keep_on_failure
+        # Set when a shard is preserved by --keep-on-failure, so the session-end
+        # cleanup_all() leaves the preserved resources alone too.
+        self.preserved_on_failure = False
         self._containers: Set[str] = set()
         self._networks: Set[str] = set()
         self._volumes: Set[str] = set()
@@ -104,7 +114,7 @@ class DockerCleanupRegistry:
             return
         self._cleaned = True
 
-        if self.keep_running:
+        if self.keep_running or self.preserved_on_failure:
             total = (
                 len(self._containers)
                 + len(self._networks)
@@ -112,9 +122,12 @@ class DockerCleanupRegistry:
                 + len(self._tempdirs)
             )
             if total:
+                reason = (
+                    "--keep-running" if self.keep_running else "--keep-on-failure (a test failed)"
+                )
                 logger.info(
-                    "DockerCleanupRegistry: --keep-running, skipping cleanup of "
-                    "%d resources for session %s",
+                    "DockerCleanupRegistry: %s, skipping cleanup of %d resources for session %s",
+                    reason,
                     total,
                     self.session_id,
                 )

@@ -22,31 +22,12 @@ from ...infra.polling import (
     try_find_deploy,
     wait_for_block_visible,
     wait_for_lfb_at_least,
-    wait_for_lfb_stable,
+    wait_for_lfb_converged,
+    wait_for_node_quiet,
 )
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
-
-
-def _poll_lfb_stalls(nodes, duration, interval=5.0):
-    """Verify LFB does NOT advance on any node for the given duration.
-
-    Returns True if LFB was stable (no advancement). Raises AssertionError
-    if any node's LFB advances during the observation window.
-    """
-    initial_lfbs = {n.name: lfb_number(n) for n in nodes}
-    deadline = time.time() + duration
-    while time.time() < deadline:
-        time.sleep(interval)
-        for node in nodes:
-            current = lfb_number(node)
-            if current > initial_lfbs[node.name]:
-                raise AssertionError(
-                    f"{node.name} LFB advanced from #{initial_lfbs[node.name]} "
-                    f"to #{current} during stall observation"
-                )
-    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -133,20 +114,31 @@ def test_validator_failure_recovery(provider, timeouts) -> None:
         v2.deploy_string('@"post-restart-v2"!(200)', VALIDATOR2_ID.private_key())
         v3.deploy_string('@"post-restart-v3"!(300)', VALIDATOR3_ID.private_key())
 
-        # All nodes should converge and advance LFB
+        # All nodes should converge and advance LFB. Poll the height and the
+        # spread together rather than waiting per-node on a lower bound and
+        # then snapshotting: wait_for_lfb_at_least exits the instant each node
+        # crosses the threshold, so V1 (a proposer, never paused) keeps
+        # advancing while V3 is still catching up, and the loop manufactures
+        # the very spread the assertion then measures. See
+        # wait_for_lfb_converged for the full rationale.
+        #
+        # Timeout is *5, not the *3 the old loop used per node: that loop gave
+        # each node its own window sequentially, so the real budget was N times
+        # *3, and convergence must now fit inside a single window. The extra
+        # allowance covers catch-up after the slowest node crosses the floor,
+        # which height-only waiting never had to wait for. If this ever times
+        # out, extend it further — do not raise max_spread. A loose tolerance
+        # silently re-admits the divergence blind spot this test exists to
+        # catch, whereas a timeout is at least a visible, honest failure.
         post_restart_baseline = lfb_number(v1)
-        for node in all_nodes:
-            wait_for_lfb_at_least(node, post_restart_baseline + 3, timeouts.finalization * 3)
-
-        final_lfbs = {n.name: lfb_number(n) for n in all_nodes}
+        final_lfbs = wait_for_lfb_converged(
+            all_nodes,
+            timeout=timeouts.finalization * 5,
+            min_height=post_restart_baseline + 3,
+            max_spread=3,
+            description=(f"LFB >= #{post_restart_baseline + 3} and spread <= 3 after V3 restart"),
+        )
         logging.info("Final LFBs after V3 restart: %s", final_lfbs)
-
-        # All nodes should be close
-        max_lfb = max(final_lfbs.values())
-        min_lfb = min(final_lfbs.values())
-        assert (
-            max_lfb - min_lfb <= 3
-        ), f"LFB spread {max_lfb - min_lfb} exceeds 3 after recovery: {final_lfbs}"
 
         logging.info("Validator failure recovery test passed (FTT=0.1)")
     finally:
@@ -212,26 +204,82 @@ def test_validator_failure_halts_finalization(provider, timeouts) -> None:
         logging.info("Pausing V3 to simulate validator failure...")
         v3.pause()
 
-        # Drain in-flight finalization. V3's votes cast before pause are
-        # already in V1/V2's gossip; blocks V3 endorsed continue finalizing
-        # until the pipeline has consumed them. wait_for_lfb_stable polls
-        # V1's LFB until two consecutive reads agree — causal "drain done"
-        # signal that fires the instant LFB stops advancing, wherever it
-        # lands. V1's LFB tops out short of V3's last block: that last
-        # block needs another validator's later vote to finalize, and
-        # FTT=0.67 means V1+V2 alone (0.667) cannot provide it.
-        post_kill_lfb = wait_for_lfb_stable(v1, timeout=timeouts.finalization)
-        logging.info("V1 LFB settled at #%d — drain complete", post_kill_lfb)
+        # SIGSTOP delivery is not instantaneous under load — V3's
+        # block-creation thread can keep producing blocks for many
+        # seconds after pause() returns (observed >10s in CI). Block
+        # here until V3's API stops responding so any deploys we submit
+        # next land in blocks that V3 cannot have voted on.
+        wait_for_node_quiet(v3, timeout=timeouts.finalization)
+        logging.info("V3 confirmed quiet (no longer responding to /api/status)")
 
-        # Deploy on V1+V2 to force NEW block proposals. Built post-drain,
-        # these can only collect V1+V2 votes (FT=0.33 < FTT=0.67) — must
-        # NOT finalize.
-        v1.deploy_string('@"post-halt-v1"!(10)', VALIDATOR1_ID.private_key())
-        v2.deploy_string('@"post-halt-v2"!(20)', VALIDATOR2_ID.private_key())
+        # Verify the property directly: blocks PROPOSED AFTER V3 is
+        # quiet cannot be finalized under FTT=0.67 with only V1+V2
+        # voting (FT = (200*2 - 300) / 300 = 0.33, NOT > 0.67).
+        # Tracking SPECIFIC post-pause block hashes — rather than
+        # asserting "LFB does not advance" — isolates the actual
+        # invariant: pre-pause blocks whose finalization was already
+        # in flight (V3's pre-pause votes already in V1/V2 gossip)
+        # CAN finalize after pause, advancing the LFB. That's not a
+        # safety violation; it just means the pipeline is still
+        # draining. The post-pause blocks below were proposed AFTER V3
+        # was confirmed quiet — V3 has no opportunity to vote on them,
+        # so their finalization is the actual signal we care about.
+        post_v1_deploy = v1.deploy_string(
+            '@"post-halt-v1"!(10)',
+            VALIDATOR1_ID.private_key(),
+        )
+        post_v2_deploy = v2.deploy_string(
+            '@"post-halt-v2"!(20)',
+            VALIDATOR2_ID.private_key(),
+        )
 
-        # Steady-state assertion: no finalization within 30s.
-        logging.info("Verifying finalization halts with only V1+V2 (FT=0.33 < 0.67)...")
-        _poll_lfb_stalls([v1, v2], duration=30, interval=5.0)
+        post_v1_block = poll_until(
+            predicate=lambda: try_find_deploy(v1, post_v1_deploy),
+            timeout=timeouts.finalization,
+            interval=2.0,
+            description="post-halt-v1 deploy proposed",
+        )
+        post_v2_block = poll_until(
+            predicate=lambda: try_find_deploy(v2, post_v2_deploy),
+            timeout=timeouts.finalization,
+            interval=2.0,
+            description="post-halt-v2 deploy proposed",
+        )
+        post_v1_hash = post_v1_block.blockHash
+        post_v2_hash = post_v2_block.blockHash
+        logging.info(
+            "Post-pause blocks proposed: v1=%s, v2=%s",
+            post_v1_hash[:16],
+            post_v2_hash[:16],
+        )
+
+        # Observation window: either V1 or V2 reporting these specific
+        # blocks as finalized would mean FT >= FTT=0.67 was reached
+        # with only V1+V2 stake (0.667 < 0.67 in strict-greater-than
+        # semantics) — a safety violation.
+        logging.info("Verifying post-pause blocks stay non-finalized (FT=0.33 NOT > FTT=0.67)...")
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            for node in (v1, v2):
+                for block_hash, label in (
+                    (post_v1_hash, "v1"),
+                    (post_v2_hash, "v2"),
+                ):
+                    if node.is_finalized(block_hash):
+                        raise AssertionError(
+                            f"Post-pause block {block_hash[:16]} from {label} "
+                            f"was finalized (observed on {node.name}) at "
+                            f"FT=0.33, FTT=0.67 — violates safety threshold."
+                        )
+            time.sleep(2.0)
+        logging.info("Post-pause blocks remained non-finalized for 30s as expected")
+        post_kill_lfb = lfb_number(v1)
+        logging.info(
+            "V1 LFB after observation: #%d — any LFB advance came from V3's "
+            "pre-pause in-flight votes finalizing PRE-pause blocks, which is "
+            "correct behavior",
+            post_kill_lfb,
+        )
 
         # ── Restart V3 ──
         logging.info("Unpausing V3...")
@@ -519,16 +567,16 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
             logging.info("Post-epoch LFB: #%d", post_epoch_lfb)
 
             # Verify finalization continued throughout (no stall)
-            assert (
-                post_epoch_lfb >= target_lfb
-            ), f"LFB #{post_epoch_lfb} should have reached #{target_lfb}"
+            assert post_epoch_lfb >= target_lfb, (
+                f"LFB #{post_epoch_lfb} should have reached #{target_lfb}"
+            )
 
             # Verify V2 and readonly also advanced
             for node in all_nodes:
                 node_lfb = lfb_number(node)
-                assert (
-                    node_lfb >= target_lfb - 3
-                ), f"{node.name} LFB #{node_lfb} too far behind target #{target_lfb}"
+                assert node_lfb >= target_lfb - 3, (
+                    f"{node.name} LFB #{node_lfb} too far behind target #{target_lfb}"
+                )
 
             # Check if joiner produced any blocks (appeared in justifications)
             latest_blocks = v1.get_blocks(20)
@@ -653,25 +701,13 @@ def test_merge_determinism_asymmetric_divergence(provider, timeouts) -> None:
         # block before their finalizers can lift their LFBs to match. On
         # slower CPUs (arm64-docker is ~3x slower per-thread) the message
         # propagation can leave V1 several blocks ahead at the moment of
-        # the initial check. Poll instead of asserting a one-shot snapshot.
-        def _converged():
-            lfbs = {n.name: lfb_number(n) for n in all_nodes}
-            return lfbs if max(lfbs.values()) - min(lfbs.values()) <= 3 else None
-
-        try:
-            final_lfbs = poll_until(
-                predicate=_converged,
-                timeout=timeouts.finalization,
-                interval=3.0,
-                description="LFB spread <= 3 after asymmetric merge",
-            )
-        except TimeoutError:
-            final_lfbs = {n.name: lfb_number(n) for n in all_nodes}
-            spread = max(final_lfbs.values()) - min(final_lfbs.values())
-            raise AssertionError(
-                f"LFB spread {spread} exceeds 3 after asymmetric merge "
-                f"within {timeouts.finalization}s: {final_lfbs}"
-            )
+        # the initial check.
+        final_lfbs = wait_for_lfb_converged(
+            all_nodes,
+            timeout=timeouts.finalization,
+            max_spread=3,
+            description="LFB spread <= 3 after asymmetric merge",
+        )
         spread = max(final_lfbs.values()) - min(final_lfbs.values())
         logging.info("Final LFBs: %s (spread: %d)", final_lfbs, spread)
 

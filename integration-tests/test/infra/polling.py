@@ -4,15 +4,15 @@ Core polling logic lives in ``f1r3fly.polling``. This module provides
 Node-aware wrappers and test-specific helpers (e.g. waiting for node
 startup logs).
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, TypeVar
 
 from f1r3fly.polling import (
     DeployError,
-    poll_until,
 )
 from f1r3fly.polling import (
     deploy_and_read as _client_deploy_and_read,
@@ -32,7 +32,70 @@ from f1r3fly.polling import (
 
 logger = logging.getLogger(__name__)
 
-# Re-export poll_until directly — it's generic, no wrapping needed
+T = TypeVar("T")
+
+# Always give a predicate this many tries, however slow each one is.
+MIN_POLL_ATTEMPTS = 3
+
+
+def poll_until(
+    predicate: Callable[[], Optional[T]],
+    timeout: int,
+    interval: float = 3.0,
+    description: str = "",
+    min_attempts: int = MIN_POLL_ATTEMPTS,
+) -> T:
+    """Poll ``predicate`` until it returns truthy, with a floor on attempts.
+
+    Wraps ``f1r3fly.polling.poll_until``, which checks its deadline only at the
+    top of the loop and then sleeps unconditionally. One probe slower than the
+    whole budget therefore yields exactly one try:
+
+        TimeoutError: deploy ... inclusion on ...validator1:
+        timed out after 10s (1 attempts)
+
+    That is a poll loop that never polled. It is not specific to any one
+    timeout — any budget on the same order as a single probe's latency
+    degrades the same way, so a caller cannot tell from the message whether the
+    condition was really absent or merely never re-checked. Under
+    ``-n 16 --dist=loadgroup`` on one runner, a gRPC round trip past ten
+    seconds is unremarkable, which is how `deploy_inclusion` (10s) reached it
+    first. Diagnosed by claude-session-9f68c6fa from f1r3node-rust PR #178,
+    run 30672935310.
+
+    The floor makes "timed out" mean the condition did not hold across
+    ``min_attempts`` independent observations. Worst-case wall time becomes
+    roughly ``min_attempts * (probe_latency + interval)`` rather than
+    ``timeout``: deliberate, since a run that is slow enough to hit the floor
+    is one where failing fast costs a re-run and a diagnosis.
+
+    ``time.monotonic`` rather than ``time.time`` so a clock adjustment mid-poll
+    cannot end the loop early.
+    """
+    deadline = time.monotonic() + timeout
+    last_err: Optional[Exception] = None
+    attempts = 0
+
+    while True:
+        attempts += 1
+        try:
+            result = predicate()
+            if result:
+                return result
+        except Exception as e:  # noqa: BLE001 — same contract as the client
+            last_err = e
+
+        if attempts >= min_attempts and time.monotonic() >= deadline:
+            break
+        time.sleep(interval)
+
+    err_detail = f" (last error: {last_err})" if last_err else ""
+    raise TimeoutError(
+        f"{description or 'poll_until'}: timed out after {timeout}s "
+        f"({attempts} attempts){err_detail}"
+    )
+
+
 __all__ = [
     "poll_until",
     "wait_for_node_running",
@@ -46,7 +109,8 @@ __all__ = [
     "wait_for_block_visible_on_all_nodes",
     "lfb_number",
     "wait_for_lfb_at_least",
-    "wait_for_lfb_stable",
+    "wait_for_lfb_converged",
+    "wait_for_node_quiet",
     "DeployError",
 ]
 
@@ -65,7 +129,7 @@ def wait_for_node_running(
 
     Primary signal: ``/api/status`` ``isReady == true`` (Rust nodes).
     Fallback signal: log marker — used when ``status_url`` is unset OR
-    when the status response is missing ``isReady`` (Scala nodes, whose
+    when the status response is missing ``isReady`` (older nodes, whose
     ``/api/status`` schema predates that field).
 
     Also checks if the container/pod has exited — if so, raises
@@ -81,7 +145,7 @@ def wait_for_node_running(
             logs = get_logs()
             tail = "\n".join(logs.splitlines()[-20:])
             raise RuntimeError(
-                f"Node {node_name} exited before reaching Running state. " f"Last logs:\n{tail}"
+                f"Node {node_name} exited before reaching Running state. Last logs:\n{tail}"
             )
 
         use_log_fallback = not status_url
@@ -96,7 +160,7 @@ def wait_for_node_running(
                             return
                     else:
                         # Status returned but no isReady field — this node
-                        # doesn't expose the readiness flag (e.g. Scala).
+                        # doesn't expose the readiness flag.
                         # Use the log marker for the remainder of this poll.
                         use_log_fallback = True
             except (requests.ConnectionError, requests.Timeout, Exception):
@@ -111,7 +175,7 @@ def wait_for_node_running(
     logs = get_logs()
     tail = "\n".join(logs.splitlines()[-20:])
     raise TimeoutError(
-        f"Node {node_name} did not reach Running state within {timeout}s. " f"Last logs:\n{tail}"
+        f"Node {node_name} did not reach Running state within {timeout}s. Last logs:\n{tail}"
     )
 
 
@@ -156,37 +220,114 @@ def wait_for_lfb_at_least(
     condition fires, not after a fixed wait.
     """
     return poll_until(
-        predicate=lambda: (lfb_number(node) if lfb_number(node) >= height else None),
+        predicate=lambda: lfb_number(node) if lfb_number(node) >= height else None,
         timeout=timeout,
         interval=interval,
         description=f"{node.name} LFB >= #{height}",
     )
 
 
-def wait_for_lfb_stable(
-    node,
+def wait_for_lfb_converged(
+    nodes,
     timeout: int,
-    interval: float = 5.0,
-) -> int:
-    """Poll ``node``'s LFB until two consecutive reads agree and return
-    the stable height. Causal detector for "finalization pipeline has
-    drained" — exits as soon as the LFB has not changed for one full
-    ``interval``.
+    min_height: Optional[int] = None,
+    max_spread: int = 3,
+    interval: float = 3.0,
+    description: str = "",
+) -> Dict[str, int]:
+    """Poll until every node's LFB is within ``max_spread`` of the highest —
+    and, when ``min_height`` is given, at or above it — with both conditions
+    satisfied by the **same** sample. Returns that ``{name: lfb}`` mapping.
 
-    Use after a perturbation (validator pause/kill, network partition)
-    where existing in-flight finalization should be allowed to settle
-    before asserting on the steady-state behavior.
+    Use this instead of a per-node ``wait_for_lfb_at_least`` loop followed by
+    a spread assertion. That shape waits on a *lower bound*, which exits the
+    instant each node crosses it, so nothing bounds how far a fast node runs
+    ahead while the remaining nodes are still being polled — the loop's own
+    serialization manufactures the spread that is then asserted against, and
+    the result measures scheduling luck rather than consensus.
+
+    The deeper reason is that a lower bound **cannot distinguish "still
+    catching up" from "permanently diverged"** — a shard that never converges
+    reads identically to one mid-convergence. Requiring both conditions in one
+    sample makes the timeout the signal for genuine non-convergence, which is
+    the property these tests exist to assert. For the same reason, a spread
+    failure here should be fixed by investigating convergence, not by raising
+    ``max_spread``.
+
+    Raises ``AssertionError`` (not ``TimeoutError``) on timeout, carrying the
+    last polled sample plus its min/max/spread — without them a reviewer
+    cannot tell a slow shard from a diverged one, nor which of the two
+    conditions actually failed.
+
+    Known property: the sample is N sequential RPCs, so on a live chain the
+    measured spread includes the time to walk ``nodes``. If this proves too
+    tight on loaded runners, require the predicate to hold on two consecutive
+    passes rather than loosening ``max_spread``.
+    """
+    if not nodes:
+        raise ValueError("wait_for_lfb_converged requires at least one node")
+
+    what = description or (
+        f"LFB spread <= {max_spread}"
+        + (f" with all nodes >= #{min_height}" if min_height is not None else "")
+    )
+
+    last_seen: Dict[str, int] = {}
+
+    def _sample() -> Optional[Dict[str, int]]:
+        lfbs = {n.name: lfb_number(n) for n in nodes}
+        last_seen.update(lfbs)
+        if min_height is not None and min(lfbs.values()) < min_height:
+            return None
+        if max(lfbs.values()) - min(lfbs.values()) > max_spread:
+            return None
+        return lfbs
+
+    try:
+        return poll_until(
+            predicate=_sample,
+            timeout=timeout,
+            interval=interval,
+            description=what,
+        )
+    except TimeoutError:
+        # Report the last sample actually polled, not a fresh read. Re-reading
+        # here would describe the shard *after* the deadline — and if it caught
+        # up in the interim the message would look converged while the test
+        # fails, which is precisely the confusion this error exists to prevent.
+        if not last_seen:
+            raise AssertionError(f"{what}: no LFB sample was taken within {timeout}s")
+        low, high = min(last_seen.values()), max(last_seen.values())
+        raise AssertionError(
+            f"{what}: not satisfied within {timeout}s — last sample min #{low}, "
+            f"max #{high}, spread {high - low}: {last_seen}"
+        )
+
+
+def wait_for_node_quiet(node, timeout: int, interval: float = 1.0) -> None:
+    """Block until ``node``'s HTTP API stops responding.
+
+    Used after ``node.pause()`` to confirm SIGSTOP has actually landed
+    on the rnode process — empirically that delivery is not instant
+    (observed >10s gap between pause() returning and the process
+    actually halting under load). Until the process is suspended its
+    block-creation thread continues to produce blocks that influence
+    finalization.
+
+    Detection: ``/api/status`` raises (timeout / connection refused)
+    for one consecutive successful poll. The probe uses a short HTTP
+    timeout (2s) so this returns promptly once the process is stopped.
     """
     deadline = time.time() + timeout
-    last = lfb_number(node)
     while time.time() < deadline:
+        try:
+            node.api_get("/status", timeout=2)
+        except Exception:
+            return
         time.sleep(interval)
-        current = lfb_number(node)
-        if current == last:
-            return current
-        last = current
     raise TimeoutError(
-        f"{node.name} LFB did not stabilize within {timeout}s " f"(last observed: #{last})"
+        f"{node.name} still responding to /api/status after {timeout}s — "
+        f"pause() may not have taken effect"
     )
 
 

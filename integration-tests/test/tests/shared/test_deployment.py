@@ -58,6 +58,7 @@ def test_deploy_invalid_syntax_rejected(shared_shard, timeouts) -> None:
     logging.info("Invalid syntax rejected, valid deploy succeeded in block %s", block_hash[:16])
 
 
+@pytest.mark.allow_forbidden_patterns("ComputationOutOfPhlogistons")
 def test_deploy_insufficient_phlo_errored(shared_shard, timeouts) -> None:
     """Deploy with insufficient phlo is included in a block but marked as errored.
 
@@ -136,9 +137,9 @@ def test_deploy_lookup_consistent_across_validators(shared_shard, timeouts) -> N
         )
 
     unique_hashes = set(block_hashes.values())
-    assert (
-        len(unique_hashes) == 1
-    ), f"Deploy {deploy_id[:24]}... resolved to different blocks: {block_hashes}"
+    assert len(unique_hashes) == 1, (
+        f"Deploy {deploy_id[:24]}... resolved to different blocks: {block_hashes}"
+    )
 
     logging.info("Deploy lookup consistent across %d nodes", len(all_nodes))
 

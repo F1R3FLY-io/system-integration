@@ -5,6 +5,7 @@ Every polling function, fixture, and test derives its timeout from a
 (``TimeoutConfig.scale``) so CI runners with slower hardware can
 uniformly inflate all timeouts without per-test adjustments.
 """
+
 from __future__ import annotations
 
 from .config import TimeoutConfig
@@ -40,6 +41,12 @@ class TimeoutHierarchy:
     def port_release(self) -> int:
         """Max seconds to wait for kernel TIME_WAIT on a port."""
         return self._scaled(self._config.port_release)
+
+    @property
+    def epoch_transition(self) -> int:
+        """Max seconds for a multi-block consensus transition (epoch-boundary
+        withdrawer move, quarantine payout) to complete."""
+        return self._scaled(self._config.epoch_transition)
 
     @property
     def poll_interval(self) -> float:

@@ -106,6 +106,33 @@ brew install protobuf
 
 ## Blockchain Issues
 
+### Controlling log verbosity (RUST_LOG)
+
+The `RUST_LOG` environment variable sets the structured log filter and takes the highest priority over any config-file setting. It applies to production nodes (`shardctl up`) and integration-test nodes alike.
+
+```bash
+# Default — info level
+poetry run shardctl up
+
+# Verbose — debug everything
+RUST_LOG=debug poetry run shardctl up
+
+# Targeted — debug only consensus events
+RUST_LOG=info,f1r3fly.casper=debug poetry run shardctl up
+
+# Integration tests
+RUST_LOG=info,f1r3fly.casper.mem_profile=debug poetry run pytest integration-tests/
+```
+
+Node logs are written to `<data-dir>/logs/node.log` inside each container (Docker: `/var/lib/rnode/logs/node.log`) and also to stdout. To watch logs live:
+
+```bash
+poetry run shardctl logs --follow
+docker logs -f rnode.validator1
+```
+
+The integration-test framework reads from the file (via `docker exec cat`) for log scanning and artifact archiving; stdout is for live developer inspection only.
+
 ### F1R3node won't accept deployments (Casper not ready)
 
 **Symptom:** Embers API crashes with "casper instance was not available yet"

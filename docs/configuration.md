@@ -8,14 +8,12 @@ For consensus parameter semantics (FTT, synchrony constraint), see [consensus-co
 
 ## Node config files (`conf/`)
 
-Rust and Scala nodes have their own HOCON config files. These are **minimal overrides** — they contain only settings that differ from the node's built-in defaults. Per-role behavior (bootstrap, validator, observer) is controlled entirely via CLI flags in the compose files, not via separate per-role configs.
+Nodes use HOCON config files. These are **minimal overrides** — they contain only settings that differ from the node's built-in defaults. Per-role behavior (bootstrap, validator, observer) is controlled entirely via CLI flags in the compose files, not via separate per-role configs.
 
 | File | Used by | Purpose |
 |---|---|---|
 | `conf/rust.conf` | All Rust shard roles | Overrides on top of Rust node defaults |
-| `conf/scala.conf` | All Scala shard roles | Overrides on top of Scala node defaults |
-| `conf/standalone-dev.conf` | All standalone nodes (Rust and Scala) | Overrides for standalone mode (instant finalization, no peers) |
-| `conf/logback.xml` | Scala nodes only | Logback logging configuration |
+| `conf/standalone-dev.conf` | All standalone nodes | Overrides for standalone mode (instant finalization, no peers) |
 
 The integration test framework reads the same files via `infra/config.py:NodeConf.resolve()`, so test behavior matches production conf.
 
@@ -31,6 +29,17 @@ Roles within a shard are differentiated by CLI flags injected via the compose fi
 | `--validator-private-key=<hex>` | Validators only (key from `.env.node`) |
 
 See the `command:` block in any compose file for the full per-role flag list.
+
+### Logging configuration (integration tests)
+
+Test nodes pick up structured logging from the mounted config files, not from CLI flags — keeping both Docker and subprocess providers consistent:
+
+| Config file | Used by | Logging settings |
+|---|---|---|
+| `conf/rust.conf` | All shard test nodes (Docker + subprocess) | `format = "json"`, `sink = "both"` |
+| `conf/standalone-dev.conf` | All standalone test nodes (Docker + subprocess) | `format = "json"`, `sink = "both"` |
+
+`sink = "both"` writes to stdout (live inspection via `docker logs -f`) and to `<data-dir>/logs/node.log` (read by the test framework). Log level for test nodes is controlled by the `RUST_LOG` environment variable.
 
 ---
 
@@ -66,7 +75,7 @@ For a real production deployment, generate your own keys and override the env va
 
 For a new node setting:
 1. Decide whether it's a HOCON setting (config file) or a CLI flag (compose file). HOCON for static, per-deployment config; CLI flags for per-role behavior.
-2. If HOCON: add to `conf/rust.conf` / `conf/scala.conf` / `conf/standalone-dev.conf` as appropriate.
+2. If HOCON: add to `conf/rust.conf` / `conf/standalone-dev.conf` as appropriate.
 3. If CLI: add to the `command:` block of the relevant compose files.
 
 For a new env var:

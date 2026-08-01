@@ -12,6 +12,7 @@ When implemented, this provider will:
   - Use ``kubectl port-forward`` for host-accessible gRPC/HTTP
   - Clean up via ``helm uninstall`` + ``kubectl delete namespace``
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -80,7 +81,7 @@ class K8sNodeHandle:
 
     def unpause(self) -> None:
         raise NotImplementedError(
-            "Reverse of pause() — remove the NetworkPolicy, or scale the " "controller back up."
+            "Reverse of pause() — remove the NetworkPolicy, or scale the controller back up."
         )
 
     def exit_code(self) -> Optional[int]:

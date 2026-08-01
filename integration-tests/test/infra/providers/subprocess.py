@@ -22,6 +22,7 @@ data directories are tracked in instance state, not in the Docker-specific
 ``pytest_sessionstart``) discovers prior runs by scanning the
 session-scoped data-dir base.
 """
+
 from __future__ import annotations
 
 import logging
@@ -37,6 +38,7 @@ from typing import List, Optional, Sequence
 from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_binary
 from ..keys import BOOTSTRAP_NODE_ID
 from ..ports import PortAllocator
+from ..run_outcome import current_test_failed
 from ..timeouts import TimeoutHierarchy
 from ..types import NodeRole, PortMapping, ValidatorIdentity
 from .base import (
@@ -63,6 +65,22 @@ _DATA_DIR_BASENAME = ".subprocess-data"
 # discovery (every spawned `node run` command line contains this token via
 # its `--data-dir` value, but the basename is the most reliable scan key).
 _DATA_DIR_SCAN_TOKEN = _DATA_DIR_BASENAME
+
+
+def _parse_ps_time(value: str) -> float:
+    """Parse a ``ps -o time`` value (``[[dd-]hh:]mm:ss`` or ``mm:ss.cc``) to
+    seconds. Returns 0.0 on any unexpected format."""
+    try:
+        days = 0
+        if "-" in value:
+            day_str, value = value.split("-", 1)
+            days = int(day_str)
+        seconds = 0.0
+        for p in value.split(":"):
+            seconds = seconds * 60 + float(p)
+        return days * 86400 + seconds
+    except (ValueError, IndexError):
+        return 0.0
 
 
 class SubprocessNodeHandle:
@@ -179,7 +197,7 @@ class SubprocessNodeHandle:
         return "\n".join(text.splitlines()[-tail:])
 
     def archive_log(self, dest_path: Path) -> None:
-        """Copy the rnode stdout/stderr log file to ``dest_path``.
+        """Copy the node's log file to ``dest_path``.
 
         The log file lives under the session data root, which is wiped
         at teardown. Copying out before that gives the artifact upload
@@ -292,27 +310,48 @@ class SubprocessNodeHandle:
     # ── Resource usage ──────────────────────────────────────────────
 
     def resource_usage(self) -> dict:
-        """Returns memory_mb, cpu_percent, memory_limit_mb (None — no limit)."""
+        """Returns memory_mb, cpu_percent, cpu_seconds, memory_limit_mb.
+
+        ``cpu_percent`` from ``ps`` is a lifetime average; for an accurate
+        instantaneous figure the resource monitor differences ``cpu_seconds``
+        (cumulative CPU time) across samples. ``memory_limit_mb`` is None —
+        subprocess nodes have no cgroup cap.
+        """
+        zero = {"memory_mb": 0.0, "cpu_percent": 0.0, "cpu_seconds": 0.0, "memory_limit_mb": None}
         if not self.is_running():
-            return {"memory_mb": 0.0, "cpu_percent": 0.0, "memory_limit_mb": None}
+            return zero
         try:
             result = subprocess.run(
-                ["ps", "-p", str(self._proc.pid), "-o", "rss=,%cpu="],
+                ["ps", "-p", str(self._proc.pid), "-o", "rss=,%cpu=,time="],
                 capture_output=True,
                 text=True,
                 timeout=5,
             )
             line = (result.stdout or "").strip()
             if not line:
-                return {"memory_mb": 0.0, "cpu_percent": 0.0, "memory_limit_mb": None}
-            rss_kb_str, cpu_str = line.split()
+                return zero
+            rss_kb_str, cpu_str, time_str = line.split()
             return {
                 "memory_mb": float(rss_kb_str) / 1024.0,
                 "cpu_percent": float(cpu_str),
+                "cpu_seconds": _parse_ps_time(time_str),
                 "memory_limit_mb": None,
             }
         except (subprocess.TimeoutExpired, ValueError, OSError):
-            return {"memory_mb": 0.0, "cpu_percent": 0.0, "memory_limit_mb": None}
+            return zero
+
+    def iter_log_lines(self):
+        """Yield the node's log file line-by-line without loading it whole.
+
+        Streaming counterpart to ``logs()`` for the post-test forbidden-pattern
+        scan, so a multi-hundred-MB node log is never materialized in memory as
+        one string plus a splitlines list.
+        """
+        if not self._log_path.exists():
+            return
+        with open(self._log_path, "r", errors="replace") as fh:
+            for line in fh:
+                yield line.rstrip("\n")
 
 
 # ── SubprocessProvider ─────────────────────────────────────────────────
@@ -329,10 +368,15 @@ class SubprocessProvider:
         timeouts: TimeoutHierarchy,
         paths: Optional[ResourcePaths] = None,
         binary_path: Optional[str] = None,
+        keep_on_failure: bool = False,
     ) -> None:
         self._ports = port_allocator
         self._session_id = session_id
         self._keep_running = keep_running
+        self._keep_on_failure = keep_on_failure
+        # Set when destroy_shard preserves a shard for --keep-on-failure, so the
+        # session-end cleanup_all() leaves the preserved shard alone too.
+        self._preserved_on_failure = False
         self._timeouts = timeouts
         self._paths = paths or ResourcePaths.resolve()
 
@@ -382,6 +426,18 @@ class SubprocessProvider:
     @property
     def active_handles(self) -> List[SubprocessNodeHandle]:
         return list(self._active_handles)
+
+    def host_process_guardian_token(self) -> Optional[str]:
+        """Subprocess nodes are host processes launched with a data dir under
+        ``<session_root>/<role>``. The trailing separator scopes the ``pgrep``
+        match to this session and avoids prefix collisions (mirrors
+        ``cleanup_session``)."""
+        return f"{self._session_root}{os.sep}"
+
+    @property
+    def monitor_output_dir(self) -> Optional[Path]:
+        """Monitor artifacts land in the session data root alongside node logs."""
+        return self._session_root
 
     @property
     def retired_log_snapshots(self) -> List[RetiredLogSnapshot]:
@@ -467,7 +523,9 @@ class SubprocessProvider:
         cmd += cli_args
 
         env = os.environ.copy()
-        env.setdefault("RUST_LOG", "info")
+        # RUST_LOG intentionally not defaulted; the node's logging.filter (conf/rust.conf
+        # + defaults.conf) drives log levels. A RUST_LOG set by the caller still passes
+        # through via os.environ.copy() above and takes precedence.
         env.setdefault("OPENAI_ENABLED", "false")
         if extra_env:
             env.update(extra_env)
@@ -563,7 +621,15 @@ class SubprocessProvider:
         for idx, (identity, _stake) in enumerate(config.bonds):
             slot = idx + 1
             role_key = f"validator{slot}"
-            cert_subdir = f"validator{slot}" if slot <= 3 else None  # certs shipped for v1-v3
+            # Use the shipped TLS keypair for this slot when both halves are present;
+            # slots without a complete fixture let the node self-generate. Requiring
+            # both files keeps a partial/empty validator{N}/ dir from suppressing
+            # self-generation and failing startup (see certs/README.md).
+            cert_dir = Path(self._paths.certs_dir) / role_key
+            has_fixture = (cert_dir / "node.certificate.pem").is_file() and (
+                cert_dir / "node.key.pem"
+            ).is_file()
+            cert_subdir = role_key if has_fixture else None
             v_cli = [
                 f"--bootstrap={bootstrap_url}",
                 f"--validator-public-key={identity.public_hex}",
@@ -669,8 +735,18 @@ class SubprocessProvider:
             )
         if self._keep_running:
             logger.info(
-                "Subprocess shard for session %s kept running (--keep-running). "
-                "PIDs: %s. Data: %s",
+                "Subprocess shard for session %s kept running (--keep-running). PIDs: %s. Data: %s",
+                self._session_id,
+                ", ".join(str(h.pid) for h in handles),
+                self._session_root,
+            )
+            return
+        if self._keep_on_failure and current_test_failed():
+            self._preserved_on_failure = True
+            logger.warning(
+                "Subprocess shard for session %s PRESERVED (--keep-on-failure; "
+                "test failed). PIDs: %s. Data: %s. Run `shardctl test-reset` "
+                "when done inspecting.",
                 self._session_id,
                 ", ".join(str(h.pid) for h in handles),
                 self._session_root,
@@ -928,7 +1004,9 @@ class SubprocessProvider:
         cmd += cli_args
 
         env = os.environ.copy()
-        env.setdefault("RUST_LOG", "info")
+        # RUST_LOG intentionally not defaulted; the node's logging.filter (conf/rust.conf
+        # + defaults.conf) drives log levels. A RUST_LOG set by the caller still passes
+        # through via os.environ.copy() above and takes precedence.
         env.setdefault("OPENAI_ENABLED", "false")
 
         log_fh = open(log_path, log_mode)
@@ -1056,10 +1134,12 @@ class SubprocessProvider:
         """Reap all handles spawned by this provider, then remove the
         session data root. Idempotent — safe to call multiple times.
         """
-        if self._keep_running:
+        if self._keep_running or self._preserved_on_failure:
+            reason = "--keep-running" if self._keep_running else "--keep-on-failure (a test failed)"
             logger.info(
-                "SubprocessProvider: --keep-running, skipping cleanup of "
+                "SubprocessProvider: %s, skipping cleanup of "
                 "%d handles for session %s (data at %s)",
+                reason,
                 len(self._active_handles),
                 self._session_id,
                 self._session_root,
@@ -1239,7 +1319,7 @@ class SubprocessProvider:
         session_dir = self._session_data_root(self._paths, session_id)
         if not session_dir.is_dir():
             raise ValueError(
-                f"No subprocess session data at {session_dir} " f"for session_id={session_id!r}"
+                f"No subprocess session data at {session_dir} for session_id={session_id!r}"
             )
 
         # Each subdir corresponds to a role (boot, validator1, …, readonly).
@@ -1456,7 +1536,7 @@ class _AdoptedHandle(SubprocessNodeHandle):
 
     def restart(self) -> None:
         raise NotImplementedError(
-            "restart() unsupported for adopted handles. " "Run a fresh `shardctl test` invocation."
+            "restart() unsupported for adopted handles. Run a fresh `shardctl test` invocation."
         )
 
     def _stop_once(self) -> None:

@@ -23,7 +23,7 @@ import pytest
 
 from ...infra.assertions import assert_deploy_errored
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import poll_until, wait_for_deploy_included
+from ...infra.polling import poll_until, wait_for_deploy_included, wait_for_lfb_converged
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -53,7 +53,15 @@ def _get_lfb_number(node) -> int:
 
 
 def _poll_lfb_all_nodes(nodes, target, timeout):
-    """Poll until LFB reaches target on all nodes."""
+    """Poll until LFB reaches target on all nodes.
+
+    Lower bound only. Each node is dropped from the polling set the first
+    time it crosses ``target`` and is never re-read — sound here because LFB
+    is monotonic, so "has crossed" stays true. **Do not follow a call to this
+    with a spread assertion**: it confirms each node crossed at some point,
+    not that they were ever close together at the same instant. Use
+    ``wait_for_lfb_converged`` when a spread matters.
+    """
     remaining = set(n.name for n in nodes)
 
     def _check():
@@ -157,9 +165,9 @@ def test_network_converges_after_slow_deploy(shared_shard, node_conf, timeouts) 
     if baseline_lfb == 0:
         logging.info("Waiting for initial LFB advancement...")
         poll_until(
-            predicate=lambda: _get_lfb_number(validators[0])
-            if _get_lfb_number(validators[0]) > 0
-            else None,
+            predicate=lambda: (
+                _get_lfb_number(validators[0]) if _get_lfb_number(validators[0]) > 0 else None
+            ),
             timeout=timeouts.finalization,
             interval=5.0,
             description="initial LFB > 0",
@@ -205,22 +213,25 @@ def test_network_converges_after_slow_deploy(shared_shard, node_conf, timeouts) 
         target_lfb,
     )
 
-    _poll_lfb_all_nodes(
+    # Poll the height and spread conditions together. Waiting per-node on a
+    # lower bound and then snapshotting the spread measures scheduling luck:
+    # nothing stops a fast node running ahead while the slower ones are still
+    # being polled, and a lower bound alone cannot tell "still catching up"
+    # from "permanently diverged". See wait_for_lfb_converged.
+    #
+    # Timeout is *5 for the same reason as the consensus-safety call site: the
+    # previous helper latched, finishing once each node had crossed target at
+    # any past instant, whereas this must observe a simultaneous tight band.
+    # max_spread stays at 2 — extend the timeout, never the tolerance.
+    final_lfbs = wait_for_lfb_converged(
         all_nodes,
-        target_lfb,
-        timeout=timeouts.finalization * 3,
+        timeout=timeouts.finalization * 5,
+        min_height=target_lfb,
+        max_spread=2,
+        description=f"LFB >= #{target_lfb} and spread <= 2 after slow deploy",
     )
-
-    # Report final LFB spread across all nodes
-    final_lfbs = {n.name: _get_lfb_number(n) for n in all_nodes}
-    logging.info("Final LFBs after slow deploy: %s", final_lfbs)
-
-    max_lfb = max(final_lfbs.values())
-    min_lfb = min(final_lfbs.values())
-    spread = max_lfb - min_lfb
-    assert spread <= 2, (
-        f"LFB spread across nodes is {spread} (max allowed: 2). " f"Values: {final_lfbs}"
-    )
+    spread = max(final_lfbs.values()) - min(final_lfbs.values())
+    logging.info("Final LFBs after slow deploy: %s (spread: %d)", final_lfbs, spread)
 
     # Verify FT >= FTT on post-recovery LFB
     for node in all_nodes:
@@ -279,11 +290,11 @@ def test_ft_convergence(shared_shard, node_conf, timeouts) -> None:
     ref_block = shared_shard.validators[0].get_block(target_hash)
     ft_ref = float(ref_block.blockInfo.faultTolerance)
     assert ft_ref >= ftt, (
-        f"Block #{target_number} has FT={ft_ref} on reference node, " f"expected >= FTT={ftt}"
+        f"Block #{target_number} has FT={ft_ref} on reference node, expected >= FTT={ftt}"
     )
-    assert (
-        ref_block.blockInfo.isFinalized is True
-    ), f"Block #{target_number} should have isFinalized=True on reference node"
+    assert ref_block.blockInfo.isFinalized is True, (
+        f"Block #{target_number} should have isFinalized=True on reference node"
+    )
     logging.info("Reference node FT=%.4f (>= FTT=%.2f)", ft_ref, ftt)
 
     # Poll until all nodes report FT = 1.0 for the target block
@@ -311,7 +322,7 @@ def test_ft_convergence(shared_shard, node_conf, timeouts) -> None:
         block = node.get_block(target_hash)
         ft = float(block.blockInfo.faultTolerance)
         assert abs(ft - 1.0) < 0.01, (
-            f"FT for block #{target_number} decreased on {node.name}: " f"was 1.0, now {ft}"
+            f"FT for block #{target_number} decreased on {node.name}: was 1.0, now {ft}"
         )
 
     logging.info(

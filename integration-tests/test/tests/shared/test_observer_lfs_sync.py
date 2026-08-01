@@ -32,6 +32,7 @@ observer mid-session via ``add_observer`` (context-managed cleanup) so
 the assertion target is the same code an operator would hit in
 production.
 """
+
 import logging
 import threading
 import time
@@ -247,7 +248,7 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
                 _observer_caught_up,
                 timeout=timeouts.finalization * 6,
                 interval=3.0,
-                description=(f"observer LFB within {_LFB_DRIFT_TOLERANCE} blocks " f"of v1 LFB"),
+                description=(f"observer LFB within {_LFB_DRIFT_TOLERANCE} blocks of v1 LFB"),
             )
 
             # Let load continue briefly so observer has to ingest via
@@ -287,8 +288,7 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
             )
             for ident in keys:
                 assert ident.public_hex in observer_bonds, (
-                    f"Observer LFB missing {ident.name} from bonds map: "
-                    f"{sorted(observer_bonds)}"
+                    f"Observer LFB missing {ident.name} from bonds map: {sorted(observer_bonds)}"
                 )
 
             # v1 must hold observer's LFB block too — covers cross-node

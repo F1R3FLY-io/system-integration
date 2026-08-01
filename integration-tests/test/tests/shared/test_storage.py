@@ -98,9 +98,9 @@ def test_data_is_stored_and_served_by_node(shared_shard, timeouts) -> None:
 
     read_data = _read_data(ro, uri)
 
-    assert (
-        read_data == random_data
-    ), f"Read data '{read_data}' should match stored data '{random_data}'"
+    assert read_data == random_data, (
+        f"Read data '{read_data}' should match stored data '{random_data}'"
+    )
     logging.info("Store on V1, read on readonly verified: '%s'", random_data)
 
 

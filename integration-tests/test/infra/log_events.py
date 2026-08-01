@@ -14,12 +14,13 @@ Provides two capabilities:
 Both work on raw log strings (from ``node.logs()``), not Docker handles
 directly, keeping this module provider-agnostic.
 """
+
 from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, Generator, List, Optional
+from typing import Dict, FrozenSet, Generator, Iterable, List, Optional
 
 # ── Structured event queries ───────────────────────────────────────────
 
@@ -89,8 +90,8 @@ class LogError:
 # (heartbeat fallback, peer disconnect, finalization-in-progress retry,
 # etc.).
 #
-# Each entry's per-pattern comment names the bug class it catches AND
-# the tests that legitimately need to opt out.
+# Each entry's per-pattern comment names the bug class it catches; the
+# few entries with active opt-outs name the opting-out test.
 FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
     # ── Always-deny by default; opt-outs rare ──
     # Panic in the node process. No legitimate test should produce this.
@@ -113,15 +114,28 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
     "ConsumeFailedReplayDivergence": re.compile(r"SystemRuntimeError\(ConsumeFailed\)"),
     # KvStore-level failure. Catches parent-child races on
     # mergeable-channels entries AND the broader "DAG storage is missing
-    # hash" case (which is also keyed below as DAGStorageMissingHash —
-    # tests opting out of the latter should also opt out of this).
-    # Opt-outs:
-    #   tests/shared/test_bonding_validators.py::test_bonding_validators
-    #     (paired with DAGStorageMissingHash; sibling gap to the rspace
-    #     forward-horizon work)
+    # hash" case (which is also keyed below as DAGStorageMissingHash).
     "KvStoreError": re.compile(r"KvStoreError|KvStore error"),
+    # More-specific: a missing mergeable-store entry, raised by
+    # `runtime_manager.rs:1035` when the per-block (post_state, creator,
+    # seq_num) tuple has no persisted DeployMergeableData. This is the
+    # cache/persistence gap tracked as Issue C in active-issues.md
+    # (cache hits skip save_mergeable_channels) — surfaces as
+    # InvalidTransaction on the proposer and breaks multi-parent merge
+    # reconstruction. Kept distinct from KvStoreError so the bug class
+    # is named in the failure message.
+    "MissingMergeableEntry": re.compile(r"Missing mergeable entry"),
     # RSpace requested a root not in the local history store.
     "UnknownRootError": re.compile(r"UnknownRootError"),
+    # System-deploy result consume never matched: the system runtime
+    # could not consume the return value of an internal system deploy
+    # (e.g. CloseBlock, slash, precharge/refund). Distinct from the
+    # replay-divergence variant below: this fires from
+    # `system_runtime.rs` when the consume itself times out after
+    # retries, regardless of play-vs-replay context. Symptomatic of
+    # state-channel writes that didn't materialize as expected
+    # (multi-Datum, missing produce, etc.).
+    "UnableToConsumeSystemDeploy": re.compile(r"Unable to consume results of system deploy"),
     # Tripwire: BlockException reached validate_with_effects despite the
     # dependency-gate fix.
     "UnexpectedBlockException": re.compile(r"UNEXPECTED.*BlockException"),
@@ -148,6 +162,22 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
         r"(has \d+ pre-state values; single-value invariant violated"
         r"|Expected at most one value for number channel)"
     ),
+    # ── Seal / merge stale-consume backstop ──
+    # state_change_merger.rs `make_trie_action` fail-closed tripwire: a
+    # chain whose committed diff was rebased onto a divergent base reached
+    # the fold — a single-value-cell race that should have been rejected
+    # upstream in DagMerger or skipped by the seal. This is the integration
+    # surface of the seal `item 2` regression (a non-foldable concurrent
+    # write the seal double-folds); the skip-rejected fix removes the
+    # in-seal source, so a recurrence under load is a merge/seal regression.
+    "StaleConsume": re.compile(r"stale-consume on channel"),
+    # ── Multi-parent pre-state divergence ──
+    # interpreter_util.rs: a validator recomputed a multi-parent pre-state
+    # that differs from the one the proposer signed — the divergent-FS /
+    # divergent-merge symptom and head of the #71 InvalidTransaction cascade.
+    "ComputedPreStateMismatch": re.compile(
+        r"Computed pre-state hash .* does not equal block's pre-state hash"
+    ),
     # ── Propose-path internal assertion ──
     # rnode's propose path raised an internal "this should never happen"
     # error tagged with the offending sequence number. Always indicates
@@ -163,11 +193,41 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
     #   tests/custom/test_consensus_safety.py::test_validator_failure_recovery
     #   tests/custom/test_consensus_safety.py::test_validator_failure_halts_finalization
     "RecordingInvalidBlock": re.compile(r"Recording invalid block"),
+    # More-specific InvalidBlock classes — diagnostic when surfaced
+    # individually. RecordingInvalidBlock catches the generic case; the
+    # specific entries below let the failure message name the bug class
+    # directly. A single line may match both — the scanner reports the
+    # first non-allowed key (dict iteration order); tests opting out of
+    # the specific class should also opt out of RecordingInvalidBlock.
+    #
+    # InvalidRepeatDeploy: validator rejected a block whose body.deploys
+    # contains a sig already applied in pre-state. Indicates a recovery
+    # / dedup gap — either the proposer wrongly included a recovered
+    # sig (proposer-side filter gap) or the applied_sigs computation is
+    # wrong (merge-integration bug).
+    "InvalidRepeatDeploy": re.compile(r"InvalidRepeatDeploy"),
+    # InvalidTransaction: block_processor's catch-all for BlockException
+    # during validation (see block_processor.rs:316-330 — converts
+    # KvStoreError + others to InvalidTransaction "to prevent dependent-
+    # block stall"). When this fires, look upstream for the original
+    # exception (often MissingMergeableEntry or ConsumeFailed).
+    "InvalidTransaction": re.compile(r"InvalidTransaction"),
+    # Out-of-phlo execution that broke replay (Issue A — f1r3node-rust#47
+    # / legacy f1r3node#506). When this appears in REPLAY (after also
+    # appearing in PLAY), it indicates the play/replay paths handle the
+    # phlo-exhaustion abort point differently and the system-deploy
+    # precharge/refund consume can't reconcile. Caught here so it can't
+    # silently appear during recovery / cross-validator replay.
+    "ComputationOutOfPhlogistons": re.compile(r"Computation ran out of phlogistons"),
+    # Observer / readonly node's reporting layer panicked with an
+    # "Unused COMM event" — the reporter's event-replay diverged from
+    # the recorded event log. Causes the gRPC stream serving observer
+    # queries to be CANCELLED (RST_STREAM error code 8), timing out any
+    # observer-LFB-sync check. Distinct from the general Panic key so
+    # the failure message points at the observer-reporter bug class.
+    "ObserverReporterUnusedCOMM": re.compile(r"Unused COMM event"),
     # DAG storage missing a referenced hash. Opt-outs:
     #   tests/shared/test_convergence.py::test_network_recovers_from_validator_pause
-    #   tests/shared/test_bonding_validators.py::test_bonding_validators
-    #     (Phase C exercises a fresh observer against a multi-bond shard;
-    #     sibling gap to the rspace forward-horizon fix; node-side fix not yet started)
     "DAGStorageMissingHash": re.compile(r"DAG storage is missing hash"),
 }
 
@@ -190,8 +250,23 @@ def scan_for_forbidden(
     key — this is intentional: it forces the test author to acknowledge
     each known bug class the line represents.
     """
+    return scan_lines_for_forbidden(logs.splitlines(), node_name, allowed)
+
+
+def scan_lines_for_forbidden(
+    lines: Iterable[str],
+    node_name: str,
+    allowed: FrozenSet[str] = frozenset(),
+) -> List[LogError]:
+    """Streaming form of :func:`scan_for_forbidden`.
+
+    Consumes ``lines`` lazily, so a multi-hundred-MB node log can be scanned
+    by iterating the file line-by-line instead of materializing the whole log
+    as one string plus a ``splitlines()`` list (which previously doubled peak
+    memory per node during the post-test scan).
+    """
     matches: List[LogError] = []
-    for line in logs.splitlines():
+    for line in lines:
         for key, pattern in FORBIDDEN_PATTERNS.items():
             if key in allowed:
                 continue

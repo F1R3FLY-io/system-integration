@@ -29,7 +29,27 @@ write_files:
       RUNNER_USER="runner"
       RUNNER_HOME="/opt/actions-runner"
 
-      log() { echo "[$(date -Iseconds)] $*"; }
+      # Tee to /dev/console as well as stdout. Everything this bootstrap writes
+      # otherwise lands only in files on the VM (/var/log/runner-bootstrap.log,
+      # /var/log/runner-run.log), which are destroyed with the instance — so a
+      # runner that dies takes the only explanation with it. Serial console
+      # output is captured by `oci compute instance-console-history`, a separate
+      # OCI resource with its own lifecycle that survives termination and can be
+      # read the next day.
+      #
+      # This is not hypothetical: soak run 30590630059 lost its runner 19
+      # minutes in, and neither GitHub (no log uploaded) nor the VM (already
+      # gone) could say why. f1r3node-rust's capture_diagnostics job greps
+      # console history for the idle-watchdog kill line below; without this tee
+      # that grep can never match.
+      #
+      # `|| true` so a missing/unwritable console can never abort the bootstrap
+      # under `set -e` — diagnostics must not be load-bearing.
+      log() {
+        local line="[$(date -Iseconds)] $*"
+        echo "$line"
+        echo "$line" > /dev/console 2>/dev/null || true
+      }
 
       log "=== Configure runner as ephemeral, repo-scoped ==="
       # No --disableupdate: if the baked image's runner version gets
@@ -47,9 +67,92 @@ write_files:
         --replace
 
       log "=== Run runner (--ephemeral: one job, then exits) ==="
-      sudo -u "$RUNNER_USER" ./run.sh || true
+      # Idle watchdog. run.sh blocks indefinitely waiting for a job. If this
+      # runner was over-provisioned (more runners launched than matrix jobs) or
+      # its run was cancelled, no job ever arrives, run.sh never returns, and the
+      # self-terminate below never runs — the VM leaks (this is exactly how the
+      # fleet of idle runners accumulated). Generous cap: once a job is picked up
+      # we let it finish; if none arrives within the timeout we kill run.sh and
+      # fall through to self-terminate.
+      IDLE_TIMEOUT_SECS=2700   # 45 min with no job
+      # Forced-update retry. When the baked agent version falls below GitHub's
+      # enforced minimum, the service triggers a self-update at job-assignment
+      # time ("Runner update in progress"). The update restart can kill run.sh
+      # before the job executes; without a retry the bootstrap would read that
+      # exit as "job complete" and self-terminate a jobless VM (2026-07-07
+      # incident: entire 20-VM batches died this way and starved the CI queue).
+      # The ephemeral registration stays valid until a job completes, so
+      # re-running run.sh (now on the updated agent) resumes listening. Retry
+      # ONLY on the update signature — any other exit falls through to
+      # self-terminate exactly as before.
+      MAX_RUN_ATTEMPTS=3
+      attempt=1
+      while :; do
+        : > /var/log/runner-run.log
+        sudo -u "$RUNNER_USER" ./run.sh > /var/log/runner-run.log 2>&1 &
+        RUN_PID=$!
+        rm -f /run/runner-idle-timeout
+        (
+          elapsed=0
+          while kill -0 "$RUN_PID" 2>/dev/null; do
+            # Is a job running? Ask the process table, not the log.
+            #
+            # This used to grep /var/log/runner-run.log for "Running job:".
+            # run.sh's stdout is redirected to a FILE, so .NET block-buffers it
+            # (~4KB) while the runner's startup output is only a few hundred
+            # bytes — the line can sit unflushed indefinitely. The watchdog then
+            # reads an apparently jobless runner and kills run.sh mid-job at the
+            # timeout, which puts EVERY job longer than
+            # IDLE_TIMEOUT_SECS-minus-boot at risk. The merge-recovery soak is
+            # exactly that shape, and this is the leading explanation for soak
+            # run 30590630059 losing its runner 19 minutes in (VM healthy,
+            # agent gone, no GitHub log).
+            #
+            # Runner.Listener forks a Runner.Worker per job, so the process
+            # table answers immediately and cannot buffer. The log grep is kept
+            # as a secondary signal: it costs nothing, and it still catches the
+            # case where a worker has exited but the listener has not yet
+            # returned.
+            # Scoped to $RUNNER_USER: the worker runs as that user (run.sh is
+            # started with `sudo -u`), while this watchdog runs as root. Without
+            # -u, any process on the box whose command line happens to contain
+            # the pattern reads as "a job is running" and the watchdog stands
+            # down forever — the VM then never self-terminates and leaks.
+            # The dot is escaped because -f takes an ERE, where "." is any char.
+            if pgrep -u "$RUNNER_USER" -f 'Runner\.Worker' >/dev/null 2>&1 \
+              || grep -q "Running job:" /var/log/runner-run.log 2>/dev/null; then
+              log "Job detected; idle watchdog standing down for this run."
+              exit 0   # a job started — let it run to completion
+            fi
+            if [ "$elapsed" -ge "$IDLE_TIMEOUT_SECS" ]; then
+              log "Idle ${IDLE_TIMEOUT_SECS}s with no job; killing runner to self-terminate."
+              touch /run/runner-idle-timeout
+              kill "$RUN_PID" 2>/dev/null || true
+              exit 0
+            fi
+            sleep 15
+            elapsed=$((elapsed + 15))
+          done
+        ) &
+        WATCHDOG_PID=$!
+        wait "$RUN_PID" 2>/dev/null || true
+        kill "$WATCHDOG_PID" 2>/dev/null || true
+        if grep -q "completed with result:" /var/log/runner-run.log 2>/dev/null; then
+          break   # job ran to completion — the normal ephemeral exit
+        fi
+        if [ -f /run/runner-idle-timeout ]; then
+          break   # idle timeout — proceed to self-terminate
+        fi
+        if grep -q "Runner update in progress" /var/log/runner-run.log 2>/dev/null \
+          && [ "$attempt" -lt "$MAX_RUN_ATTEMPTS" ]; then
+          attempt=$((attempt + 1))
+          log "run.sh exited during forced self-update; retrying (attempt $attempt/$MAX_RUN_ATTEMPTS)"
+          continue
+        fi
+        break   # unrecognized exit — preserve pre-existing terminate behavior
+      done
 
-      log "=== Job complete; self-terminating instance via instance principal ==="
+      log "=== Job complete (or idle timeout); self-terminating instance via instance principal ==="
       INSTANCE_ID=$(curl -fsSL -H "Authorization: Bearer Oracle" \
         http://169.254.169.254/opc/v2/instance/id)
       /usr/local/bin/oci --auth instance_principal \

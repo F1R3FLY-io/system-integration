@@ -4,6 +4,7 @@ Single source of truth for all test key material. These match the
 genesis files shipped in ``integration-tests/genesis/`` and the
 credentials in ``.env.node``.
 """
+
 from __future__ import annotations
 
 from .types import ValidatorIdentity
@@ -67,6 +68,15 @@ VALIDATOR5_ID = ValidatorIdentity(
     ),
 )
 
+VALIDATOR6_ID = ValidatorIdentity(
+    name="validator6",
+    private_hex="4b4c8a83c4ce9b7740a4f8387be489c9e5b5360e710ed6d3bd2d7677ac215de7",
+    public_hex=(
+        "0425e1bc4f6d953a9bbc12b98e6c3efbdbd1c07f3d6d351677b73ad1b0b2ef7c"
+        "58ccf80a4d43804423a2f771d597c74c4f501d0c0cbcc87bf136f052546fee975e"
+    ),
+)
+
 # Default genesis balances (from integration-tests/genesis/wallets.txt)
 GENESIS_BALANCES = {
     BOOTSTRAP_ID.name: 50_000_000_000_000_000,
@@ -91,4 +101,5 @@ ALL_IDENTITIES = [
     VALIDATOR3_ID,
     VALIDATOR4_ID,
     VALIDATOR5_ID,
+    VALIDATOR6_ID,
 ]

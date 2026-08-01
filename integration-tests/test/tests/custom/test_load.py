@@ -1,22 +1,30 @@
 """
 Deploy Throughput and Finalization Latency Load Test
 
-Measures deploy throughput and finalization latency under increasing load
-to identify the shard's capacity limits. Runs sequential phases from low
-(1 deploy/sec) to burst (32 deploys at once), reporting p50/p95/p99
-finalization latency and effective throughput per phase.
+Measures deploy throughput and finalization latency under increasing load to
+identify the shard's capacity limits AND to reproduce/attribute the
+finalization-lag merge runaway. Runs sequential phases from low (1 deploy/sec)
+through high and a 32-burst, then a SUSTAINED continuous-load phase with no
+drain — long enough to build the un-finalized cone deep, which is the only way
+the runaway (cone grows -> O(cone) merge/block -> finalization can't keep pace
+-> deeper cone) appears. Reports p50/p95/p99 inclusion/finalization latency,
+effective throughput, and the tip-LFB cone depth per phase.
 
-Uses lightweight contracts (@N!(N)) to stress the deploy pipeline rather
-than the Rholang interpreter. Deploy submission is distributed across
-3 validators via ThreadPoolExecutor for rates > 1/sec.
+Uses lightweight contracts (@N!(N)) to stress the deploy pipeline (and thereby
+block/cone count) rather than the Rholang interpreter. Submission is distributed
+across 3 validators via ThreadPoolExecutor for rates > 1/sec.
 
-Per-deploy latency is measured by polling find_deploy in background
-threads concurrently with submission, so inclusion_time reflects actual
-time from submission to block inclusion.
+Per-phase node /metrics deltas attribute block-processing cost across every
+sub-stage — including the parents_post_state breakdown (floor compute / FS seal
+fold / scope walk / mergeable recompute / dag merge), so the O(cone) climber is
+visible. Scraped on EVERY validator (not just v1).
 
-Results are logged as a summary table. No hard assertion on latency --
-the point is to measure, not gate. Hard assertions: zero deploy failures,
-all deploys finalized within timeout, no node crashes.
+Telemetry-first (measure, not gate) for latency. Hard assertions: zero deploy
+failures; all deploys finalized within timeout; all-node LFB convergence (every
+node polled to within a spread of 5, not sampled once at drain — nodes are still
+catching up the instant load stops); no node crashes. Set
+LOAD_TEST_TELEMETRY_ONLY=1 to collect the runaway metrics without the
+finalization/convergence gates.
 """
 
 import logging
@@ -28,7 +36,12 @@ from typing import List
 import pytest
 
 from ...infra.config import ShardConfig
-from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.keys import (
+    VALIDATOR1_ID,
+    VALIDATOR2_ID,
+    VALIDATOR3_ID,
+    VALIDATOR4_ID,
+)
 from ...infra.metrics import (
     DeployRecord,
     LifecycleTracker,
@@ -38,7 +51,7 @@ from ...infra.metrics import (
     percentiles,
     scrape_metrics,
 )
-from ...infra.polling import poll_until
+from ...infra.polling import poll_until, wait_for_lfb_converged
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
@@ -52,6 +65,13 @@ PHASES = [
     {"name": "medium", "rate": 5, "duration": 20, "workers": 3},
     {"name": "high", "rate": 10, "duration": 15, "workers": 3},
     {"name": "burst", "rate": 0, "duration": 0, "workers": 3, "burst_count": 32},
+    # Sustained continuous load with NO drain — long enough to build the
+    # un-finalized cone deep. The finalization-lag merge runaway (cone grows ->
+    # O(cone) merge per block -> finalization can't keep pace -> deeper cone)
+    # only appears under sustained pressure; the short phases above never reach
+    # it. The parents_post_state sub-stage metrics (floor/fs_seal/scope/merge)
+    # attribute the per-block cost as the cone deepens.
+    {"name": "sustained", "rate": 4, "duration": 300, "workers": 3},
 ]
 
 VABN_REFRESH_INTERVAL = 30
@@ -85,7 +105,54 @@ def _submit_deploy(node, key, index, vabn, phase):
     )
 
 
-def _run_phase(nodes, tracker, phase, start_index):
+def _current_block_number(node, monitor=None) -> int:
+    """``node.get_current_block_number()``, but explaining itself when it fails.
+
+    When the host-protection watchdog trips it SIGKILLs every node, so the next
+    query dies with a bare ``grpc StatusCode.UNAVAILABLE / Connection refused``.
+    That traceback is what the run *presents* as, while the actual cause — the
+    monitor's breach line — is thousands of log lines earlier and only reaches
+    the report at fixture teardown (``conftest.py``'s ``resource_monitor``).
+    Diagnosing run 30516534214 from the raw traceback took ~40 minutes; the
+    breach line answers it immediately. So attribute it here, at the point of
+    failure, instead of leaving the two halves to be correlated by hand.
+    """
+    try:
+        return node.get_current_block_number()
+    # Deliberately broad. A watchdog kill arrives as grpc.RpcError, but a dead
+    # node also surfaces as connection resets and client-wrapper errors, and all
+    # of them want the same attribution. Narrowing this to grpc.RpcError would
+    # quietly restore the misdiagnosis path for the other shapes. The original
+    # exception is chained, so nothing is hidden.
+    except Exception as exc:
+        breach = getattr(monitor, "breach", None) if monitor is not None else None
+        if breach:
+            raise AssertionError(
+                f"Node {node.name} is unreachable because the host-protection "
+                f"watchdog killed the nodes: {breach}. Raise --rss-ceiling-mb to "
+                f"suit this host, or reduce the load profile — the nodes did not "
+                f"crash on their own. Underlying error: {exc}"
+            ) from exc
+        # Distinguish "asked the monitor, it said no" from "never asked it".
+        # Claiming no breach when no monitor was consulted is the same class of
+        # misleading attribution this helper exists to remove.
+        if monitor is None:
+            diagnosis = (
+                "No resource monitor was attached to this call, so a "
+                "host-protection kill cannot be ruled out here"
+            )
+        else:
+            diagnosis = (
+                "The resource monitor reports no breach, so this is a node-side "
+                "failure rather than a watchdog kill — check that node's logs"
+            )
+        raise AssertionError(
+            f"Node {node.name} became unreachable while querying the last "
+            f"finalized block. {diagnosis}. Underlying error: {exc}"
+        ) from exc
+
+
+def _run_phase(nodes, tracker, phase, start_index, monitor=None):
     """Submit deploys for a phase, tracking each immediately.
 
     Returns (deploy_count, errors, submission_duration).
@@ -100,7 +167,7 @@ def _run_phase(nodes, tracker, phase, start_index):
         (nodes[v_name], identity.private_key()) for identity, v_name in VALIDATORS_AND_KEYS
     ]
 
-    vabn = max(0, node_list[0][0].get_current_block_number() - 1)
+    vabn = max(0, _current_block_number(node_list[0][0], monitor) - 1)
 
     deploy_count = 0
     errors: List[str] = []
@@ -133,7 +200,7 @@ def _run_phase(nodes, tracker, phase, start_index):
         for i in range(total_deploys):
             now = time.time()
             if now - vabn_refreshed_at > VABN_REFRESH_INTERVAL:
-                vabn = max(0, node_list[0][0].get_current_block_number() - 1)
+                vabn = max(0, _current_block_number(node_list[0][0], monitor) - 1)
                 vabn_refreshed_at = now
             node, key = node_list[i % len(node_list)]
             idx = start_index + i
@@ -180,18 +247,33 @@ def _get_lfb_number(node) -> int:
         return 0
 
 
+def _get_tip(node) -> int:
+    """Highest block number the node knows (the DAG tip). ``tip - LFB`` is the
+    un-finalized cone depth — the direct finalization-lag / runaway signal."""
+    try:
+        return node.get_current_block_number()
+    except Exception:
+        return 0
+
+
 # ---------------------------------------------------------------------------
 # Test
 # ---------------------------------------------------------------------------
 
 
-def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
+def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor) -> None:
     """Measure deploy throughput and finalization latency under increasing load."""
     config = ShardConfig(
+        # 4 genesis validators (6 nodes total with boot + readonly): enough concurrent
+        # heartbeat proposers to produce sibling blocks -> multi-parent merges build a real
+        # un-finalized cone, WITHOUT the 8-node simultaneous bring-up that froze the host at
+        # 6 validators (the lifecycle test also has 8 nodes but staggers joiners in, so it
+        # never spikes). A 3-validator shard barely forks, so it never reaches the cone cost.
         bonds=[
             (VALIDATOR1_ID, 100),
             (VALIDATOR2_ID, 100),
             (VALIDATOR3_ID, 100),
+            (VALIDATOR4_ID, 100),
         ],
         heartbeat=True,
         include_readonly=True,
@@ -269,6 +351,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                     tracker,
                     phase,
                     deploy_index,
+                    resource_monitor,
                 )
                 deploy_index += deploy_count + len(errors)
                 total_failures += len(errors)
@@ -283,6 +366,21 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                     submission_duration,
                     deploy_count / max(submission_duration, 0.001),
                     len(errors),
+                )
+
+                # Cone depth at peak — end of submission, BEFORE the drain wait.
+                # tip - LFB (both current) = un-finalized blocks. A value that climbs
+                # across the rated phases (esp. the sustained phase) is the runaway;
+                # one that stays bounded means finalization keeps pace.
+                tip_now = _get_tip(v1)
+                lfb_now = _get_lfb_number(v1)
+                peak_lag = tip_now - lfb_now
+                logging.info(
+                    "  Cone at end of %s submission: tip-LFB lag = %d blocks (tip #%d, LFB #%d)",
+                    phase_name,
+                    peak_lag,
+                    tip_now,
+                    lfb_now,
                 )
 
                 tracker.wait_for_finalization(timeout=finalization_timeout)
@@ -375,16 +473,18 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                     format_node_metrics(report.node_metrics),
                 )
 
-        # Verify readonly LFB tracked validators
-        ro = shard.readonly
-        if ro:
-            ro_lfb = _get_lfb_number(ro)
-            v1_lfb = _get_lfb_number(v1)
-            lfb_gap = v1_lfb - ro_lfb
-            logging.info("Readonly LFB: #%d (V1: #%d, gap: %d)", ro_lfb, v1_lfb, lfb_gap)
-            assert (
-                lfb_gap <= 5
-            ), f"Readonly LFB #{ro_lfb} is {lfb_gap} blocks behind V1 #{v1_lfb} after load test"
+        # All-node LFB convergence: after the load drains, every node — all
+        # validators + readonly — should settle within a few blocks of the max
+        # LFB. A persistent spread is a node failing to finalize / falling
+        # behind (the runaway leaves laggards).
+        #
+        # Snapshot at drain first, for the record only. This is the state at the
+        # instant load stopped: it is what a telemetry-only run wants, and it
+        # makes a later convergence failure interpretable by showing how far
+        # behind the shard started from.
+        drain_lfbs = {n.name: _get_lfb_number(n) for n in shard.all_nodes}
+        drain_spread = max(drain_lfbs.values()) - min(drain_lfbs.values())
+        logging.info("All-node LFBs at drain: %s (spread %d blocks)", drain_lfbs, drain_spread)
 
         # Hard assertions. Set LOAD_TEST_TELEMETRY_ONLY=1 to skip the
         # finalization gate when collecting metrics across capacity limits.
@@ -397,9 +497,40 @@ def test_deploy_throughput_and_finalization(provider, timeouts) -> None:
                 finalization_timeout,
             )
         else:
-            assert (
-                total_unfinalized == 0
-            ), f"{total_unfinalized} deploy(s) not finalized within {finalization_timeout}s"
+            assert total_unfinalized == 0, (
+                f"{total_unfinalized} deploy(s) not finalized within {finalization_timeout}s"
+            )
+            # Wait for convergence instead of asserting the drain snapshot.
+            # Nodes are legitimately still catching up the moment load stops, so
+            # asserting the instantaneous spread makes this gate a race against
+            # normal catch-up: it fails whenever the sample happens to land
+            # mid-recovery. A single test run mostly gets away with that; a soak
+            # runs this hundreds of times and will hit it. Polling asserts the
+            # property actually meant — "the shard converges after load" — rather
+            # than "it had already converged at the microsecond load drained".
+            #
+            # Budget is *3 rather than a single finalization window. Unlike the
+            # sibling convergence tests there is no prior budget to restore here
+            # — the old code allowed zero — so this is an estimate, chosen from
+            # what the check has to cover: every deploy is already finalized by
+            # this point (asserted above), so what remains is laggards, mostly
+            # readonly, catching up across up to 7 nodes on a host carrying a
+            # soak's accumulated load. One 45s window is a tight floor for that.
+            #
+            # max_spread stays 5. If this times out the shard genuinely failed to
+            # converge within the budget, which is the signal the soak exists to
+            # surface; widen the timeout, never the tolerance.
+            converged_lfbs = wait_for_lfb_converged(
+                shard.all_nodes,
+                timeout=finalization_timeout * 3,
+                max_spread=5,
+                description="all-node LFB spread <= 5 after load drains",
+            )
+            logging.info(
+                "All-node LFBs converged: %s (spread %d blocks)",
+                converged_lfbs,
+                max(converged_lfbs.values()) - min(converged_lfbs.values()),
+            )
         for node in shard.all_nodes:
             assert node.is_running(), f"{node.name} is not running after load test"
     finally:

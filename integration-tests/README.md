@@ -15,7 +15,7 @@ Three layers of documentation:
 - **Docker + Docker Compose** (containers managed by the test fixtures)
 - **Python 3.10** (see the [main README](../README.md) for pyenv setup)
 - **Poetry** (Python dependency manager)
-- **Memory** — 12 GB RAM minimum for Rust node tests (3-validator shards)
+- **Memory (Docker allocation)** — 4 GB for a 3-validator shard; less for the 2-validator light shard
 
 ```bash
 # From the repo root
@@ -60,8 +60,8 @@ poetry run pytest integration-tests/test/tests/shared/test_deployment.py -v -s
 # Single test
 poetry run pytest integration-tests/test/tests/shared/test_wallets.py::test_validator1_pay_validator2
 
-# Stop on first failure (useful with --keep-running for post-mortem)
-poetry run pytest integration-tests/test/tests/shared/ -x -v -s
+# Stop on first failure, preserving only the failing shard for post-mortem
+poetry run pytest integration-tests/test/tests/shared/ -x -v -s --keep-on-failure
 ```
 
 ### Parallel
@@ -99,7 +99,8 @@ Each worker gets a non-overlapping host port range automatically. No coordinatio
 | `--provider={docker,subprocess}` | Infrastructure backend. `docker` (default) spawns nodes as containers using the `F1R3FLY_NODE_IMAGE` tag; `subprocess` spawns the locally-built node binary directly on the host. Set `F1R3FLY_NODE_BINARY=/abs/path/to/target/release/node` to override the default lookup at `services/f1r3node-rust/target/release/node`. **`F1R3FLY_NODE_BINARY` is ignored under the Docker provider** — to exercise a feature-branch binary, pass `--provider=subprocess`. |
 | `--instafail` | Print each test's traceback the moment it errors or fails, instead of buffering until session end. Strongly recommended under `-n auto` (xdist) — without it, a session-fixture failure on the `@shared` worker can hide behind 30+ identical ERROR markers for the duration of the run. Provided by `pytest-instafail`. |
 | `--maxfail=N` | Abort the session after N total failures/errors. Pair with `--instafail` for diagnostic runs. Useful as a "storm-stop" against fixture-failure cascades — e.g. `--maxfail=10` aborts a runaway session in ~10s instead of grinding through every dependent test. |
-| `--keep-running` | Start shard, run tests, **don't tear down** after. Prints the session ID for reuse. |
+| `--keep-running` | Start shard, run tests, **don't tear down** after. Prints the session ID for reuse. Keeps *every* shard — on a multi-test suite this accumulates shards and stresses the host. |
+| `--keep-on-failure` | Tear down shards for **passing** tests, but **preserve the shard of a failing test** for inspection. The clean-on-the-happy-path counterpart to `--keep-running`: it avoids the host-load accumulation that itself causes flakiness, so it's the right choice for debugging a flake-under-load. Designed to pair with `-x` (the run stops at the first failure, leaving exactly that one shard up). Run `shardctl test-reset` to clean up the preserved shard. Honored by both providers. |
 | `--skip-setup --session-id <id>` | Adopt a shard from a previous `--keep-running` run. Skip bring-up (~2s vs ~60s fresh). |
 | `--monitor` | Sample Docker resource usage (peak memory, CPU) across all framework containers. Report embedded in `report.json`. (Docker provider only.) |
 | `--timeout-scale <f>` | Multiplier for every derived timeout. Use `1.5`–`2.0` on slow CI runners. |
@@ -116,7 +117,6 @@ F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust:dev poetry run pytest ...
 
 # Via shardctl shortcuts (all set F1R3FLY_NODE_IMAGE internally)
 poetry run shardctl test --rust   # f1r3flyindustries/f1r3fly-rust:latest
-poetry run shardctl test --scala  # f1r3flyindustries/f1r3fly-scala-node:latest
 poetry run shardctl test --image myrepo/custom:tag
 ```
 

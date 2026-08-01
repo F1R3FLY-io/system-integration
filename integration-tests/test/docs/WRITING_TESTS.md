@@ -34,7 +34,7 @@ pytestmark = pytest.mark.xdist_group("shared")  # pin to one xdist worker
 def test_something(validator1_node, readonly_node, timeouts):
     """Short description of what this verifies."""
     deploy_id = validator1_node.deploy_string(
-        '@1!(42)',
+        "@1!(42)",
         VALIDATOR1_ID.private_key(),
     )
     wait_for_deploy_finalized(validator1_node, deploy_id, timeouts.finalization)
@@ -141,12 +141,24 @@ For deploy tracking, prefer `wait_for_deploy_finalized` over `wait_for_finalized
 ```python
 from ...infra.polling import wait_for_deploy_finalized
 
-deploy_id = node.deploy_string('@1!(42)', key.private_key())
+deploy_id = node.deploy_string("@1!(42)", key.private_key())
 status = wait_for_deploy_finalized(node, deploy_id, timeouts.finalization)
 # status.latestBlockHash points at the canonical-state block
 ```
 
 Use `wait_for_finalized(block_number)` only when the test cares about LFB advancement to a specific height (rare — most assertions are about a deploy's outcome, not the chain's height).
+
+### Assert many deploys finalized on all nodes (bg-load / orphan regression)
+
+To check that a batch of deploys (e.g. a background-load run) all finalized on every node, use `assert_all_deploys_finalized_on_all_nodes` — do **not** resolve `find_deploy` once and assert that block hash finalizes. The latter falsely fails on **re-homing**: a deploy whose first block loses a merge is re-included into a finalized descendant, so the original block hash never finalizes even though the deploy does. The shared helper is built on `wait_for_deploy_finalized` (per-node `deploy_finalization_status`), so it follows re-homing while still flagging genuinely dropped work.
+
+```python
+from ...infra.assertions import assert_all_deploys_finalized_on_all_nodes
+
+assert_all_deploys_finalized_on_all_nodes(
+    shard.all_nodes, deploy_ids, timeouts.finalization * 2, label="bg-load"
+)
+```
 
 ### Deploy + read result in one helper
 

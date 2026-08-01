@@ -34,30 +34,30 @@ def test_api_status_returns_configured_token(shared_shard, node_conf) -> None:
     """/api/status reports the configured token metadata on all nodes."""
     for node in shared_shard.all_nodes:
         status = fetch_api_status_token(node.http_url)
-        assert (
-            status.name == node_conf.native_token_name
-        ), f"{node.name}: expected name '{node_conf.native_token_name}', got '{status.name}'"
-        assert (
-            status.symbol == node_conf.native_token_symbol
-        ), f"{node.name}: expected symbol '{node_conf.native_token_symbol}', got '{status.symbol}'"
-        assert (
-            status.decimals == node_conf.native_token_decimals
-        ), f"{node.name}: expected decimals {node_conf.native_token_decimals}, got {status.decimals}"
+        assert status.name == node_conf.native_token_name, (
+            f"{node.name}: expected name '{node_conf.native_token_name}', got '{status.name}'"
+        )
+        assert status.symbol == node_conf.native_token_symbol, (
+            f"{node.name}: expected symbol '{node_conf.native_token_symbol}', got '{status.symbol}'"
+        )
+        assert status.decimals == node_conf.native_token_decimals, (
+            f"{node.name}: expected decimals {node_conf.native_token_decimals}, got {status.decimals}"
+        )
 
 
 def test_on_chain_all_exploratory(shared_shard, node_conf) -> None:
     """TokenMetadata!("all", ret) via exploratory deploy matches config."""
     ro = shared_shard.readonly
     on_chain = query_token_metadata_all(ro.grpc_host, ro.external_grpc_port)
-    assert (
-        on_chain.name == node_conf.native_token_name
-    ), f"{ro.name}: on-chain name '{on_chain.name}' != config '{node_conf.native_token_name}'"
-    assert (
-        on_chain.symbol == node_conf.native_token_symbol
-    ), f"{ro.name}: on-chain symbol '{on_chain.symbol}' != config '{node_conf.native_token_symbol}'"
-    assert (
-        on_chain.decimals == node_conf.native_token_decimals
-    ), f"{ro.name}: on-chain decimals {on_chain.decimals} != config {node_conf.native_token_decimals}"
+    assert on_chain.name == node_conf.native_token_name, (
+        f"{ro.name}: on-chain name '{on_chain.name}' != config '{node_conf.native_token_name}'"
+    )
+    assert on_chain.symbol == node_conf.native_token_symbol, (
+        f"{ro.name}: on-chain symbol '{on_chain.symbol}' != config '{node_conf.native_token_symbol}'"
+    )
+    assert on_chain.decimals == node_conf.native_token_decimals, (
+        f"{ro.name}: on-chain decimals {on_chain.decimals} != config {node_conf.native_token_decimals}"
+    )
     logging.info(
         "%s (exploratory): name=%s symbol=%s decimals=%d",
         ro.name,
@@ -79,15 +79,15 @@ def test_on_chain_all_real_deploy(shared_shard, node_conf, timeouts) -> None:
         timeouts.deploy_inclusion,
         timeouts.finalization,
     )
-    assert (
-        on_chain.name == node_conf.native_token_name
-    ), f"{node.name}: on-chain name '{on_chain.name}' != config '{node_conf.native_token_name}'"
-    assert (
-        on_chain.symbol == node_conf.native_token_symbol
-    ), f"{node.name}: on-chain symbol '{on_chain.symbol}' != config '{node_conf.native_token_symbol}'"
-    assert (
-        on_chain.decimals == node_conf.native_token_decimals
-    ), f"{node.name}: on-chain decimals {on_chain.decimals} != config {node_conf.native_token_decimals}"
+    assert on_chain.name == node_conf.native_token_name, (
+        f"{node.name}: on-chain name '{on_chain.name}' != config '{node_conf.native_token_name}'"
+    )
+    assert on_chain.symbol == node_conf.native_token_symbol, (
+        f"{node.name}: on-chain symbol '{on_chain.symbol}' != config '{node_conf.native_token_symbol}'"
+    )
+    assert on_chain.decimals == node_conf.native_token_decimals, (
+        f"{node.name}: on-chain decimals {on_chain.decimals} != config {node_conf.native_token_decimals}"
+    )
     logging.info(
         "%s (deploy): name=%s symbol=%s decimals=%d",
         node.name,
@@ -109,12 +109,12 @@ def test_on_chain_individual_methods_match_all(shared_shard) -> None:
     symbol = query_token_metadata_symbol(host, port)
     decimals = query_token_metadata_decimals(host, port)
     assert name == all_tuple.name, f"individual name '{name}' != all tuple '{all_tuple.name}'"
-    assert (
-        symbol == all_tuple.symbol
-    ), f"individual symbol '{symbol}' != all tuple '{all_tuple.symbol}'"
-    assert (
-        decimals == all_tuple.decimals
-    ), f"individual decimals {decimals} != all tuple {all_tuple.decimals}"
+    assert symbol == all_tuple.symbol, (
+        f"individual symbol '{symbol}' != all tuple '{all_tuple.symbol}'"
+    )
+    assert decimals == all_tuple.decimals, (
+        f"individual decimals {decimals} != all tuple {all_tuple.decimals}"
+    )
 
 
 def test_startup_log_announces_token_metadata(shared_shard, node_conf) -> None:
@@ -133,12 +133,12 @@ def test_startup_log_announces_token_metadata(shared_shard, node_conf) -> None:
                 if "native_token" in (e.get("event") or "")
             )
         )
-        assert (
-            event.get("native_token_name") == node_conf.native_token_name
-        ), f"{node.name}: log name '{event.get('native_token_name')}' != '{node_conf.native_token_name}'"
-        assert (
-            event.get("native_token_symbol") == node_conf.native_token_symbol
-        ), f"{node.name}: log symbol '{event.get('native_token_symbol')}' != '{node_conf.native_token_symbol}'"
-        assert (
-            event.get("native_token_decimals") == node_conf.native_token_decimals
-        ), f"{node.name}: log decimals {event.get('native_token_decimals')} != {node_conf.native_token_decimals}"
+        assert event.get("native_token_name") == node_conf.native_token_name, (
+            f"{node.name}: log name '{event.get('native_token_name')}' != '{node_conf.native_token_name}'"
+        )
+        assert event.get("native_token_symbol") == node_conf.native_token_symbol, (
+            f"{node.name}: log symbol '{event.get('native_token_symbol')}' != '{node_conf.native_token_symbol}'"
+        )
+        assert event.get("native_token_decimals") == node_conf.native_token_decimals, (
+            f"{node.name}: log decimals {event.get('native_token_decimals')} != {node_conf.native_token_decimals}"
+        )
