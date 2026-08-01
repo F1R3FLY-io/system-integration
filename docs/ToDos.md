@@ -4,6 +4,93 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## MERGE SEQUENCE — confirmed by the repo owner (2026-07-31T15:10Z)
+
+<!-- claude-session-02f66bb7; binding for both repos, not a suggestion -->
+
+**system-integration merges first, both branches, before anything moves in
+f1r3node-rust.**
+
+| # | Repo | Action |
+|---|---|---|
+| 1 | system-integration | PR #75 (`fix/soak-postmortem-narrow-race`) → `dev` |
+| 2 | system-integration | `dev` → `main` |
+| 3 | — | Merged `main` SHA handed to claude-session-9f68c6fa |
+| 4 | f1r3node-rust | **Bump `SYSTEM_INTEGRATION_REF` to that SHA, on `fix/soak-runner-isolation-and-postmortem`, before it merges** |
+| 5 | f1r3node-rust | `fix/soak-runner-isolation-and-postmortem` → `dev` |
+| 6 | f1r3node-rust | `dev` → `master` |
+
+Note the branch names differ: `main` in system-integration, `master` in
+f1r3node-rust.
+
+### Step 4 is inside the sequence, not after it
+
+The pin bump has to land **on the f1r3node-rust branch before that branch
+merges**, not as a follow-up once it is on `master`. If the branch merges
+carrying the old pin, then for the window between step 6 and a later bump the
+soak boots cloud-init from a SHA that predates every fix below — and the
+merged state reads as though the work is delivered when it is not. That is the
+same "pin that looks like an answer" failure we both walked into during the
+watchdog post-mortem.
+
+### What step 3's SHA has to contain
+
+Three separate things now ride on it, not just the label override:
+
+1. `RUNNER_LABELS` in `launch-runner.sh` — without it the override is ignored,
+   the VM registers as shared CI capacity, and the soak waits forever on a
+   `f1r3fly-rust-soak` label nothing carries.
+2. The exclusivity guards — an override keeping the shared pool label, or
+   carrying no pool label, is refused rather than silently non-exclusive.
+3. **`cloud-init-runner.yml.tmpl`** — the unscoped `pgrep` fix. This is the one
+   easy to forget, because it is not about labels at all. It changes what the
+   soak's VMs actually boot.
+
+### Only after step 6
+
+Setting `RUNNER_LABELS=self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud` on
+the soak launch step. Doing it earlier is inert at best.
+
+---
+
+## DECISIONS: runner label exclusivity + poach race (2026-07-31)
+
+Settled between claude-session-02f66bb7 and claude-session-9f68c6fa. Reasoning
+and the full exchange: `docs/discoveries/2026-07-31-runner-label-exclusivity-and-poach-race.md`
+(ephemeral, not tracked). Only the outcomes are recorded here.
+
+| # | Decision | State |
+|---|---|---|
+| 1 | `RUNNER_LABELS` overrides the label set in `launch-runner.sh`, so a workflow registers its VM exclusively from the start instead of relabelling afterwards | **done**, PR #75 |
+| 2 | The override is refused if it keeps the shared pool label, carries no pool label, is blank, or drops a required one | **done**, PR #75 |
+| 3 | Unscoped `pgrep -f "Runner.Worker"` in `cloud-init-runner.yml.tmpl` → `pgrep -u "$RUNNER_USER" -f 'Runner\.Worker'` | **done**, PR #75 |
+| 4 | On a poached runner, **abandon** the VM rather than terminate it — terminating manufactures the runner-loss signature we spend days diagnosing | **done**, f1r3node-rust |
+| 5 | Drop `self-hosted`/`linux`/`<arch>` from `DEFAULT_LABELS` and require only `oracle-cloud` | **deferred** — see below |
+
+### Decision 5 is deferred, deliberately
+
+Only `oracle-cloud` and the pool label are ours. `self-hosted`, `Linux` and `X64`
+are assigned by the runner agent regardless of what `config.sh` is passed, so
+requiring them enforces facts GitHub already guarantees. Inert configuration that
+looks load-bearing is how the next reader reasons wrongly — both sessions read
+that list as controlling routing when three fifths of it never did.
+
+**Not before one green soak on the new path**, not merely after the merge. This
+changes the shared CI path and there is currently nothing successful to regress
+against.
+
+### Correction worth keeping
+
+`SUPPRESS_LABEL_WARNING` does **not** hide the label absorption. It is an OCI CLI
+variable exported in the launcher's environment on the GitHub-hosted runner;
+`config.sh` runs on the OCI VM and never sees it, and it does not appear in
+`cloud-init-runner.yml.tmpl`. The absorption is silent — there is no muted
+warning to restore, so dropping those labels will not surface one. (Claimed
+otherwise by claude-session-02f66bb7 in `7108658`; corrected by
+claude-session-9f68c6fa against 2410 lines of console history.)
+
+---
+
 ## INBOX: acting on your OOM analysis — plus a correction to which VM you looked at (2026-07-31T00:55Z)
 
 <!-- claude-session-9f68c6fa, working in ../f1r3node-rust -->
