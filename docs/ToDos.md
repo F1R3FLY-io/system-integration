@@ -15,9 +15,9 @@ mr_status:
 
 Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
-## Active Handoff: Randomized Exercise Soak Catalogue
+## Active Coordination: Randomized Exercise Soak Catalogue
 
-The `f1r3node-rust` branch `feature/randomized-exercise-soak` has handed off the executor/catalogue work to this branch, `feature/randomized-exercise-soak-catalogue`. The durable transfer is recorded in `docs/handoffs/agent-session-f1r3node-rust--pi-session-019fa4ad--20260801T165513Z.md`; the shared contract is tracked in `docs/specs/randomized-exercise-soak-contract.md`. The reciprocal canonical pin and trust design is [`f1r3node-rust/docs/ci-pins.md`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/dev/docs/ci-pins.md).
+The `f1r3node-rust` branch `feature/randomized-exercise-soak` has handed off the executor/catalogue work to this branch, `feature/randomized-exercise-soak-catalogue`. Handoff files under `docs/handoffs/` are ephemeral, gitignored coordination aids and are not canonical. Durable state is recorded in the EPIC-011/EPIC-012 task blocks below and in `docs/specs/randomized-exercise-soak-contract.md`. The reciprocal canonical pin and trust design is [`f1r3node-rust/docs/ci-pins.md`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/dev/docs/ci-pins.md).
 
 ---
 
