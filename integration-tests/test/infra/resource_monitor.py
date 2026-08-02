@@ -332,6 +332,17 @@ class ResourceMonitor:
         self._maybe_start_guardian()
         if self._output_dir is not None:
             self._output_dir.mkdir(parents=True, exist_ok=True)
+            # Session dirs are normally unique per run, but the --skip-setup
+            # --session-id debug loop reuses one — a prior run's breach marker
+            # must not survive into this run, or "marker present" stops
+            # meaning "this run breached". Mirrors the guardian's own
+            # .guardian-breach unlink.
+            try:
+                (self._output_dir / "host-protection-breach.txt").unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:  # noqa: BLE001
+                pass
             self._ts_fh = open(self._output_dir / "resource-timeseries.csv", "w", newline="")
             self._ts_writer = csv.writer(self._ts_fh)
             self._ts_writer.writerow(
@@ -415,9 +426,12 @@ class ResourceMonitor:
             # in the data dir is a stable contract.
             if self._breach is not None:
                 try:
-                    (self._output_dir / "host-protection-breach.txt").write_text(
-                        self._breach + "\n"
-                    )
+                    # Write-then-rename so a concurrent reader (the soak
+                    # driver polls this path) never sees a partial file.
+                    marker = self._output_dir / "host-protection-breach.txt"
+                    tmp = marker.with_suffix(".txt.tmp")
+                    tmp.write_text(self._breach + "\n")
+                    tmp.replace(marker)
                 except Exception:  # noqa: BLE001
                     pass
         for fh in (self._ts_fh, self._metrics_fh):
