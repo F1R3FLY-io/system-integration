@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, TypeVar
 
 from f1r3fly.polling import (
     DeployError,
-    poll_until,
 )
 from f1r3fly.polling import (
     deploy_and_read as _client_deploy_and_read,
@@ -33,7 +32,70 @@ from f1r3fly.polling import (
 
 logger = logging.getLogger(__name__)
 
-# Re-export poll_until directly — it's generic, no wrapping needed
+T = TypeVar("T")
+
+# Always give a predicate this many tries, however slow each one is.
+MIN_POLL_ATTEMPTS = 3
+
+
+def poll_until(
+    predicate: Callable[[], Optional[T]],
+    timeout: int,
+    interval: float = 3.0,
+    description: str = "",
+    min_attempts: int = MIN_POLL_ATTEMPTS,
+) -> T:
+    """Poll ``predicate`` until it returns truthy, with a floor on attempts.
+
+    Wraps ``f1r3fly.polling.poll_until``, which checks its deadline only at the
+    top of the loop and then sleeps unconditionally. One probe slower than the
+    whole budget therefore yields exactly one try:
+
+        TimeoutError: deploy ... inclusion on ...validator1:
+        timed out after 10s (1 attempts)
+
+    That is a poll loop that never polled. It is not specific to any one
+    timeout — any budget on the same order as a single probe's latency
+    degrades the same way, so a caller cannot tell from the message whether the
+    condition was really absent or merely never re-checked. Under
+    ``-n 16 --dist=loadgroup`` on one runner, a gRPC round trip past ten
+    seconds is unremarkable, which is how `deploy_inclusion` (10s) reached it
+    first. Diagnosed by claude-session-9f68c6fa from f1r3node-rust PR #178,
+    run 30672935310.
+
+    The floor makes "timed out" mean the condition did not hold across
+    ``min_attempts`` independent observations. Worst-case wall time becomes
+    roughly ``min_attempts * (probe_latency + interval)`` rather than
+    ``timeout``: deliberate, since a run that is slow enough to hit the floor
+    is one where failing fast costs a re-run and a diagnosis.
+
+    ``time.monotonic`` rather than ``time.time`` so a clock adjustment mid-poll
+    cannot end the loop early.
+    """
+    deadline = time.monotonic() + timeout
+    last_err: Optional[Exception] = None
+    attempts = 0
+
+    while True:
+        attempts += 1
+        try:
+            result = predicate()
+            if result:
+                return result
+        except Exception as e:  # noqa: BLE001 — same contract as the client
+            last_err = e
+
+        if attempts >= min_attempts and time.monotonic() >= deadline:
+            break
+        time.sleep(interval)
+
+    err_detail = f" (last error: {last_err})" if last_err else ""
+    raise TimeoutError(
+        f"{description or 'poll_until'}: timed out after {timeout}s "
+        f"({attempts} attempts){err_detail}"
+    )
+
+
 __all__ = [
     "poll_until",
     "wait_for_node_running",
