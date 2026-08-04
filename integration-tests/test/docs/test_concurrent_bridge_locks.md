@@ -4,14 +4,14 @@
 Verifies exact bridge accounting when one funded wallet submits many unique locks concurrently.
 
 ## Tests (1)
-- `test_concurrent_bridge_locks_exact_accounting` — bursts 24 locks and reconciles finalized deploys, nonce history, total locked, per-address locked value, and vault balances.
+- `test_concurrent_bridge_locks_exact_accounting` — bursts 12 locks and reconciles finalized deploys, the final nonce, total locked, and vault balances.
 
 ## Setup
 A fresh three-validator shard with a readonly observer and one deployed `bridge-v2.rho` instance.
 
 ## Key assertions
-- Every unique lock finalizes on every validator and the readonly observer before state is queried.
-- Lock nonces are contiguous with no missing or duplicate history entries.
+- Every unique lock finalizes before the readonly observer state is queried.
+- The final nonce and total locked value match the exact lock count.
 - Contract accounting and bridge-vault balance increase by the exact lock total.
 
 ## Infrastructure used

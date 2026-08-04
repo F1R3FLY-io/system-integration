@@ -17,6 +17,21 @@ pytestmark = pytest.mark.xdist_group("custom")
 _HEARTBEAT_SUCCESS = "Heartbeat: Successfully created block"
 
 
+def _wait_for_stable_lfb(node, stable_for: float = 35, timeout: float = 90) -> int:
+    deadline = time.monotonic() + timeout
+    current = node.last_finalized_block().blockInfo.blockNumber
+    stable_since = time.monotonic()
+    while time.monotonic() < deadline:
+        time.sleep(1)
+        observed = node.last_finalized_block().blockInfo.blockNumber
+        if observed != current:
+            current = observed
+            stable_since = time.monotonic()
+        elif time.monotonic() - stable_since >= stable_for:
+            return current
+    raise TimeoutError(f"LFB did not remain stable for {stable_for}s within {timeout}s")
+
+
 @pytest.fixture(scope="module")
 def recovery_shard(provider, timeouts):
     config = ShardConfig(
@@ -69,14 +84,13 @@ def test_finality_stall_bounded_recovery(recovery_shard, timeouts) -> None:
         max_spread=3,
         description="healthy finalized baseline before quorum loss",
     )
-    baseline_lfb = v1.last_finalized_block().blockInfo.blockNumber
-
     for node in unavailable:
         node.pause()
     try:
         for node in unavailable:
             wait_for_node_quiet(node, timeout=10)
 
+        baseline_lfb = _wait_for_stable_lfb(v1)
         successes_before = v1.logs().count(_HEARTBEAT_SUCCESS)
         time.sleep(45)
         empty_recovery_blocks = v1.logs().count(_HEARTBEAT_SUCCESS) - successes_before
