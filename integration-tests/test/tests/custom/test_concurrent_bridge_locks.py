@@ -5,7 +5,11 @@ from f1r3fly.par import par_as_int, par_as_list, par_as_string, par_as_uri
 
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import deploy_and_read, wait_for_deploy_finalized
+from ...infra.polling import (
+    deploy_and_read,
+    wait_for_block_visible,
+    wait_for_deploy_finalized,
+)
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
@@ -70,19 +74,19 @@ def test_concurrent_bridge_locks_exact_accounting(bridge_shard, timeouts) -> Non
     key = VALIDATOR1_ID.private_key()
     from_addr = key.get_public_key().get_vault_address()
 
-    deploy_pars, _, _ = deploy_and_read(
+    deploy_pars, deploy_block_hash, _ = deploy_and_read(
         v1,
         "",
         key,
         timeouts.custom(120),
-        timeouts.finalization,
+        timeouts.finalization * 4,
         rho_file="resources/bridge-v2.rho",
         phlo_limit=_PHLO_LIMIT,
     )
     query_uri, lock_uri, _ = _extract_bridge_uris(deploy_pars)
-    lfb_hash = readonly.last_finalized_block().blockInfo.blockHash
+    wait_for_block_visible(readonly, deploy_block_hash, timeouts.finalization)
     bridge_addr = par_as_string(
-        readonly.registry_query(query_uri, "getAddress", block_hash=lfb_hash)[0]
+        readonly.registry_query(query_uri, "getAddress", block_hash=deploy_block_hash)[0]
     )
     source_before = readonly.vault.get_balance(from_addr)
     bridge_before = readonly.vault.get_balance(bridge_addr)
