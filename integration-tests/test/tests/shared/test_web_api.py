@@ -811,11 +811,38 @@ def test_is_finalized_http(shared_shard, timeouts) -> None:
     logging.info("is-finalized verified: HTTP=%s, gRPC=%s", result, grpc_result)
 
 
+def _status_pair_over_stable_lfb(node, attempts: int = 5):
+    """Sample HTTP and gRPC status across a window where the LFB did not move.
+
+    ``lastFinalizedBlockNumber`` advances on a live shard, so reading the two
+    endpoints in sequence is a torn read — the later call legitimately observes
+    a higher value, and comparing them is not a well-posed assertion. Bracket
+    the gRPC call with two HTTP reads and accept the sample only when both
+    agree: the value was then stationary for the whole window, so any residual
+    difference is a real parity defect rather than elapsed time.
+
+    Deliberately not "retry until the two endpoints agree" — that would also
+    converge when the endpoints genuinely disagree, hiding the defect this
+    test exists to catch.
+    """
+    for _ in range(attempts):
+        before = node.api_get("/status")
+        grpc_status = node.grpc_status()
+        after = node.api_get("/status")
+        if before["lastFinalizedBlockNumber"] == after["lastFinalizedBlockNumber"]:
+            return before, grpc_status
+
+    raise AssertionError(
+        f"{node.name}: lastFinalizedBlockNumber advanced during all {attempts} "
+        "sampling attempts; could not compare HTTP and gRPC status over a "
+        "stable window"
+    )
+
+
 def test_grpc_status_matches_http(shared_shard, node_conf) -> None:
     """gRPC status() returns same fields as HTTP /api/status on all nodes."""
     for node in shared_shard.all_nodes:
-        http_status = node.api_get("/status")
-        grpc_status = node.grpc_status()
+        http_status, grpc_status = _status_pair_over_stable_lfb(node)
 
         assert grpc_status.shardId == http_status["shardId"], f"{node.name}: shardId mismatch"
         assert grpc_status.networkId == http_status["networkId"], f"{node.name}: networkId mismatch"
