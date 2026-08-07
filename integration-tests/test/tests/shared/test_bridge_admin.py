@@ -18,7 +18,12 @@ import pytest
 from f1r3fly.par import par_as_int, par_as_list, par_as_string, par_as_uri
 
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import DeployError, deploy_and_read, poll_until, wait_for_finalized
+from ...infra.polling import (
+    EmptyParListError,
+    deploy_and_read,
+    poll_until,
+    wait_for_finalized,
+)
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -187,7 +192,7 @@ def _query_bridge(node, query_uri: str, method: str, private_key, find_timeout, 
     ``_make_query_rho`` fails silently on a registry lookup miss (the ``for``
     continuation never fires), so a proposer whose merged pre-state
     transiently excludes the registry entry finalizes an empty deployId
-    channel — surfacing as ``DeployError`` "empty par list" even after
+    channel — surfacing as ``EmptyParListError`` even after
     ``_wait_for_registry_visible`` passed on every node's LFB. One fresh
     deploy lands on a newer tip; a second empty read means the entry is
     durably gone and the error propagates.
@@ -197,9 +202,7 @@ def _query_bridge(node, query_uri: str, method: str, private_key, find_timeout, 
         return deploy_and_read(
             node, term, private_key, find_timeout, lfb_timeout, phlo_limit=500_000_000
         )
-    except DeployError as err:
-        if "empty par list" not in str(err):
-            raise
+    except EmptyParListError as err:
         logging.warning(
             "%s query on %s read an empty deployId channel (%s); retrying once on a fresh tip",
             method,
