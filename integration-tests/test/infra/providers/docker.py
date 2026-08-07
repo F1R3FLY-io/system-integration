@@ -621,8 +621,19 @@ class DockerProvider:
 
     @property
     def monitor_output_dir(self) -> Optional[Path]:
-        """No host-visible per-session dir; the monitor reports peak/avg only."""
-        return None
+        """Monitor artifacts land in the per-session archive dir.
+
+        The monitor runs host-side (sampling ``docker stats``), so nothing
+        about containerized nodes prevents host-visible output. Returning
+        ``None`` here silently disabled BOTH the resource/metrics CSV
+        time-series (soak per-node RSS attribution joined against them) and
+        the ``host-protection-breach.txt`` marker channel on docker
+        iterations — the 2026-08-04 soak breach (f1r3node-rust run
+        30880995655) had to be attributed from the teardown peak/avg table
+        alone. The archive dir is the same host-visible per-session
+        location the log archival uses, so CI's integration-tests tree
+        capture picks these up with no extra wiring."""
+        return self._archive_dir
 
     @property
     def retired_log_snapshots(self) -> List[RetiredLogSnapshot]:
