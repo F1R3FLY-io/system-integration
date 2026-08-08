@@ -10,13 +10,14 @@ firing, reintroducing the flake with no test pointing at the stale match.
 ``EmptyParListError`` at the wrapper boundary, and these tests pin both
 halves of the contract:
 
-- the upstream wording still contains the marker the translation matches
+- the upstream raise site still uses the marker the translation matches
   (the drift guard — this is the test that fails loudly on a reword), and
 - the wrapper raises the typed error for matching messages and leaves every
   other ``DeployError`` untouched.
 """
 
 import inspect
+import re
 import sys
 from pathlib import Path
 
@@ -52,14 +53,27 @@ def _deploy(monkeypatch, raises):
     )
 
 
-def test_upstream_wording_still_contains_the_marker():
+def test_upstream_raise_site_still_uses_the_marker():
     """The drift guard: fails when pyf1r3fly rewords the message.
 
     The marker string is owned by pyf1r3fly's raise site; the wrapper's
     translation matches on it. If a pyf1r3fly bump rewords the message,
     this test — not a re-flaking bridge suite — is what breaks.
+
+    Anchored to ``raise DeployError(...)`` statements inside the one
+    upstream function the wrapper calls, not the whole module: the phrase
+    surviving in a comment or docstring elsewhere must not keep this green
+    (PR #90 review, major finding).
     """
-    assert _EMPTY_PAR_MARKER in inspect.getsource(upstream_polling)
+    src = inspect.getsource(upstream_polling.deploy_and_read)
+    raise_sites = re.findall(r"raise\s+DeployError\((?:[^()]|\([^()]*\))*\)", src)
+    assert raise_sites, "f1r3fly.polling.deploy_and_read no longer raises DeployError directly"
+    assert any(_EMPTY_PAR_MARKER in site for site in raise_sites), (
+        f"no raise DeployError(...) in f1r3fly.polling.deploy_and_read mentions "
+        f"{_EMPTY_PAR_MARKER!r}: the upstream wording drifted, so the "
+        f"EmptyParListError translation in test/infra/polling.py is dead — "
+        f"update _EMPTY_PAR_MARKER to match the new message"
+    )
 
 
 def test_empty_par_message_is_translated_to_the_typed_error(monkeypatch):
