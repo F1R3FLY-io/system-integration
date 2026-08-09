@@ -319,10 +319,28 @@ def assert_all_deploys_finalized_on_all_nodes(
                 # the f1r3fly.deploy class re-exported at module scope.
                 not_finalized.append((sig[:16], node.name, type(exc).__name__))
                 break  # one un-finalizing node is enough; move to the next deploy
+
+    # Classify HOW each deploy was lost. Refund-quarantine, retry-gate
+    # starvation and merge starvation are structurally different failures that
+    # all arrive here as DeployError; without this the cause is only
+    # recoverable by hand-scanning shard logs. One streaming pass per affected
+    # node, on the failure path only.
+    causes: dict = {}
+    if not_finalized:
+        from .log_events import classify_deploy_losses
+
+        try:
+            causes = classify_deploy_losses(nodes, {sig16 for sig16, _, _ in not_finalized})
+        except Exception:  # noqa: BLE001 - diagnostics must never mask the failure
+            causes = {}
+    detail = "; ".join(
+        f"{sig16}@{node_name} {exc_name} -> {causes.get(sig16, 'unclassified')}"
+        for sig16, node_name, exc_name in not_finalized[:3]
+    )
     assert not not_finalized, (
         f"[{label}] {len(not_finalized)} of {len(deploy_ids)} deploys did not "
         f"finalize on all nodes (deploy-status, re-homing-aware). "
-        f"first(3)={not_finalized[:3]}"
+        f"first(3)={detail}"
     )
 
 
