@@ -1,3 +1,11 @@
+"""Finality stalls cleanly under quorum loss and resumes when quorum returns.
+
+With two of three equal-stake validators paused nothing can finalize. The
+survivor must hold the LFB still rather than emitting empty recovery blocks
+without bound, must still admit a deploy into a block while stalled, and must
+finalize that deploy once quorum comes back.
+"""
+
 import time
 
 import pytest
@@ -55,6 +63,7 @@ def recovery_shard(provider, timeouts):
 
 
 def test_finality_stall_bounded_recovery(recovery_shard, timeouts) -> None:
+    """LFB freezes without runaway empty blocks, then advances once quorum returns."""
     v1 = recovery_shard.node("validator1")
     validators = [
         v1,
@@ -94,6 +103,15 @@ def test_finality_stall_bounded_recovery(recovery_shard, timeouts) -> None:
         successes_before = v1.logs().count(_HEARTBEAT_SUCCESS)
         time.sleep(45)
         empty_recovery_blocks = v1.logs().count(_HEARTBEAT_SUCCESS) - successes_before
+        # NOTE: 2 is an observed ceiling, NOT derived from the
+        # --heartbeat-advanced-empty-frontier-max-unfinalized-blocks=4 set above. The
+        # two are different quantities: the config caps DAG-wide unfinalized DEPTH
+        # (with a strict >, so backpressure engages at 5), while this counts heartbeat
+        # blocks emitted in a fixed 45s window. How many land before backpressure
+        # latches depends on how deep the frontier already was when the window opened,
+        # which _wait_for_stable_lfb leaves free to vary between 35s and 90s of prior
+        # elapsed time. A mechanism-level assertion on the node's backpressure log
+        # line would need no threshold at all.
         assert empty_recovery_blocks <= 2, (
             f"stalled LFB produced {empty_recovery_blocks} empty recovery blocks "
             "during bounded recovery"

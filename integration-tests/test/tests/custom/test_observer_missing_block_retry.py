@@ -1,3 +1,12 @@
+"""An observer retries blocks its peers could not serve, then reproduces their state.
+
+While an observer is performing approved-state sync, every source node is paused so
+its block requests go unanswered. It must schedule resends rather than giving up,
+and once the sources return it must reach the target LFB and compute the same
+post-state hash the shard did — a retry that resumed but diverged would be worse
+than one that failed.
+"""
+
 import pytest
 from f1r3fly.client import F1r3flyClientException
 
@@ -59,6 +68,7 @@ def active_shard(provider, timeouts):
 
 
 def test_observer_retries_missing_block_after_peer_returns(active_shard, timeouts) -> None:
+    """Resends are scheduled while sources are down; state matches once they return."""
     v1 = active_shard.node("validator1")
     sources = list(active_shard.all_nodes)
     key = VALIDATOR1_ID.private_key()

@@ -1,3 +1,12 @@
+"""Concurrent submissions of one signed deploy admit and execute exactly one copy.
+
+Resubmitting an identical ``DeployDataProto`` — same signature, so the same deploy
+id — must be refused after the first acceptance rather than queued twice. Beyond
+the admission count, this asserts the property no unit test can reach: after
+finalization the deploy appears exactly once in the canonical block, so a
+duplicate cannot be executed twice.
+"""
+
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -12,6 +21,7 @@ from ...infra.types import NodeRole
 
 
 def test_duplicate_signed_deploy_race(provider, timeouts) -> None:
+    """One of 32 concurrent identical submissions is admitted and executed once."""
     config = NodeConfig(
         role=NodeRole.STANDALONE,
         cli_flags=frozenset({"--heartbeat-enabled"}),

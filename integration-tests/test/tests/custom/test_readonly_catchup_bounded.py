@@ -1,3 +1,15 @@
+"""A readonly observer catching up keeps its API responsive and its memory bounded.
+
+A 40-block history is built on a single-finalizer shard, then a fresh observer is
+attached and must converge to the shard's canonical state while its `/api/status`
+keeps answering and its resident memory stays under the ceiling shared with the
+overload regression. Converging by wedging the API or ballooning memory is not
+converging.
+
+NOTE: the latency bound here is weaker than it reads — see the comment on the
+status-probe loop.
+"""
+
 import os
 import threading
 import time
@@ -81,6 +93,7 @@ def deep_shard(provider, timeouts):
 
 
 def test_readonly_catchup_parallelism_keeps_api_responsive(deep_shard, timeouts) -> None:
+    """The observer reaches canonical state with its API answering and memory bounded."""
     source = deep_shard.node("validator1")
     history_blocks = _history_block_count()
     baseline = source.last_finalized_block().blockInfo.blockNumber
@@ -116,6 +129,13 @@ def test_readonly_catchup_parallelism_keeps_api_responsive(deep_shard, timeouts)
         memory_samples = []
 
         def probe_status() -> None:
+            # NOTE: `timeout=2` bounds how long the observer may take to ISSUE a
+            # response, so a probe that stalls past it raises and is dropped here
+            # rather than recorded. That makes `max(latencies) < 2` below far weaker
+            # than it reads — recorded samples are fast probes almost by
+            # construction, and the interesting signal (probes that blew the budget)
+            # is exactly what is discarded. Counting the timeouts would make the
+            # bound falsifiable.
             url = f"{observer.http_url}/api/status"
             while not stop.is_set():
                 started = time.monotonic()

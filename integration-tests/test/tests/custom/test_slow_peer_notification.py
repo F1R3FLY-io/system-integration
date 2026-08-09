@@ -1,3 +1,15 @@
+"""A slow low-stake peer must not block deploy finalization while quorum remains.
+
+With validator3 (stake 1 of 201) suspended and FTT at 0.1, the two remaining
+validators still hold quorum, so deploys submitted to them must finalize rather
+than waiting on the unreachable peer's notification. The suspended peer must then
+catch up once resumed.
+
+The failure this guards against is a deploy that is accepted and then sits
+Pending indefinitely with no rejection recorded, while the reachable validators
+stay healthy and keep finalizing blocks.
+"""
+
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -35,6 +47,7 @@ def notification_shard(provider, timeouts):
 
 
 def test_slow_peer_does_not_block_block_processing(notification_shard, timeouts) -> None:
+    """Deploys finalize on the quorum-holding validators while a low-stake peer is down."""
     v1 = notification_shard.node("validator1")
     v2 = notification_shard.node("validator2")
     slow_peer = notification_shard.node("validator3")
