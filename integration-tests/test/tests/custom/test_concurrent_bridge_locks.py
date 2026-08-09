@@ -1,3 +1,14 @@
+"""Concurrent bridge locks preserve exact nonce, accounting, and vault state.
+
+Twelve locks are submitted at once against one bridge contract, so every one of
+them is a read-modify-write on the same set of single-value cells — the shape
+multi-parent merge has to get right. After all twelve finalize, the nonce and
+total-locked counters must equal exactly twelve and the bridge vault must be
+credited by exactly twelve, with the source debited by at least that (the surplus
+being gas).
+"""
+
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -7,6 +18,7 @@ from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import (
     deploy_and_read,
+    poll_until,
     wait_for_block_visible,
     wait_for_deploy_finalized,
 )
@@ -16,6 +28,58 @@ pytestmark = pytest.mark.xdist_group("custom")
 
 _LOCK_COUNT = 12
 _PHLO_LIMIT = 500_000_000
+
+
+def _wait_for_registry_visible(node, query_uri: str, timeout: int) -> None:
+    """Block until the bridge registry entry answers queries in ``node``'s canonical state.
+
+    Block finalization does not finalize a deploy's *effects*: a conflict-set merge
+    on a later block can reject an already-finalized deploy, so the registry insert
+    can vanish from the canonical lineage while the bridge deploy still reports
+    Finalized. Without this barrier that surfaces as an ``IndexError`` off a bare
+    ``[0]`` several assertions later instead of naming the precondition that broke.
+
+    ``node`` must serve exploratory deploys — only the readonly observer does;
+    validators reject them outright, which would turn this barrier into a
+    guaranteed timeout. Exploratory queries cost no blocks and no phlo, so polling
+    is free.
+
+    Mirrors ``tests/shared/test_bridge_admin.py::_wait_for_registry_visible``.
+    """
+
+    def _visible():
+        lfb_hash = node.last_finalized_block().blockInfo.blockHash
+        try:
+            pars = node.registry_query(query_uri, "getNonce", block_hash=lfb_hash)
+        except Exception as err:  # noqa: BLE001 — fail-soft probe, retried
+            logging.debug("registry_query on %s not ready: %s", node.name, err)
+            return None
+        return pars or None
+
+    poll_until(
+        predicate=_visible,
+        timeout=timeout,
+        description=(
+            f"bridge registry entry visible in canonical state on {node.name} "
+            "(timeout here means the bridge deploy's effects were likely rejected by "
+            "merge after block finalization; check DagMerger / RejectedDeployBuffer)"
+        ),
+    )
+
+
+def _query_one(node, query_uri: str, method: str, block_hash: str):
+    """Return the single Par answering ``method``, failing with context if absent.
+
+    A bare ``[0]`` here raises ``IndexError`` with nothing identifying which query
+    came back empty, which is the failure shape merge-rejected registry effects
+    produce.
+    """
+    pars = node.registry_query(query_uri, method, block_hash=block_hash)
+    assert pars, (
+        f"bridge query {method!r} returned no results on {node.name} at block "
+        f"{block_hash[:16]} — the registry entry is absent from this node's canonical state"
+    )
+    return pars[0]
 
 
 def _extract_bridge_uris(pars):
@@ -69,6 +133,7 @@ def bridge_shard(provider, timeouts):
 
 
 def test_concurrent_bridge_locks_exact_accounting(bridge_shard, timeouts) -> None:
+    """Twelve simultaneous locks reconcile to exactly twelve on nonce, total, and vault."""
     v1 = bridge_shard.node("validator1")
     readonly = bridge_shard.readonly
     key = VALIDATOR1_ID.private_key()
@@ -85,11 +150,13 @@ def test_concurrent_bridge_locks_exact_accounting(bridge_shard, timeouts) -> Non
     )
     query_uri, lock_uri, _ = _extract_bridge_uris(deploy_pars)
     wait_for_block_visible(readonly, deploy_block_hash, timeouts.finalization)
-    bridge_addr = par_as_string(
-        readonly.registry_query(query_uri, "getAddress", block_hash=deploy_block_hash)[0]
-    )
-    source_before = readonly.vault.get_balance(from_addr)
-    bridge_before = readonly.vault.get_balance(bridge_addr)
+    # Block visibility is not effect visibility — see _wait_for_registry_visible.
+    _wait_for_registry_visible(readonly, query_uri, timeouts.finalization)
+    bridge_addr = par_as_string(_query_one(readonly, query_uri, "getAddress", deploy_block_hash))
+    # Pin the "before" reads to the same block the deltas are measured against;
+    # get_balance defaults to latest, which drifts as heartbeat blocks land.
+    source_before = readonly.vault.get_balance(from_addr, deploy_block_hash)
+    bridge_before = readonly.vault.get_balance(bridge_addr, deploy_block_hash)
 
     def submit(index: int) -> str:
         term = _lock_term(lock_uri, 1, f"0x{index:040x}", from_addr)
@@ -111,15 +178,22 @@ def test_concurrent_bridge_locks_exact_accounting(bridge_shard, timeouts) -> Non
         statuses = list(executor.map(wait_for_finalization, deploy_ids))
     assert len(statuses) == _LOCK_COUNT
 
+    # Every read below is pinned to one block. Sampling the counters at an LFB and
+    # the balances at "latest" would reconcile two different states, and the drift
+    # is unbounded while heartbeat blocks keep landing.
     lfb_hash = readonly.last_finalized_block().blockInfo.blockHash
-    nonce = par_as_int(readonly.registry_query(query_uri, "getNonce", block_hash=lfb_hash)[0])
-    total_locked = par_as_int(
-        readonly.registry_query(query_uri, "getTotalLocked", block_hash=lfb_hash)[0]
-    )
-    bridge_after = readonly.vault.get_balance(bridge_addr)
-    source_after = readonly.vault.get_balance(from_addr)
+    nonce = par_as_int(_query_one(readonly, query_uri, "getNonce", lfb_hash))
+    total_locked = par_as_int(_query_one(readonly, query_uri, "getTotalLocked", lfb_hash))
+    bridge_after = readonly.vault.get_balance(bridge_addr, lfb_hash)
+    source_after = readonly.vault.get_balance(from_addr, lfb_hash)
 
-    assert nonce == _LOCK_COUNT
-    assert total_locked == _LOCK_COUNT
-    assert bridge_after - bridge_before == _LOCK_COUNT
-    assert source_before - source_after >= _LOCK_COUNT
+    assert nonce == _LOCK_COUNT, f"expected nonce {_LOCK_COUNT}, got {nonce}"
+    assert total_locked == _LOCK_COUNT, f"expected total locked {_LOCK_COUNT}, got {total_locked}"
+    assert bridge_after - bridge_before == _LOCK_COUNT, (
+        f"bridge vault moved by {bridge_after - bridge_before}, expected exactly "
+        f"{_LOCK_COUNT} ({bridge_before} -> {bridge_after})"
+    )
+    assert source_before - source_after >= _LOCK_COUNT, (
+        f"source vault fell by {source_before - source_after}, expected at least "
+        f"{_LOCK_COUNT} plus gas ({source_before} -> {source_after})"
+    )

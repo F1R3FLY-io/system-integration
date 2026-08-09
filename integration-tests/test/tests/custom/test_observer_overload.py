@@ -1,3 +1,12 @@
+"""A readonly observer bounds exploratory-query admission and recovers afterwards.
+
+With the exploratory executor occupied, further queries must fail fast with a
+bounded rejection rather than queueing without limit or growing observer memory.
+Verifies the rejection shape, that the observer stays ready while rejecting, that
+memory stays under the catch-up regression's ceiling, and that query capacity
+returns once the permit is released.
+"""
+
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +21,18 @@ from ...infra.shard import Shard
 pytestmark = pytest.mark.xdist_group("custom")
 
 _OBSERVER_MEMORY_CEILING_MB = 1500
+
+_EXCESS_COUNT = 8
+
+# Seconds between occupying the permit and sending the excess requests.
+_EXCESS_DELAY = 0.5
+
+# How long a queued exploratory request waits for the permit before the observer
+# rejects it as observer_busy. The occupying query therefore has to hold the
+# permit for longer than _EXCESS_DELAY + this, or the excess requests are never
+# actually contended and "all rejected" is not the property under test. Asserted
+# below rather than assumed.
+_QUEUE_TIMEOUT = 2.0
 
 _SLOW_QUERY = """
 new loop in {
@@ -40,6 +61,7 @@ def observer_shard(provider, timeouts):
 
 
 def test_observer_exploratory_overload_recovers(observer_shard) -> None:
+    """Excess exploratory queries fail fast with bounded memory, then capacity returns."""
     observer = observer_shard.readonly
     url = f"{observer.http_url}/api/explore-deploy"
     stop = threading.Event()
@@ -56,14 +78,15 @@ def test_observer_exploratory_overload_recovers(observer_shard) -> None:
     sampler.start()
 
     try:
-        with ThreadPoolExecutor(max_workers=9) as executor:
+        with ThreadPoolExecutor(max_workers=_EXCESS_COUNT + 1) as executor:
+            started = time.monotonic()
             slow = executor.submit(
                 requests.post,
                 url,
                 json={"term": _SLOW_QUERY},
                 timeout=90,
             )
-            time.sleep(0.5)
+            time.sleep(_EXCESS_DELAY)
             excess = [
                 executor.submit(
                     requests.post,
@@ -71,14 +94,30 @@ def test_observer_exploratory_overload_recovers(observer_shard) -> None:
                     json={"term": "new x in { x!(1) }"},
                     timeout=15,
                 )
-                for _ in range(8)
+                for _ in range(_EXCESS_COUNT)
             ]
             responses = [future.result() for future in excess]
             slow_response = slow.result()
+            slow_held_permit_for = time.monotonic() - started
     finally:
         stop.set()
         sampler.join(timeout=5)
 
+    # Precondition, asserted rather than assumed: the excess requests are only
+    # contended if the permit was still held while they queued. The observer caps
+    # exploratory phlo server-side, so a client cannot make _SLOW_QUERY arbitrarily
+    # long — if it finishes early the run proves nothing about rejection, and that
+    # must read as a setup failure rather than as a rejection-count mismatch.
+    assert slow_held_permit_for > _EXCESS_DELAY + _QUEUE_TIMEOUT, (
+        f"the occupying query released the permit after {slow_held_permit_for:.1f}s, "
+        f"before the {_EXCESS_COUNT} excess requests finished queueing "
+        f"({_EXCESS_DELAY + _QUEUE_TIMEOUT:.1f}s) — no overload window existed, so "
+        f"this run cannot test admission bounding. Increase the work in _SLOW_QUERY, "
+        f"or the server-side exploratory phlo limit."
+    )
+
+    # Having held the permit past the queue window, the occupying query either
+    # completed, exhausted phlo, or hit the observer's bounded execution timeout.
     assert slow_response.status_code in {200, 422, 504}
     if slow_response.status_code == 504:
         assert slow_response.json().get("error") == "exploratory_timeout"
