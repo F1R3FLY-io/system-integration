@@ -82,8 +82,17 @@ def _extract_bridge_uris(pars):
 
 
 def _wait_for_registry_visible(nodes, query_uri: str, timeout: int) -> None:
-    """Block until the bridge registry entry answers queries in every node's
+    """Block until the bridge registry entry answers queries in each node's
     canonical LFB state.
+
+    Only pass nodes that SERVE exploratory deploys — the readonly observer.
+    ``registry_query`` is an exploratory deploy, and the node rejects those on
+    bonded/boot nodes outright ("Exploratory deploy can only be executed on
+    read-only node", casper block_api). Polling such a node turns this barrier
+    into a guaranteed timeout: the error is swallowed by the fail-soft retry
+    and reads as permanent invisibility. That exact mistake (polling
+    ``all_nodes``) failed every Heavy Pipeline slot on f1r3node-rust run
+    31284483534 while the node itself was healthy.
 
     Block finalization does not finalize a deploy's *effects*: a conflict-set
     merge on a later block can reject an already-finalized deploy (e.g. a
@@ -120,7 +129,7 @@ def _wait_for_registry_visible(nodes, query_uri: str, timeout: int) -> None:
                 "RejectedDeployBuffer entries in the node logs)"
             ),
         )
-    logging.info("Bridge registry entry visible in canonical state on all nodes")
+    logging.info("Bridge registry entry visible in canonical state")
 
 
 def _deploy_bridge(shared_shard, timeouts):
@@ -151,7 +160,10 @@ def _deploy_bridge(shared_shard, timeouts):
     logging.info("  lockUri:   %s", lock_uri)
     logging.info("  unlockUri: %s", unlock_uri)
 
-    _wait_for_registry_visible(all_nodes, query_uri, lfb_timeout)
+    # Readonly only: it is the one node that serves exploratory queries, and
+    # its LFB view is the canonical-state vantage the queries below rely on.
+    # The all-nodes finalization wait above already covers the validators.
+    _wait_for_registry_visible([shared_shard.readonly], query_uri, lfb_timeout)
     return query_uri, lock_uri, unlock_uri
 
 
