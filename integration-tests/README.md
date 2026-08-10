@@ -104,6 +104,7 @@ Each worker gets a non-overlapping host port range automatically. No coordinatio
 | `--skip-setup --session-id <id>` | Adopt a shard from a previous `--keep-running` run. Skip bring-up (~2s vs ~60s fresh). |
 | `--monitor` | Sample Docker resource usage (peak memory, CPU) across all framework containers. Report embedded in `report.json`. (Docker provider only.) |
 | `--timeout-scale <f>` | Multiplier for every derived timeout. Use `1.5`–`2.0` on slow CI runners. |
+| `--readonly-history-blocks <n>` | Blocks of history built before the observer attaches in the readonly catch-up regression (default 40). Raise it to make catch-up deeper; each block costs one propose round trip. |
 
 ---
 
