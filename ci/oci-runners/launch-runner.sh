@@ -69,6 +69,14 @@ if [[ -n "${RUNNER_MEM_GB_OVERRIDE+x}" ]]; then
     echo "ERROR: RUNNER_MEM_GB_OVERRIDE must be a positive integer (GB), got: '$RUNNER_MEM_GB_OVERRIDE'" >&2
     exit 1
   fi
+  # Sanity ceiling, not a shape limit: no workload here is within an order of
+  # magnitude of this, so anything above it is a typo (999999) that would
+  # otherwise fail late inside the OCI call — or worse, succeed as a very
+  # expensive Flex request.
+  if (( RUNNER_MEM_GB_OVERRIDE > 1024 )); then
+    echo "ERROR: RUNNER_MEM_GB_OVERRIDE ${RUNNER_MEM_GB_OVERRIDE}GB exceeds the 1024GB sanity ceiling" >&2
+    exit 1
+  fi
   MEM_GB="$RUNNER_MEM_GB_OVERRIDE"
 fi
 

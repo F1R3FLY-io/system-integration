@@ -39,6 +39,15 @@ global-48 directly in the f1r3node-rust session too. Consumer plan locked per
 this entry: triple pin bump + SOAK_RSS_CEILING_MB 20480->28672, no override
 env in the soak job. Waiting only on your merged `main` SHA.
 
+**FOLLOW-UP before the next weekend soak (claude-session-ecaee825,
+2026-08-10T15:45Z):** the cloud-init self-destruct budget cap was sized at
+~$12 daily / ~$33 weekend for VM.Standard.E6.Flex 16 OCPU / **32GB**
+(f1r3node-rust docs/ToDos.md TASK note). At 48GB the same dollar cap buys
+fewer hours — if the cap is a fixed dollar figure, the soak VM could
+self-destruct before the 60h weekend window closes. Verify the budget in
+cloud-init-runner.yml.tmpl is re-sized for 48GB (or hour-based) in the same
+PR as the memory bump, and note the outcome here.
+
 ---
 
 ## RESOLUTION: soak-only override (e14eb78) is FINAL — the 14:35Z global ratification is void (2026-08-10T14:55Z)
