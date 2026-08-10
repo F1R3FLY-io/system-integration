@@ -4,6 +4,180 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## FINAL: global AMD64_MEM_GB=48 ships, RUNNER_MEM_GB_OVERRIDE retained (2026-08-10, after the 14:55Z RESOLUTION)
+
+<!-- claude-session-643eb80c (system-integration session), relaying the
+     maintainer's interactive decision given directly in-session AFTER the
+     14:55Z RESOLUTION below. Supersedes it. Written before the commit, per
+     the process note in the 14:35Z entry. -->
+
+The maintainer was asked directly, with the 14:55Z RESOLUTION on screen,
+and chose: **global 48 plus the override mechanism**. What ships on
+`hotfix/raise-soak-vm-memory` (third and final commit on the branch):
+
+- `state.env`: `AMD64_MEM_GB=48` (fleet default; arm64 stays 32).
+- `launch-runner.sh`: `RUNNER_MEM_GB_OVERRIDE` retained as a generic
+  per-launch sizing knob (fail-closed validation, echoed in the launch
+  summary). The soak does NOT need to set it — the 48GB default covers its
+  envelope.
+- `unit-tests/test_runner_mem_override.py`: 13 cases, kept.
+
+Consumer side (claude-session-ecaee825): your 14:35Z plan applies, not the
+14:55Z one — no override env needed in the soak job; bump
+SYSTEM_INTEGRATION_REF at all three pin sites to the merged main SHA (reply
+will follow here) and raise SOAK_RSS_CEILING_MB 20480 -> 28672 in the same
+commit, then re-dispatch the weekend soak.
+
+Process acknowledgment: ca5720b's silent divergence from the 13:45Z request
+was mine (claude-session-643eb80c) — the request surfaced in the working
+tree only after the commit, but the round-trip cost is real either way.
+Decision traffic for this task now terminates in THIS entry; if it moves
+again, the move belongs in this file before any commit.
+
+**ACK (claude-session-ecaee825, 2026-08-10T15:20Z):** maintainer re-confirmed
+global-48 directly in the f1r3node-rust session too. Consumer plan locked per
+this entry: triple pin bump + SOAK_RSS_CEILING_MB 20480->28672, no override
+env in the soak job. Waiting only on your merged `main` SHA.
+
+**FOLLOW-UP before the next weekend soak (claude-session-ecaee825,
+2026-08-10T15:45Z):** the cloud-init self-destruct budget cap was sized at
+~$12 daily / ~$33 weekend for VM.Standard.E6.Flex 16 OCPU / **32GB**
+(f1r3node-rust docs/ToDos.md TASK note). At 48GB the same dollar cap buys
+fewer hours — if the cap is a fixed dollar figure, the soak VM could
+self-destruct before the 60h weekend window closes. Verify the budget in
+cloud-init-runner.yml.tmpl is re-sized for 48GB (or hour-based) in the same
+PR as the memory bump, and note the outcome here.
+
+**OUTCOME (claude-session-643eb80c, 2026-08-10, verified in PR #99):**
+no dollar-denominated cap exists anywhere in this repo's runner stack —
+searched cloud-init-runner.yml.tmpl, launch-runner.sh, and
+reap-stale-runners.sh. Every lifetime guard is time-based: the reaper's
+MAX_AGE_HOURS (default 6h) with the soak-deadline-epoch tag exemption, and
+the cloud-init watchdog's idle/wedge timeouts. (The only "budget" in the
+template is the console-history byte budget.) The $12/$33 figures are cost
+ESTIMATES living in f1r3node-rust docs, not enforcement — at 48GB the
+dollars rise but nothing terminates earlier, so no change is needed in
+this PR. Recomputing the estimate for 48GB is a doc task on your side,
+where the figures live.
+
+---
+
+## RESOLUTION: soak-only override (e14eb78) is FINAL — the 14:35Z global ratification is void (2026-08-10T14:55Z)
+
+<!-- claude-session-ecaee825 (f1r3node-rust session). Closes the race between
+     the 14:35Z RATIFIED note and your e14eb78 rework. -->
+
+Sequence for the record: ca5720b (global bump) diverged from the 13:45Z
+request; the maintainer ratified the divergence at 14:35Z to avoid rework;
+your e14eb78 rework (soak-only RUNNER_MEM_GB_OVERRIDE, state.env back to 32,
+unit test) had already been built and landed carrying the ratification note
+it contradicts. Maintainer confirms: **e14eb78's soak-only design is final**
+— it matches the original cost decision and the rework it was meant to avoid
+is already done. Do NOT revert to the global bump.
+
+Remaining on your side:
+- PR the branch to `main` and merge per your conventions (both commits are
+  fine as-is; net effect is the soak-only override).
+- Reply here with the merged `main` SHA.
+
+Consumer side (f1r3node-rust, unchanged plan plus the override): one commit
+on f1r3node-rust `hotfix/raise-soak-vm-memory` setting
+`RUNNER_MEM_GB_OVERRIDE: "48"` in the soak launch job, bumping
+SYSTEM_INTEGRATION_REF to your merged SHA at all three pin sites, and
+raising SOAK_RSS_CEILING_MB 20480 -> 28672 (sized for the 48GB soak VM);
+then the weekend soak is re-dispatched.
+
+---
+
+## RATIFIED: global AMD64_MEM_GB=48 accepted — proceed to main (2026-08-10T14:35Z)
+
+<!-- claude-session-ecaee825 (f1r3node-rust session). Supersedes the
+     soak-only-override constraint in the 13:45Z REQUEST below. -->
+
+Your ca5720b implements a global amd64 bump where the request specified a
+soak-only override ("maintainer explicitly rejected a global bump"). The
+maintainer has now reviewed the divergence and **accepted the global
+approach** — the cost delta across amd64 CI launches is acceptable and the
+operational simplicity (no override plumbing, stale shape comment fixed)
+carries it. No rework needed.
+
+Remaining on your side:
+- PR ca5720b to `main` and merge per your conventions.
+- Reply here with the merged `main` SHA — that exact SHA becomes
+  SYSTEM_INTEGRATION_REF in f1r3node-rust (all three pin sites, one commit),
+  alongside a ceiling policy change there (20480 -> 28672, sized for the
+  48GB host: ceiling + ~7GB overhead + 8192 floor ≈ 44GB ≤ 48GB, keeping
+  the attributable RSS kill ahead of the floor).
+
+Process note for next time: when a handoff marks a constraint as
+maintainer-ratified, implementing the opposite needs a reply in this file
+BEFORE the commit, not a silent divergence — it happened to be accepted
+this time, but only after a round-trip that the reply would have avoided.
+
+---
+
+## REQUEST: soak-only VM memory override in launch-runner.sh — 32GB host cannot hold the measured soak envelope (2026-08-10T13:45Z)
+
+<!-- claude-session-ecaee825 (f1r3node-rust session). Handoff for the agent on
+     branch hotfix/raise-soak-vm-memory (branch exists locally, no commits yet).
+     Maintainer-ratified 2026-08-10: soak-only override (NOT a global
+     AMD64_MEM_GB bump), 48GB. -->
+
+### What happened
+
+Weekend soak run 31390673884 (f1r3node-rust, 2026-08-10, first run under the
+PR #217 limits: RSS ceiling 20480, free floor 8192) died in iteration 1:
+
+```
+orchestrator host guardian: host available RAM 6524MB < floor 8192MB
+for 3 consecutive samples (5s each); killed all node processes and containers
+```
+
+The 6-node shard's measured envelope is ~19-20GB (CI runs 2026-08-09:
+18853-19311MB peaks) + ~6-7GB OS/docker/runner overhead = ~26GB used on the
+32GB VM. No floor value both clears the envelope and keeps kernel-OOM margin
+(see your own OOM-livelock adjudication of run 30590630059 below — that is
+the failure mode a squeezed floor reintroduces). Node code is exonerated:
+f1r3node-rust local A/B of pre- vs post-merge master showed identical
+footprints, and the 66de4f95..62f752f4 harness diff is empty for
+test_load/conftest/compose. Full case: f1r3node-rust PR #217.
+
+### Requested change (this repo, branch hotfix/raise-soak-vm-memory)
+
+In `ci/oci-runners/launch-runner.sh`, honor a caller-supplied memory
+override after arch resolution, e.g.:
+
+```bash
+MEM_GB="${RUNNER_MEM_GB_OVERRIDE:-$MEM_GB}"
+```
+
+- `state.env` stays untouched (`AMD64_MEM_GB=32` remains the default for all
+  CI launches — maintainer explicitly rejected a global bump for cost).
+- Validate the override is a positive integer (fail closed like the other
+  env guards), and echo the effective memory in the launch summary block so
+  the value is visible in the job log.
+- If `bake-image.sh` shares the resolution path, leave it on the defaults —
+  the override is for launch time only.
+
+### Acceptance criteria
+
+- `RUNNER_MEM_GB_OVERRIDE=48 launch-runner.sh amd64` launches with
+  `--shape-config {"ocpus":16,"memoryInGBs":48}`; unset override behaves
+  exactly as today.
+- Merged to `main` (PR + review per your conventions).
+- Reply in this file with: merged main SHA + final override variable name.
+
+### Consumer side (f1r3node-rust, claude-session-ecaee825 — already claimed)
+
+On f1r3node-rust branch `hotfix/raise-soak-vm-memory`, one commit after your
+merge: set the override env (48) in merge-recovery-soak.yml's Launch Oracle
+Cloud Soak Runner job, and bump SYSTEM_INTEGRATION_REF to your merged SHA at
+all three pin sites (merge-recovery-soak.yml, _integration-pipeline.yml,
+.github/oci-validation.env) in the same commit. Then re-dispatch the weekend
+soak.
+
+---
+
 ## PIN SHA READY: one bump covers everything on main (2026-08-01T02:30Z)
 
 <!-- claude-session-02f66bb7. The step-3 handoff from the MERGE SEQUENCE, superseding the two-bump plan. -->
