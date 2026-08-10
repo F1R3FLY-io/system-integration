@@ -4,6 +4,68 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## REQUEST: soak-only VM memory override in launch-runner.sh — 32GB host cannot hold the measured soak envelope (2026-08-10T13:45Z)
+
+<!-- claude-session-ecaee825 (f1r3node-rust session). Handoff for the agent on
+     branch hotfix/raise-soak-vm-memory (branch exists locally, no commits yet).
+     Maintainer-ratified 2026-08-10: soak-only override (NOT a global
+     AMD64_MEM_GB bump), 48GB. -->
+
+### What happened
+
+Weekend soak run 31390673884 (f1r3node-rust, 2026-08-10, first run under the
+PR #217 limits: RSS ceiling 20480, free floor 8192) died in iteration 1:
+
+```
+orchestrator host guardian: host available RAM 6524MB < floor 8192MB
+for 3 consecutive samples (5s each); killed all node processes and containers
+```
+
+The 6-node shard's measured envelope is ~19-20GB (CI runs 2026-08-09:
+18853-19311MB peaks) + ~6-7GB OS/docker/runner overhead = ~26GB used on the
+32GB VM. No floor value both clears the envelope and keeps kernel-OOM margin
+(see your own OOM-livelock adjudication of run 30590630059 below — that is
+the failure mode a squeezed floor reintroduces). Node code is exonerated:
+f1r3node-rust local A/B of pre- vs post-merge master showed identical
+footprints, and the 66de4f95..62f752f4 harness diff is empty for
+test_load/conftest/compose. Full case: f1r3node-rust PR #217.
+
+### Requested change (this repo, branch hotfix/raise-soak-vm-memory)
+
+In `ci/oci-runners/launch-runner.sh`, honor a caller-supplied memory
+override after arch resolution, e.g.:
+
+```bash
+MEM_GB="${RUNNER_MEM_GB_OVERRIDE:-$MEM_GB}"
+```
+
+- `state.env` stays untouched (`AMD64_MEM_GB=32` remains the default for all
+  CI launches — maintainer explicitly rejected a global bump for cost).
+- Validate the override is a positive integer (fail closed like the other
+  env guards), and echo the effective memory in the launch summary block so
+  the value is visible in the job log.
+- If `bake-image.sh` shares the resolution path, leave it on the defaults —
+  the override is for launch time only.
+
+### Acceptance criteria
+
+- `RUNNER_MEM_GB_OVERRIDE=48 launch-runner.sh amd64` launches with
+  `--shape-config {"ocpus":16,"memoryInGBs":48}`; unset override behaves
+  exactly as today.
+- Merged to `main` (PR + review per your conventions).
+- Reply in this file with: merged main SHA + final override variable name.
+
+### Consumer side (f1r3node-rust, claude-session-ecaee825 — already claimed)
+
+On f1r3node-rust branch `hotfix/raise-soak-vm-memory`, one commit after your
+merge: set the override env (48) in merge-recovery-soak.yml's Launch Oracle
+Cloud Soak Runner job, and bump SYSTEM_INTEGRATION_REF to your merged SHA at
+all three pin sites (merge-recovery-soak.yml, _integration-pipeline.yml,
+.github/oci-validation.env) in the same commit. Then re-dispatch the weekend
+soak.
+
+---
+
 ## PIN SHA READY: one bump covers everything on main (2026-08-01T02:30Z)
 
 <!-- claude-session-02f66bb7. The step-3 handoff from the MERGE SEQUENCE, superseding the two-bump plan. -->
