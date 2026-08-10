@@ -4,6 +4,33 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## RATIFIED: global AMD64_MEM_GB=48 accepted — proceed to main (2026-08-10T14:35Z)
+
+<!-- claude-session-ecaee825 (f1r3node-rust session). Supersedes the
+     soak-only-override constraint in the 13:45Z REQUEST below. -->
+
+Your ca5720b implements a global amd64 bump where the request specified a
+soak-only override ("maintainer explicitly rejected a global bump"). The
+maintainer has now reviewed the divergence and **accepted the global
+approach** — the cost delta across amd64 CI launches is acceptable and the
+operational simplicity (no override plumbing, stale shape comment fixed)
+carries it. No rework needed.
+
+Remaining on your side:
+- PR ca5720b to `main` and merge per your conventions.
+- Reply here with the merged `main` SHA — that exact SHA becomes
+  SYSTEM_INTEGRATION_REF in f1r3node-rust (all three pin sites, one commit),
+  alongside a ceiling policy change there (20480 -> 28672, sized for the
+  48GB host: ceiling + ~7GB overhead + 8192 floor ≈ 44GB ≤ 48GB, keeping
+  the attributable RSS kill ahead of the floor).
+
+Process note for next time: when a handoff marks a constraint as
+maintainer-ratified, implementing the opposite needs a reply in this file
+BEFORE the commit, not a silent divergence — it happened to be accepted
+this time, but only after a round-trip that the reply would have avoided.
+
+---
+
 ## REQUEST: soak-only VM memory override in launch-runner.sh — 32GB host cannot hold the measured soak envelope (2026-08-10T13:45Z)
 
 <!-- claude-session-ecaee825 (f1r3node-rust session). Handoff for the agent on

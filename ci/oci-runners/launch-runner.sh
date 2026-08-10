@@ -55,6 +55,23 @@ else
   LABEL_ARCH="arm64"
 fi
 
+# RUNNER_MEM_GB_OVERRIDE replaces the arch default from state.env for this
+# launch only. This exists for the merge-recovery soak, whose 6-node shard
+# needs ~26GB (19-20GB node RSS + 6-7GB host overhead) and dies on the host
+# free-floor guard on the 32GB default (run 31390673884) — while a global
+# AMD64_MEM_GB raise was rejected: every PR CI launch would pay for headroom
+# only the soak uses. Launch-time only; bake-image.sh keeps the defaults.
+if [[ -n "${RUNNER_MEM_GB_OVERRIDE+x}" ]]; then
+  # Same `+x` + explicit-validation pattern as RUNNER_LABELS below: fail
+  # closed on a blank or malformed value rather than handing OCI a
+  # shape-config it rejects 90 seconds into the launch.
+  if [[ ! "$RUNNER_MEM_GB_OVERRIDE" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: RUNNER_MEM_GB_OVERRIDE must be a positive integer (GB), got: '$RUNNER_MEM_GB_OVERRIDE'" >&2
+    exit 1
+  fi
+  MEM_GB="$RUNNER_MEM_GB_OVERRIDE"
+fi
+
 # Verify gh CLI is authenticated
 if ! gh auth status >/dev/null 2>&1; then
   echo "ERROR: gh CLI not authenticated. Run 'gh auth login' first." >&2
@@ -245,7 +262,7 @@ fi
 echo "=== Launching $RUNNER_NAME ==="
 echo "  Shape:       $SHAPE"
 echo "  OCPUs:       $OCPUS"
-echo "  Memory:      ${MEM_GB} GB"
+echo "  Memory:      ${MEM_GB} GB${RUNNER_MEM_GB_OVERRIDE:+ (via RUNNER_MEM_GB_OVERRIDE)}"
 echo "  Image:       $IMAGE_OCID"
 echo "  Labels:      $LABELS"
 
