@@ -139,7 +139,7 @@ Test framework lives at [integration-tests/](integration-tests/). Canonical invo
   - [integration-tests/README.md](integration-tests/README.md) — running tests
   - [integration-tests/test/docs/ARCHITECTURE.md](integration-tests/test/docs/ARCHITECTURE.md) — framework internals (fixtures, Provider protocol, cleanup, ports, timeouts)
   - [integration-tests/test/docs/WRITING_TESTS.md](integration-tests/test/docs/WRITING_TESTS.md) — recipes for adding a test
-  - [integration-tests/test/docs/INDEX.md](integration-tests/test/docs/INDEX.md) — catalog of all 22 test files
+  - [integration-tests/test/docs/INDEX.md](integration-tests/test/docs/INDEX.md) — catalog of all 38 test files
 
 ## Git Hooks
 
