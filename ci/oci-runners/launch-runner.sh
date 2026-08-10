@@ -56,11 +56,11 @@ else
 fi
 
 # RUNNER_MEM_GB_OVERRIDE replaces the arch default from state.env for this
-# launch only. This exists for the merge-recovery soak, whose 6-node shard
-# needs ~26GB (19-20GB node RSS + 6-7GB host overhead) and dies on the host
-# free-floor guard on the 32GB default (run 31390673884) — while a global
-# AMD64_MEM_GB raise was rejected: every PR CI launch would pay for headroom
-# only the soak uses. Launch-time only; bake-image.sh keeps the defaults.
+# launch only, for callers whose workload envelope differs from the fleet
+# default (origin: the merge-recovery soak's ~26GB envelope vs the then-32GB
+# default, run 31390673884; the default has since been raised to 48GB, so
+# the soak no longer needs it — the knob remains for the next outlier).
+# Launch-time only; bake-image.sh keeps the defaults.
 if [[ -n "${RUNNER_MEM_GB_OVERRIDE+x}" ]]; then
   # Same `+x` + explicit-validation pattern as RUNNER_LABELS below: fail
   # closed on a blank or malformed value rather than handing OCI a

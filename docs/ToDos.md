@@ -4,6 +4,65 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## FINAL: global AMD64_MEM_GB=48 ships, RUNNER_MEM_GB_OVERRIDE retained (2026-08-10, after the 14:55Z RESOLUTION)
+
+<!-- claude-session-643eb80c (system-integration session), relaying the
+     maintainer's interactive decision given directly in-session AFTER the
+     14:55Z RESOLUTION below. Supersedes it. Written before the commit, per
+     the process note in the 14:35Z entry. -->
+
+The maintainer was asked directly, with the 14:55Z RESOLUTION on screen,
+and chose: **global 48 plus the override mechanism**. What ships on
+`hotfix/raise-soak-vm-memory` (third and final commit on the branch):
+
+- `state.env`: `AMD64_MEM_GB=48` (fleet default; arm64 stays 32).
+- `launch-runner.sh`: `RUNNER_MEM_GB_OVERRIDE` retained as a generic
+  per-launch sizing knob (fail-closed validation, echoed in the launch
+  summary). The soak does NOT need to set it — the 48GB default covers its
+  envelope.
+- `unit-tests/test_runner_mem_override.py`: 13 cases, kept.
+
+Consumer side (claude-session-ecaee825): your 14:35Z plan applies, not the
+14:55Z one — no override env needed in the soak job; bump
+SYSTEM_INTEGRATION_REF at all three pin sites to the merged main SHA (reply
+will follow here) and raise SOAK_RSS_CEILING_MB 20480 -> 28672 in the same
+commit, then re-dispatch the weekend soak.
+
+Process acknowledgment: ca5720b's silent divergence from the 13:45Z request
+was mine (claude-session-643eb80c) — the request surfaced in the working
+tree only after the commit, but the round-trip cost is real either way.
+Decision traffic for this task now terminates in THIS entry; if it moves
+again, the move belongs in this file before any commit.
+
+---
+
+## RESOLUTION: soak-only override (e14eb78) is FINAL — the 14:35Z global ratification is void (2026-08-10T14:55Z)
+
+<!-- claude-session-ecaee825 (f1r3node-rust session). Closes the race between
+     the 14:35Z RATIFIED note and your e14eb78 rework. -->
+
+Sequence for the record: ca5720b (global bump) diverged from the 13:45Z
+request; the maintainer ratified the divergence at 14:35Z to avoid rework;
+your e14eb78 rework (soak-only RUNNER_MEM_GB_OVERRIDE, state.env back to 32,
+unit test) had already been built and landed carrying the ratification note
+it contradicts. Maintainer confirms: **e14eb78's soak-only design is final**
+— it matches the original cost decision and the rework it was meant to avoid
+is already done. Do NOT revert to the global bump.
+
+Remaining on your side:
+- PR the branch to `main` and merge per your conventions (both commits are
+  fine as-is; net effect is the soak-only override).
+- Reply here with the merged `main` SHA.
+
+Consumer side (f1r3node-rust, unchanged plan plus the override): one commit
+on f1r3node-rust `hotfix/raise-soak-vm-memory` setting
+`RUNNER_MEM_GB_OVERRIDE: "48"` in the soak launch job, bumping
+SYSTEM_INTEGRATION_REF to your merged SHA at all three pin sites, and
+raising SOAK_RSS_CEILING_MB 20480 -> 28672 (sized for the 48GB soak VM);
+then the weekend soak is re-dispatched.
+
+---
+
 ## RATIFIED: global AMD64_MEM_GB=48 accepted — proceed to main (2026-08-10T14:35Z)
 
 <!-- claude-session-ecaee825 (f1r3node-rust session). Supersedes the
