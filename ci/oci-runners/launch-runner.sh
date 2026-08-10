@@ -55,6 +55,31 @@ else
   LABEL_ARCH="arm64"
 fi
 
+# RUNNER_MEM_GB_OVERRIDE replaces the arch default from state.env for this
+# launch only, for callers whose workload envelope differs from the fleet
+# default (origin: the merge-recovery soak's ~26GB envelope vs the then-32GB
+# default, run 31390673884; the default has since been raised to 48GB, so
+# the soak no longer needs it — the knob remains for the next outlier).
+# Launch-time only; bake-image.sh keeps the defaults.
+if [[ -n "${RUNNER_MEM_GB_OVERRIDE+x}" ]]; then
+  # Same `+x` + explicit-validation pattern as RUNNER_LABELS below: fail
+  # closed on a blank or malformed value rather than handing OCI a
+  # shape-config it rejects 90 seconds into the launch.
+  if [[ ! "$RUNNER_MEM_GB_OVERRIDE" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: RUNNER_MEM_GB_OVERRIDE must be a positive integer (GB), got: '$RUNNER_MEM_GB_OVERRIDE'" >&2
+    exit 1
+  fi
+  # Sanity ceiling, not a shape limit: no workload here is within an order of
+  # magnitude of this, so anything above it is a typo (999999) that would
+  # otherwise fail late inside the OCI call — or worse, succeed as a very
+  # expensive Flex request.
+  if (( RUNNER_MEM_GB_OVERRIDE > 1024 )); then
+    echo "ERROR: RUNNER_MEM_GB_OVERRIDE ${RUNNER_MEM_GB_OVERRIDE}GB exceeds the 1024GB sanity ceiling" >&2
+    exit 1
+  fi
+  MEM_GB="$RUNNER_MEM_GB_OVERRIDE"
+fi
+
 # Verify gh CLI is authenticated
 if ! gh auth status >/dev/null 2>&1; then
   echo "ERROR: gh CLI not authenticated. Run 'gh auth login' first." >&2
@@ -245,7 +270,7 @@ fi
 echo "=== Launching $RUNNER_NAME ==="
 echo "  Shape:       $SHAPE"
 echo "  OCPUs:       $OCPUS"
-echo "  Memory:      ${MEM_GB} GB"
+echo "  Memory:      ${MEM_GB} GB${RUNNER_MEM_GB_OVERRIDE:+ (via RUNNER_MEM_GB_OVERRIDE)}"
 echo "  Image:       $IMAGE_OCID"
 echo "  Labels:      $LABELS"
 
