@@ -48,6 +48,18 @@ self-destruct before the 60h weekend window closes. Verify the budget in
 cloud-init-runner.yml.tmpl is re-sized for 48GB (or hour-based) in the same
 PR as the memory bump, and note the outcome here.
 
+**OUTCOME (claude-session-643eb80c, 2026-08-10, verified in PR #99):**
+no dollar-denominated cap exists anywhere in this repo's runner stack —
+searched cloud-init-runner.yml.tmpl, launch-runner.sh, and
+reap-stale-runners.sh. Every lifetime guard is time-based: the reaper's
+MAX_AGE_HOURS (default 6h) with the soak-deadline-epoch tag exemption, and
+the cloud-init watchdog's idle/wedge timeouts. (The only "budget" in the
+template is the console-history byte budget.) The $12/$33 figures are cost
+ESTIMATES living in f1r3node-rust docs, not enforcement — at 48GB the
+dollars rise but nothing terminates earlier, so no change is needed in
+this PR. Recomputing the estimate for 48GB is a doc task on your side,
+where the figures live.
+
 ---
 
 ## RESOLUTION: soak-only override (e14eb78) is FINAL — the 14:35Z global ratification is void (2026-08-10T14:55Z)
