@@ -37,11 +37,9 @@ Surfaces, from least to most adversarial:
     credits COMPOSE; the final value is the sum, never exceeding it
     (an upper bound that catches a double-applied credit);
 
-  - cost-priority overdraft (``test_overdraft_cost_priority``) — two concurrent
-    same-source vault transfers that together overdraw; #3 keeps the
-    higher-phlo-price (higher-cost) branch, so the higher-cost transfer's amount
-    lands and the lower-cost one is rejected-then-recovery-fails. The integration
-    analog of ``fold_rejection_rejects_lower_cost_branch_on_overdraft``.
+  - overdraft safety (``test_overdraft_allows_exactly_one_transfer``) — two
+    concurrent same-source vault transfers that together overdraw; exactly one
+    branch lands and the other is rejected or fails during recovery.
 
 Background load runs the whole time to reproduce the lumpy, contended
 finalization the merge must survive. Forbidden node-log patterns (including
@@ -76,8 +74,6 @@ pytestmark = pytest.mark.xdist_group("custom")
 # ── Shard parameters (aligned with the lifecycle shard) ──────────────────────
 _GENESIS_STAKE = 100
 _WALLET_BALANCE = 50_000_000_000_000_000
-_PHLO_LIMIT = 100_000_000
-_PHLO_PRICE = 1
 
 # A dedicated funded deployer key per producer node: each concurrent op runs on
 # its own vault (no inter-op phlo contention) and is submitted to a distinct
@@ -95,19 +91,16 @@ _PRODUCER_WALLETS = [
 _MERGE_DEST_KEY = PrivateKey.from_seed(91004)
 _MERGE_DEST_ADDR = _MERGE_DEST_KEY.get_public_key().get_vault_address()
 
-# ── Cost-priority overdraft (#3) — concurrent same-source transfers ──────────
+# ── Overdraft safety — concurrent same-source transfers ─────────────────────
 # Source funded so each transfer fits ALONE but the two together overdraw. The
-# amounts (≫ gas) differ so the surviving branch is observable: #3 keeps the
-# higher-COST (higher phlo-price) branch, so the HIGH-amount transfer must land.
+# amounts differ so the surviving branch is observable.
 _OVERDRAFT_SRC_KEY = PrivateKey.from_seed(91005)
 _OVERDRAFT_DST_KEY = PrivateKey.from_seed(91006)
 _OVERDRAFT_SRC_ADDR = _OVERDRAFT_SRC_KEY.get_public_key().get_vault_address()
 _OVERDRAFT_DST_ADDR = _OVERDRAFT_DST_KEY.get_public_key().get_vault_address()
 _OVERDRAFT_SRC_BALANCE = 200_000_000
-_OVERDRAFT_HIGH_AMOUNT = 120_000_000  # high phlo-price → higher cost → must WIN
-_OVERDRAFT_LOW_AMOUNT = 100_000_000  # low phlo-price → lower cost → must LOSE
-_OVERDRAFT_HIGH_PRICE = 10
-_OVERDRAFT_LOW_PRICE = 1
+_OVERDRAFT_HIGH_AMOUNT = 120_000_000
+_OVERDRAFT_LOW_AMOUNT = 100_000_000
 
 # ── Background load: same-vault transfer contention (mirrors lifecycle) ───────
 _BG_SRC_KEY = PrivateKey.from_seed(90001)
@@ -180,8 +173,6 @@ class _BackgroundLoad:
                     _BG_DST_ADDR,
                     _BG_TRANSFER_AMOUNT,
                     _BG_SRC_KEY,
-                    phlo_price=1,
-                    phlo_limit=_PHLO_LIMIT,
                 )
                 with self._lock:
                     self._deploy_ids.append(did)
@@ -268,9 +259,7 @@ def _deploy_on_each(shard, term_for, timeouts) -> List[str]:
     deploy_ids: List[str] = []
     for name, key in _PRODUCER_KEYS.items():
         node = shard.node(name)
-        did = node.deploy_string(
-            term_for(name), key, phlo_limit=_PHLO_LIMIT, phlo_price=_PHLO_PRICE
-        )
+        did = node.deploy_string(term_for(name), key)
         deploy_ids.append(did)
         logging.info("RMW_DEPLOY_ID node=%s deploy_id=%s", name, did)
     for name, did in zip(_PRODUCER_KEYS, deploy_ids):
@@ -287,9 +276,7 @@ def _deploy_k_on_each(shard, term_for, k: int, timeouts) -> List[str]:
     for i in range(k):
         for name, key in _PRODUCER_KEYS.items():
             node = shard.node(name)
-            did = node.deploy_string(
-                term_for(name, i), key, phlo_limit=_PHLO_LIMIT, phlo_price=_PHLO_PRICE
-            )
+            did = node.deploy_string(term_for(name, i), key)
             submitted.append((node, did))
             logging.info("FANOUT_DEPLOY_ID node=%s i=%d deploy_id=%s", name, i, did)
     for node, did in submitted:
@@ -301,9 +288,7 @@ def _finalize_setup(shard, term: str, timeouts) -> None:
     """Deploy a one-time setup term on validator1 and wait until it finalizes
     cluster-wide so the initialized cell is visible to every proposer."""
     v1 = shard.node("validator1")
-    did = v1.deploy_string(
-        term, _PRODUCER_KEYS["validator1"], phlo_limit=_PHLO_LIMIT, phlo_price=_PHLO_PRICE
-    )
+    did = v1.deploy_string(term, _PRODUCER_KEYS["validator1"])
     block = wait_for_deploy_included(v1, did, timeouts.deploy_inclusion * 3)
     wait_for_finalized(v1, block.blockNumber, timeouts.finalization * 3)
     assert_block_finalized_on_all_nodes(
@@ -690,8 +675,6 @@ def test_mergeable_balance_concurrent_transfers_compose(user_shard, timeouts):
                     _MERGE_DEST_ADDR,
                     amounts[name],
                     key,
-                    phlo_price=1,
-                    phlo_limit=_PHLO_LIMIT,
                 )
             )
         for name, did in zip(_PRODUCER_KEYS, deploy_ids):
@@ -722,19 +705,10 @@ def test_mergeable_balance_concurrent_transfers_compose(user_shard, timeouts):
         )
 
 
-def test_overdraft_cost_priority_keeps_higher_cost_transfer(user_shard, timeouts):
-    """Cost-priority overdraft (integration analog of
-    fold_rejection_rejects_lower_cost_branch_on_overdraft): two concurrent transfers
-    from the SAME source that each fit alone but together overdraw it. The source
-    balance cell is an IntegerAdd number-channel, so the combined debit goes negative
-    and #3's fold_rejection rejects the LOWER-cost branch.
-
-    The HIGH transfer (higher phlo-price -> higher cost) moves the LARGER amount; the
-    LOW transfer the smaller. With amounts (≫ gas) chosen so the source cannot cover
-    the loser after the winner applies, the loser's recovery re-executes and fails
-    (insufficient balance). So the dest must receive EXACTLY the HIGH amount — not the
-    low amount (which would mean the cheaper branch won), not their sum (a double-spend)
-    — and the source must never go negative. All checked on every node."""
+def test_overdraft_allows_exactly_one_transfer(user_shard, timeouts):
+    """Two concurrent transfers from the same source each fit alone but
+    together overdraw it. Exactly one transfer must land, the source must never
+    go negative, and every node must agree on the result."""
     shard = user_shard
     all_nodes = shard.all_nodes
     ro = shard.node("readonly")
@@ -748,8 +722,7 @@ def test_overdraft_cost_priority_keeps_higher_cost_transfer(user_shard, timeouts
     try:
         before = ro.get_vault().get_balance(_OVERDRAFT_DST_ADDR)
 
-        # High-cost transfer on validator1, low-cost on validator2 — siblings the next
-        # block multi-parent-merges. Both debit the same source; together they overdraw.
+        # Both transfers debit the same source and together overdraw it.
         high_id = (
             shard.node("validator1")
             .get_vault()
@@ -758,8 +731,6 @@ def test_overdraft_cost_priority_keeps_higher_cost_transfer(user_shard, timeouts
                 _OVERDRAFT_DST_ADDR,
                 _OVERDRAFT_HIGH_AMOUNT,
                 _OVERDRAFT_SRC_KEY,
-                phlo_price=_OVERDRAFT_HIGH_PRICE,
-                phlo_limit=_PHLO_LIMIT,
             )
         )
         low_id = (
@@ -770,19 +741,12 @@ def test_overdraft_cost_priority_keeps_higher_cost_transfer(user_shard, timeouts
                 _OVERDRAFT_DST_ADDR,
                 _OVERDRAFT_LOW_AMOUNT,
                 _OVERDRAFT_SRC_KEY,
-                phlo_price=_OVERDRAFT_LOW_PRICE,
-                phlo_limit=_PHLO_LIMIT,
             )
         )
         for node, did in ((shard.node("validator1"), high_id), (shard.node("validator2"), low_id)):
             wait_for_deploy_included(node, did, timeouts.deploy_inclusion * 3)
 
-        # No-double-spend SAFETY invariant. The merge keeps the higher-COST branch, but
-        # "cost" is phlo CONSUMED (≈equal for two simple transfers), not phlo_price — so
-        # WHICH branch wins is the deterministic tiebreak, not observable as price
-        # priority. What IS guaranteed and observable: EXACTLY ONE transfer lands (never
-        # both = double-spend, never neither), and the source never goes negative, on
-        # every node. The loser recovers and fails (insufficient balance after the winner).
+        # Exactly one transfer lands; which branch wins is the deterministic tiebreak.
         accept_high = before + _OVERDRAFT_HIGH_AMOUNT
         accept_low = before + _OVERDRAFT_LOW_AMOUNT
         deadline = time.time() + timeouts.finalization * 3

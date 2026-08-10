@@ -6,7 +6,7 @@ Walks three joiner validators (V4/V5/V6) through the **entire PoS validator life
 
 One comprehensive test on its own `provider.create_shard` shard (destroyed at the end), so it can mutate shard-wide bonded state freely. **Slashing is out of scope** (covered separately); everything else non-slashing is exercised.
 
-**Config (module-scoped shard):** 3 genesis validators (v1/v2/v3 @ stake 100) + 3 joiners (V4=200, V5=300, V6=400) + readonly observer. `--bond-minimum=100 --bond-maximum=1000` (CLI; makes below-min/above-max/Mode-B reachable); `epoch-length=4`, `quarantine-length=10` (from `conf/rust.conf`). Distinct joiner stakes give reward weights (= bond / bond-minimum) genesis:V4:V5:V6 = 1:2:3:4, driving the reward-proportionality case.
+**Config (module-scoped shard):** 3 genesis validators (v1/v2/v3 @ stake 100) + 3 joiners (V4=200, V5=300, V6=400) + readonly observer. `--bond-minimum=100 --bond-maximum=1000`; `epoch-length=4`, `quarantine-length=10` (from `conf/rust.conf`). Distinct joiner stakes give reward weights (= bond / bond-minimum) genesis:V4:V5:V6 = 1:2:3:4, driving the reward-proportionality case.
 
 **Background load:** a `_BackgroundLoad` thread runs **the whole test, never paused** — same-vault transfers (`_BG_SRC → _BG_DST`) round-robin across the genesis producers, contending the SAME two IntegerAdd balance channels (the production merge surface) and generating netPhlo so rewards accrue. (The contract's standing-pool reward model has **no idle-no-accrual** property — see Phase 3 — so there is nothing to demonstrate by pausing.)
 
@@ -15,7 +15,7 @@ One comprehensive test on its own `provider.create_shard` shard (destroyed at th
 ## The test (`test_validator_lifecycle`) — phases
 
 1. **Concurrent bond V4+V5 + activation.** Both joiners brought online (LFS-synced, can't-propose pre-bond), then BOTH bonds submitted in one window (sibling blocks — the concurrent-multi-bond merge surface). Each finalizes on all nodes; the FS bonded set converges to the exact 5-validator set with **non-regression** (`_await_bonds_monotone`); each joiner activates, proposes a finalized block, is justified, and the full 5-node active set is live.
-2. **Rejection branches** (non-mutating): already-bonded, below-minimum, above-maximum, withdraw-not-bonded, and **Mode-B deposit-fail** (wallet funded just over the phlo precharge but under the bond amount → `(false, "Bond deposit failed")`). Each is a SUCCESSFUL deploy whose contract returns `(false, reason)`; the bonds map is asserted unchanged.
+2. **Rejection branches** (non-mutating): already-bonded, below-minimum, above-maximum, and withdraw-not-bonded. Each is a successful deploy whose contract returns `(false, reason)`; the bonds map is asserted unchanged.
 3. **Reward window 1:** under bg-on, FS rewards accrue **proportionally** to stake — hard gate `Δgenesis < ΔV4 < ΔV5` (weights 1:2:3) plus positive accrual (cases 1, 5). The contract distributes the **standing** posVault pool every epoch, so there is **no idle-no-accrual** property to assert (the earlier "case 2" was removed once that was understood).
 4. **Concurrent bond V6 + withdraw V4 + withdraw V5** (#1) in one window — allBonds grows (V6) while pendingWithdrawers grows (V4,V5) across overlapping blocks. **Double-withdraw edge**: a 2nd withdraw of V4 is contract-clean either way — idempotent pending overwrite if still in allBonds, else `(false, "not bonded")` — assert no corruption.
 5. **Epoch-move shrink + grow:** the next boundary runs `movePendingWithdrawer({V4,V5})` (allBonds shrinks) and keeps V6 active. V4/V5 leave `/validators` into `getWithdrawers`; V6 active. The post-shrink FS set converges (non-regression, V4/V5 volatile) and the boundary block's bonds field is **node-identical across all nodes** (the multi-element move fold — the seal-base surface).
@@ -26,8 +26,7 @@ One comprehensive test on its own `provider.create_shard` shard (destroyed at th
 10. **Read sanity:** `getCoopVault` / `getInitialPosVault` decode to sane tuples, and `getEpochLength` / `getQuarantineLength` match `conf/rust.conf` (4 / 10 — the values the poll budgets assume).
 11. **Commit-reveal randomness:** V1 commits a keccak256 image (`commitRandomImage`), then walks every `revealRandom` branch — commit happy, commit **already-committed**, reveal **not-found** (a validator that never committed), reveal **mismatch** (wrong preimage), and reveal **success** (the keccak preimage matches). Exercises the `randomImages` / `randomNumbers` state (`eth_hash.keccak` matches the contract's `rho:crypto:keccak256Hash`).
 12. **`posVaultTransfer` permission guard:** a transfer from a non-PoS deployer key is denied `(false, "You have not permission to transfer.")` — the success path needs the PoS contract key and is not reachable from a test.
-13. **Mode-A out-of-phlo bond:** a bond with a phlo limit too small to complete runs out of phlo → the deploy **errors** (full phlo charged, bond not applied), distinct from Mode-B's clean `(false, msg)`. The block must still finalize on all nodes; if it does not, the assertion surfaces it **as Issue A** ([f1r3node-rust#47](https://github.com/F1R3FLY-io/f1r3node-rust/issues/47) — out-of-phlo play/replay divergence) rather than silently skipping the case.
-14. **Auth-token-gated system methods reject a bogus token:** `chargeDeploy` / `refundDeploy` / `closeBlock` are user-callable (single write-enabled PoS bundle) but reject a `Nil` token with `(false, "Invalid system auth token")` **before any work** — asserted with no state change.
+13. **Auth-token-gated system methods reject a bogus token:** `chargeDeploy` / `refundDeploy` / `closeBlock` are user-callable (single write-enabled PoS bundle) but reject a `Nil` token with `(false, "Invalid system auth token")` **before any work** — asserted with no state change.
 
 ## Key assertions
 
@@ -38,11 +37,11 @@ One comprehensive test on its own `provider.create_shard` shard (destroyed at th
 - **Background load** reconciled exactly (`_assert_bg_load_robust`): every transfer finalized on all nodes; the contended dst credit composes to exactly `N×amount` (no dropped/double-applied work); the gas-paying src debited by at least the total.
 
 ## Out of scope
-**Slashing** (covered on the dev branch) and the **active-validator cap** — split into [test_active_validator_cap](test_active_validator_cap.md) because it needs a contradictory *capped* genesis. Also `refundDeploy`'s internal `(Bug found)` transfer-failure branch (a should-never-happen, not user-reachable) and reward numeric-formula exactness (behavioral assertions only). The random-beacon (`commit/revealRandom`), `posVaultTransfer`, Mode-A out-of-phlo, and the auth-token reject branches are **now in scope** (Phases 11-14).
+**Slashing** (covered on the dev branch) and the **active-validator cap** — split into [test_active_validator_cap](test_active_validator_cap.md) because it needs a contradictory *capped* genesis. Also `refundDeploy`'s internal `(Bug found)` transfer-failure branch and reward numeric-formula exactness. The random-beacon (`commit/revealRandom`), `posVaultTransfer`, and auth-token reject branches are in scope.
 
 ## Infrastructure used
 
-- Module-scoped `Shard.create()` / `shard.destroy()` with a custom `ShardConfig` (genesis bonds + extra funded wallets for joiners, bg pair, throwaways, and the Mode-B wallet) and `global_cli_options` for bond bounds
+- Module-scoped `Shard.create()` / `shard.destroy()` with a custom `ShardConfig` (genesis bonds + extra funded wallets for joiners, background-load pair, and throwaways) and `global_cli_options` for bond bounds
 - `shard.attach_joiner()` + `_attach_prebond` (LFS-sync + pre-bond can't-propose)
 - `_BackgroundLoad` (same-vault IntegerAdd contention, always-on for the whole test) + `_assert_bg_load_robust`
 - `PosAPI` (`bond` / `withdraw` / `read_result` / `get_bonds` / `get_rewards` / `get_pending_withdrawer` / `get_withdrawers` / `get_coop_vault` / `get_initial_pos_vault` / `get_epoch_length` / `get_quarantine_length` / `commit_random_image` / `reveal_random` / `pos_vault_transfer` / `call_auth_gated_invalid_token`) and `VaultAPI.get_balance` — all FS-backed via the readonly node

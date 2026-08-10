@@ -74,8 +74,6 @@ def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
         did = node.deploy_string(
             f"@{2000 + i}!({i})",
             VALIDATOR1_ID.private_key(),
-            phlo_limit=100_000,
-            phlo_price=1,
         )
         deploy_ids.append(did)
 
@@ -516,12 +514,8 @@ def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
         # Full view fields
         assert detail["deployer"] == v1_pubkey, f"{node.name}: deployer mismatch"
         assert detail["systemDeployError"] == "", f"{node.name}: systemDeployError should be empty"
-        assert detail["phloPrice"] == 1, (
-            f"{node.name}: phloPrice should be 1, got {detail['phloPrice']}"
-        )
-        assert detail["phloLimit"] == 100_000, (
-            f"{node.name}: phloLimit should be 100000, got {detail['phloLimit']}"
-        )
+        assert "phloPrice" not in detail, f"{node.name}: phloPrice should be absent"
+        assert "phloLimit" not in detail, f"{node.name}: phloLimit should be absent"
         assert detail["sigAlgorithm"] == expect["sig_algorithm"], (
             f"{node.name}: sigAlgorithm mismatch"
         )
@@ -584,8 +578,6 @@ def test_deploy_summary_view(shared_shard, node_conf, timeouts) -> None:
         for excluded in [
             "deployer",
             "term",
-            "phloPrice",
-            "phloLimit",
             "sigAlgorithm",
             "systemDeployError",
             "validAfterBlockNumber",
@@ -662,8 +654,6 @@ def test_deploy_via_http(shared_shard) -> None:
     deploy_proto = DeployDataProto(
         term="@2!(1)",
         timestamp=timestamp,
-        phloLimit=100_000,
-        phloPrice=1,
         validAfterBlockNumber=5,
         shardId="root",
     )
@@ -671,8 +661,6 @@ def test_deploy_via_http(shared_shard) -> None:
         "data": {
             "term": "@2!(1)",
             "timestamp": timestamp,
-            "phloLimit": 100_000,
-            "phloPrice": 1,
             "validAfterBlockNumber": 5,
             "shardId": "root",
         },
@@ -1020,7 +1008,6 @@ def test_get_continuation(shared_shard, timeouts) -> None:
     deploy_id = v1.deploy_string(
         rholang,
         VALIDATOR1_ID.private_key(),
-        phlo_limit=100_000,
     )
     wait_for_deploy_finalized(v1, deploy_id, timeouts.finalization)
 

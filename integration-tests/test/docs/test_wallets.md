@@ -94,4 +94,4 @@ Verifies that the HTTP Block API exposes transfer details in `DeployInfo`.
 
 ## Related
 
-- [test_deployment](test_deployment.md) -- deploy error handling (insufficient phlo, different from insufficient funds)
+- [test_deployment](test_deployment.md) -- deploy syntax handling and cross-node lookup

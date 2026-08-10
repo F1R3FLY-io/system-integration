@@ -81,17 +81,17 @@ def test_synchrony_constraint(provider, timeouts) -> None:
 
         # Phase 1: First block after genesis (exempt)
         logging.info("Phase 1: First proposals (exempt from synchrony constraint)")
-        v1.deploy_string("@1!(1)", v1_key, phlo_limit=100_000_000)
+        v1.deploy_string("@1!(1)", v1_key)
         b1 = v1.propose()
         logging.info("V1 first block: %s", b1[:16])
 
         wait_for_block_visible(v2, b1, t)
-        v2.deploy_string("@2!(2)", v2_key, phlo_limit=100_000_000)
+        v2.deploy_string("@2!(2)", v2_key)
         b2 = v2.propose()
         logging.info("V2 first block: %s", b2[:16])
 
         wait_for_block_visible(v3, b2, t)
-        v3.deploy_string("@3!(3)", v3_key, phlo_limit=100_000_000)
+        v3.deploy_string("@3!(3)", v3_key)
         b3 = v3.propose()
         logging.info("V3 first block: %s", b3[:16])
 
@@ -100,14 +100,14 @@ def test_synchrony_constraint(provider, timeouts) -> None:
 
         # Phase 2: V2 can propose (V1 stake=100 meets 0.33)
         logging.info("Phase 2: V2 proposes (V1 stake=100 meets 0.33)")
-        v2.deploy_string("@20!(20)", v2_key, phlo_limit=100_000_000)
+        v2.deploy_string("@20!(20)", v2_key)
         b4 = v2.propose()
         logging.info("V2 second block: %s", b4[:16])
 
         # Phase 3: V1 can propose (V2+V3 = 200 >= 134)
         wait_for_block_visible(v1, b4, t)
         logging.info("Phase 3: V1 proposes (V2=102 + V3=98 = 200 >= 134)")
-        v1.deploy_string("@10!(10)", v1_key, phlo_limit=100_000_000)
+        v1.deploy_string("@10!(10)", v1_key)
         b5 = v1.propose()
         logging.info("V1 second block: %s", b5[:16])
 
@@ -115,20 +115,20 @@ def test_synchrony_constraint(provider, timeouts) -> None:
         wait_for_block_visible(v3, b5, t)
         wait_for_block_visible(v3, b4, t)
         logging.info("Phase 4: V3 proposes (V1=100 + V2=102 = 202 >= 199.98)")
-        v3.deploy_string("@30!(30)", v3_key, phlo_limit=100_000_000)
+        v3.deploy_string("@30!(30)", v3_key)
         b6 = v3.propose()
         logging.info("V3 second block: %s", b6[:16])
 
         # Phase 5: V2 proposes again
         wait_for_block_visible(v2, b6, t)
-        v2.deploy_string("@21!(21)", v2_key, phlo_limit=100_000_000)
+        v2.deploy_string("@21!(21)", v2_key)
         b7 = v2.propose()
         logging.info("V2 third block: %s", b7[:16])
 
         # Phase 6: V1 can propose (V3+V2 = 200 >= 134)
         wait_for_block_visible(v1, b7, t)
         logging.info("Phase 6: V1 proposes (V3=98 + V2=102 = 200 >= 134)")
-        v1.deploy_string("@11!(11)", v1_key, phlo_limit=100_000_000)
+        v1.deploy_string("@11!(11)", v1_key)
         b8 = v1.propose()
         logging.info("V1 third block: %s", b8[:16])
 
@@ -136,7 +136,7 @@ def test_synchrony_constraint(provider, timeouts) -> None:
         wait_for_block_visible(v3, b8, t)
         wait_for_block_visible(v3, b7, t)
         logging.info("Phase 7: V3 proposes (V1=100 + V2=102 = 202 >= 199.98)")
-        v3.deploy_string("@31!(31)", v3_key, phlo_limit=100_000_000)
+        v3.deploy_string("@31!(31)", v3_key)
         b9 = v3.propose()
         logging.info("V3 third block: %s", b9[:16])
 

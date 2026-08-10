@@ -81,8 +81,6 @@ def _propose_with_filler(node, identity, label: str) -> str:
     node.deploy_string(
         f'@"filler-{label}"!(0)',
         identity.private_key(),
-        phlo_limit=100_000_000,
-        phlo_price=1,
     )
     return node.propose()
 
@@ -138,8 +136,6 @@ class _BgProposers:
                 node.deploy_string(
                     f'@"bg-prop-{idx}-{self._counter}"!({self._counter})',
                     identity.private_key(),
-                    phlo_limit=100_000_000,
-                    phlo_price=1,
                 )
                 self._counter += 1
                 node.propose()
@@ -172,8 +168,6 @@ def _concurrent_proposes(
             node.deploy_string(
                 f'@"concurrent-{label}"!(0)',
                 identity.private_key(),
-                phlo_limit=100_000_000,
-                phlo_price=1,
             )
             results[idx] = node.propose()
         except Exception as e:
@@ -282,8 +276,6 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
             rho_file_path="resources/wallets/bond.rho",
             private_key=VALIDATOR4_ID.private_key(),
             substitutions={"%AMOUNT": str(_BOND_AMOUNT)},
-            phlo_limit=100_000_000,
-            phlo_price=1,
         )
         b4 = v1.propose()
         for n in (v2, v3, joiner, ro):
@@ -363,8 +355,6 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
                 joiner.deploy_string(
                     f'@"v4-prop-{i}"!({i})',
                     VALIDATOR4_ID.private_key(),
-                    phlo_limit=100_000_000,
-                    phlo_price=1,
                 )
                 vb = joiner.propose()
             except F1r3flyClientException as e:

@@ -102,7 +102,6 @@ _EPOCH_LENGTH = 4
 # during Phase A sub-phases 1-5 (~30s window), so total deploy count
 # stays bounded (~45 deploys).
 _BG_LOAD_INTERVAL = 2.0
-_BG_LOAD_PHLO_LIMIT = 100_000_000
 
 # Phase C (observer LFS forward-horizon sync) is held out during the
 # bug-d investigation — it exercises a subsystem orthogonal to the
@@ -181,8 +180,6 @@ class _BackgroundLoad:
                 deploy_id = node.deploy_string(
                     f'@"bg-load-{self._counter}"!({self._counter})',
                     identity.private_key(),
-                    phlo_limit=_BG_LOAD_PHLO_LIMIT,
-                    phlo_price=1,
                 )
                 with self._lock:
                     self._deploy_ids.append(deploy_id)
@@ -367,8 +364,6 @@ def _bond_lifecycle(
     joiner.deploy_string(
         f'@"pre-bond-{joiner_identity.name}"!(0)',
         joiner_identity.private_key(),
-        phlo_limit=100_000_000,
-        phlo_price=1,
     )
     with pytest.raises(F1r3flyClientException):
         joiner.propose()
@@ -379,8 +374,6 @@ def _bond_lifecycle(
         rho_file_path="resources/wallets/bond.rho",
         private_key=joiner_identity.private_key(),
         substitutions={"%AMOUNT": str(_BOND_AMOUNT)},
-        phlo_limit=100_000_000,
-        phlo_price=1,
     )
     # Bond deploy needs a generous budget: under heartbeat-only
     # production config (no manual propose), inclusion latency depends
@@ -463,8 +456,6 @@ def _bond_lifecycle(
     joiner.deploy_string(
         f'@"joiner-active-{joiner_identity.name}"!(1)',
         joiner_identity.private_key(),
-        phlo_limit=100_000_000,
-        phlo_price=1,
     )
 
     def _joiner_proposed():
@@ -508,8 +499,6 @@ def _bond_lifecycle(
     v1.deploy_string(
         f'@"v1-after-{joiner_identity.name}"!(2)',
         VALIDATOR1_ID.private_key(),
-        phlo_limit=100_000_000,
-        phlo_price=1,
     )
 
     def _v1_justifies_joiner():
@@ -564,8 +553,6 @@ def _bond_lifecycle(
         deploy_id = node.deploy_string(
             f'@"liveness-{node.name}-{joiner_identity.name}"!(1)',
             key.private_key(),
-            phlo_limit=100_000_000,
-            phlo_price=1,
         )
         block = wait_for_deploy_included(
             node,

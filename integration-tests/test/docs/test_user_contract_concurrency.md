@@ -12,7 +12,7 @@ Three merge surfaces, each driven by a different proposer concurrently under loa
 
 Strict throughout: every user deploy must finalize on every node, and the final canonical state must reflect EVERY operation. Background load runs the whole time to reproduce the lumpy, contended finalization the merge must survive.
 
-**Config (all tests, shared module shard):** 3 validators 100/100/100, FTT=0.1, heartbeat, readonly observer. Dedicated funded deployer key per producer node (no inter-op phlo contention; each op is a sibling proposal from a distinct node), plus funded background-load source/dest vaults and a shared merge-destination vault.
+**Config (all tests, shared module shard):** 3 validators 100/100/100, FTT=0.1, heartbeat, readonly observer. Dedicated funded deployer key per producer node (each op is a sibling proposal from a distinct node), plus funded background-load source/dest vaults and a shared merge-destination vault.
 
 ## Tests (3)
 

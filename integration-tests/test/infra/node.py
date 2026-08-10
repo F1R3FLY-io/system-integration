@@ -14,7 +14,6 @@ import logging
 from typing import Dict, Optional
 
 from f1r3fly.client import F1r3flyClient
-from f1r3fly.const import DEFAULT_PHLO_LIMIT, DEFAULT_PHLO_PRICE
 from f1r3fly.crypto import PrivateKey
 from f1r3fly.pos import PosAPI
 from f1r3fly.vault import VaultAPI
@@ -218,8 +217,6 @@ class Node:
         self,
         rholang_code: str,
         private_key: PrivateKey,
-        phlo_limit: int = DEFAULT_PHLO_LIMIT,
-        phlo_price: int = DEFAULT_PHLO_PRICE,
         valid_after_block_no: Optional[int] = None,
         shard_id: str = "root",
     ) -> str:
@@ -232,16 +229,12 @@ class Node:
             return self._external_client().deploy(
                 key=private_key,
                 term=rholang_code,
-                phlo_price=phlo_price,
-                phlo_limit=phlo_limit,
                 valid_after_block_no=valid_after_block_no,
                 shard_id=shard_id,
             )
         return self._external_client().deploy_with_vabn_filled(
             key=private_key,
             term=rholang_code,
-            phlo_price=phlo_price,
-            phlo_limit=phlo_limit,
             shard_id=shard_id,
         )
 
@@ -250,8 +243,6 @@ class Node:
         rho_file_path: str,
         private_key: PrivateKey,
         substitutions: Optional[Dict[str, str]] = None,
-        phlo_limit: int = DEFAULT_PHLO_LIMIT,
-        phlo_price: int = DEFAULT_PHLO_PRICE,
         valid_after_block_no: Optional[int] = None,
         shard_id: str = "root",
     ) -> str:
@@ -280,8 +271,6 @@ class Node:
         return self.deploy_string(
             code,
             private_key,
-            phlo_limit=phlo_limit,
-            phlo_price=phlo_price,
             valid_after_block_no=valid_after_block_no,
             shard_id=shard_id,
         )

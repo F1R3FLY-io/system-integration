@@ -69,7 +69,7 @@ All block info assertions use `_assert_light_block_info()` which validates every
 - Valid `blockHash`, `blockNumber` > 0, `timestamp` > 0
 - `cost` > 0, `errored` == false, `isFinalized` == true
 - `deployer` matches V1's public key
-- `systemDeployError` == "", `phloPrice` == 1, `phloLimit` == 100000
+- `systemDeployError` == ""; retired `phloPrice` and `phloLimit` fields are absent
 - `sigAlgorithm` == "secp256k1"
 - **Transfers**: omitted on validators, present as list on readonly
 - Cross-node: all agree on `blockHash` and `cost`
@@ -77,7 +77,7 @@ All block info assertions use `_assert_light_block_info()` which validates every
 ### test_deploy_summary_view
 `GET /api/deploy/{id}?view=summary` on **all nodes**. Asserts:
 - Core fields present: `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`
-- Full-view fields excluded: `deployer`, `term`, `phloPrice`, `phloLimit`, `sigAlgorithm`, `systemDeployError`, `validAfterBlockNumber`, `transfers`
+- Full-view fields excluded: `deployer`, `term`, `sigAlgorithm`, `systemDeployError`, `validAfterBlockNumber`, `transfers`
 - Cross-node: all agree on `blockHash` and `cost`
 
 ### test_get_data_at_name_empty_payload

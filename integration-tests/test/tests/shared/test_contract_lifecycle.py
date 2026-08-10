@@ -220,7 +220,6 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
                 validators[0],
                 VALIDATOR1_ID,
                 rho_file=BRIDGE_CONTRACT,
-                phlo_limit=500_000_000,
             ): "bridge1",
             executor.submit(
                 _deploy,
@@ -228,7 +227,6 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
                 validators[1],
                 VALIDATOR2_ID,
                 rho_file=BRIDGE_CONTRACT,
-                phlo_limit=500_000_000,
             ): "bridge2",
             executor.submit(
                 _deploy,
@@ -236,7 +234,6 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
                 validators[2],
                 VALIDATOR3_ID,
                 rho_file=STORE_DATA_CONTRACT,
-                phlo_limit=100_000_000,
             ): "storage",
         }
 
@@ -278,7 +275,6 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
         find_timeout,
         lfb_timeout,
         rho_file=DATA_PROVIDER_CONTRACT,
-        phlo_limit=100_000_000,
     )
     provider_uri = par_as_uri(provider_pars[0])
     results["provider"] = {
@@ -370,7 +366,6 @@ def test_cross_validator_queries_real_deploy(
                 key.private_key(),
                 find_timeout,
                 lfb_timeout,
-                phlo_limit=500_000_000,
             )
             futures[f] = label
 
@@ -489,7 +484,6 @@ def test_contract_to_contract_interaction(
         lfb_timeout,
         rho_file=DATA_CONSUMER_CONTRACT,
         substitutions={"@provider_uri@": provider_uri},
-        phlo_limit=100_000_000,
     )
 
     assert consumer_pars, "Consumer deploy returned no data"
@@ -572,7 +566,6 @@ def test_transfers_interleaved_with_queries(
             v3_key,
             find_timeout,
             lfb_timeout,
-            phlo_limit=500_000_000,
         )
 
         for f in as_completed([transfer_future, query_future]):
@@ -649,7 +642,6 @@ def test_multi_block_state_evolution(
         v1_key,
         find_timeout,
         lfb_timeout,
-        phlo_limit=500_000_000,
     )
     logging.info("Lock 1 result: %s", str(lock1_pars[0])[:120] if lock1_pars else "empty")
 
@@ -674,7 +666,6 @@ def test_multi_block_state_evolution(
         v2_key,
         find_timeout,
         lfb_timeout,
-        phlo_limit=500_000_000,
     )
     logging.info("Lock 2 result: %s", str(lock2_pars[0])[:120] if lock2_pars else "empty")
 

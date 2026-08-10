@@ -417,8 +417,6 @@ def deploy_and_read(
     *,
     rho_file: str = None,
     substitutions: Optional[Dict[str, str]] = None,
-    phlo_limit: int = 100_000,
-    phlo_price: int = 1,
     shard_id: str = "root",
 ) -> tuple:
     """Deploy code (or .rho file), wait for finalization, read deployId data.
@@ -434,8 +432,6 @@ def deploy_and_read(
         finalization_timeout: Seconds to wait for finalization.
         rho_file: If set, read code from this .rho file path.
         substitutions: String replacements to apply to the code.
-        phlo_limit: Maximum phlo to spend.
-        phlo_price: Phlo price per unit.
         shard_id: Target shard identifier.
 
     Returns:
@@ -471,8 +467,6 @@ def deploy_and_read(
             private_key=private_key,
             inclusion_timeout=inclusion_timeout,
             finalization_timeout=finalization_timeout,
-            phlo_limit=phlo_limit,
-            phlo_price=phlo_price,
             shard_id=shard_id,
         )
     except EmptyParListError:
@@ -488,8 +482,6 @@ def deploy_with_fallback(
     term: str,
     private_key,
     timeout_per_node: int,
-    phlo_limit: int = 100_000,
-    phlo_price: int = 1,
     valid_after_block_no: int = None,
     shard_id: str = "root",
     rho_file: str = None,
@@ -521,8 +513,6 @@ def deploy_with_fallback(
         term=term,
         private_key=private_key,
         timeout_per_client=timeout_per_node,
-        phlo_limit=phlo_limit,
-        phlo_price=phlo_price,
         valid_after_block_no=valid_after_block_no,
         shard_id=shard_id,
     )
