@@ -14,14 +14,10 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from f1r3fly.par import par_as_int, par_as_list, par_as_string, par_as_uri
 
+from ...infra.assertions import assert_all_deploys_finalized_on_all_nodes
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import (
-    deploy_and_read,
-    poll_until,
-    wait_for_block_visible,
-    wait_for_deploy_finalized,
-)
+from ...infra.polling import deploy_and_read, poll_until, wait_for_block_visible
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
@@ -167,16 +163,18 @@ def test_concurrent_bridge_locks_exact_accounting(bridge_shard, timeouts) -> Non
 
     assert len(set(deploy_ids)) == _LOCK_COUNT
 
-    def wait_for_finalization(deploy_id: str):
-        return wait_for_deploy_finalized(
-            v1,
-            deploy_id,
-            timeouts.finalization * 8,
-        )
-
-    with ThreadPoolExecutor(max_workers=_LOCK_COUNT) as executor:
-        statuses = list(executor.map(wait_for_finalization, deploy_ids))
-    assert len(statuses) == _LOCK_COUNT
+    # Every lock must finalize on EVERY node, the readonly observer included. Two
+    # reasons: twelve concurrent writes to the same cells is where per-node merge
+    # divergence appears and one node cannot see it; and the reconciliation below
+    # reads the observer's own LFB, which may lag the proposer, so waiting only on
+    # the proposer would let the observer choose a block that predates some locks.
+    # Re-homing-aware, so a lock re-included in a finalized descendant still counts.
+    assert_all_deploys_finalized_on_all_nodes(
+        bridge_shard.all_nodes,
+        deploy_ids,
+        timeouts.finalization * 8,
+        label="concurrent-bridge-locks",
+    )
 
     # Every read below is pinned to one block. Sampling the counters at an LFB and
     # the balances at "latest" would reconcile two different states, and the drift

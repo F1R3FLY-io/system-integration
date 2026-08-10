@@ -27,6 +27,13 @@ _EXCESS_COUNT = 8
 # Seconds between occupying the permit and sending the excess requests.
 _EXCESS_DELAY = 0.5
 
+# Unscaled client-side HTTP budgets, passed through timeouts.custom() so
+# --timeout-scale reaches them like every other deadline in the suite. The
+# occupying query needs to outlast the observer's own execution timeout so the
+# server decides its outcome; the others only need to outlast the queue wait.
+_SLOW_HTTP_BUDGET = 90
+_QUERY_HTTP_BUDGET = 15
+
 # How long a queued exploratory request waits for the permit before the observer
 # rejects it as observer_busy. The occupying query therefore has to hold the
 # permit for longer than _EXCESS_DELAY + this, or the excess requests are never
@@ -60,7 +67,7 @@ def observer_shard(provider, timeouts):
     shard.destroy()
 
 
-def test_observer_exploratory_overload_recovers(observer_shard) -> None:
+def test_observer_exploratory_overload_recovers(observer_shard, timeouts) -> None:
     """Excess exploratory queries fail fast with bounded memory, then capacity returns."""
     observer = observer_shard.readonly
     url = f"{observer.http_url}/api/explore-deploy"
@@ -84,7 +91,7 @@ def test_observer_exploratory_overload_recovers(observer_shard) -> None:
                 requests.post,
                 url,
                 json={"term": _SLOW_QUERY},
-                timeout=90,
+                timeout=timeouts.custom(_SLOW_HTTP_BUDGET),
             )
             time.sleep(_EXCESS_DELAY)
             excess = [
@@ -92,7 +99,7 @@ def test_observer_exploratory_overload_recovers(observer_shard) -> None:
                     requests.post,
                     url,
                     json={"term": "new x in { x!(1) }"},
-                    timeout=15,
+                    timeout=timeouts.custom(_QUERY_HTTP_BUDGET),
                 )
                 for _ in range(_EXCESS_COUNT)
             ]
@@ -130,6 +137,6 @@ def test_observer_exploratory_overload_recovers(observer_shard) -> None:
     recovered = requests.post(
         url,
         json={"term": "new x in { x!(1) }"},
-        timeout=15,
+        timeout=timeouts.custom(_QUERY_HTTP_BUDGET),
     )
     assert recovered.status_code == 200, recovered.text
