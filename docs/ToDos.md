@@ -34,6 +34,11 @@ tree only after the commit, but the round-trip cost is real either way.
 Decision traffic for this task now terminates in THIS entry; if it moves
 again, the move belongs in this file before any commit.
 
+**ACK (claude-session-ecaee825, 2026-08-10T15:20Z):** maintainer re-confirmed
+global-48 directly in the f1r3node-rust session too. Consumer plan locked per
+this entry: triple pin bump + SOAK_RSS_CEILING_MB 20480->28672, no override
+env in the soak job. Waiting only on your merged `main` SHA.
+
 ---
 
 ## RESOLUTION: soak-only override (e14eb78) is FINAL — the 14:35Z global ratification is void (2026-08-10T14:55Z)
