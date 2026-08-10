@@ -43,6 +43,38 @@ from .providers.docker import _parse_mem
 
 logger = logging.getLogger(__name__)
 
+# Per-node RSS a single observer must stay under while it is doing heavy work
+# (catching up, or shedding an exploratory-query overload). Distinct from
+# ``--rss-ceiling-mb``, which is the whole-run host-protection kill across every
+# node; this is one node's budget, asserted by the tests that stress it.
+OBSERVER_MEMORY_CEILING_MB = 1500
+
+
+def sample_peak_memory_mb(node, stop, interval: float = 0.5) -> List[float]:
+    """Sample ``node``'s RSS until ``stop`` is set; return every reading seen.
+
+    For running in a daemon thread alongside a test that stresses one node. Zero
+    and unavailable readings are dropped so a provider that cannot answer yet
+    does not look like a node using no memory — callers assert the list is
+    non-empty to catch that case.
+
+    ``interval`` is a floor, not a period: a reading costs a provider round trip
+    (``docker stats --no-stream`` for the Docker provider, which is a subprocess
+    and takes on the order of a second), so the real rate is bounded by that.
+    """
+    samples: List[float] = []
+    while not stop.is_set():
+        try:
+            usage = node.resource_usage()
+            memory = float(usage.get("memory_mb", 0) or 0)
+        except Exception:  # noqa: BLE001 — a failed sample must not kill the test
+            memory = 0.0
+        if memory > 0:
+            samples.append(memory)
+        stop.wait(interval)
+    return samples
+
+
 # Prometheus metric-name substrings worth recording for bottleneck attribution.
 # A scraped sample is kept if its (punctuation-normalized) metric name contains
 # any of these tokens. metrics-exporter-prometheus sanitizes names by replacing

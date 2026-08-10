@@ -122,12 +122,17 @@ __all__ = [
     "wait_for_lfb_with_ft",
     "deploy_and_read",
     "deploy_with_fallback",
+    "propose_until_included",
     "wait_for_block_visible",
     "wait_for_block_visible_on_all_nodes",
+    "wait_for_block_justified",
     "lfb_number",
     "wait_for_lfb_at_least",
     "wait_for_lfb_converged",
     "wait_for_node_quiet",
+    "get_blocks_if_enough",
+    "try_find_deploy",
+    "all_blocks_visible",
     "DeployError",
     "EmptyParListError",
 ]
@@ -525,6 +530,47 @@ def deploy_with_fallback(
         phlo_price=phlo_price,
         valid_after_block_no=valid_after_block_no,
         shard_id=shard_id,
+    )
+
+
+def propose_until_included(node, deploy_id: str, timeout: int, interval: float = 0.5) -> str:
+    """Drive ``node`` to propose until ``deploy_id`` lands in a block; return its hash.
+
+    For building deterministic history on a shard with ``heartbeat=False``, where
+    nothing proposes unless a test asks it to. Each attempt re-checks inclusion
+    before and after proposing, because the deploy may have been picked up by a
+    propose already in flight.
+
+    ``No new deploys`` and ``another propose is in progress`` are expected while
+    racing an in-flight propose and are retried; any other propose failure is a
+    real error and propagates.
+    """
+    from f1r3fly.client import F1r3flyClientException
+
+    retryable = ("No new deploys", "another propose is in progress")
+
+    def _attempt():
+        try:
+            return node.find_deploy(deploy_id).blockHash
+        except F1r3flyClientException:
+            pass
+
+        try:
+            node.propose()
+        except F1r3flyClientException as exc:
+            if not any(marker in str(exc) for marker in retryable):
+                raise
+
+        try:
+            return node.find_deploy(deploy_id).blockHash
+        except F1r3flyClientException:
+            return None
+
+    return poll_until(
+        _attempt,
+        timeout=timeout,
+        interval=interval,
+        description=f"deploy {deploy_id[:24]} becomes available and is proposed",
     )
 
 
