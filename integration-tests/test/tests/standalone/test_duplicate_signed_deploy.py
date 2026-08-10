@@ -55,7 +55,12 @@ def test_duplicate_signed_deploy_race(provider, timeouts) -> None:
                 except F1r3flyClientException as exc:
                     rejected.append(str(exc))
 
-        assert accepted == [expected_id], f"expected one acceptance, got {accepted}"
+        # Only the COUNT is a server-side fact: send_deploy returns the signature of
+        # the request it sent, so every accepted entry equals expected_id by
+        # construction. Check both anyway — the equality documents which deploy id
+        # the surviving submission carries.
+        assert len(accepted) == 1, f"expected exactly one acceptance, got {accepted}"
+        assert accepted == [expected_id]
         assert len(rejected) == 31, f"expected 31 duplicate rejections, got {len(rejected)}"
         assert all(
             "duplicate" in message.lower() or "already known" in message.lower()

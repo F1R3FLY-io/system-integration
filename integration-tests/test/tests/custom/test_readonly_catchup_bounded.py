@@ -5,97 +5,51 @@ attached and must converge to the shard's canonical state while its `/api/status
 keeps answering and its resident memory stays under the ceiling shared with the
 overload regression. Converging by wedging the API or ballooning memory is not
 converging.
-
-NOTE: the latency bound here is weaker than it reads — see the comment on the
-status-probe loop.
 """
 
-import os
 import threading
 import time
 
 import pytest
 import requests
-from f1r3fly.client import F1r3flyClientException
 
-from ...infra.config import ShardConfig
-from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.config import deterministic_history_shard_config
+from ...infra.keys import VALIDATOR1_ID
 from ...infra.polling import (
-    poll_until,
+    propose_until_included,
     wait_for_block_visible,
     wait_for_lfb_at_least,
     wait_for_node_running,
 )
+from ...infra.resource_monitor import OBSERVER_MEMORY_CEILING_MB, sample_peak_memory_mb
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
 
-DEFAULT_HISTORY_BLOCKS = 40
-_OBSERVER_MEMORY_CEILING_MB = 1500
+# Seconds the observer is allowed to take to issue a /api/status response.
+_PROBE_BUDGET = 2.0
 
+# Floor on the share of probes answered inside the budget. A share rather than a
+# count, so it does not depend on how long catch-up happens to take.
+_MIN_RESPONSIVE_SHARE = 0.95
 
-def _history_block_count() -> int:
-    raw = os.environ.get(
-        "F1R3FLY_READONLY_HISTORY_BLOCKS",
-        str(DEFAULT_HISTORY_BLOCKS),
-    )
-    try:
-        count = int(raw)
-    except ValueError as exc:
-        raise ValueError("F1R3FLY_READONLY_HISTORY_BLOCKS must be positive") from exc
-    if count <= 0:
-        raise ValueError("F1R3FLY_READONLY_HISTORY_BLOCKS must be positive")
-    return count
-
-
-def _propose_until_included(node, deploy_id: str, timeout: int) -> str:
-    def attempt():
-        try:
-            return node.find_deploy(deploy_id).blockHash
-        except F1r3flyClientException:
-            pass
-
-        try:
-            node.propose()
-        except F1r3flyClientException as exc:
-            if "No new deploys" not in str(exc) and "another propose is in progress" not in str(
-                exc
-            ):
-                raise
-
-        try:
-            return node.find_deploy(deploy_id).blockHash
-        except F1r3flyClientException:
-            return None
-
-    return poll_until(
-        attempt,
-        timeout=timeout,
-        interval=0.5,
-        description=f"deploy {deploy_id[:24]} becomes available and is proposed",
-    )
+# Enough probes for the share to mean something at a 0.1s sampling interval.
+_MIN_PROBES = 20
 
 
 @pytest.fixture(scope="module")
 def deep_shard(provider, timeouts):
-    config = ShardConfig(
-        bonds=[
-            (VALIDATOR1_ID, 10_000_000),
-            (VALIDATOR2_ID, 1),
-            (VALIDATOR3_ID, 1),
-        ],
-        ftt=-1,
-        heartbeat=False,
-    )
-    shard = Shard.create(provider, config, timeouts)
+    shard = Shard.create(provider, deterministic_history_shard_config(), timeouts)
     yield shard
     shard.destroy()
 
 
-def test_readonly_catchup_parallelism_keeps_api_responsive(deep_shard, timeouts) -> None:
+def test_readonly_catchup_parallelism_keeps_api_responsive(
+    deep_shard, timeouts, readonly_history_blocks
+) -> None:
     """The observer reaches canonical state with its API answering and memory bounded."""
     source = deep_shard.node("validator1")
-    history_blocks = _history_block_count()
+    history_blocks = readonly_history_blocks
     baseline = source.last_finalized_block().blockInfo.blockNumber
     history = []
     for index in range(history_blocks):
@@ -109,7 +63,7 @@ def test_readonly_catchup_parallelism_keeps_api_responsive(deep_shard, timeouts)
             valid_after_block_no=valid_after,
         )
         history.append(
-            _propose_until_included(
+            propose_until_included(
                 source,
                 deploy_id,
                 timeout=timeouts.custom(120),
@@ -125,39 +79,44 @@ def test_readonly_catchup_parallelism_keeps_api_responsive(deep_shard, timeouts)
 
     with deep_shard.add_observer(wait_running=False) as observer:
         stop = threading.Event()
-        latencies = []
-        memory_samples = []
+        latencies: list = []
+        over_budget: list = []
+        memory_samples: list = []
 
         def probe_status() -> None:
-            # NOTE: `timeout=2` bounds how long the observer may take to ISSUE a
-            # response, so a probe that stalls past it raises and is dropped here
-            # rather than recorded. That makes `max(latencies) < 2` below far weaker
-            # than it reads — recorded samples are fast probes almost by
-            # construction, and the interesting signal (probes that blew the budget)
-            # is exactly what is discarded. Counting the timeouts would make the
-            # bound falsifiable.
+            """Sample ``/api/status``, recording blown budgets as well as fast replies.
+
+            ``requests``' timeout bounds how long the observer may take to ISSUE a
+            response, so a stalled probe raises rather than returning a large
+            latency. Those have to be counted, not dropped: they are the whole
+            signal that catch-up is starving the read API, and discarding them
+            leaves a bound on ``max(latencies)`` that cannot fail.
+
+            Connection errors before the observer has ever answered are startup,
+            not latency, and are ignored.
+            """
             url = f"{observer.http_url}/api/status"
             while not stop.is_set():
                 started = time.monotonic()
                 try:
-                    response = requests.get(url, timeout=2)
+                    response = requests.get(url, timeout=_PROBE_BUDGET)
                     if response.status_code == 200:
                         latencies.append(time.monotonic() - started)
-                except requests.RequestException:
-                    pass
+                    else:
+                        over_budget.append(f"HTTP {response.status_code}")
+                except requests.Timeout:
+                    over_budget.append(f"no response within {_PROBE_BUDGET}s")
+                except requests.RequestException as err:
+                    if latencies or over_budget:
+                        over_budget.append(type(err).__name__)
                 stop.wait(0.1)
-
-        def sample_memory() -> None:
-            while not stop.is_set():
-                usage = observer.resource_usage()
-                memory = float(usage.get("memory_mb", 0) or 0)
-                if memory > 0:
-                    memory_samples.append(memory)
-                stop.wait(0.5)
 
         threads = [
             threading.Thread(target=probe_status, daemon=True),
-            threading.Thread(target=sample_memory, daemon=True),
+            threading.Thread(
+                target=lambda: memory_samples.extend(sample_peak_memory_mb(observer, stop)),
+                daemon=True,
+            ),
         ]
         for thread in threads:
             thread.start()
@@ -185,16 +144,24 @@ def test_readonly_catchup_parallelism_keeps_api_responsive(deep_shard, timeouts)
             for thread in threads:
                 thread.join(timeout=5)
 
-        assert len(latencies) >= 5, f"only {len(latencies)} status probes succeeded"
-        assert max(latencies) < 2
+        probes = len(latencies) + len(over_budget)
+        assert probes >= _MIN_PROBES, f"only {probes} status probes completed"
+        responsive_share = len(latencies) / probes
+        assert responsive_share >= _MIN_RESPONSIVE_SHARE, (
+            f"observer answered /api/status inside {_PROBE_BUDGET}s for only "
+            f"{responsive_share:.0%} of {probes} probes during catch-up "
+            f"(floor {_MIN_RESPONSIVE_SHARE:.0%}); {len(over_budget)} exceeded it, "
+            f"first few: {over_budget[:3]}"
+        )
         assert memory_samples, "observer resource usage was never available"
-        assert max(memory_samples) < _OBSERVER_MEMORY_CEILING_MB
+        assert max(memory_samples) < OBSERVER_MEMORY_CEILING_MB
 
         observer_view = observer.get_block(target.blockHash)
         assert observer_view.blockInfo.postStateHash == target.postStateHash
-        response = observer.api_post(
+        # api_post raises on any non-2xx, so reaching the next line IS the
+        # assertion that the observer serves reads again after catching up.
+        observer.api_post(
             "/explore-deploy",
             {"term": "new x in { x!(1) }"},
             timeout=15,
         )
-        assert response.status_code == 200

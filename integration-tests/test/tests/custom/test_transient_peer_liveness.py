@@ -6,8 +6,6 @@ discovery must find the peer again. Runs with one-second network timeouts and
 two-second cleanup/discovery intervals so the streak plays out in seconds.
 """
 
-import time
-
 import pytest
 
 from ...infra.config import ShardConfig
@@ -71,7 +69,26 @@ def test_transient_peer_failure_does_not_disconnect(fast_liveness_shard, timeout
         interval=1,
         description="peer reconnects after transient failure",
     )
-    time.sleep(4)
+    # The streak resets on a SUCCESSFUL heartbeat after the peer returns, so wait
+    # for evidence of one rather than sleeping a fixed interval: the count of
+    # first-failure lines must stop growing, which it only does once the peer is
+    # answering again.
+    settled = observer.logs().count(first_marker)
+
+    def _failures_stopped():
+        nonlocal settled
+        current = observer.logs().count(first_marker)
+        if current == settled:
+            return True
+        settled = current
+        return None
+
+    poll_until(
+        _failures_stopped,
+        timeout=20,
+        interval=1.0,
+        description="heartbeat failures stop once the restored peer answers",
+    )
 
     first_count = observer.logs().count(first_marker)
     peer.pause()

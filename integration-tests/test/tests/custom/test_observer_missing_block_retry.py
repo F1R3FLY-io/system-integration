@@ -8,12 +8,13 @@ than one that failed.
 """
 
 import pytest
-from f1r3fly.client import F1r3flyClientException
 
-from ...infra.config import ShardConfig
-from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.config import deterministic_history_shard_config
+from ...infra.keys import VALIDATOR1_ID
+from ...infra.log_events import marker
 from ...infra.polling import (
     poll_until,
+    propose_until_included,
     wait_for_block_visible,
     wait_for_lfb_at_least,
     wait_for_node_running,
@@ -22,47 +23,15 @@ from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
 
-
-def _propose_until_included(node, deploy_id: str, timeout: int) -> str:
-    def attempt():
-        try:
-            return node.find_deploy(deploy_id).blockHash
-        except F1r3flyClientException:
-            pass
-
-        try:
-            node.propose()
-        except F1r3flyClientException as exc:
-            if "No new deploys" not in str(exc) and "another propose is in progress" not in str(
-                exc
-            ):
-                raise
-
-        try:
-            return node.find_deploy(deploy_id).blockHash
-        except F1r3flyClientException:
-            return None
-
-    return poll_until(
-        attempt,
-        timeout=timeout,
-        interval=0.5,
-        description=f"deploy {deploy_id[:24]} becomes available and is proposed",
-    )
+# Each of these predicates fetches the node's whole log file over a
+# docker exec, so the interval is what keeps the loop from running that
+# continuously for the length of a node-startup budget.
+_LOG_POLL_INTERVAL = 0.5
 
 
 @pytest.fixture(scope="module")
 def active_shard(provider, timeouts):
-    config = ShardConfig(
-        bonds=[
-            (VALIDATOR1_ID, 10_000_000),
-            (VALIDATOR2_ID, 1),
-            (VALIDATOR3_ID, 1),
-        ],
-        ftt=-1,
-        heartbeat=False,
-    )
-    shard = Shard.create(provider, config, timeouts)
+    shard = Shard.create(provider, deterministic_history_shard_config(), timeouts)
     yield shard
     shard.destroy()
 
@@ -80,7 +49,7 @@ def test_observer_retries_missing_block_after_peer_returns(active_shard, timeout
             key,
             valid_after_block_no=0,
         )
-        latest_hash = _propose_until_included(
+        latest_hash = propose_until_included(
             v1,
             deploy_id,
             timeout=timeouts.custom(120),
@@ -100,9 +69,9 @@ def test_observer_retries_missing_block_after_peer_returns(active_shard, timeout
         wait_running=False,
     ) as observer:
         poll_until(
-            lambda: True if "request_approved_state: start" in observer.logs() else None,
+            lambda: True if marker("ApprovedStateRequestStarted") in observer.logs() else None,
             timeout=timeouts.node_startup,
-            interval=0.01,
+            interval=_LOG_POLL_INTERVAL,
             description="observer starts approved-state synchronization",
         )
 
@@ -110,17 +79,15 @@ def test_observer_retries_missing_block_after_peer_returns(active_shard, timeout
             for source in sources:
                 source.pause()
             poll_until(
-                lambda: (
-                    True if "LFS Block Requester stream initialized" in observer.logs() else None
-                ),
+                lambda: True if marker("LfsBlockRequesterStarted") in observer.logs() else None,
                 timeout=15,
-                interval=0.05,
+                interval=_LOG_POLL_INTERVAL,
                 description="observer starts block retrieval while sources are unavailable",
             )
             poll_until(
-                lambda: True if "No responses for" in observer.logs() else None,
+                lambda: True if marker("BlockRequestResend") in observer.logs() else None,
                 timeout=15,
-                interval=0.25,
+                interval=_LOG_POLL_INTERVAL,
                 description="observer schedules a resend for missing blocks",
             )
         finally:

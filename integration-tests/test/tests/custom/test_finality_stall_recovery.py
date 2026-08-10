@@ -13,6 +13,7 @@ import pytest
 from ...infra.assertions import assert_all_deploys_finalized_on_all_nodes
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.log_events import marker
 from ...infra.polling import (
     wait_for_deploy_included,
     wait_for_lfb_converged,
@@ -22,7 +23,7 @@ from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
 
-_HEARTBEAT_SUCCESS = "Heartbeat: Successfully created block"
+_HEARTBEAT_SUCCESS = marker("HeartbeatBlockCreated")
 
 
 def _wait_for_stable_lfb(node, stable_for: float = 35, timeout: float = 90) -> int:
@@ -103,6 +104,10 @@ def test_finality_stall_bounded_recovery(recovery_shard, timeouts) -> None:
         successes_before = v1.logs().count(_HEARTBEAT_SUCCESS)
         time.sleep(45)
         empty_recovery_blocks = v1.logs().count(_HEARTBEAT_SUCCESS) - successes_before
+        # TODO: assert on the node's empty-frontier backpressure log line instead of
+        # counting blocks. That line reports unfinalized_blocks and the cap, so it
+        # needs no threshold at all.
+        #
         # NOTE: 2 is an observed ceiling, NOT derived from the
         # --heartbeat-advanced-empty-frontier-max-unfinalized-blocks=4 set above. The
         # two are different quantities: the config caps DAG-wide unfinalized DEPTH
@@ -110,8 +115,7 @@ def test_finality_stall_bounded_recovery(recovery_shard, timeouts) -> None:
         # blocks emitted in a fixed 45s window. How many land before backpressure
         # latches depends on how deep the frontier already was when the window opened,
         # which _wait_for_stable_lfb leaves free to vary between 35s and 90s of prior
-        # elapsed time. A mechanism-level assertion on the node's backpressure log
-        # line would need no threshold at all.
+        # elapsed time.
         assert empty_recovery_blocks <= 2, (
             f"stalled LFB produced {empty_recovery_blocks} empty recovery blocks "
             "during bounded recovery"
@@ -138,11 +142,13 @@ def test_finality_stall_bounded_recovery(recovery_shard, timeouts) -> None:
         timeouts.finalization * 4,
         label="post-stall-pending-deploy",
     )
-    lfbs = wait_for_lfb_converged(
+    # min_height carries the recovery assertion: every node must be at least three
+    # blocks past the stalled LFB *and* past the block the pending deploy landed in,
+    # with the whole shard inside max_spread of each other at that same sample.
+    wait_for_lfb_converged(
         recovery_shard.all_nodes,
         timeout=timeouts.finalization * 4,
         min_height=max(baseline_lfb + 3, included.blockNumber),
         max_spread=5,
         description="finality resumes after quorum returns",
     )
-    assert min(lfbs.values()) > baseline_lfb

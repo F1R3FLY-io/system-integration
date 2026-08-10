@@ -8,86 +8,27 @@ credited by exactly twelve, with the source debited by at least that (the surplu
 being gas).
 """
 
-import logging
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from f1r3fly.par import par_as_int, par_as_list, par_as_string, par_as_uri
+from f1r3fly.par import par_as_int, par_as_string
 
 from ...infra.assertions import assert_all_deploys_finalized_on_all_nodes
+from ...infra.bridge import (
+    BRIDGE_CONTRACT,
+    extract_bridge_uris,
+    query_one,
+    wait_for_registry_visible,
+)
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import deploy_and_read, poll_until, wait_for_block_visible
+from ...infra.polling import deploy_and_read, wait_for_block_visible
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
 
 _LOCK_COUNT = 12
 _PHLO_LIMIT = 500_000_000
-
-
-def _wait_for_registry_visible(node, query_uri: str, timeout: int) -> None:
-    """Block until the bridge registry entry answers queries in ``node``'s canonical state.
-
-    Block finalization does not finalize a deploy's *effects*: a conflict-set merge
-    on a later block can reject an already-finalized deploy, so the registry insert
-    can vanish from the canonical lineage while the bridge deploy still reports
-    Finalized. Without this barrier that surfaces as an ``IndexError`` off a bare
-    ``[0]`` several assertions later instead of naming the precondition that broke.
-
-    ``node`` must serve exploratory deploys — only the readonly observer does;
-    validators reject them outright, which would turn this barrier into a
-    guaranteed timeout. Exploratory queries cost no blocks and no phlo, so polling
-    is free.
-
-    Mirrors ``tests/shared/test_bridge_admin.py::_wait_for_registry_visible``.
-    """
-
-    def _visible():
-        lfb_hash = node.last_finalized_block().blockInfo.blockHash
-        try:
-            pars = node.registry_query(query_uri, "getNonce", block_hash=lfb_hash)
-        except Exception as err:  # noqa: BLE001 — fail-soft probe, retried
-            logging.debug("registry_query on %s not ready: %s", node.name, err)
-            return None
-        return pars or None
-
-    poll_until(
-        predicate=_visible,
-        timeout=timeout,
-        description=(
-            f"bridge registry entry visible in canonical state on {node.name} "
-            "(timeout here means the bridge deploy's effects were likely rejected by "
-            "merge after block finalization; check DagMerger / RejectedDeployBuffer)"
-        ),
-    )
-
-
-def _query_one(node, query_uri: str, method: str, block_hash: str):
-    """Return the single Par answering ``method``, failing with context if absent.
-
-    A bare ``[0]`` here raises ``IndexError`` with nothing identifying which query
-    came back empty, which is the failure shape merge-rejected registry effects
-    produce.
-    """
-    pars = node.registry_query(query_uri, method, block_hash=block_hash)
-    assert pars, (
-        f"bridge query {method!r} returned no results on {node.name} at block "
-        f"{block_hash[:16]} — the registry entry is absent from this node's canonical state"
-    )
-    return pars[0]
-
-
-def _extract_bridge_uris(pars):
-    for par in pars:
-        try:
-            items = par_as_list(par)
-            uris = [par_as_uri(item) for item in items]
-        except ValueError:
-            continue
-        if len(uris) == 3 and all(uri.startswith("rho:id:") for uri in uris):
-            return uris
-    raise AssertionError(f"bridge deployment did not return three URIs: {pars}")
 
 
 def _lock_term(lock_uri: str, amount: int, recipient: str, from_addr: str) -> str:
@@ -141,14 +82,14 @@ def test_concurrent_bridge_locks_exact_accounting(bridge_shard, timeouts) -> Non
         key,
         timeouts.custom(120),
         timeouts.finalization * 4,
-        rho_file="resources/bridge-v2.rho",
+        rho_file=BRIDGE_CONTRACT,
         phlo_limit=_PHLO_LIMIT,
     )
-    query_uri, lock_uri, _ = _extract_bridge_uris(deploy_pars)
+    query_uri, lock_uri, _ = extract_bridge_uris(deploy_pars)
     wait_for_block_visible(readonly, deploy_block_hash, timeouts.finalization)
-    # Block visibility is not effect visibility — see _wait_for_registry_visible.
-    _wait_for_registry_visible(readonly, query_uri, timeouts.finalization)
-    bridge_addr = par_as_string(_query_one(readonly, query_uri, "getAddress", deploy_block_hash))
+    # Block visibility is not effect visibility — see wait_for_registry_visible.
+    wait_for_registry_visible([readonly], query_uri, timeouts.finalization)
+    bridge_addr = par_as_string(query_one(readonly, query_uri, "getAddress", deploy_block_hash))
     # Pin the "before" reads to the same block the deltas are measured against;
     # get_balance defaults to latest, which drifts as heartbeat blocks land.
     source_before = readonly.vault.get_balance(from_addr, deploy_block_hash)
@@ -180,8 +121,8 @@ def test_concurrent_bridge_locks_exact_accounting(bridge_shard, timeouts) -> Non
     # the balances at "latest" would reconcile two different states, and the drift
     # is unbounded while heartbeat blocks keep landing.
     lfb_hash = readonly.last_finalized_block().blockInfo.blockHash
-    nonce = par_as_int(_query_one(readonly, query_uri, "getNonce", lfb_hash))
-    total_locked = par_as_int(_query_one(readonly, query_uri, "getTotalLocked", lfb_hash))
+    nonce = par_as_int(query_one(readonly, query_uri, "getNonce", lfb_hash))
+    total_locked = par_as_int(query_one(readonly, query_uri, "getTotalLocked", lfb_hash))
     bridge_after = readonly.vault.get_balance(bridge_addr, lfb_hash)
     source_after = readonly.vault.get_balance(from_addr, lfb_hash)
 
