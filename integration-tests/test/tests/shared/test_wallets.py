@@ -230,8 +230,8 @@ def test_transfer_failed_with_insufficient_funds(shared_shard, timeouts) -> None
 def test_block_api_returns_transfer_info(shared_shard, timeouts) -> None:
     """Block API returns transfer information in DeployInfo.
 
-    Uses VaultAPI for the transfer, then queries both the readonly node
-    and a validator for BlockReportAPI transfer extraction.
+    Uses VaultAPI for the transfer, waits for canonical finalization on every
+    node, then queries the readonly BlockReportAPI transfer extraction.
     """
     v1 = shared_shard.node("validator1")
     ro = shared_shard.readonly
@@ -243,28 +243,16 @@ def test_block_api_returns_transfer_info(shared_shard, timeouts) -> None:
     # Ensure V2's vault exists (query via readonly)
     ro.vault.get_balance(v2_vault)
 
-    # Transfer via VaultAPI
-    deploy_id = v1.vault.transfer_ensure(
+    result, block_hash = _transfer_and_read_result(
+        v1,
         v1_vault,
         v2_vault,
         transfer_amount,
         v1_key,
+        timeouts,
+        all_nodes=shared_shard.all_nodes,
     )
-
-    # Find the block containing the transfer deploy
-    def _find():
-        try:
-            block = v1.find_deploy(deploy_id)
-            return block.blockHash if block.blockHash else None
-        except Exception:
-            return None
-
-    block_hash = poll_until(
-        predicate=_find,
-        timeout=timeouts.deploy_inclusion,
-        interval=3.0,
-        description=f"transfer deploy {deploy_id[:24]} inclusion",
-    )
+    assert result.success, f"Transfer failed: {result.reason}"
 
     # Verify transfer info on readonly (block report API is readonly-only on Rust node)
     for node in [ro]:
