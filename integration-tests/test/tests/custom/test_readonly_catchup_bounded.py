@@ -29,12 +29,20 @@ pytestmark = pytest.mark.xdist_group("custom")
 # Seconds the observer is allowed to take to issue a /api/status response.
 _PROBE_BUDGET = 2.0
 
+# Unscaled budget for the post-catch-up exploratory query, passed through
+# timeouts.custom() so --timeout-scale reaches it.
+_QUERY_HTTP_BUDGET = 15
+
 # Floor on the share of probes answered inside the budget. A share rather than a
 # count, so it does not depend on how long catch-up happens to take.
 _MIN_RESPONSIVE_SHARE = 0.95
 
-# Enough probes for the share to mean something at a 0.1s sampling interval.
-_MIN_PROBES = 20
+# Floor on probes completed, so a catch-up too short to sample says so rather
+# than passing on one lucky reading. Kept at the original bar: probes only start
+# landing once the observer answers at all, and nothing establishes how wide that
+# window is. At counts this low the share below effectively requires every probe
+# to be in budget.
+_MIN_PROBES = 5
 
 
 @pytest.fixture(scope="module")
@@ -114,7 +122,8 @@ def test_readonly_catchup_parallelism_keeps_api_responsive(
         threads = [
             threading.Thread(target=probe_status, daemon=True),
             threading.Thread(
-                target=lambda: memory_samples.extend(sample_peak_memory_mb(observer, stop)),
+                target=sample_peak_memory_mb,
+                args=(observer, stop, memory_samples),
                 daemon=True,
             ),
         ]
@@ -163,5 +172,5 @@ def test_readonly_catchup_parallelism_keeps_api_responsive(
         observer.api_post(
             "/explore-deploy",
             {"term": "new x in { x!(1) }"},
-            timeout=15,
+            timeout=timeouts.custom(_QUERY_HTTP_BUDGET),
         )

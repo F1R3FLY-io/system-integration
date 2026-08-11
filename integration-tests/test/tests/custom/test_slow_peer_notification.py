@@ -28,6 +28,9 @@ pytestmark = pytest.mark.xdist_group("custom")
 
 _DEPLOY_COUNT = 16
 
+# Unscaled budget for a paused node to stop answering, via the timeouts fixture.
+_QUIET_BUDGET = 10
+
 
 @pytest.fixture(scope="module")
 def notification_shard(provider, timeouts):
@@ -56,7 +59,7 @@ def test_slow_peer_does_not_block_block_processing(notification_shard, timeouts)
 
     slow_peer.pause()
     try:
-        wait_for_node_quiet(slow_peer, timeout=10)
+        wait_for_node_quiet(slow_peer, timeout=timeouts.custom(_QUIET_BUDGET))
 
         def submit(index: int) -> str:
             node = active[index % len(active)]

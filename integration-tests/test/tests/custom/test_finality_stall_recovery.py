@@ -25,6 +25,13 @@ pytestmark = pytest.mark.xdist_group("custom")
 
 _HEARTBEAT_SUCCESS = marker("HeartbeatBlockCreated")
 
+# Unscaled budget for a paused node to stop answering, via the timeouts fixture.
+_QUIET_BUDGET = 10
+
+# Unscaled deadline for the LFB to settle. stable_for and the sampling window
+# below are NOT scaled: they define the measurement, not how long to wait for it.
+_STABLE_LFB_BUDGET = 90
+
 
 def _wait_for_stable_lfb(node, stable_for: float = 35, timeout: float = 90) -> int:
     deadline = time.monotonic() + timeout
@@ -98,9 +105,9 @@ def test_finality_stall_bounded_recovery(recovery_shard, timeouts) -> None:
         node.pause()
     try:
         for node in unavailable:
-            wait_for_node_quiet(node, timeout=10)
+            wait_for_node_quiet(node, timeout=timeouts.custom(_QUIET_BUDGET))
 
-        baseline_lfb = _wait_for_stable_lfb(v1)
+        baseline_lfb = _wait_for_stable_lfb(v1, timeout=timeouts.custom(_STABLE_LFB_BUDGET))
         successes_before = v1.logs().count(_HEARTBEAT_SUCCESS)
         time.sleep(45)
         empty_recovery_blocks = v1.logs().count(_HEARTBEAT_SUCCESS) - successes_before

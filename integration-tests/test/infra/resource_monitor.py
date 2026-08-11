@@ -50,19 +50,22 @@ logger = logging.getLogger(__name__)
 OBSERVER_MEMORY_CEILING_MB = 1500
 
 
-def sample_peak_memory_mb(node, stop, interval: float = 0.5) -> List[float]:
-    """Sample ``node``'s RSS until ``stop`` is set; return every reading seen.
+def sample_peak_memory_mb(node, stop, into: List[float], interval: float = 0.5) -> List[float]:
+    """Append ``node``'s RSS readings to ``into`` until ``stop`` is set.
 
     For running in a daemon thread alongside a test that stresses one node. Zero
     and unavailable readings are dropped so a provider that cannot answer yet
     does not look like a node using no memory — callers assert the list is
     non-empty to catch that case.
 
+    Readings land in ``into`` as they are taken rather than being returned at the
+    end, so a caller whose ``join`` times out still sees what was collected.
+
     ``interval`` is a floor, not a period: a reading costs a provider round trip
     (``docker stats --no-stream`` for the Docker provider, which is a subprocess
     and takes on the order of a second), so the real rate is bounded by that.
     """
-    samples: List[float] = []
+    samples = into
     while not stop.is_set():
         try:
             usage = node.resource_usage()

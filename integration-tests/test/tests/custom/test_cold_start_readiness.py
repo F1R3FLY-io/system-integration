@@ -26,6 +26,12 @@ pytestmark = pytest.mark.xdist_group("custom")
 # a fast genesis, long enough not to spin the API.
 _SAMPLE_INTERVAL = 0.05
 
+# Unscaled HTTP budgets, run through the timeouts fixture so --timeout-scale
+# reaches them. The sweep probe is deliberately sub-second so one unresponsive
+# node cannot stall the sweep; custom_float keeps it from truncating to zero.
+_SWEEP_PROBE_BUDGET = 0.5
+_READY_PROBE_BUDGET = 2
+
 
 def test_cold_start_readiness_requires_lfb(provider, timeouts) -> None:
     """No node reports ready while its LFB is -1; every node reaches ready with one."""
@@ -57,7 +63,7 @@ def test_cold_start_readiness_requires_lfb(provider, timeouts) -> None:
                 if name not in pending:
                     continue
                 try:
-                    response = requests.get(url, timeout=0.5)
+                    response = requests.get(url, timeout=timeouts.custom_float(_SWEEP_PROBE_BUDGET))
                 except requests.RequestException:
                     continue
                 if response.status_code != 200:
@@ -97,12 +103,13 @@ def test_cold_start_readiness_requires_lfb(provider, timeouts) -> None:
                 status_url=status_urls[handle.name],
             )
 
+        ready_budget = timeouts.custom(_READY_PROBE_BUDGET)
         for handle in handles:
             url = status_urls[handle.name]
             poll_until(
                 lambda url=url: (
                     status
-                    if (status := requests.get(url, timeout=2).json()).get(
+                    if (status := requests.get(url, timeout=ready_budget).json()).get(
                         "lastFinalizedBlockNumber", -1
                     )
                     >= 0

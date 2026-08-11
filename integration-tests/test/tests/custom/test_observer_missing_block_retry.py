@@ -28,6 +28,9 @@ pytestmark = pytest.mark.xdist_group("custom")
 # continuously for the length of a node-startup budget.
 _LOG_POLL_INTERVAL = 0.5
 
+# Unscaled budget for a log marker to appear, via the timeouts fixture.
+_LOG_WAIT_BUDGET = 15
+
 
 @pytest.fixture(scope="module")
 def active_shard(provider, timeouts):
@@ -80,13 +83,13 @@ def test_observer_retries_missing_block_after_peer_returns(active_shard, timeout
                 source.pause()
             poll_until(
                 lambda: True if marker("LfsBlockRequesterStarted") in observer.logs() else None,
-                timeout=15,
+                timeout=timeouts.custom(_LOG_WAIT_BUDGET),
                 interval=_LOG_POLL_INTERVAL,
                 description="observer starts block retrieval while sources are unavailable",
             )
             poll_until(
                 lambda: True if marker("BlockRequestResend") in observer.logs() else None,
-                timeout=15,
+                timeout=timeouts.custom(_LOG_WAIT_BUDGET),
                 interval=_LOG_POLL_INTERVAL,
                 description="observer schedules a resend for missing blocks",
             )

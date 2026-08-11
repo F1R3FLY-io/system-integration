@@ -74,7 +74,8 @@ def test_observer_exploratory_overload_recovers(observer_shard, timeouts) -> Non
     memory_samples: list = []
 
     sampler = threading.Thread(
-        target=lambda: memory_samples.extend(sample_peak_memory_mb(observer, stop)),
+        target=sample_peak_memory_mb,
+        args=(observer, stop, memory_samples),
         daemon=True,
     )
     sampler.start()

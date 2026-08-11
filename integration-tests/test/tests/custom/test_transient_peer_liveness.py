@@ -10,10 +10,22 @@ import pytest
 
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.log_events import marker
 from ...infra.polling import poll_until, wait_for_node_quiet
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
+
+# Unscaled budgets, run through the timeouts fixture so --timeout-scale reaches
+# them. Sized against --network-timeout=1second and the two-second cleanup and
+# discovery intervals this shard runs with: a failure or a reconnect is expected
+# within a few of those cycles, and removal after three consecutive failures.
+_QUIET_BUDGET = 10
+_MARKER_BUDGET = 10
+_RECONNECT_BUDGET = 15
+_SETTLE_BUDGET = 20
+_REMOVAL_BUDGET = 20
+_REDISCOVERY_BUDGET = 20
 
 
 @pytest.fixture(scope="module")
@@ -52,10 +64,10 @@ def test_transient_peer_failure_does_not_disconnect(fast_liveness_shard, timeout
 
     peer.pause()
     try:
-        wait_for_node_quiet(peer, timeout=10)
+        wait_for_node_quiet(peer, timeout=timeouts.custom(_QUIET_BUDGET))
         poll_until(
             lambda: True if observer.logs().count(first_marker) > first_count else None,
-            timeout=10,
+            timeout=timeouts.custom(_MARKER_BUDGET),
             interval=0.25,
             description="first failed heartbeat retains peer",
         )
@@ -65,7 +77,7 @@ def test_transient_peer_failure_does_not_disconnect(fast_liveness_shard, timeout
 
     poll_until(
         lambda: True if observer.api_get("/status")["peers"] >= baseline_peers else None,
-        timeout=15,
+        timeout=timeouts.custom(_RECONNECT_BUDGET),
         interval=1,
         description="peer reconnects after transient failure",
     )
@@ -85,7 +97,7 @@ def test_transient_peer_failure_does_not_disconnect(fast_liveness_shard, timeout
 
     poll_until(
         _failures_stopped,
-        timeout=20,
+        timeout=timeouts.custom(_SETTLE_BUDGET),
         interval=1.0,
         description="heartbeat failures stop once the restored peer answers",
     )
@@ -93,7 +105,7 @@ def test_transient_peer_failure_does_not_disconnect(fast_liveness_shard, timeout
     first_count = observer.logs().count(first_marker)
     peer.pause()
     try:
-        wait_for_node_quiet(peer, timeout=10)
+        wait_for_node_quiet(peer, timeout=timeouts.custom(_QUIET_BUDGET))
         # A *fresh* 1/3 line is itself the proof that the streak reset: had the
         # earlier failure carried over, the next one would have been logged 2/3.
         # Do not additionally snapshot the 2/3 count here — the streak is meant to
@@ -102,7 +114,7 @@ def test_transient_peer_failure_does_not_disconnect(fast_liveness_shard, timeout
         # transition while the predicate itself costs a log read.
         poll_until(
             lambda: True if observer.logs().count(first_marker) > first_count else None,
-            timeout=10,
+            timeout=timeouts.custom(_MARKER_BUDGET),
             interval=0.25,
             description="a new first-failure line proves the success reset the streak",
         )
@@ -110,11 +122,11 @@ def test_transient_peer_failure_does_not_disconnect(fast_liveness_shard, timeout
         poll_until(
             lambda: (
                 True
-                if "Removing peer" in observer.logs()
+                if marker("PeerRemoved") in observer.logs()
                 and observer.api_get("/status")["peers"] < baseline_peers
                 else None
             ),
-            timeout=15,
+            timeout=timeouts.custom(_REMOVAL_BUDGET),
             interval=0.5,
             description="three consecutive failures remove peer",
         )
@@ -123,7 +135,7 @@ def test_transient_peer_failure_does_not_disconnect(fast_liveness_shard, timeout
 
     poll_until(
         lambda: True if observer.api_get("/status")["peers"] >= baseline_peers else None,
-        timeout=20,
+        timeout=timeouts.custom(_REDISCOVERY_BUDGET),
         interval=1,
         description="removed peer is rediscovered",
     )
