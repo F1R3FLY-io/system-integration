@@ -48,6 +48,117 @@ _NODE_PORT_RESERVATION_ARGS: List[str] = [
 ]
 
 
+# Probe for per-core CPU accounting, run inside the container. cgroup v1
+# exposes cumulative per-core nanoseconds directly (cpuacct.usage_percpu);
+# cgroup v2 dropped per-CPU accounting entirely, so the fallback dumps every
+# thread's /proc stat line — cumulative utime/stime, the core the thread last
+# ran on, and its start time — and the caller attributes CPU-time deltas to
+# cores. A thread that migrated cores mid-interval is attributed wholly to
+# its current core, so the v2 path is an approximation (a cell can briefly
+# exceed 100% of one core); peaks per core remain representative at the
+# monitor's multi-second sampling interval.
+#
+# The v1 file must be the CONTAINER's cgroup, not the mount root: with a host
+# cgroup namespace (the classic v1 Docker setup) the controller mount shows
+# the full host hierarchy, and the root-level cpuacct.usage_percpu is
+# host-wide — every node would report identical numbers. So the probe
+# resolves this process's own cpuacct membership path from /proc/self/cgroup
+# and joins it onto the mount root; only a "/" membership (private cgroup
+# namespace, where the mount root IS the container) may read the root file.
+# No cpuacct line at all means cgroup v2 — fall through to the thread dump.
+_PERCORE_PROBE = (
+    "rel=\"$(awk -F: '$2 ~ /(^|,)cpuacct(,|$)/ { print $3; exit }' /proc/self/cgroup"
+    ' 2>/dev/null)"; '
+    'if [ -n "$rel" ]; then '
+    "for base in /sys/fs/cgroup/cpuacct /sys/fs/cgroup/cpu,cpuacct /sys/fs/cgroup; do "
+    'if [ "$rel" = / ]; then f="$base/cpuacct.usage_percpu"; '
+    'else f="$base$rel/cpuacct.usage_percpu"; fi; '
+    'if [ -r "$f" ]; then echo PERCPU; cat "$f"; exit 0; fi; done; fi; '
+    "echo THREADS; "
+    # One cat for the whole thread dump — a per-thread cat loop costs one
+    # fork/exec per thread per sample, which perturbs the very CPU numbers
+    # being measured. 2>/dev/null absorbs threads exiting between glob and
+    # read; the trailing `true` keeps that from failing the probe (the parser
+    # rejects an empty dump).
+    "cat /proc/[0-9]*/task/[0-9]*/stat 2>/dev/null; "
+    "true"
+)
+
+# USER_HZ for /proc stat utime/stime ticks. Fixed at 100 on every Linux ABI
+# the node images run (the syscall-visible constant, independent of kernel
+# CONFIG_HZ); not worth an exec round trip to `getconf CLK_TCK` per sample.
+_CLK_TCK = 100.0
+
+
+def _parse_percore_probe(text: str):
+    """Parse ``_PERCORE_PROBE`` output.
+
+    Returns ``("percpu", {core_id: cpu_seconds})`` for the cgroup v1 counters,
+    ``("threads", {tid: (cpu_seconds, core_id, starttime)})`` for the v2
+    thread dump, or ``("", {})`` when the output is unrecognized. Malformed
+    lines are skipped (threads exit between the shell glob and the cat; their
+    stat lines vanish). ``starttime`` (ticks since boot) makes the thread's
+    identity — tids are recycled, and a recycled tid must not be differenced
+    against its predecessor's counters.
+    """
+    lines = text.splitlines()
+    if not lines:
+        return "", {}
+    marker, body = lines[0].strip(), lines[1:]
+    if marker == "PERCPU":
+        cores: Dict[str, float] = {}
+        for i, tok in enumerate(" ".join(body).split()):
+            try:
+                cores[str(i)] = int(tok) / 1e9
+            except ValueError:
+                return "", {}
+        return ("percpu", cores) if cores else ("", {})
+    if marker != "THREADS":
+        return "", {}
+    threads: Dict[str, tuple] = {}
+    for line in body:
+        # "<tid> (<comm>) <state> <ppid> ..." — comm may contain ") ", so
+        # split on the LAST ") ". Fields after comm: utime is field 14,
+        # starttime field 22, and processor field 39 (1-indexed per proc(5))
+        # → offsets 11, 19, and 36.
+        head, sep, rest = line.rpartition(") ")
+        fields = rest.split()
+        if not sep or len(fields) < 37:
+            continue
+        tid = head.split(" (", 1)[0]
+        try:
+            cpu_seconds = (int(fields[11]) + int(fields[12])) / _CLK_TCK
+        except ValueError:
+            continue
+        threads[tid] = (cpu_seconds, fields[36], fields[19])
+    return ("threads", threads) if threads else ("", {})
+
+
+def _percore_percent(prev: tuple, cur: tuple, dt: float) -> Dict[str, float]:
+    """Per-core CPU% over ``dt`` seconds from two ``_parse_percore_probe``
+    results (mode, data). ``{}`` when the modes differ (baseline invalid) or
+    no time elapsed. A percpu counter reset (container restart) clamps to
+    zero rather than spiking. A thread is the same thread only if its tid AND
+    starttime match the baseline — a recycled tid is a different thread whose
+    counters must not be differenced, even when they happen to be larger."""
+    (prev_mode, prev_data), (cur_mode, cur_data) = prev, cur
+    if prev_mode != cur_mode or dt <= 0:
+        return {}
+    if cur_mode == "percpu":
+        return {
+            core: max(0.0, (seconds - prev_data[core]) / dt * 100.0)
+            for core, seconds in cur_data.items()
+            if core in prev_data
+        }
+    totals: Dict[str, float] = {}
+    for tid, (seconds, core, started) in cur_data.items():
+        prev_entry = prev_data.get(tid)
+        if prev_entry is None or prev_entry[2] != started or prev_entry[0] > seconds:
+            continue
+        totals[core] = totals.get(core, 0.0) + (seconds - prev_entry[0])
+    return {core: spent / dt * 100.0 for core, spent in totals.items()}
+
+
 def _docker(*args: str, check: bool = False, timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["docker", *args],
@@ -280,6 +391,8 @@ class DockerNodeHandle:
         self._role = role
         self._identity = identity
         self._volume_name = volume_name
+        # per_core_cpu_percent baseline: (mode, data, monotonic_time)
+        self._percore_prev: Optional[tuple] = None
 
     @property
     def volume_name(self) -> Optional[str]:
@@ -446,6 +559,35 @@ class DockerNodeHandle:
             }
         except (ValueError, IndexError):
             return {"memory_mb": 0, "cpu_percent": 0, "memory_limit_mb": 0}
+
+    def per_core_cpu_percent(self) -> Dict[str, float]:
+        """Instantaneous per-core CPU% (core id -> % of that core) since the
+        previous call.
+
+        Feeds the soak dashboard's node × core heatmap (BACKLOG-FI-003 in
+        f1r3node-rust): real core rows instead of the aggregate-only "all"
+        row. The first call establishes the baseline and returns ``{}``, as
+        does any failed probe — per-core sampling is best-effort telemetry
+        and must never affect the run. A failed probe keeps the previous
+        baseline, so the next successful sample simply averages over the
+        longer interval.
+        """
+        try:
+            result = _docker("exec", self._name, "sh", "-c", _PERCORE_PROBE, timeout=15)
+        except Exception:  # noqa: BLE001 — best-effort telemetry
+            return {}
+        now = time.monotonic()
+        if result.returncode != 0:
+            return {}
+        mode, data = _parse_percore_probe(result.stdout or "")
+        if not mode:
+            return {}
+        prev = self._percore_prev
+        self._percore_prev = (mode, data, now)
+        if prev is None:
+            return {}
+        prev_mode, prev_data, prev_t = prev
+        return _percore_percent((prev_mode, prev_data), (mode, data), now - prev_t)
 
     def stop(self) -> None:
         # 30s grace period (vs Docker's 10s default) — rnode needs time to
