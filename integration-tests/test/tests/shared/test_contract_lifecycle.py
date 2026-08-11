@@ -27,13 +27,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Tuple
 
 import pytest
-from f1r3fly.par import par_as_int, par_as_list, par_as_string, par_as_uri
+from f1r3fly.par import par_as_int, par_as_string, par_as_uri
 
 from ...infra.assertions import (
     assert_all_nodes_agree_on_block,
     assert_all_nodes_agree_on_lfb,
     assert_contracts_consistent_across_nodes,
 )
+from ...infra.bridge import extract_bridge_uris, make_query_rho
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import deploy_and_read, wait_for_deploy_finalized, wait_for_finalized
 
@@ -52,48 +53,6 @@ VALIDATOR_KEYS = [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID]
 
 
 # ── Bridge URI extraction ─────────────────────────────────────────────
-
-
-def _extract_bridge_uris(pars) -> Tuple[str, str, str]:
-    """Extract (queryUri, lockUri, unlockUri) from bridge deploy data."""
-    for par in pars:
-        try:
-            items = par_as_list(par)
-        except ValueError:
-            continue
-        if len(items) != 3:
-            continue
-        try:
-            uris = [par_as_uri(item) for item in items]
-        except ValueError:
-            continue
-        if all(u.startswith("rho:id:") for u in uris):
-            return uris[0], uris[1], uris[2]
-
-    par_summaries = [str(p)[:80] for p in pars]
-    raise AssertionError(
-        f"Could not find [queryUri, lockUri, unlockUri] in deploy data. "
-        f"Got {len(pars)} par entries: {par_summaries}"
-    )
-
-
-# ── Rholang builders (bridge-specific) ───────────────────────────────
-
-
-def _make_query_rho(query_uri: str, method: str, param: str = "Nil") -> str:
-    """Build Rholang for a bridge query via real deploy (uses deployId)."""
-    return f"""
-new deployId(`rho:system:deployId`),
-    lookup(`rho:registry:lookup`),
-    queryCh, ret
-in {{
-  lookup!(`{query_uri}`, *queryCh) |
-  for (q <- queryCh) {{
-    q!("{method}", {param}, *ret) |
-    for (@result <- ret) {{ deployId!(result) }}
-  }}
-}}
-"""
 
 
 def _make_lock_rho(
@@ -256,7 +215,7 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
 
     # Extract bridge URIs
     for bridge_name in ("bridge1", "bridge2"):
-        query_uri, lock_uri, unlock_uri = _extract_bridge_uris(results[bridge_name]["pars"])
+        query_uri, lock_uri, unlock_uri = extract_bridge_uris(results[bridge_name]["pars"])
         results[bridge_name]["query_uri"] = query_uri
         results[bridge_name]["lock_uri"] = lock_uri
         results[bridge_name]["unlock_uri"] = unlock_uri
@@ -366,7 +325,7 @@ def test_cross_validator_queries_real_deploy(
             f = executor.submit(
                 deploy_and_read,
                 node,
-                _make_query_rho(uri, method),
+                make_query_rho(uri, method),
                 key.private_key(),
                 find_timeout,
                 lfb_timeout,
@@ -565,7 +524,7 @@ def test_transfers_interleaved_with_queries(
         query_future = executor.submit(
             deploy_and_read,
             validators[1],
-            _make_query_rho(
+            make_query_rho(
                 deployed_contracts["bridge1"]["query_uri"],
                 "getNonce",
             ),

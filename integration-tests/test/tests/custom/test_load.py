@@ -51,7 +51,7 @@ from ...infra.metrics import (
     percentiles,
     scrape_metrics,
 )
-from ...infra.polling import poll_until, wait_for_lfb_converged
+from ...infra.polling import lfb_number, poll_until, wait_for_lfb_converged
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
@@ -240,13 +240,6 @@ def _format_report(reports):
     return "\n".join(lines)
 
 
-def _get_lfb_number(node) -> int:
-    try:
-        return node.last_finalized_block().blockInfo.blockNumber
-    except Exception:
-        return 0
-
-
 def _get_tip(node) -> int:
     """Highest block number the node knows (the DAG tip). ``tip - LFB`` is the
     un-finalized cone depth — the direct finalization-lag / runaway signal."""
@@ -311,16 +304,16 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
         nodes = {"validator1": v1, "validator2": v2, "validator3": v3}
 
         # Wait for shard to be healthy
-        baseline_lfb = _get_lfb_number(v1)
+        baseline_lfb = lfb_number(v1)
         if baseline_lfb == 0:
             logging.info("Waiting for initial LFB advancement...")
             poll_until(
-                predicate=lambda: _get_lfb_number(v1) if _get_lfb_number(v1) > 0 else None,
+                predicate=lambda: lfb_number(v1) if lfb_number(v1) > 0 else None,
                 timeout=timeouts.finalization,
                 interval=5.0,
                 description="initial LFB > 0",
             )
-            baseline_lfb = _get_lfb_number(v1)
+            baseline_lfb = lfb_number(v1)
 
         logging.info("Baseline LFB: #%d", baseline_lfb)
 
@@ -341,7 +334,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
                 logging.info("--- Phase: %s ---", phase_name)
 
                 tracker.clear()
-                lfb_start = _get_lfb_number(v1)
+                lfb_start = lfb_number(v1)
                 metrics_before_by_v = {name: scrape_metrics(node) for name, node in nodes.items()}
                 metrics_before = metrics_before_by_v["validator1"]
                 phase_time_start = time.time()
@@ -373,7 +366,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
                 # across the rated phases (esp. the sustained phase) is the runaway;
                 # one that stays bounded means finalization keeps pace.
                 tip_now = _get_tip(v1)
-                lfb_now = _get_lfb_number(v1)
+                lfb_now = lfb_number(v1)
                 peak_lag = tip_now - lfb_now
                 logging.info(
                     "  Cone at end of %s submission: tip-LFB lag = %d blocks (tip #%d, LFB #%d)",
@@ -385,7 +378,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
 
                 tracker.wait_for_finalization(timeout=finalization_timeout)
 
-                lfb_end = _get_lfb_number(v1)
+                lfb_end = lfb_number(v1)
                 metrics_after_by_v = {name: scrape_metrics(node) for name, node in nodes.items()}
                 metrics_after = metrics_after_by_v["validator1"]
                 node_metrics = compute_metric_deltas(metrics_before, metrics_after)
@@ -482,7 +475,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
         # instant load stopped: it is what a telemetry-only run wants, and it
         # makes a later convergence failure interpretable by showing how far
         # behind the shard started from.
-        drain_lfbs = {n.name: _get_lfb_number(n) for n in shard.all_nodes}
+        drain_lfbs = {n.name: lfb_number(n) for n in shard.all_nodes}
         drain_spread = max(drain_lfbs.values()) - min(drain_lfbs.values())
         logging.info("All-node LFBs at drain: %s (spread %d blocks)", drain_lfbs, drain_spread)
 

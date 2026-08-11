@@ -57,5 +57,14 @@ class TimeoutHierarchy:
         """Apply the scale factor to an arbitrary base timeout."""
         return self._scaled(base_seconds)
 
+    def custom_float(self, base_seconds: float) -> float:
+        """Apply the scale factor to a fractional base timeout.
+
+        ``custom`` truncates to an int, so any budget below a second collapses to
+        ``0`` — an immediate failure rather than a scaled deadline. Use this for
+        sub-second budgets such as a short HTTP probe timeout.
+        """
+        return base_seconds * self._config.scale
+
     def _scaled(self, base: int) -> int:
         return int(base * self._config.scale)
