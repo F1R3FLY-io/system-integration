@@ -26,12 +26,15 @@ from test.infra.providers.docker import (  # noqa: E402
 from test.infra.resource_monitor import ResourceMonitor  # noqa: E402
 
 
-def _stat_line(tid: int, comm: str, utime: int, stime: int, processor: int) -> str:
-    """A /proc/<pid>/task/<tid>/stat line with utime/stime at fields 14/15
-    and processor at field 39 (1-indexed per proc(5))."""
+def _stat_line(
+    tid: int, comm: str, utime: int, stime: int, processor: int, starttime: int = 500
+) -> str:
+    """A /proc/<pid>/task/<tid>/stat line with utime/stime at fields 14/15,
+    starttime at field 22, and processor at field 39 (1-indexed per proc(5))."""
     fields = ["S"] + ["0"] * 51
     fields[11] = str(utime)  # field 14
     fields[12] = str(stime)  # field 15
+    fields[19] = str(starttime)  # field 22
     fields[36] = str(processor)  # field 39
     return f"{tid} ({comm}) " + " ".join(fields)
 
@@ -54,10 +57,12 @@ def test_parse_percpu_rejects_garbage():
 def test_parse_thread_dump_survives_hostile_comm():
     # comm may contain spaces and even ") " — rpartition on the LAST ") "
     # keeps the fixed-position fields intact.
-    text = "THREADS\n" + _stat_line(7, "grpc) worker (1", utime=200, stime=100, processor=3)
+    text = "THREADS\n" + _stat_line(
+        7, "grpc) worker (1", utime=200, stime=100, processor=3, starttime=900
+    )
     mode, threads = _parse_percore_probe(text)
     assert mode == "threads"
-    assert threads == {"7": (3.0, "3")}  # (200+100)/CLK_TCK=100
+    assert threads == {"7": (3.0, "3", "900")}  # (200+100)/CLK_TCK=100
 
 
 def test_parse_thread_dump_skips_truncated_lines():
@@ -78,23 +83,36 @@ def test_percpu_percent_diffs_per_core_and_clamps_counter_resets():
 
 
 def test_thread_percent_attributes_deltas_to_current_core():
-    prev = ("threads", {"7": (3.0, "0"), "8": (1.0, "1")})
+    prev = ("threads", {"7": (3.0, "0", "500"), "8": (1.0, "1", "500")})
     # tid 7 burned 2s and migrated to core 2 (delta lands on the current
     # core); tid 8 burned 1s on core 1; tid 9 is new (no baseline — skipped).
-    cur = ("threads", {"7": (5.0, "2"), "8": (2.0, "1"), "9": (9.0, "0")})
+    cur = (
+        "threads",
+        {"7": (5.0, "2", "500"), "8": (2.0, "1", "500"), "9": (9.0, "0", "800")},
+    )
     pct = _percore_percent(prev, cur, dt=4.0)
     assert pct == {"2": 50.0, "1": 25.0}
 
 
 def test_thread_percent_skips_reused_tids():
-    prev = ("threads", {"7": (5.0, "0")})
-    cur = ("threads", {"7": (1.0, "0")})  # cpu time went backwards: new process
+    prev = ("threads", {"7": (5.0, "0", "500")})
+    # cpu time went backwards: a new thread even if starttime happened to match
+    cur = ("threads", {"7": (1.0, "0", "500")})
+    assert _percore_percent(prev, cur, dt=4.0) == {}
+
+
+def test_thread_percent_detects_reuse_by_starttime_even_with_higher_cputime():
+    # A recycled tid whose replacement has already accumulated MORE cpu time
+    # than the old thread's baseline: the cpu-time guard alone would charge
+    # the difference as a spurious spike. starttime is the thread's identity.
+    prev = ("threads", {"7": (2.0, "0", "500")})
+    cur = ("threads", {"7": (6.0, "0", "900")})
     assert _percore_percent(prev, cur, dt=4.0) == {}
 
 
 def test_percent_requires_matching_modes_and_elapsed_time():
     percpu = ("percpu", {"0": 1.0})
-    threads = ("threads", {"7": (1.0, "0")})
+    threads = ("threads", {"7": (1.0, "0", "500")})
     assert _percore_percent(percpu, threads, dt=4.0) == {}
     assert _percore_percent(percpu, percpu, dt=0.0) == {}
 

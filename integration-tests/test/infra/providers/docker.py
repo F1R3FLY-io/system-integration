@@ -48,24 +48,39 @@ _NODE_PORT_RESERVATION_ARGS: List[str] = [
 ]
 
 
-# Probe for per-core CPU accounting, run inside the container so the cgroup
-# files it sees are the container's own. cgroup v1 exposes cumulative per-core
-# nanoseconds directly (cpuacct.usage_percpu; mount layout varies by distro).
+# Probe for per-core CPU accounting, run inside the container. cgroup v1
+# exposes cumulative per-core nanoseconds directly (cpuacct.usage_percpu);
 # cgroup v2 dropped per-CPU accounting entirely, so the fallback dumps every
-# thread's /proc stat line — cumulative utime/stime plus the core the thread
-# last ran on — and the caller attributes CPU-time deltas to cores. A thread
-# that migrated cores mid-interval is attributed wholly to its current core,
-# so the v2 path is an approximation; peaks per core remain representative at
-# the monitor's multi-second sampling interval.
+# thread's /proc stat line — cumulative utime/stime, the core the thread last
+# ran on, and its start time — and the caller attributes CPU-time deltas to
+# cores. A thread that migrated cores mid-interval is attributed wholly to
+# its current core, so the v2 path is an approximation (a cell can briefly
+# exceed 100% of one core); peaks per core remain representative at the
+# monitor's multi-second sampling interval.
+#
+# The v1 file must be the CONTAINER's cgroup, not the mount root: with a host
+# cgroup namespace (the classic v1 Docker setup) the controller mount shows
+# the full host hierarchy, and the root-level cpuacct.usage_percpu is
+# host-wide — every node would report identical numbers. So the probe
+# resolves this process's own cpuacct membership path from /proc/self/cgroup
+# and joins it onto the mount root; only a "/" membership (private cgroup
+# namespace, where the mount root IS the container) may read the root file.
+# No cpuacct line at all means cgroup v2 — fall through to the thread dump.
 _PERCORE_PROBE = (
-    "for f in /sys/fs/cgroup/cpuacct/cpuacct.usage_percpu "
-    "/sys/fs/cgroup/cpu,cpuacct/cpuacct.usage_percpu "
-    "/sys/fs/cgroup/cpuacct.usage_percpu; do "
-    'if [ -r "$f" ]; then echo PERCPU; cat "$f"; exit 0; fi; done; '
+    "rel=\"$(awk -F: '$2 ~ /(^|,)cpuacct(,|$)/ { print $3; exit }' /proc/self/cgroup"
+    ' 2>/dev/null)"; '
+    'if [ -n "$rel" ]; then '
+    "for base in /sys/fs/cgroup/cpuacct /sys/fs/cgroup/cpu,cpuacct /sys/fs/cgroup; do "
+    'if [ "$rel" = / ]; then f="$base/cpuacct.usage_percpu"; '
+    'else f="$base$rel/cpuacct.usage_percpu"; fi; '
+    'if [ -r "$f" ]; then echo PERCPU; cat "$f"; exit 0; fi; done; fi; '
     "echo THREADS; "
-    'for t in /proc/[0-9]*/task/[0-9]*/stat; do cat "$t" 2>/dev/null; done; '
-    # The trailing `true` keeps a thread exiting between the glob and the last
-    # cat from failing the whole probe; the parser rejects an empty dump.
+    # One cat for the whole thread dump — a per-thread cat loop costs one
+    # fork/exec per thread per sample, which perturbs the very CPU numbers
+    # being measured. 2>/dev/null absorbs threads exiting between glob and
+    # read; the trailing `true` keeps that from failing the probe (the parser
+    # rejects an empty dump).
+    "cat /proc/[0-9]*/task/[0-9]*/stat 2>/dev/null; "
     "true"
 )
 
@@ -79,9 +94,12 @@ def _parse_percore_probe(text: str):
     """Parse ``_PERCORE_PROBE`` output.
 
     Returns ``("percpu", {core_id: cpu_seconds})`` for the cgroup v1 counters,
-    ``("threads", {tid: (cpu_seconds, core_id)})`` for the v2 thread dump, or
-    ``("", {})`` when the output is unrecognized. Malformed lines are skipped
-    (threads exit between the shell glob and the cat; their stat lines vanish).
+    ``("threads", {tid: (cpu_seconds, core_id, starttime)})`` for the v2
+    thread dump, or ``("", {})`` when the output is unrecognized. Malformed
+    lines are skipped (threads exit between the shell glob and the cat; their
+    stat lines vanish). ``starttime`` (ticks since boot) makes the thread's
+    identity — tids are recycled, and a recycled tid must not be differenced
+    against its predecessor's counters.
     """
     lines = text.splitlines()
     if not lines:
@@ -100,8 +118,9 @@ def _parse_percore_probe(text: str):
     threads: Dict[str, tuple] = {}
     for line in body:
         # "<tid> (<comm>) <state> <ppid> ..." — comm may contain ") ", so
-        # split on the LAST ") ". Fields after comm: utime is field 14 and
-        # processor field 39 (1-indexed per proc(5)) → offsets 11 and 36.
+        # split on the LAST ") ". Fields after comm: utime is field 14,
+        # starttime field 22, and processor field 39 (1-indexed per proc(5))
+        # → offsets 11, 19, and 36.
         head, sep, rest = line.rpartition(") ")
         fields = rest.split()
         if not sep or len(fields) < 37:
@@ -111,15 +130,17 @@ def _parse_percore_probe(text: str):
             cpu_seconds = (int(fields[11]) + int(fields[12])) / _CLK_TCK
         except ValueError:
             continue
-        threads[tid] = (cpu_seconds, fields[36])
+        threads[tid] = (cpu_seconds, fields[36], fields[19])
     return ("threads", threads) if threads else ("", {})
 
 
 def _percore_percent(prev: tuple, cur: tuple, dt: float) -> Dict[str, float]:
     """Per-core CPU% over ``dt`` seconds from two ``_parse_percore_probe``
     results (mode, data). ``{}`` when the modes differ (baseline invalid) or
-    no time elapsed. Negative deltas — counter reset from a container restart,
-    or a reused tid — contribute nothing rather than a spurious spike."""
+    no time elapsed. A percpu counter reset (container restart) clamps to
+    zero rather than spiking. A thread is the same thread only if its tid AND
+    starttime match the baseline — a recycled tid is a different thread whose
+    counters must not be differenced, even when they happen to be larger."""
     (prev_mode, prev_data), (cur_mode, cur_data) = prev, cur
     if prev_mode != cur_mode or dt <= 0:
         return {}
@@ -130,9 +151,9 @@ def _percore_percent(prev: tuple, cur: tuple, dt: float) -> Dict[str, float]:
             if core in prev_data
         }
     totals: Dict[str, float] = {}
-    for tid, (seconds, core) in cur_data.items():
+    for tid, (seconds, core, started) in cur_data.items():
         prev_entry = prev_data.get(tid)
-        if prev_entry is None or prev_entry[0] > seconds:
+        if prev_entry is None or prev_entry[2] != started or prev_entry[0] > seconds:
             continue
         totals[core] = totals.get(core, 0.0) + (seconds - prev_entry[0])
     return {core: spent / dt * 100.0 for core, spent in totals.items()}
