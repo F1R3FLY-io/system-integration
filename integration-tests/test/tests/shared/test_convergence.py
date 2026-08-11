@@ -5,9 +5,7 @@ Tests that the network recovers after DAG tip divergence caused by:
 1. Validator pause -- pausing a container forces other validators to
    produce independent blocks, creating DAG forks that must be merged
    after unpause.
-2. Slow deploy -- a phlo-exhausting deploy (#224) blocks one validator
-   while others produce heartbeat blocks, causing divergence (#437).
-3. FT convergence -- fault tolerance for finalized blocks converges
+2. FT convergence -- fault tolerance for finalized blocks converges
    to 1.0 across all nodes as later finalization rounds update
    cached values.
 
@@ -21,31 +19,12 @@ import time
 
 import pytest
 
-from ...infra.assertions import assert_deploy_errored
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import poll_until, wait_for_deploy_included, wait_for_lfb_converged
+from ...infra.polling import poll_until
 
 pytestmark = pytest.mark.xdist_group("shared")
 
 VALIDATOR_KEYS = [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID]
-
-# Phlo-exhausting loop contract. Runs until phlo runs out, blocking the
-# proposing validator long enough for other validators to create independent
-# blocks via heartbeat, causing DAG tip divergence.
-SLOW_LOOP_CONTRACT = """
-new stdout(`rho:io:stdout`) in {
-  new loop in {
-    contract loop(@n) = {
-      if (n <= 0) {
-        stdout!("done")
-      } else {
-        loop!(n - 1)
-      }
-    } |
-    loop!(100000)
-  }
-}
-"""
 
 
 def _get_lfb_number(node) -> int:
@@ -144,109 +123,6 @@ def test_network_recovers_from_validator_pause(shared_shard, node_conf, timeouts
         )
 
     logging.info("Network converged after validator pause (FT >= FTT=%.2f)", node_conf.ftt)
-
-
-def test_network_converges_after_slow_deploy(shared_shard, node_conf, timeouts) -> None:
-    """Deploy a phlo-exhausting loop and verify the shard converges.
-
-    The loop contract blocks V1 for ~25s while phlo is exhausted.
-    During this time, V2 and V3 create independent heartbeat blocks,
-    causing DAG tip divergence. After the deploy completes (errored),
-    the network must converge and LFB must advance.
-
-    Reproduces:
-    - #224: phlo-exhausting deploy stalls the proposing validator
-    - #437: resulting DAG tip divergence causes permanent LFB stall
-    """
-    validators = shared_shard.validators
-    all_nodes = shared_shard.all_nodes
-
-    baseline_lfb = _get_lfb_number(validators[0])
-    if baseline_lfb == 0:
-        logging.info("Waiting for initial LFB advancement...")
-        poll_until(
-            predicate=lambda: (
-                _get_lfb_number(validators[0]) if _get_lfb_number(validators[0]) > 0 else None
-            ),
-            timeout=timeouts.finalization,
-            interval=5.0,
-            description="initial LFB > 0",
-        )
-        baseline_lfb = _get_lfb_number(validators[0])
-
-    logging.info("Baseline LFB: #%d", baseline_lfb)
-
-    # Deploy on V2 and V3 to create active state alongside the slow deploy
-    validators[1].deploy_string(
-        '@"pre-slow-v2"!(1)',
-        VALIDATOR2_ID.private_key(),
-    )
-    validators[2].deploy_string(
-        '@"pre-slow-v3"!(1)',
-        VALIDATOR3_ID.private_key(),
-    )
-
-    # Submit the slow deploy on V1
-    deploy_id = validators[0].deploy_string(
-        SLOW_LOOP_CONTRACT,
-        VALIDATOR1_ID.private_key(),
-        phlo_limit=20_000_000,
-        phlo_price=1,
-    )
-    logging.info("Deployed loop contract on V1, deploy_id=%s", deploy_id[:24])
-
-    # Wait for the deploy to be included. The phlo-exhausting loop takes
-    # ~25s to execute, much longer than normal deploy inclusion.
-    info = wait_for_deploy_included(validators[0], deploy_id, timeout=timeouts.finalization * 10)
-    deploy_block = info.blockNumber
-
-    # Verify the slow deploy is errored (phlo exhausted)
-    block_info = validators[0].get_block(info.blockHash)
-    assert_deploy_errored(block_info, deploy_id)
-    logging.info("Slow deploy errored as expected (phlo exhausted) in block #%d", deploy_block)
-
-    # LFB must advance past the deploy block on ALL nodes
-    target_lfb = deploy_block + 3
-    logging.info(
-        "Waiting for LFB to advance past deploy block #%d (target=#%d) on all nodes...",
-        deploy_block,
-        target_lfb,
-    )
-
-    # Poll the height and spread conditions together. Waiting per-node on a
-    # lower bound and then snapshotting the spread measures scheduling luck:
-    # nothing stops a fast node running ahead while the slower ones are still
-    # being polled, and a lower bound alone cannot tell "still catching up"
-    # from "permanently diverged". See wait_for_lfb_converged.
-    #
-    # Timeout is *5 for the same reason as the consensus-safety call site: the
-    # previous helper latched, finishing once each node had crossed target at
-    # any past instant, whereas this must observe a simultaneous tight band.
-    # max_spread stays at 2 — extend the timeout, never the tolerance.
-    final_lfbs = wait_for_lfb_converged(
-        all_nodes,
-        timeout=timeouts.finalization * 5,
-        min_height=target_lfb,
-        max_spread=2,
-        description=f"LFB >= #{target_lfb} and spread <= 2 after slow deploy",
-    )
-    spread = max(final_lfbs.values()) - min(final_lfbs.values())
-    logging.info("Final LFBs after slow deploy: %s (spread: %d)", final_lfbs, spread)
-
-    # Verify FT >= FTT on post-recovery LFB
-    for node in all_nodes:
-        lfb = node.last_finalized_block()
-        ft = float(lfb.blockInfo.faultTolerance)
-        assert ft >= node_conf.ftt, (
-            f"{node.name}: post-recovery LFB #{lfb.blockInfo.blockNumber} "
-            f"has FT={ft}, expected >= FTT={node_conf.ftt}"
-        )
-
-    logging.info(
-        "Network recovered after slow deploy (LFB spread: %d, FT >= FTT=%.2f)",
-        spread,
-        node_conf.ftt,
-    )
 
 
 def test_ft_convergence(shared_shard, node_conf, timeouts) -> None:

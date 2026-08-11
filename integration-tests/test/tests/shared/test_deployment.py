@@ -3,14 +3,8 @@ Deploy Lifecycle Integration Tests
 
 Tests for the full deploy lifecycle on a shared shard:
 1. Invalid syntax — rejected at API level, pipeline not poisoned
-2. Insufficient phlo — included in block but marked as errored
-3. Cross-validator deploy lookup — same deploy resolves to same block
-4. Exploratory deploy error handling — invalid Rholang returns error, not empty
-
-Previously, deploying with insufficient phlo triggered NeglectedInvalidBlock
-crashes. This was resolved by fixing non-deterministic merge ordering in
-the consensus layer (EventLogIndex, DeployChainIndex, ConflictSetMerger)
-and adding transient-error recovery in the Proposer.
+2. Cross-validator deploy lookup — same deploy resolves to same block
+3. Exploratory deploy error handling — invalid Rholang returns error, not empty
 """
 
 import logging
@@ -18,9 +12,9 @@ import logging
 import pytest
 from f1r3fly.client import F1r3flyClientException
 
-from ...infra.assertions import assert_deploy_errored, assert_deploy_succeeded
+from ...infra.assertions import assert_deploy_succeeded
 from ...infra.keys import VALIDATOR1_ID
-from ...infra.polling import poll_until, wait_for_deploy_included
+from ...infra.polling import wait_for_deploy_included
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -45,8 +39,6 @@ def test_deploy_invalid_syntax_rejected(shared_shard, timeouts) -> None:
     deploy_id = v1.deploy_string(
         '@"valid-after-invalid"!(42)',
         v1_key,
-        phlo_limit=100_000_000,
-        phlo_price=1,
     )
 
     block_info = wait_for_deploy_included(v1, deploy_id, timeout=timeouts.deploy_inclusion)
@@ -56,57 +48,6 @@ def test_deploy_invalid_syntax_rejected(shared_shard, timeouts) -> None:
     assert_deploy_succeeded(full_block, deploy_id)
 
     logging.info("Invalid syntax rejected, valid deploy succeeded in block %s", block_hash[:16])
-
-
-@pytest.mark.allow_forbidden_patterns("ComputationOutOfPhlogistons")
-def test_deploy_insufficient_phlo_errored(shared_shard, timeouts) -> None:
-    """Deploy with insufficient phlo is included in a block but marked as errored.
-
-    Deploys '@1!(1)' with phlo_limit=10 (too low -- even this minimal
-    contract costs ~97 phlo). Heartbeat auto-proposes the block. The deploy
-    is in the block with errored=True.
-
-    All nodes must advance LFB by 3+ blocks after the errored deploy,
-    proving no NeglectedInvalidBlock crash.
-    """
-    v1 = shared_shard.node("validator1")
-
-    deploy_id = v1.deploy_string(
-        "@1!(1)",
-        VALIDATOR1_ID.private_key(),
-        phlo_limit=10,
-        phlo_price=1,
-    )
-    logging.info("Deployed with insufficient phlo, deploy_id=%s", deploy_id[:24])
-
-    light_block = wait_for_deploy_included(v1, deploy_id, timeouts.deploy_inclusion)
-    block_hash = light_block.blockHash
-    logging.info(
-        "Deploy found in block %s (blockNumber=%d)",
-        block_hash[:16],
-        light_block.blockNumber,
-    )
-
-    block_info = v1.get_block(block_hash)
-    assert_deploy_errored(block_info, deploy_id)
-
-    logging.info("Insufficient phlo deploy correctly marked as errored")
-
-    # All nodes must advance LFB by 3+ blocks — proves no crash
-    target = light_block.blockNumber + 3
-    for node in shared_shard.all_nodes:
-        poll_until(
-            predicate=lambda n=node: (
-                n.last_finalized_block().blockInfo.blockNumber
-                if n.last_finalized_block().blockInfo.blockNumber >= target
-                else None
-            ),
-            timeout=timeouts.finalization * 3,
-            interval=5.0,
-            description=f"{node.name} LFB >= #{target}",
-        )
-
-    logging.info("All nodes advanced LFB past #%d after errored deploy", target)
 
 
 def test_deploy_lookup_consistent_across_validators(shared_shard, timeouts) -> None:
@@ -121,8 +62,6 @@ def test_deploy_lookup_consistent_across_validators(shared_shard, timeouts) -> N
     deploy_id = v1.deploy_string(
         '@"deploy-lookup-test"!(1)',
         VALIDATOR1_ID.private_key(),
-        phlo_limit=100_000_000,
-        phlo_price=1,
     )
 
     block_hashes = {}

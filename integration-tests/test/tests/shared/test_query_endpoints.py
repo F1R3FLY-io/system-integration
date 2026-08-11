@@ -304,7 +304,6 @@ def test_registry_endpoint(shared_shard, timeouts) -> None:
     deploy_id = v1.deploy_string(
         rholang,
         VALIDATOR1_ID.private_key(),
-        phlo_limit=100_000,
     )
     wait_for_deploy_finalized(v1, deploy_id, timeouts.finalization)
 
@@ -334,7 +333,6 @@ def test_query_with_block_hash(shared_shard, timeouts) -> None:
     deploy_id = v1.deploy_string(
         "@9999!(0)",
         VALIDATOR1_ID.private_key(),
-        phlo_limit=100_000,
     )
     status = wait_for_deploy_finalized(v1, deploy_id, timeouts.finalization)
     block_hash = status.latestBlockHash.hex()

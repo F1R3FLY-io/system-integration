@@ -336,7 +336,7 @@ Things that are safe:
 
 - **`pytest.skip()` inside a test** — runtime condition, environment-dependent (e.g., "skip on standalone where validator and readonly are the same node")
 - **`@pytest.mark.skip(reason=...)`** — class- or function-level skip. Prefer this over bare `skip()` if the condition is static.
-- **`--deselect path::test` in CLI or CI** — known-broken test you want out of a specific run without touching source. See `tests/shared/test_convergence.py::test_network_converges_after_slow_deploy` as an example (triggers #437 shard stall).
+- **`--deselect path::test` in CLI or CI** — known-broken test you want out of a specific run without touching source.
 - **Delete the test** — feature removed or superseded.
 
 Don't skip silently without a clear reason string. Don't deselect indefinitely — put an issue link + a triage date.

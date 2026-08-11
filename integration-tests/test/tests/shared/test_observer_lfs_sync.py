@@ -71,7 +71,6 @@ _MIN_PRE_ATTACH_DEPTH = 12
 # advancing during the observer attach window without saturating the
 # horizon density (which can stretch sync past timeout).
 _BG_LOAD_INTERVAL = 2.5
-_BG_LOAD_PHLO_LIMIT = 100_000_000
 
 # How long to keep load running after observer attaches before stopping
 # and asserting drift convergence. Enough to give the observer a chance
@@ -141,8 +140,6 @@ class _BackgroundLoad:
                 node.deploy_string(
                     f'@"obs-lfs-bg-{self._counter}"!({self._counter})',
                     identity.private_key(),
-                    phlo_limit=_BG_LOAD_PHLO_LIMIT,
-                    phlo_price=1,
                 )
             except Exception as e:
                 self._errors += 1

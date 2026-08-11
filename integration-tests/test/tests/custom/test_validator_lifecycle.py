@@ -7,8 +7,7 @@ state (the surface bug-d lived on). Runs on its own ``provider.create_shard``
 shard (3 genesis validators + 3 joiners + readonly), destroyed at the end.
 
 Coverage (see project-validator-lifecycle-test-design memory for the matrix):
-  - bond: happy, already-bonded, below-minimum, above-maximum, Mode-B deposit
-    failure (contract (false, msg) returns, not deploy failures)
+  - bond: happy, already-bonded, below-minimum, and above-maximum
   - concurrent multi-bond + cross-node bonds-cache consistency (grow)
   - withdraw: pending -> multi-element epoch-move -> multi-element quarantine
     payout; not-bonded; double-withdraw edge
@@ -43,7 +42,6 @@ from ...infra.assertions import (
     assert_all_deploys_finalized_on_all_nodes,
     assert_block_finalized_on_all_nodes,
     assert_bonds_map_consistent_across_nodes,
-    assert_deploy_errored,
 )
 from ...infra.config import ShardConfig
 from ...infra.keys import (
@@ -82,12 +80,7 @@ _BOND_MAXIMUM = 1000
 _EPOCH_LENGTH = 4
 _QUARANTINE_LENGTH = 10
 
-_WALLET_BALANCE = 50_000_000_000_000_000  # joiners: cover phlo + stake
-_BOND_PHLO_LIMIT = 100_000_000
-_BOND_PHLO_PRICE = 1
-# Mode-A out-of-phlo: a phlo_limit large enough to precharge but far too small to run the
-# bond contract to completion, so the deploy runs out of phlo mid-execution and errors.
-_MODE_A_PHLO_LIMIT = 50_000
+_WALLET_BALANCE = 50_000_000_000_000_000
 
 # Only the bond bounds genuinely deviate from rust.conf / node defaults.
 # epoch-length, quarantine-length, and synchrony-constraint-threshold=0 are
@@ -117,19 +110,10 @@ _BG_TRANSFER_AMOUNT = 1
 # mirroring the user-contract test.
 _BG_LOAD_ENABLED = True
 
-# Throwaway deployer keys for the bond/withdraw rejection branches. They must be
-# funded so the deploy precharges successfully and the contract reaches its
-# amount/bond checks — an unfunded key would fail precharge (out-of-phlo)
-# instead of returning the clean (false, reason) we assert.
+# Throwaway deployer keys for the bond/withdraw rejection branches. They are
+# funded so D3 admission succeeds and the contract reaches its amount checks.
 _THROWAWAY_BOND_KEY = PrivateKey.from_seed(80001)
 _THROWAWAY_WITHDRAW_KEY = PrivateKey.from_seed(80002)
-
-# Mode-B deposit-fail wallet: funded JUST over the phlo precharge (phlo_limit*price)
-# but under the bond amount. The deploy's precharge reserves the full phlo_limit, so
-# the contract's bond-deposit transfer then fails for insufficient balance ->
-# (false, "Bond deposit failed: ..."), distinct from out-of-phlo (Mode A).
-_MODE_B_KEY = PrivateKey.from_seed(80003)
-_MODE_B_BALANCE = _BOND_PHLO_LIMIT + 500  # ~500 left after precharge, < bond amount
 
 
 class _BackgroundLoad:
@@ -179,8 +163,6 @@ class _BackgroundLoad:
                     _BG_DST_ADDR,
                     _BG_TRANSFER_AMOUNT,
                     _BG_SRC_KEY,
-                    phlo_price=1,
-                    phlo_limit=_BOND_PHLO_LIMIT,
                 )
                 with self._lock:
                     self._deploy_ids.append(did)
@@ -300,8 +282,6 @@ def _attach_prebond(shard, identity, timeouts):
     joiner.deploy_string(
         f'@"pre-bond-{identity.name}"!(0)',
         identity.private_key(),
-        phlo_limit=_BOND_PHLO_LIMIT,
-        phlo_price=_BOND_PHLO_PRICE,
     )
     with pytest.raises(F1r3flyClientException):
         joiner.propose()
@@ -395,8 +375,6 @@ def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bo
     joiner.deploy_string(
         f'@"active-{identity.name}"!(1)',
         identity.private_key(),
-        phlo_limit=_BOND_PHLO_LIMIT,
-        phlo_price=_BOND_PHLO_PRICE,
     )
 
     def _joiner_proposed():
@@ -422,8 +400,6 @@ def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bo
     proposer.deploy_string(
         f'@"after-{identity.name}"!(2)',
         proposer_id.private_key(),
-        phlo_limit=_BOND_PHLO_LIMIT,
-        phlo_price=_BOND_PHLO_PRICE,
     )
 
     def _proposer_justifies_joiner():
@@ -463,8 +439,6 @@ def _assert_full_liveness(shard, active, timeouts):
         live_id = node.deploy_string(
             f'@"liveness-{node.name}"!(1)',
             node_id.private_key(),
-            phlo_limit=_BOND_PHLO_LIMIT,
-            phlo_price=_BOND_PHLO_PRICE,
         )
         live_block = wait_for_deploy_included(node, live_id, timeouts.deploy_inclusion * 5)
         wait_for_finalized(node, live_block.blockNumber, timeouts.finalization * 5)
@@ -676,8 +650,6 @@ def lifecycle_shard(provider, timeouts):
     extra_wallets.append(
         (_THROWAWAY_WITHDRAW_KEY.get_public_key().get_vault_address(), _WALLET_BALANCE)
     )
-    extra_wallets.append((_MODE_B_KEY.get_public_key().get_vault_address(), _MODE_B_BALANCE))
-
     config = ShardConfig(
         bonds=[
             (VALIDATOR1_ID, _GENESIS_STAKE),
@@ -697,7 +669,6 @@ def lifecycle_shard(provider, timeouts):
         shard.destroy()
 
 
-@pytest.mark.allow_forbidden_patterns("ComputationOutOfPhlogistons")
 def test_validator_lifecycle(lifecycle_shard, timeouts) -> None:
     shard = lifecycle_shard
     v1, v2, v3 = (shard.node("validator1"), shard.node("validator2"), shard.node("validator3"))
@@ -860,13 +831,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     _assert_withdraw_rejected(
         v1, shard.all_nodes, ro, _THROWAWAY_WITHDRAW_KEY, "not bonded", timeouts
     )
-    # Mode-B deposit-fail: wallet funded just over the phlo precharge but under the
-    # bond amount -> precharge succeeds, the contract's bond deposit transfer fails
-    # -> (false, "Bond deposit failed: ..."). amount = bond-maximum (passes min/max).
-    _assert_bond_rejected(
-        v1, shard.all_nodes, ro, _MODE_B_KEY, _BOND_MAXIMUM, "Bond deposit failed", timeouts
-    )
-    logging.info("Phase 2: bond/withdraw rejection branches verified (incl. Mode-B deposit-fail)")
+    logging.info("Phase 2: bond/withdraw rejection branches verified")
 
     g1_pk = VALIDATOR1_ID.public_hex
 
@@ -978,16 +943,12 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     j4.deploy_string(
         f'@"postwd-{VALIDATOR4_ID.name}"!(0)',
         VALIDATOR4_ID.private_key(),
-        phlo_limit=_BOND_PHLO_LIMIT,
-        phlo_price=_BOND_PHLO_PRICE,
     )
     with pytest.raises(F1r3flyClientException):
         j4.propose()
     v6_live = j6.deploy_string(
         f'@"live-{VALIDATOR6_ID.name}"!(1)',
         VALIDATOR6_ID.private_key(),
-        phlo_limit=_BOND_PHLO_LIMIT,
-        phlo_price=_BOND_PHLO_PRICE,
     )
     v6_block = wait_for_deploy_included(j6, v6_live, timeouts.deploy_inclusion * 5)
     wait_for_finalized(j6, v6_block.blockNumber, timeouts.finalization * 5)
@@ -1114,34 +1075,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     )
     logging.info("Phase 12: posVaultTransfer correctly denied for a non-PoS deployer key")
 
-    # ── Phase 13: Mode-A out-of-phlo bond (deploy-failure mode; Issue A territory) ──
-    # A bond with a phlo_limit too small to complete runs out of phlo mid-execution: the
-    # deploy ERRORS (full phlo charged, bond NOT applied), distinct from Mode-B's clean
-    # (false, msg). Per Issue A (f1r3node-rust#47) out-of-phlo can diverge play vs replay;
-    # we do NOT skip it — if it arises, the all-node-finalize check surfaces it AS Issue A.
-    bonds_before_a = ro.pos.get_bonds()
-    mode_a_id = v1.pos.bond(_THROWAWAY_BOND_KEY, _BOND_MAXIMUM, phlo_limit=_MODE_A_PHLO_LIMIT)
-    a_block = wait_for_deploy_included(v1, mode_a_id, timeouts.deploy_inclusion * 3)
-    wait_for_finalized(v1, a_block.blockNumber, timeouts.finalization * 3)
-    try:
-        assert_block_finalized_on_all_nodes(
-            shard.all_nodes, a_block.blockHash, timeout=timeouts.finalization * 3
-        )
-    except AssertionError as e:
-        raise AssertionError(
-            "Mode-A out-of-phlo block did not finalize on all nodes — this is Issue A "
-            "(f1r3node-rust#47: out-of-phlo play/replay divergence -> InvalidTransaction). "
-            f"Fix the replay path, do not skip the case: {e}"
-        ) from e
-    assert_deploy_errored(v1.get_block(a_block.blockHash), mode_a_id)
-    assert ro.pos.get_bonds() == bonds_before_a, (
-        f"Mode-A out-of-phlo must not bond: before={bonds_before_a} after={ro.pos.get_bonds()}"
-    )
-    logging.info(
-        "Phase 13: Mode-A out-of-phlo bond errored, bonds unchanged, finalized on all nodes"
-    )
-
-    # ── Phase 14: auth-token-gated system methods reject a bogus token ────────────
+    # ── Phase 13: auth-token-gated system methods reject a bogus token ────────────
     # chargeDeploy / refundDeploy / closeBlock are user-callable (single write-enabled PoS
     # bundle) but reject a bogus token (Nil) before any work, so no state changes.
     bonds_before_t = ro.pos.get_bonds()
@@ -1155,5 +1089,5 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         f"bogus-token system calls must not mutate state: {bonds_before_t} -> {ro.pos.get_bonds()}"
     )
     logging.info(
-        "Phase 14: chargeDeploy/refundDeploy/closeBlock reject a bogus auth token, no state change"
+        "Phase 13: chargeDeploy/refundDeploy/closeBlock reject a bogus auth token, no state change"
     )

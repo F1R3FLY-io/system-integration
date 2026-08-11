@@ -147,7 +147,6 @@ def _deploy_bridge(shared_shard, timeouts):
         find_timeout,
         lfb_timeout,
         rho_file=BRIDGE_CONTRACT,
-        phlo_limit=500_000_000,
     )
 
     target = block_number + 1
@@ -211,9 +210,7 @@ def _query_bridge(node, query_uri: str, method: str, private_key, find_timeout, 
     """
     term = _make_query_rho(query_uri, method)
     try:
-        return deploy_and_read(
-            node, term, private_key, find_timeout, lfb_timeout, phlo_limit=500_000_000
-        )
+        return deploy_and_read(node, term, private_key, find_timeout, lfb_timeout)
     except EmptyParListError as err:
         logging.warning(
             "%s query on %s read an empty deployId channel (%s); retrying once on a fresh tip",
@@ -221,9 +218,7 @@ def _query_bridge(node, query_uri: str, method: str, private_key, find_timeout, 
             node.name,
             err,
         )
-        return deploy_and_read(
-            node, term, private_key, find_timeout, lfb_timeout, phlo_limit=500_000_000
-        )
+        return deploy_and_read(node, term, private_key, find_timeout, lfb_timeout)
 
 
 def test_bridge_api_real_deploy(shared_shard, timeouts) -> None:
