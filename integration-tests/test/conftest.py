@@ -117,6 +117,15 @@ def pytest_addoption(parser):
         "CPU-saturation freeze. Subprocess provider only. 0 disables. Default 8.0.",
     )
     group.addoption(
+        "--readonly-history-blocks",
+        action="store",
+        type=int,
+        default=40,
+        help="Number of blocks of history to build before attaching the observer "
+        "in the readonly catch-up regression. Raise it to make catch-up deeper; "
+        "each block costs one propose round trip.",
+    )
+    group.addoption(
         "--provider",
         action="store",
         default="docker",
@@ -135,6 +144,9 @@ def pytest_configure(config):
             "--skip-setup requires --session-id <id>. "
             "The session ID is printed by a prior `shardctl test --keep-running` run."
         )
+
+    if config.getoption("--readonly-history-blocks") <= 0:
+        raise pytest.UsageError("--readonly-history-blocks must be a positive integer")
 
     config.addinivalue_line(
         "markers",
@@ -220,6 +232,12 @@ def node_conf() -> NodeConf:
 @pytest.fixture(scope="session")
 def resource_paths() -> ResourcePaths:
     return ResourcePaths.resolve()
+
+
+@pytest.fixture(scope="session")
+def readonly_history_blocks(request) -> int:
+    """Blocks of history to build before attaching the catch-up observer."""
+    return request.config.getoption("--readonly-history-blocks")
 
 
 @pytest.fixture(scope="session")

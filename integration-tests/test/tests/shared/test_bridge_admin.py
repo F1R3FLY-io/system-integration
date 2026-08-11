@@ -15,121 +15,22 @@ count_view index bug causing GPrivate ID collisions (fixed in PR #468).
 import logging
 
 import pytest
-from f1r3fly.par import par_as_int, par_as_list, par_as_string, par_as_uri
+from f1r3fly.par import par_as_int, par_as_string
 
+from ...infra.bridge import (
+    BRIDGE_CONTRACT,
+    extract_bridge_uris,
+    make_query_rho,
+    wait_for_registry_visible,
+)
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import (
     EmptyParListError,
     deploy_and_read,
-    poll_until,
     wait_for_finalized,
 )
 
 pytestmark = pytest.mark.xdist_group("shared")
-
-
-BRIDGE_CONTRACT = "resources/bridge-v2.rho"
-
-
-def _make_query_rho(query_uri: str, method: str, param: str = "Nil") -> str:
-    return f"""
-new deployId(`rho:system:deployId`),
-    lookup(`rho:registry:lookup`),
-    queryCh,
-    ret
-in {{
-  lookup!(`{query_uri}`, *queryCh) |
-  for (query <- queryCh) {{
-    query!("{method}", {param}, *ret) |
-    for (@result <- ret) {{
-      deployId!(result)
-    }}
-  }}
-}}
-"""
-
-
-def _extract_bridge_uris(pars):
-    """Extract and validate the 3 bridge URIs from the deploy data.
-
-    bridge-v2.rho writes multiple values to deployId during deploy:
-      deployId!(["address", bridgeVaultAddr])
-      deployId!("initialized state channels")
-      deployId!([queryUri, lockUri, unlockUri])
-
-    We find the Par that is a list of 3 URIs.
-    Returns (query_uri, lock_uri, unlock_uri).
-    """
-    for par in pars:
-        try:
-            items = par_as_list(par)
-        except ValueError:
-            continue
-        if len(items) != 3:
-            continue
-        try:
-            uris = [par_as_uri(item) for item in items]
-        except ValueError:
-            continue
-        if all(u.startswith("rho:id:") for u in uris):
-            return uris[0], uris[1], uris[2]
-
-    par_summaries = [str(p)[:80] for p in pars]
-    raise AssertionError(
-        f"Could not find [queryUri, lockUri, unlockUri] in deploy data. "
-        f"Got {len(pars)} par entries: {par_summaries}"
-    )
-
-
-def _wait_for_registry_visible(nodes, query_uri: str, timeout: int) -> None:
-    """Block until the bridge registry entry answers queries in each node's
-    canonical LFB state.
-
-    Only pass nodes that SERVE exploratory deploys — the readonly observer.
-    ``registry_query`` is an exploratory deploy, and the node rejects those on
-    bonded/boot nodes outright ("Exploratory deploy can only be executed on
-    read-only node", casper block_api). Polling such a node turns this barrier
-    into a guaranteed timeout: the error is swallowed by the fail-soft retry
-    and reads as permanent invisibility. That exact mistake (polling
-    ``all_nodes``) failed every Heavy Pipeline slot on f1r3node-rust run
-    31284483534 while the node itself was healthy.
-
-    Block finalization does not finalize a deploy's *effects*: a conflict-set
-    merge on a later block can reject an already-finalized deploy (e.g. a
-    registry TreeHashMap insert conflicting with a parallel branch), and the
-    rejected-deploy buffer purges entries whose canonical win is finalized, so
-    the registry insert can vanish from the canonical lineage while the bridge
-    deploy still reports Finalized. Observed in f1r3node-rust CI run
-    31150220859: ``DagMerger rejected 1 user deploys`` for the bridge deploy
-    after its block finalized, then ``getNonce`` read an empty deployId
-    channel three steps downstream. Failing here names the precondition that
-    actually broke instead of surfacing an opaque "empty par list" later.
-
-    Uses exploratory ``registry_query`` (no blocks, no phlo), so polling is
-    free.
-    """
-    for node in nodes:
-
-        def _visible(node=node):
-            lfb_hash = node.last_finalized_block().blockInfo.blockHash
-            try:
-                pars = node.registry_query(query_uri, "getNonce", block_hash=lfb_hash)
-            except Exception as err:
-                logging.debug("registry_query on %s not ready: %s", node.name, err)
-                return None
-            return pars or None
-
-        poll_until(
-            predicate=_visible,
-            timeout=timeout,
-            description=(
-                f"bridge registry entry visible in canonical LFB state on {node.name} "
-                "(timeout here means the bridge deploy's effects were likely rejected "
-                "by merge after block finalization; check DagMerger / "
-                "RejectedDeployBuffer entries in the node logs)"
-            ),
-        )
-    logging.info("Bridge registry entry visible in canonical state")
 
 
 def _deploy_bridge(shared_shard, timeouts):
@@ -155,7 +56,7 @@ def _deploy_bridge(shared_shard, timeouts):
         wait_for_finalized(node, target, lfb_timeout)
     logging.info("All nodes finalized past bridge block #%d", block_number)
 
-    query_uri, lock_uri, unlock_uri = _extract_bridge_uris(deploy_pars)
+    query_uri, lock_uri, unlock_uri = extract_bridge_uris(deploy_pars)
     logging.info("  queryUri:  %s", query_uri)
     logging.info("  lockUri:   %s", lock_uri)
     logging.info("  unlockUri: %s", unlock_uri)
@@ -163,7 +64,7 @@ def _deploy_bridge(shared_shard, timeouts):
     # Readonly only: it is the one node that serves exploratory queries, and
     # its LFB view is the canonical-state vantage the queries below rely on.
     # The all-nodes finalization wait above already covers the validators.
-    _wait_for_registry_visible([shared_shard.readonly], query_uri, lfb_timeout)
+    wait_for_registry_visible([shared_shard.readonly], query_uri, lfb_timeout)
     return query_uri, lock_uri, unlock_uri
 
 
@@ -201,7 +102,7 @@ def test_bridge_api_exploratory(shared_shard, timeouts) -> None:
 def _query_bridge(node, query_uri: str, method: str, private_key, find_timeout, lfb_timeout):
     """``deploy_and_read`` of a bridge query, retrying once on an empty read.
 
-    ``_make_query_rho`` fails silently on a registry lookup miss (the ``for``
+    ``make_query_rho`` fails silently on a registry lookup miss (the ``for``
     continuation never fires), so a proposer whose merged pre-state
     transiently excludes the registry entry finalizes an empty deployId
     channel — surfacing as ``EmptyParListError`` even after
@@ -209,7 +110,7 @@ def _query_bridge(node, query_uri: str, method: str, private_key, find_timeout, 
     deploy lands on a newer tip; a second empty read means the entry is
     durably gone and the error propagates.
     """
-    term = _make_query_rho(query_uri, method)
+    term = make_query_rho(query_uri, method)
     try:
         return deploy_and_read(
             node, term, private_key, find_timeout, lfb_timeout, phlo_limit=500_000_000

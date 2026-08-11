@@ -23,7 +23,12 @@ import pytest
 
 from ...infra.assertions import assert_deploy_errored
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import poll_until, wait_for_deploy_included, wait_for_lfb_converged
+from ...infra.polling import (
+    lfb_number,
+    poll_until,
+    wait_for_deploy_included,
+    wait_for_lfb_converged,
+)
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -48,10 +53,6 @@ new stdout(`rho:io:stdout`) in {
 """
 
 
-def _get_lfb_number(node) -> int:
-    return node.last_finalized_block().blockInfo.blockNumber
-
-
 def _poll_lfb_all_nodes(nodes, target, timeout):
     """Poll until LFB reaches target on all nodes.
 
@@ -69,7 +70,7 @@ def _poll_lfb_all_nodes(nodes, target, timeout):
             if node.name not in remaining:
                 continue
             try:
-                if _get_lfb_number(node) >= target:
+                if lfb_number(node) >= target:
                     remaining.discard(node.name)
             except Exception:
                 pass
@@ -104,7 +105,7 @@ def test_network_recovers_from_validator_pause(shared_shard, node_conf, timeouts
         )
     logging.info("Pre-pause deploys submitted to all validators")
 
-    baseline_lfb = _get_lfb_number(validators[0])
+    baseline_lfb = lfb_number(validators[0])
     logging.info("Baseline LFB: block #%d", baseline_lfb)
 
     logging.info("Pausing validator1 for 30s to force DAG divergence...")
@@ -161,18 +162,16 @@ def test_network_converges_after_slow_deploy(shared_shard, node_conf, timeouts) 
     validators = shared_shard.validators
     all_nodes = shared_shard.all_nodes
 
-    baseline_lfb = _get_lfb_number(validators[0])
+    baseline_lfb = lfb_number(validators[0])
     if baseline_lfb == 0:
         logging.info("Waiting for initial LFB advancement...")
         poll_until(
-            predicate=lambda: (
-                _get_lfb_number(validators[0]) if _get_lfb_number(validators[0]) > 0 else None
-            ),
+            predicate=lambda: lfb_number(validators[0]) if lfb_number(validators[0]) > 0 else None,
             timeout=timeouts.finalization,
             interval=5.0,
             description="initial LFB > 0",
         )
-        baseline_lfb = _get_lfb_number(validators[0])
+        baseline_lfb = lfb_number(validators[0])
 
     logging.info("Baseline LFB: #%d", baseline_lfb)
 

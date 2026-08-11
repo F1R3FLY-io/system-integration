@@ -67,6 +67,46 @@ def find_events(logs: str, **fields: object) -> List[dict]:
     ]
 
 
+# ── Expected progress markers ─────────────────────────────────────────
+#
+# Substrings tests wait FOR, as opposed to FORBIDDEN_PATTERNS below, which they
+# must never see. Centralized for the same reason: each one couples a test to a
+# node log line, so when the node rewords one there is a single place to fix
+# rather than a grep across suites. Every entry names the node behaviour it
+# marks, not the test that waits on it.
+SYNC_MARKERS: Dict[str, str] = {
+    # Node has begun requesting the approved state from its peers — the start of
+    # last-finalized-state sync on a fresh observer or joiner.
+    "ApprovedStateRequestStarted": "request_approved_state: start",
+    # LFS block requester's stream is up, so block requests are being issued and
+    # their responses tracked. Emitted after the approved state is settled.
+    "LfsBlockRequesterStarted": "LFS Block Requester stream initialized",
+    # Requested blocks went unanswered within the requester's window and are
+    # being re-requested. The retry path, not an error.
+    "BlockRequestResend": "No responses for",
+    # Heartbeat proposer created a block. Fires for every heartbeat-created
+    # block, whether or not it carried user deploys.
+    "HeartbeatBlockCreated": "Heartbeat: Successfully created block",
+    # A peer was dropped from the connections table, after its heartbeat failure
+    # streak reached the configured threshold.
+    "PeerRemoved": "Removing peer",
+}
+
+
+def marker(key: str) -> str:
+    """Return the node log substring registered under ``key``.
+
+    Raises ``KeyError`` naming the available keys, so a typo fails at once rather
+    than as a poll that can never succeed.
+    """
+    try:
+        return SYNC_MARKERS[key]
+    except KeyError:
+        raise KeyError(
+            f"unknown sync marker {key!r}; registered markers: {sorted(SYNC_MARKERS)}"
+        ) from None
+
+
 # ── Forbidden-pattern scanning ────────────────────────────────────────
 
 

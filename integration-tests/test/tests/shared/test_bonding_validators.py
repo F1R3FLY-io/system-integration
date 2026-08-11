@@ -201,32 +201,6 @@ class _BackgroundLoad:
             self._stop.wait(self._interval)
 
 
-def _assert_bg_load_deploys_finalized(
-    producers: List,
-    deploy_ids: List[str],
-    timeouts,
-    label: str,
-) -> None:
-    """Every bg-load deploy must land in a block that finalizes.
-
-    Regression detector for the fork-choice + multi-parent merge orphan path.
-    A bg-load deploy that lands in a block losing fork choice and never
-    being cited as a secondary parent within max_parent_depth means the
-    deploy is silently dropped — user-visible work goes unfinalized while
-    the chain progresses on heartbeat-only blocks. The phlo-cost tiebreaker
-    is meant to prevent that; this assertion fails loud if a future change
-    regresses either the tiebreaker or the recovery path.
-    """
-    # Delegates to the shared, re-homing-aware deploy-status helper. A bg-load
-    # deploy whose first block loses fork choice and is re-included into a
-    # finalized descendant is correctly counted finalized; the old find_deploy +
-    # block-hash check falsely flagged it as dropped work. Checks all producers
-    # (stronger than the previous producers[0]-only check).
-    assert_all_deploys_finalized_on_all_nodes(
-        producers, deploy_ids, timeouts.finalization * 2, label=label
-    )
-
-
 def _dump_block_search_diagnostic(
     nodes: List,
     label: str,
@@ -595,10 +569,14 @@ def _bond_lifecycle(
     # must end up in a finalized block. Run only on the lifecycle call that
     # owns the bg_load (Phase A), not on Phase B which receives bg_load=None.
     if bg_load is not None:
-        _assert_bg_load_deploys_finalized(
-            producers=[v1, v2, v3],
-            deploy_ids=bg_load.deploy_ids(),
-            timeouts=timeouts,
+        # Every bg-load deploy must land in a block that finalizes: one that loses
+        # fork choice and is never cited as a secondary parent within
+        # max_parent_depth is silently dropped user work. Re-homing-aware, so a
+        # deploy re-included in a finalized descendant still counts.
+        assert_all_deploys_finalized_on_all_nodes(
+            [v1, v2, v3],
+            bg_load.deploy_ids(),
+            timeouts.finalization * 2,
             label=f"Phase A ({joiner_identity.name})",
         )
 

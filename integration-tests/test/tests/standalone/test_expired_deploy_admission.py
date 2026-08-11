@@ -22,8 +22,6 @@ from ...infra.node import Node
 from ...infra.polling import wait_for_deploy_finalized
 from ...infra.types import NodeRole
 
-_DEPLOY_LIFESPAN = 50
-
 # Attempts allowed for the accepted-case submission. The boundary is only one
 # block wide, so a heartbeat block landing between probing the boundary and
 # submitting against it flips the accepted case to expired; re-probe and retry
@@ -84,7 +82,6 @@ def test_expired_deploy_rejected_at_admission(provider, timeouts) -> None:
 
     try:
         height, lifespan = _current_boundary()
-        assert lifespan == _DEPLOY_LIFESPAN
 
         # At the boundary: refused. Safe against block advance — a growing
         # latest_block_number only pushes this deploy further outside the window.
@@ -111,7 +108,9 @@ def test_expired_deploy_rejected_at_admission(provider, timeouts) -> None:
         )
         wait_for_deploy_finalized(node, accepted_id, timeouts.finalization)
 
-        with pytest.raises(F1r3flyClientException):
+        # The refused deploy must be absent from the DAG, not merely unfinalized.
+        # match= keeps an unreachable node from passing this as a "not found".
+        with pytest.raises(F1r3flyClientException, match="(?i)not found|no block"):
             node.find_deploy(expired.sig.hex())
         assert node.is_running()
     finally:

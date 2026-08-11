@@ -16,13 +16,16 @@ import requests
 
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.resource_monitor import OBSERVER_MEMORY_CEILING_MB, sample_peak_memory_mb
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
 
-_OBSERVER_MEMORY_CEILING_MB = 1500
-
 _EXCESS_COUNT = 8
+
+# Memory sampling gap. Kept tighter than the shared default because this test
+# watches a short overload burst rather than a minutes-long catch-up.
+_MEMORY_SAMPLE_INTERVAL = 0.1
 
 # Seconds between occupying the permit and sending the excess requests.
 _EXCESS_DELAY = 0.5
@@ -72,16 +75,13 @@ def test_observer_exploratory_overload_recovers(observer_shard, timeouts) -> Non
     observer = observer_shard.readonly
     url = f"{observer.http_url}/api/explore-deploy"
     stop = threading.Event()
-    memory_samples = []
+    memory_samples: list = []
 
-    def sample_memory() -> None:
-        while not stop.is_set():
-            memory = float(observer.resource_usage().get("memory_mb", 0) or 0)
-            if memory > 0:
-                memory_samples.append(memory)
-            stop.wait(0.1)
-
-    sampler = threading.Thread(target=sample_memory, daemon=True)
+    sampler = threading.Thread(
+        target=sample_peak_memory_mb,
+        args=(observer, stop, memory_samples, _MEMORY_SAMPLE_INTERVAL),
+        daemon=True,
+    )
     sampler.start()
 
     try:
@@ -131,7 +131,7 @@ def test_observer_exploratory_overload_recovers(observer_shard, timeouts) -> Non
     assert [response.status_code for response in responses] == [503] * len(responses)
     assert all(response.json().get("error") == "observer_busy" for response in responses)
     assert memory_samples, "observer resource usage was never available"
-    assert max(memory_samples) < _OBSERVER_MEMORY_CEILING_MB
+    assert max(memory_samples) < OBSERVER_MEMORY_CEILING_MB
     assert observer.api_get("/status")["isReady"] is True
 
     recovered = requests.post(
