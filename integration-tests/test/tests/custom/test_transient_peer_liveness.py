@@ -27,6 +27,13 @@ _SETTLE_BUDGET = 20
 _REMOVAL_BUDGET = 20
 _REDISCOVERY_BUDGET = 20
 
+# Consecutive unchanged failure-count samples required to call the streak settled,
+# and the gap between them. Three samples one second apart span two real intervals
+# — longer than the ~1s failure cadence and the 2s discovery cleanup cycle — so a
+# quiet run cannot be one sample landing between two failures.
+_QUIET_SAMPLES = 3
+_QUIET_SAMPLE_INTERVAL = 1.0
+
 
 @pytest.fixture(scope="module")
 def fast_liveness_shard(provider, timeouts):
@@ -85,21 +92,33 @@ def test_transient_peer_failure_does_not_disconnect(fast_liveness_shard, timeout
     # for evidence of one rather than sleeping a fixed interval: the count of
     # first-failure lines must stop growing, which it only does once the peer is
     # answering again.
-    settled = observer.logs().count(first_marker)
+    #
+    # Require _QUIET_SAMPLES *consecutive* unchanged observations. A single
+    # unchanged reading proves nothing — failures accrue about once per
+    # --network-timeout (1s), so any one sample can fall between two of them, and
+    # poll_until evaluates its predicate before checking the deadline, so a
+    # predicate satisfied by one reading returns immediately without waiting at
+    # all. `count=None` initially so the first observation only establishes the
+    # baseline and cannot score toward the streak.
+    observed = {"count": None, "streak": 0}
 
     def _failures_stopped():
-        nonlocal settled
         current = observer.logs().count(first_marker)
-        if current == settled:
-            return True
-        settled = current
-        return None
+        if observed["count"] == current:
+            observed["streak"] += 1
+        else:
+            observed["count"] = current
+            observed["streak"] = 0
+        return True if observed["streak"] >= _QUIET_SAMPLES else None
 
     poll_until(
         _failures_stopped,
         timeout=timeouts.custom(_SETTLE_BUDGET),
-        interval=1.0,
-        description="heartbeat failures stop once the restored peer answers",
+        interval=_QUIET_SAMPLE_INTERVAL,
+        description=(
+            f"{_QUIET_SAMPLES} consecutive samples with no new failure line, "
+            "proving the restored peer is answering again"
+        ),
     )
 
     first_count = observer.logs().count(first_marker)

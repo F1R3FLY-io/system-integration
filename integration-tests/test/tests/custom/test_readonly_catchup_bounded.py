@@ -26,7 +26,10 @@ from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
 
-# Seconds the observer is allowed to take to issue a /api/status response.
+# Unscaled seconds the observer is allowed to take to issue a /api/status
+# response. Run through timeouts.custom_float so --timeout-scale reaches it; this
+# value is both the request deadline and the bound being asserted, so scaling it
+# widens both together, which is what a slow runner needs.
 _PROBE_BUDGET = 2.0
 
 # Unscaled budget for the post-catch-up exploratory query, passed through
@@ -91,6 +94,8 @@ def test_readonly_catchup_parallelism_keeps_api_responsive(
         over_budget: list = []
         memory_samples: list = []
 
+        probe_budget = timeouts.custom_float(_PROBE_BUDGET)
+
         def probe_status() -> None:
             """Sample ``/api/status``, recording blown budgets as well as fast replies.
 
@@ -107,13 +112,13 @@ def test_readonly_catchup_parallelism_keeps_api_responsive(
             while not stop.is_set():
                 started = time.monotonic()
                 try:
-                    response = requests.get(url, timeout=_PROBE_BUDGET)
+                    response = requests.get(url, timeout=probe_budget)
                     if response.status_code == 200:
                         latencies.append(time.monotonic() - started)
                     else:
                         over_budget.append(f"HTTP {response.status_code}")
                 except requests.Timeout:
-                    over_budget.append(f"no response within {_PROBE_BUDGET}s")
+                    over_budget.append(f"no response within {probe_budget}s")
                 except requests.RequestException as err:
                     if latencies or over_budget:
                         over_budget.append(type(err).__name__)
@@ -157,7 +162,7 @@ def test_readonly_catchup_parallelism_keeps_api_responsive(
         assert probes >= _MIN_PROBES, f"only {probes} status probes completed"
         responsive_share = len(latencies) / probes
         assert responsive_share >= _MIN_RESPONSIVE_SHARE, (
-            f"observer answered /api/status inside {_PROBE_BUDGET}s for only "
+            f"observer answered /api/status inside {probe_budget}s for only "
             f"{responsive_share:.0%} of {probes} probes during catch-up "
             f"(floor {_MIN_RESPONSIVE_SHARE:.0%}); {len(over_budget)} exceeded it, "
             f"first few: {over_budget[:3]}"

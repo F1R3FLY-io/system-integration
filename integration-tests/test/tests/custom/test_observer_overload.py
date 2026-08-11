@@ -23,6 +23,10 @@ pytestmark = pytest.mark.xdist_group("custom")
 
 _EXCESS_COUNT = 8
 
+# Memory sampling gap. Kept tighter than the shared default because this test
+# watches a short overload burst rather than a minutes-long catch-up.
+_MEMORY_SAMPLE_INTERVAL = 0.1
+
 # Seconds between occupying the permit and sending the excess requests.
 _EXCESS_DELAY = 0.5
 
@@ -75,7 +79,7 @@ def test_observer_exploratory_overload_recovers(observer_shard, timeouts) -> Non
 
     sampler = threading.Thread(
         target=sample_peak_memory_mb,
-        args=(observer, stop, memory_samples),
+        args=(observer, stop, memory_samples, _MEMORY_SAMPLE_INTERVAL),
         daemon=True,
     )
     sampler.start()

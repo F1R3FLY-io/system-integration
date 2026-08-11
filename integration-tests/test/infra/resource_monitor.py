@@ -65,7 +65,6 @@ def sample_peak_memory_mb(node, stop, into: List[float], interval: float = 0.5) 
     (``docker stats --no-stream`` for the Docker provider, which is a subprocess
     and takes on the order of a second), so the real rate is bounded by that.
     """
-    samples = into
     while not stop.is_set():
         try:
             usage = node.resource_usage()
@@ -73,9 +72,9 @@ def sample_peak_memory_mb(node, stop, into: List[float], interval: float = 0.5) 
         except Exception:  # noqa: BLE001 — a failed sample must not kill the test
             memory = 0.0
         if memory > 0:
-            samples.append(memory)
+            into.append(memory)
         stop.wait(interval)
-    return samples
+    return into
 
 
 # Prometheus metric-name substrings worth recording for bottleneck attribution.

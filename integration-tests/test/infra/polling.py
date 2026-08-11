@@ -558,7 +558,7 @@ def propose_until_included(node, deploy_id: str, timeout: int, interval: float =
         try:
             node.propose()
         except F1r3flyClientException as exc:
-            if not any(marker in str(exc) for marker in retryable):
+            if not any(text in str(exc) for text in retryable):
                 raise
 
         try:

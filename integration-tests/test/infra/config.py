@@ -169,6 +169,10 @@ class ShardConfig:
             return self.required_signatures
         return max(0, len(self.bonds) - 1)
 
+    @property
+    def validator_count(self) -> int:
+        return len(self.bonds)
+
 
 def deterministic_history_shard_config(**overrides) -> "ShardConfig":
     """A shard whose block history is entirely test-driven.
@@ -193,10 +197,6 @@ def deterministic_history_shard_config(**overrides) -> "ShardConfig":
     )
     params.update(overrides)
     return ShardConfig(**params)
-
-    @property
-    def validator_count(self) -> int:
-        return len(self.bonds)
 
 
 @dataclasses.dataclass(frozen=True)
