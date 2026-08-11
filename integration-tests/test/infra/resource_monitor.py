@@ -19,6 +19,8 @@ with an output directory, writes:
 
 * ``resource-timeseries.csv``      — per-node RSS/CPU + a ``__system__`` row
                                       (host free/swap) per sample
+* ``resource-percore-timeseries.csv`` — per-node per-CORE CPU% (providers
+                                      whose handles expose it; Docker today)
 * ``node-metrics-timeseries.csv``  — per-node subsystem timers from /metrics
 * ``resource-summary.txt``         — peak/avg table
 """
@@ -335,6 +337,8 @@ class ResourceMonitor:
         self._ts_fh = None
         self._metrics_writer = None
         self._metrics_fh = None
+        self._percore_writer = None
+        self._percore_fh = None
         # Watchdog: if total node RSS exceeds rss_ceiling_mb for
         # ceiling_consecutive samples, kill the nodes and record a breach so the
         # run aborts before the host is driven into swap-thrash / freeze.
@@ -387,6 +391,15 @@ class ResourceMonitor:
             )
             self._metrics_writer = csv.writer(self._metrics_fh)
             self._metrics_writer.writerow(["elapsed_s", "node", "metric", "value"])
+            # Per-core CPU lives in its OWN file, not as extra rows in
+            # resource-timeseries.csv: the soak driver's awk aggregates sum
+            # cpu_percent across all rows per timestamp, so interleaving
+            # per-core rows there would double-count every node's CPU.
+            self._percore_fh = open(
+                self._output_dir / "resource-percore-timeseries.csv", "w", newline=""
+            )
+            self._percore_writer = csv.writer(self._percore_fh)
+            self._percore_writer.writerow(["elapsed_s", "node", "core", "cpu_percent"])
         self._thread = threading.Thread(target=self._sample_loop, daemon=True)
         self._thread.start()
 
@@ -468,7 +481,7 @@ class ResourceMonitor:
                     tmp.replace(marker)
                 except Exception:  # noqa: BLE001
                     pass
-        for fh in (self._ts_fh, self._metrics_fh):
+        for fh in (self._ts_fh, self._metrics_fh, self._percore_fh):
             if fh is not None:
                 try:
                     fh.close()
@@ -517,6 +530,7 @@ class ResourceMonitor:
                         "" if limit is None else f"{limit:.1f}",
                     ]
                 )
+            self._write_per_core(handle, name, elapsed)
             self._scrape_metrics(handle, name, elapsed)
 
         # System-wide row (page cache / swap not visible in per-proc RSS).
@@ -535,6 +549,8 @@ class ResourceMonitor:
             self._ts_fh.flush()
         if self._metrics_fh is not None:
             self._metrics_fh.flush()
+        if self._percore_fh is not None:
+            self._percore_fh.flush()
 
         if session_memory > self._total_peak_memory_mb:
             self._total_peak_memory_mb = session_memory
@@ -645,6 +661,26 @@ class ResourceMonitor:
             # New process under this name (or no time elapsed) — don't diff across it.
             return 0.0
         return max(0.0, (float(cpu_s) - prev_cpu) / dt * 100.0)
+
+    def _write_per_core(self, handle, name: str, elapsed: float) -> None:
+        """Record per-core CPU% rows for handles that can sample them.
+
+        Optional per the ``NodeHandle`` protocol — only the Docker handle
+        exposes ``per_core_cpu_percent()`` today; other providers silently
+        contribute no rows and the downstream node × core heatmap keeps its
+        aggregate-only rendering for those runs.
+        """
+        if self._percore_writer is None:
+            return
+        percore_fn = getattr(handle, "per_core_cpu_percent", None)
+        if percore_fn is None:
+            return
+        try:
+            per_core = percore_fn() or {}
+        except Exception:  # noqa: BLE001 — best-effort telemetry
+            return
+        for core, pct in sorted(per_core.items()):
+            self._percore_writer.writerow([f"{elapsed:.1f}", name, core, f"{pct:.1f}"])
 
     def _scrape_metrics(self, handle, name: str, elapsed: float) -> None:
         if self._metrics_writer is None:
@@ -767,6 +803,7 @@ class ResourceMonitor:
         lines.append(f"  Samples collected: {max_samples}")
         if self._output_dir is not None:
             lines.append(f"  Time-series: {self._output_dir / 'resource-timeseries.csv'}")
+            lines.append(f"  Per-core CPU: {self._output_dir / 'resource-percore-timeseries.csv'}")
             lines.append(f"  Node metrics: {self._output_dir / 'node-metrics-timeseries.csv'}")
         lines.append("=" * 90)
         return "\n".join(lines)
