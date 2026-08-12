@@ -42,8 +42,17 @@ def active_shard(provider, timeouts):
     shard.destroy()
 
 
+@pytest.mark.allow_forbidden_patterns("ObserverReporterUnusedCOMM")
 def test_observer_retries_missing_block_after_peer_returns(active_shard, timeouts) -> None:
-    """Resends are scheduled while sources are down; state matches once they return."""
+    """Resends are scheduled while sources are down; state matches once they return.
+
+    Opts out of ObserverReporterUnusedCOMM: this test starves the observer of every
+    block source on purpose, so its report replay cannot consume the recorded COMM
+    events and leaves entries behind. The pattern was added when that condition
+    panicked the reporting layer and cancelled the gRPC stream serving observer
+    queries; the node now treats it as a handled failure that abandons one report
+    without caching it, and logs it. Expected here, so it must not fail the run.
+    """
     v1 = active_shard.node("validator1")
     sources = list(active_shard.all_nodes)
     key = VALIDATOR1_ID.private_key()
