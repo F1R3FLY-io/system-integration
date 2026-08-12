@@ -10,6 +10,7 @@ duplicate cannot be executed twice.
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import pytest
 from f1r3fly.client import F1r3flyClientException
 from f1r3fly.util import create_deploy_data
 
@@ -20,6 +21,7 @@ from ...infra.polling import wait_for_deploy_finalized
 from ...infra.types import NodeRole
 
 
+@pytest.mark.requires_node_capabilities("duplicate-signed-deploy-race")
 def test_duplicate_signed_deploy_race(provider, timeouts) -> None:
     """One of 32 concurrent identical submissions is admitted and executed once."""
     config = NodeConfig(

@@ -19,7 +19,10 @@ from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.resource_monitor import OBSERVER_MEMORY_CEILING_MB, sample_peak_memory_mb
 from ...infra.shard import Shard
 
-pytestmark = pytest.mark.xdist_group("custom")
+pytestmark = [
+    pytest.mark.xdist_group("custom"),
+    pytest.mark.requires_node_capabilities("observer-exploratory-backpressure"),
+]
 
 _EXCESS_COUNT = 8
 

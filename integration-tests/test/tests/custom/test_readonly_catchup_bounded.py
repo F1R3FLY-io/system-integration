@@ -24,7 +24,10 @@ from ...infra.polling import (
 from ...infra.resource_monitor import OBSERVER_MEMORY_CEILING_MB, sample_peak_memory_mb
 from ...infra.shard import Shard
 
-pytestmark = pytest.mark.xdist_group("custom")
+pytestmark = [
+    pytest.mark.xdist_group("custom"),
+    pytest.mark.requires_node_capabilities("readonly-observer-api-catchup"),
+]
 
 # Unscaled seconds the observer is allowed to take to issue a /api/status
 # response. Run through timeouts.custom_float so --timeout-scale reaches it; this
