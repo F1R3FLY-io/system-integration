@@ -14,7 +14,10 @@ from ...infra.log_events import marker
 from ...infra.polling import poll_until, wait_for_node_quiet
 from ...infra.shard import Shard
 
-pytestmark = pytest.mark.xdist_group("custom")
+pytestmark = [
+    pytest.mark.xdist_group("custom"),
+    pytest.mark.requires_node_capabilities("transient-peer-liveness"),
+]
 
 # Unscaled budgets, run through the timeouts fixture so --timeout-scale reaches
 # them. Sized against --network-timeout=1second and the two-second cleanup and

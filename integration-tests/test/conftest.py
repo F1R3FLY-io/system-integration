@@ -27,6 +27,7 @@ from .infra.cleanup import DockerCleanupRegistry
 from .infra.config import NodeConf, ResourcePaths, ShardConfig, TimeoutConfig
 from .infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from .infra.node import Node
+from .infra.node_capabilities import missing_node_capabilities, validate_node_capabilities
 from .infra.ports import PortAllocator
 from .infra.providers.docker import DockerProvider
 from .infra.shard import Shard
@@ -135,6 +136,15 @@ def pytest_addoption(parser):
         "directly on the host (set F1R3FLY_NODE_BINARY or build "
         "services/f1r3node-rust first).",
     )
+    group.addoption(
+        "--node-capability",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Declare a capability implemented by the node under test. Repeat "
+        "for multiple capabilities; capability-gated regressions skip unless "
+        "all of their requirements are declared.",
+    )
 
 
 def pytest_configure(config):
@@ -148,6 +158,18 @@ def pytest_configure(config):
     if config.getoption("--readonly-history-blocks") <= 0:
         raise pytest.UsageError("--readonly-history-blocks must be a positive integer")
 
+    try:
+        config._f1r3fly_node_capabilities = validate_node_capabilities(
+            config.getoption("--node-capability"), source="--node-capability"
+        )
+    except ValueError as exc:
+        raise pytest.UsageError(str(exc)) from exc
+
+    config.addinivalue_line(
+        "markers",
+        "requires_node_capabilities(*names): run only when every named node "
+        "capability is supplied with --node-capability.",
+    )
     config.addinivalue_line(
         "markers",
         "allow_forbidden_patterns(*keys): exempt this test from named "
@@ -155,6 +177,32 @@ def pytest_configure(config):
         "when the test legitimately produces the pattern as part of its "
         "verification. See infra/log_events.py for the pattern set.",
     )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip regressions whose node capabilities are not available."""
+    available = config._f1r3fly_node_capabilities
+    for item in items:
+        marker = item.get_closest_marker("requires_node_capabilities")
+        if marker is None:
+            continue
+        if marker.kwargs:
+            raise pytest.UsageError(
+                "requires_node_capabilities accepts positional capability names only"
+            )
+        try:
+            required = validate_node_capabilities(
+                marker.args, source=f"{item.nodeid} requires_node_capabilities marker"
+            )
+        except ValueError as exc:
+            raise pytest.UsageError(str(exc)) from exc
+        missing = missing_node_capabilities(required, available)
+        if missing:
+            item.add_marker(
+                pytest.mark.skip(
+                    reason="node under test lacks required capabilities: " + ", ".join(missing)
+                )
+            )
 
 
 def _stale_cleanup_for_provider(provider_choice: str) -> None:

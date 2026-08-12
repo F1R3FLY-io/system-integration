@@ -21,7 +21,10 @@ from ...infra.polling import (
 )
 from ...infra.shard import Shard
 
-pytestmark = pytest.mark.xdist_group("custom")
+pytestmark = [
+    pytest.mark.xdist_group("custom"),
+    pytest.mark.requires_node_capabilities("observer-missing-block-retry"),
+]
 
 # Each of these predicates fetches the node's whole log file over a
 # docker exec, so the interval is what keeps the loop from running that
