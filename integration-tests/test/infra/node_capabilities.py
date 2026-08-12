@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-_CAPABILITY_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+_CAPABILITY_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
 def validate_node_capabilities(capabilities: Iterable[object], *, source: str) -> frozenset[str]:
@@ -18,6 +18,19 @@ def validate_node_capabilities(capabilities: Iterable[object], *, source: str) -
             raise ValueError(f"duplicate node capability from {source}: {capability}")
         validated.add(capability)
     return frozenset(validated)
+
+
+def required_node_capabilities(
+    requirements: Iterable[Iterable[object]], *, source: str
+) -> frozenset[str]:
+    """Combine stacked requirements, rejecting every empty marker."""
+    required: set[str] = set()
+    for capabilities in requirements:
+        validated = validate_node_capabilities(capabilities, source=source)
+        if not validated:
+            raise ValueError(f"empty node capability requirement from {source}")
+        required.update(validated)
+    return frozenset(required)
 
 
 def missing_node_capabilities(

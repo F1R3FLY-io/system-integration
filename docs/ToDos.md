@@ -14,8 +14,10 @@ Consumer contract in this repo:
 - Repeatable pytest option: `--node-capability=<name>`.
 - Marker: `@pytest.mark.requires_node_capabilities("<name>", ...)`.
 - A marked regression skips unless every required capability was supplied.
-- Missing capabilities are the baseline/released-node case; malformed or
-  duplicate capability arguments fail closed during pytest configuration.
+- Missing capabilities are the baseline/released-node case. Malformed or
+  duplicate CLI arguments fail during configuration; malformed, empty, or
+  keyword marker requirements fail during collection. Stacked markers are
+  combined, so a nearer marker cannot shadow an inherited requirement.
 
 Capability names map one-to-one to the unreleased node fix branches:
 
@@ -32,8 +34,15 @@ Capability names map one-to-one to the unreleased node fix branches:
 | `expired-deploy-admission` | `test_expired_deploy_admission.py` |
 
 `test_cold_start_readiness.py` stays unguarded: it has no corresponding
-unreleased node fix and remains baseline coverage. The sibling workflow may
-pass its validated manifest entries directly as the repeated option above.
+unreleased node fix and remains baseline coverage. The sibling workflow passes
+its validated manifest entries directly as the repeated option above.
+
+Sibling completion report: an empty manifest would over-skip coverage, and the
+workflow pin must include this consumer contract. Its follow-up therefore pins
+all three `SYSTEM_INTEGRATION_REF` sites to this branch and declares the three
+baseline-supported capabilities `concurrent-bridge-lock-accounting`,
+`finality-stall-recovery`, and `slow-peer-notification-quorum`. The other six
+remain absent—and therefore skipped—until their node fixes land.
 
 ---
 

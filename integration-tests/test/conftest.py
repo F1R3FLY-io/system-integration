@@ -11,6 +11,7 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import Iterator
 
 # Disable gRPC's pthread_atfork handlers before the gRPC C-core loads (pulled in
 # transitively by the .infra imports below via pyf1r3fly.client). The test
@@ -27,13 +28,19 @@ from .infra.cleanup import DockerCleanupRegistry
 from .infra.config import NodeConf, ResourcePaths, ShardConfig, TimeoutConfig
 from .infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from .infra.node import Node
-from .infra.node_capabilities import missing_node_capabilities, validate_node_capabilities
+from .infra.node_capabilities import (
+    missing_node_capabilities,
+    required_node_capabilities,
+    validate_node_capabilities,
+)
 from .infra.ports import PortAllocator
 from .infra.providers.docker import DockerProvider
 from .infra.shard import Shard
 from .infra.timeouts import TimeoutHierarchy
 
 # ── Hooks ────────────────────────────────────────────────────────────
+
+_NODE_CAPABILITIES = pytest.StashKey[frozenset[str]]()
 
 
 def pytest_addoption(parser):
@@ -139,7 +146,7 @@ def pytest_addoption(parser):
     group.addoption(
         "--node-capability",
         action="append",
-        default=[],
+        default=None,
         metavar="NAME",
         help="Declare a capability implemented by the node under test. Repeat "
         "for multiple capabilities; capability-gated regressions skip unless "
@@ -159,17 +166,12 @@ def pytest_configure(config):
         raise pytest.UsageError("--readonly-history-blocks must be a positive integer")
 
     try:
-        config._f1r3fly_node_capabilities = validate_node_capabilities(
-            config.getoption("--node-capability"), source="--node-capability"
+        config.stash[_NODE_CAPABILITIES] = validate_node_capabilities(
+            config.getoption("--node-capability") or (), source="--node-capability"
         )
     except ValueError as exc:
         raise pytest.UsageError(str(exc)) from exc
 
-    config.addinivalue_line(
-        "markers",
-        "requires_node_capabilities(*names): run only when every named node "
-        "capability is supplied with --node-capability.",
-    )
     config.addinivalue_line(
         "markers",
         "allow_forbidden_patterns(*keys): exempt this test from named "
@@ -181,18 +183,19 @@ def pytest_configure(config):
 
 def pytest_collection_modifyitems(config, items):
     """Skip regressions whose node capabilities are not available."""
-    available = config._f1r3fly_node_capabilities
+    available = config.stash[_NODE_CAPABILITIES]
     for item in items:
-        marker = item.get_closest_marker("requires_node_capabilities")
-        if marker is None:
+        markers = tuple(item.iter_markers("requires_node_capabilities"))
+        if not markers:
             continue
-        if marker.kwargs:
+        if any(marker.kwargs for marker in markers):
             raise pytest.UsageError(
                 "requires_node_capabilities accepts positional capability names only"
             )
         try:
-            required = validate_node_capabilities(
-                marker.args, source=f"{item.nodeid} requires_node_capabilities marker"
+            required = required_node_capabilities(
+                (marker.args for marker in markers),
+                source=f"{item.nodeid} requires_node_capabilities marker",
             )
         except ValueError as exc:
             raise pytest.UsageError(str(exc)) from exc
@@ -349,7 +352,7 @@ def provider(request, port_allocator, session_id, timeouts, resource_paths):
 
 
 @pytest.fixture(scope="session")
-def shared_shard(request, provider, timeouts) -> Shard:
+def shared_shard(request, provider, timeouts) -> Iterator[Shard]:
     """Session-scoped 3-validator shard (boot + v1 + v2 + v3).
 
     Used by tests that need a pre-running shard. Tests that modify
