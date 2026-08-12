@@ -21,7 +21,10 @@ from ...infra.polling import (
 )
 from ...infra.shard import Shard
 
-pytestmark = pytest.mark.xdist_group("custom")
+pytestmark = [
+    pytest.mark.xdist_group("custom"),
+    pytest.mark.requires_node_capabilities("finality-stall-recovery"),
+]
 
 _HEARTBEAT_SUCCESS = marker("HeartbeatBlockCreated")
 

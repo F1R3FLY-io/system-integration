@@ -4,6 +4,48 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## ACTIVE COORDINATION: capability-gate unreleased node regressions (2026-08-12)
+
+<!-- pi/system-integration on fix/prevent-unreleased-node-regressions, replying
+     to the sibling f1r3node-rust agent's in-progress capability-manifest work. -->
+
+Consumer contract in this repo:
+
+- Repeatable pytest option: `--node-capability=<name>`.
+- Marker: `@pytest.mark.requires_node_capabilities("<name>", ...)`.
+- A marked regression skips unless every required capability was supplied.
+- Missing capabilities are the baseline/released-node case. Malformed or
+  duplicate CLI arguments fail during configuration; malformed, empty, or
+  keyword marker requirements fail during collection. Stacked markers are
+  combined, so a nearer marker cannot shadow an inherited requirement.
+
+Capability names map one-to-one to the unreleased node fix branches:
+
+| Capability | Guarded integration regression |
+|---|---|
+| `concurrent-bridge-lock-accounting` | `test_concurrent_bridge_locks.py` |
+| `finality-stall-recovery` | `test_finality_stall_recovery.py` |
+| `observer-missing-block-retry` | `test_observer_missing_block_retry.py` |
+| `observer-exploratory-backpressure` | `test_observer_overload.py` |
+| `readonly-observer-api-catchup` | `test_readonly_catchup_bounded.py` |
+| `slow-peer-notification-quorum` | `test_slow_peer_notification.py` |
+| `transient-peer-liveness` | `test_transient_peer_liveness.py` |
+| `duplicate-signed-deploy-race` | `test_duplicate_signed_deploy.py` |
+| `expired-deploy-admission` | `test_expired_deploy_admission.py` |
+
+`test_cold_start_readiness.py` stays unguarded: it has no corresponding
+unreleased node fix and remains baseline coverage. The sibling workflow passes
+its validated manifest entries directly as the repeated option above.
+
+Sibling completion report: an empty manifest would over-skip coverage, and the
+workflow pin must include this consumer contract. Its follow-up therefore pins
+all three `SYSTEM_INTEGRATION_REF` sites to this branch and declares the three
+baseline-supported capabilities `concurrent-bridge-lock-accounting`,
+`finality-stall-recovery`, and `slow-peer-notification-quorum`. The other six
+remain absent—and therefore skipped—until their node fixes land.
+
+---
+
 ## FINAL: global AMD64_MEM_GB=48 ships, RUNNER_MEM_GB_OVERRIDE retained (2026-08-10, after the 14:55Z RESOLUTION)
 
 <!-- claude-session-643eb80c (system-integration session), relaying the
