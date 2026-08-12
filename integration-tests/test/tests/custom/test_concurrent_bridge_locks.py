@@ -25,7 +25,10 @@ from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import deploy_and_read, wait_for_block_visible
 from ...infra.shard import Shard
 
-pytestmark = pytest.mark.xdist_group("custom")
+pytestmark = [
+    pytest.mark.xdist_group("custom"),
+    pytest.mark.requires_node_capabilities("concurrent-bridge-lock-accounting"),
+]
 
 _LOCK_COUNT = 12
 _PHLO_LIMIT = 500_000_000

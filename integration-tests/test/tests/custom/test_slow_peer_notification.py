@@ -24,7 +24,10 @@ from ...infra.polling import (
 )
 from ...infra.shard import Shard
 
-pytestmark = pytest.mark.xdist_group("custom")
+pytestmark = [
+    pytest.mark.xdist_group("custom"),
+    pytest.mark.requires_node_capabilities("slow-peer-notification-quorum"),
+]
 
 _DEPLOY_COUNT = 16
 

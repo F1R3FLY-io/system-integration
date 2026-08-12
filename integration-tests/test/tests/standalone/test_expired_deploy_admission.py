@@ -32,6 +32,7 @@ _PHLO_PRICE = 1
 _PHLO_LIMIT = 100_000
 
 
+@pytest.mark.requires_node_capabilities("expired-deploy-admission")
 def test_expired_deploy_rejected_at_admission(provider, timeouts) -> None:
     """At-boundary deploys are refused; one block past the boundary finalizes."""
     config = NodeConfig(
