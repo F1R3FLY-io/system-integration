@@ -1,0 +1,97 @@
+# services.yml — All non-shard services (embers, f1r3sky)
+# Usage: docker compose -f compose/services.yml up -d
+#        docker compose -f compose/services.yml down
+#
+# Prerequisites: shard must be running on the f1r3fly network
+# The f1r3fly network is created by shard.yml (external: true)
+
+services:
+  f1r3sky-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: atproto
+    volumes:
+      - f1r3sky-pgdata:/var/lib/postgresql/data
+    networks:
+      - f1r3fly
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  f1r3sky-redis:
+    image: redis:7-alpine
+    networks:
+      - f1r3fly
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  f1r3sky:
+    image: f1r3flyindustries/firesky-ts:local
+    ports:
+      - "2581:2581"
+      - "2582:2582"
+      - "2583:2583"
+      - "2584:2584"
+      - "2587:2587"
+    environment:
+      ENABLE_PDS: "1"
+      DB_POSTGRES_URL: postgresql://postgres:postgres@f1r3sky-postgres:5432/atproto
+      REDIS_HOST: f1r3sky-redis
+      PDS_HOSTNAME: f1r3sky
+    depends_on:
+      f1r3sky-postgres:
+        condition: service_healthy
+      f1r3sky-redis:
+        condition: service_healthy
+    networks:
+      - f1r3fly
+
+  embers:
+    image: f1r3flyio/embers:local
+    env_file:
+      - ../services/embers/embers.env
+    ports:
+      - "8080:3000"
+    depends_on:
+      f1r3sky:
+        condition: service_started
+    # Override localhost to point to f1r3sky for AT Protocol DID resolution.
+    # The PDS DID is did:web:localhost, so the atproto client inside embers
+    # resolves the PDS endpoint to localhost:2583.
+    # F1R3SKY_IP must be set before running compose (start-all.sh handles this).
+    extra_hosts:
+      - "localhost:${F1R3SKY_IP}"
+    networks:
+      - f1r3fly
+
+  embers-frontend:
+    image: f1r3flyio/embers-frontend:local
+    ports:
+      - "8081:80"
+    environment:
+      API_URL: "http://localhost:8080"
+
+  f1r3sky-frontend:
+    image: f1r3flyio/firesky-frontend:local
+    ports:
+      - "8100:8100"
+    environment:
+      HTTP_ADDRESS: ":8100"
+      ATP_APPVIEW_HOST: "http://f1r3sky:2583"
+    command: /usr/bin/bskyweb serve
+    networks:
+      - f1r3fly
+
+volumes:
+  f1r3sky-pgdata:
+
+networks:
+  f1r3fly:
+    external: true
