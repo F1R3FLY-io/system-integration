@@ -33,7 +33,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 
-import pytest
+import pytest  # type: ignore[import-not-found]
+
+from shardctl.soak_metrics import emit_lfb_spread_metric
 
 from ...infra.config import ShardConfig
 from ...infra.keys import (
@@ -478,6 +480,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
         drain_lfbs = {n.name: lfb_number(n) for n in shard.all_nodes}
         drain_spread = max(drain_lfbs.values()) - min(drain_lfbs.values())
         logging.info("All-node LFBs at drain: %s (spread %d blocks)", drain_lfbs, drain_spread)
+        emit_lfb_spread_metric(drain_spread)
 
         # Hard assertions. Set LOAD_TEST_TELEMETRY_ONLY=1 to skip the
         # finalization gate when collecting metrics across capacity limits.
