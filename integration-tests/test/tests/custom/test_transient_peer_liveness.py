@@ -2,8 +2,9 @@
 
 A single missed heartbeat must not drop a peer, a successful heartbeat must reset
 the failure streak, and only a sustained streak may remove one — after which
-discovery must find the peer again. Runs with one-second network timeouts and
-two-second cleanup/discovery intervals so the streak plays out in seconds.
+discovery must find the peer again. Runs with one-second network timeouts,
+two-second cleanup/discovery intervals, and a three-failure eviction threshold so
+the streak plays out in seconds.
 """
 
 import pytest
@@ -51,6 +52,7 @@ def fast_liveness_shard(provider, timeouts):
             "--network-timeout": "1second",
             "--discovery-cleanup-interval": "2seconds",
             "--discovery-lookup-interval": "2seconds",
+            "--discovery-heartbeat-failure-threshold": "3",
         },
     )
     shard = Shard.create(provider, config, timeouts)
@@ -69,6 +71,7 @@ def test_transient_peer_failure_does_not_disconnect(fast_liveness_shard, timeout
         description="validator1 connects to all shard peers",
     )
 
+    # The denominator is the threshold the fixture sets, not a node default.
     first_marker = "failed (1/3); retaining connection"
     first_count = observer.logs().count(first_marker)
 
