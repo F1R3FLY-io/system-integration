@@ -27,7 +27,12 @@ from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto
 from f1r3fly.util import sign_deploy_data
 
 from ...infra.keys import VALIDATOR1_ID
-from ...infra.polling import poll_until, wait_for_deploy_finalized, wait_for_deploy_included
+from ...infra.polling import (
+    lfb_number,
+    poll_until,
+    wait_for_deploy_finalized,
+    wait_for_deploy_included,
+)
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -658,13 +663,18 @@ def test_deploy_via_http(shared_shard) -> None:
     v1 = shared_shard.node("validator1")
     key = VALIDATOR1_ID.private_key()
     timestamp = int(time.time() * 1000)
+    # Read from the LFB rather than hardcoding: the node rejects a deploy whose
+    # valid-after block has fallen outside `deploy_lifespan` behind the tip, and
+    # this shard is shared, so a fixed low value expires once enough tests have
+    # run against it. The LFB trails the tip by far less than the lifespan.
+    valid_after_block_number = lfb_number(v1)
 
     deploy_proto = DeployDataProto(
         term="@2!(1)",
         timestamp=timestamp,
         phloLimit=100_000,
         phloPrice=1,
-        validAfterBlockNumber=5,
+        validAfterBlockNumber=valid_after_block_number,
         shardId="root",
     )
     deploy_req = {
@@ -673,7 +683,7 @@ def test_deploy_via_http(shared_shard) -> None:
             "timestamp": timestamp,
             "phloLimit": 100_000,
             "phloPrice": 1,
-            "validAfterBlockNumber": 5,
+            "validAfterBlockNumber": valid_after_block_number,
             "shardId": "root",
         },
         "deployer": key.get_public_key().to_hex(),

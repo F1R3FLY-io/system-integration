@@ -110,8 +110,10 @@ def test_expired_deploy_rejected_at_admission(provider, timeouts) -> None:
         wait_for_deploy_finalized(node, accepted_id, timeouts.finalization)
 
         # The refused deploy must be absent from the DAG, not merely unfinalized.
-        # match= keeps an unreachable node from passing this as a "not found".
-        with pytest.raises(F1r3flyClientException, match="(?i)not found|no block"):
+        # match= keeps an unreachable node from passing this as an absence; the
+        # phrasing is DeployNotFoundError's, "Couldn't find block containing
+        # deploy with id: ..." (casper/src/rust/api/block_api.rs).
+        with pytest.raises(F1r3flyClientException, match="(?i)find block containing deploy"):
             node.find_deploy(expired.sig.hex())
         assert node.is_running()
     finally:
