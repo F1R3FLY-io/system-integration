@@ -406,13 +406,14 @@ def _bond_lifecycle(
     # FIRST containing block can lose fork choice and be orphaned while
     # the bond deploy is re-homed into a finalized descendant (observed
     # live: every node held the original block at FT=-1.0 forever).
-    # Wait for the DEPLOY to finalize, then re-resolve its durable
-    # containing block and anchor every downstream assertion — bonds
-    # maps and epoch arithmetic — to that block.
-    wait_for_deploy_finalized(proposer_node, bond_deploy_id, timeouts.finalization * 3)
-    bond_block = proposer_node.find_deploy(bond_deploy_id)
-    bond_block_hash = bond_block.blockHash
-    bond_block_number = bond_block.blockNumber
+    # Wait for the DEPLOY to finalize, then anchor every downstream
+    # assertion — bonds maps and epoch arithmetic — to the resolver's
+    # canonical inclusion. find_deploy is NOT safe here: it can keep
+    # returning an orphaned inclusion while the deploy finalizes in a
+    # different block (also observed live).
+    status = wait_for_deploy_finalized(proposer_node, bond_deploy_id, timeouts.finalization * 3)
+    bond_block_hash = status.latestBlockHash.hex()
+    bond_block_number = proposer_node.get_block(bond_block_hash).blockInfo.blockNumber
     assert_block_finalized_on_all_nodes(
         [v1, v2, v3, joiner, ro],
         bond_block_hash,
