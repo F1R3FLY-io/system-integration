@@ -30,13 +30,14 @@ this, the new forward-horizon code paths fire on a trivial input and
 provide little signal.
 
 Cross-node bonds verification: after every bond block finalizes, its
-active consensus map is checked on every node against an independently
-computed expectation — the pre-bond set off-boundary, or the post-bond
-set when the bond block lands exactly on an epoch boundary (closeBlock
-activates the joiner in the same block). The original
-``InvalidBondsCache`` bug was a per-node divergence; checking every
-node against an independent expectation catches both divergence and a
-wrong map.
+active consensus map is checked on every node against independently
+computed candidates — the pre-bond set off-boundary; on an epoch
+boundary either side of the closeBlock transition is valid (heartbeat +
+multi-parent processing can leave the header on the pre-activation
+weights even though activation succeeded). Activation is then required
+exactly on a later finalized block. The original ``InvalidBondsCache``
+bug was a per-node divergence; checking every node against independent
+candidates catches both divergence and a wrong map.
 
 Runs under production config (heartbeat=true, ftt from rust.conf, no
 manual propose). Cross-node finalization is asserted on every step via
@@ -412,27 +413,28 @@ def _bond_lifecycle(
     bond_block_info = proposer_node.get_block(bond_block_hash)
     bond_block_bonds = {b.validator: b.stake for b in bond_block_info.blockInfo.bonds}
     # The joiner is sealed into the ledger by this block but activates
-    # only at an epoch boundary. Heartbeat timing can land the bond
-    # block exactly ON a boundary, where closeBlock activates the joiner
-    # in the same block and its active map already includes the joiner
-    # (see test_joiner_self_proposes_at_epoch_boundary). Off-boundary,
-    # the active map is exactly the pre-bond set. Either way the
-    # expectation is computed independently of the proposer's response,
-    # keeping the cross-node check a correctness assertion rather than
-    # a divergence detector.
-    if bond_block_number % _EPOCH_LENGTH == 0:
-        expected_bond_block_bonds = {**bonds_pre, joiner_identity.public_hex: _BOND_AMOUNT}
-    else:
-        expected_bond_block_bonds = bonds_pre
-    assert bond_block_bonds == expected_bond_block_bonds, (
+    # only at an epoch boundary. Off-boundary, the bond block's active
+    # map is exactly the pre-bond set. ON a boundary, closeBlock
+    # activates the joiner in the same block, but heartbeat and
+    # multi-parent processing can validly leave the block header
+    # carrying either side of the transition (pre- or post-activation
+    # weights) — accept both. Activation itself is never waived: Phase 5
+    # below still requires the exact post-bond map on a later finalized
+    # block, cross-node. The observed map must equal an independently
+    # computed candidate, keeping the cross-node check a correctness
+    # assertion rather than a divergence detector.
+    post_bond_bonds = {**bonds_pre, joiner_identity.public_hex: _BOND_AMOUNT}
+    on_boundary = bond_block_number % _EPOCH_LENGTH == 0
+    allowed_maps = (bonds_pre, post_bond_bonds) if on_boundary else (bonds_pre,)
+    assert any(bond_block_bonds == m for m in allowed_maps), (
         f"Bond block #{bond_block_number} ({bond_block_hash[:16]}) active bonds "
-        f"map mismatch (on_boundary={bond_block_number % _EPOCH_LENGTH == 0}): "
-        f"got {sorted(bond_block_bonds)}, expected {sorted(expected_bond_block_bonds)}"
+        f"map mismatch (on_boundary={on_boundary}): got {sorted(bond_block_bonds)}, "
+        f"allowed {[sorted(m) for m in allowed_maps]}"
     )
     assert_bonds_map_consistent_across_nodes(
         [v1, v2, v3, joiner, ro],
         bond_block_hash,
-        expected_bond_block_bonds,
+        bond_block_bonds,
         timeout=timeouts.finalization * 3,
     )
 

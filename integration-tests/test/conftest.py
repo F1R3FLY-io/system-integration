@@ -662,14 +662,31 @@ def _custom_shard_cascade_guard(request):
 # ── Log scanning ────────────────────────────────────────────────────
 
 
+# Cross-test log-scan bookkeeping (per pytest process; each xdist worker
+# owns its provider, so plain module globals are correct). Keyed by node
+# name: how many log lines earlier per-test scans have already judged,
+# and the allowance set of the last test that judged them. Consumed (and
+# removed) by the retired-snapshot scan so a reused node name after a
+# shard teardown starts fresh.
+_scanned_log_offsets: dict = {}
+_last_scan_allowances: dict = {}
+
+
+def _count_lines(lines, counter):
+    """Yield ``lines`` unchanged while tallying them into ``counter[0]``."""
+    for line in lines:
+        counter[0] += 1
+        yield line
+
+
 @pytest.fixture(autouse=True)
 def check_node_logs_after_test(request, provider):
     """Post-test log scan for forbidden patterns on all active nodes.
 
     Runs after every test (shared, custom, standalone). Queries the
-    provider for all active node handles and runs ``scan_for_forbidden``
-    on each node's logs (via the provider-agnostic ``handle.logs()``
-    method).
+    provider for all active node handles and runs
+    ``scan_lines_for_forbidden`` on each node's logs (via the
+    provider-agnostic ``handle.logs()`` / ``iter_log_lines`` methods).
 
     Patterns are defined in ``infra/log_events.py`` as a single
     ``FORBIDDEN_PATTERNS`` dict — covers panics, KvStore failures,
@@ -707,7 +724,7 @@ def check_node_logs_after_test(request, provider):
 
     yield
 
-    from .infra.log_events import format_errors, scan_for_forbidden, scan_lines_for_forbidden
+    from .infra.log_events import format_errors, scan_lines_for_forbidden
 
     # Collect opt-out keys from this test's markers.
     allowed = frozenset()
@@ -727,22 +744,44 @@ def check_node_logs_after_test(request, provider):
             # into memory during the post-test scan. Fall back to the string
             # API for providers without a streaming iterator.
             iter_lines = getattr(handle, "iter_log_lines", None)
+            scanned = 0
             if iter_lines is not None:
                 new_lines = itertools.islice(iter_lines(), offset, None)
-                forbidden.extend(scan_lines_for_forbidden(new_lines, handle.name, allowed))
+                counted = _count_lines(new_lines, counter := [0])
+                forbidden.extend(scan_lines_for_forbidden(counted, handle.name, allowed))
+                scanned = counter[0]
             else:
                 tail = handle.logs().splitlines()[offset:]
                 forbidden.extend(scan_lines_for_forbidden(tail, handle.name, allowed))
+                scanned = len(tail)
+            # Bookkeeping for retirement: record how far this node's log
+            # has been judged, and under which allowances, so a later
+            # retired-snapshot scan neither re-judges these lines nor
+            # drops this test's opt-outs for its teardown-window lines.
+            _scanned_log_offsets[handle.name] = offset + scanned
+            _last_scan_allowances[handle.name] = allowed
         except Exception:
             continue
 
-    # Also scan logs from transient nodes that were attached and
-    # detached during this test (e.g., observers attached via the
-    # ``add_observer`` context manager). The provider snapshots each
-    # node's log content before its handle is removed; without this
-    # path, panics on transient nodes silently escape the scanner.
+    # Also scan logs from retired nodes: transient nodes detached during
+    # this test (e.g., observers attached via the ``add_observer``
+    # context manager) AND shards destroyed by module-fixture teardown,
+    # whose snapshots surface here during the NEXT test's scan. The
+    # snapshot holds the node's FULL cumulative log, so skip the prefix
+    # already judged by earlier per-test scans — those lines were judged
+    # under their own test's allowances, and re-judging them here
+    # mis-attributes them to this test (the leak that failed
+    # test_bridge_api_exploratory on the previous test's allowed
+    # ComputationOutOfPhlogistons lines). The remaining teardown-window
+    # lines are judged under this test's allowances UNION the last
+    # owning test's allowances. A transient node with no recorded scan
+    # (offset 0) still gets its whole log scanned, preserving the
+    # original panic coverage.
     for snapshot in getattr(provider, "retired_log_snapshots", []):
-        forbidden.extend(scan_for_forbidden(snapshot.log_text, snapshot.name, allowed))
+        offset = _scanned_log_offsets.pop(snapshot.name, 0)
+        snapshot_allowed = allowed | _last_scan_allowances.pop(snapshot.name, frozenset())
+        tail = snapshot.log_text.splitlines()[offset:]
+        forbidden.extend(scan_lines_for_forbidden(tail, snapshot.name, snapshot_allowed))
     if hasattr(provider, "clear_retired_log_snapshots"):
         provider.clear_retired_log_snapshots()
 

@@ -5,9 +5,9 @@ Tests that the network recovers after DAG tip divergence caused by:
 1. Validator pause -- pausing a container forces other validators to
    produce independent blocks, creating DAG forks that must be merged
    after unpause.
-2. FT convergence -- fault tolerance for finalized blocks converges
-   to 1.0 across all nodes as later finalization rounds update
-   cached values.
+2. FT convergence -- cached fault tolerance for finalized blocks
+   reaches FTT on every node and only grows as later finalization
+   rounds update cached values (exact 1.0 is not guaranteed).
 3. Slow deploy -- a phlo-exhausting deploy (#224) blocks one validator
    while others produce heartbeat blocks, causing divergence (#437).
    Runs last so its trailing phlo-exhaustion replay lines cannot land
@@ -173,11 +173,15 @@ def test_network_recovers_from_validator_pause(convergence_shard, node_conf, tim
 
 
 def test_ft_convergence(convergence_shard, node_conf, timeouts) -> None:
-    """Verify FT for finalized blocks converges to 1.0 across all nodes.
+    """Verify cached FT reaches FTT on every node and never decreases.
 
-    FT is cached at finalization time and monotonically increases as later
-    finalization rounds update ancestor blocks. With all validators active,
-    FT should converge to 1.0 (all stake agrees) on every node.
+    FT is cached at finalization time and may only grow as later
+    finalization rounds update ancestor blocks. Exact FT=1.0 is NOT a
+    valid requirement: with FTT=0.10 a node can validly hold a cached
+    FT of 0.3333 forever — later finalization does not guarantee every
+    node's cache is updated to full-stake agreement. Reaching exactly
+    1.0 needs a controlled consensus configuration this shard does not
+    pin.
 
     Runs before ``test_network_converges_after_slow_deploy``: replay of
     that test's errored deploy can log ``ComputationOutOfPhlogistons``
@@ -188,8 +192,8 @@ def test_ft_convergence(convergence_shard, node_conf, timeouts) -> None:
     1. Wait for LFB to advance past genesis
     2. Pick a finalized block from V1's LFB ancestor chain
     3. Assert FT >= FTT on V1 (cache works)
-    4. Poll all nodes until they all report FT = 1.0 for the block
-    5. Verify FT stays at 1.0 (stability check)
+    4. Poll all nodes until every one reports FT >= FTT for the block
+    5. Re-sample: FT must stay >= FTT and never decrease (monotonicity)
     """
     all_nodes = convergence_shard.all_nodes
     ftt = node_conf.ftt
@@ -225,36 +229,50 @@ def test_ft_convergence(convergence_shard, node_conf, timeouts) -> None:
     )
     logging.info("Reference node FT=%.4f (>= FTT=%.2f)", ft_ref, ftt)
 
-    # Poll until all nodes report FT = 1.0 for the target block
-    def all_nodes_ft_converged():
+    # Poll until every node reports FT >= FTT for the target block —
+    # cross-node agreement that the block is finalized. Exact 1.0 is not
+    # required (see docstring).
+    def all_nodes_ft_finalized():
         ft_values = {}
         for node in all_nodes:
             block = node.get_block(target_hash)
-            ft = float(block.blockInfo.faultTolerance)
-            ft_values[node.name] = ft
-        all_converged = all(abs(ft - 1.0) < 0.01 for ft in ft_values.values())
-        if not all_converged:
-            logging.info("FT values: %s", {k: f"{v:.4f}" for k, v in ft_values.items()})
-        return ft_values if all_converged else None
+            ft_values[node.name] = float(block.blockInfo.faultTolerance)
+        if all(ft >= ftt for ft in ft_values.values()):
+            return ft_values
+        logging.info("FT values: %s", {k: f"{v:.4f}" for k, v in ft_values.items()})
+        return None
 
-    ft_values = poll_until(
-        predicate=all_nodes_ft_converged,
+    ft_first = poll_until(
+        predicate=all_nodes_ft_finalized,
         timeout=timeouts.finalization * 6,
         interval=5.0,
-        description=f"all nodes converge to FT=1.0 for block #{target_number}",
+        description=f"all nodes report FT >= FTT={ftt:.2f} for block #{target_number}",
     )
-    logging.info("All nodes converged to FT=1.0: %s", {k: f"{v:.4f}" for k, v in ft_values.items()})
+    logging.info(
+        "All nodes report FT >= FTT=%.2f: %s",
+        ftt,
+        {k: f"{v:.4f}" for k, v in ft_first.items()},
+    )
 
-    # Stability check: query again and verify FT is still 1.0
+    # Monotonicity check: cached FT may only grow — re-sample and verify
+    # it never decreased and still clears FTT on every node.
     for node in all_nodes:
         block = node.get_block(target_hash)
-        ft = float(block.blockInfo.faultTolerance)
-        assert abs(ft - 1.0) < 0.01, (
-            f"FT for block #{target_number} decreased on {node.name}: was 1.0, now {ft}"
+        ft_now = float(block.blockInfo.faultTolerance)
+        ft_before = ft_first[node.name]
+        assert ft_now >= ftt, (
+            f"FT for block #{target_number} dropped below FTT on {node.name}: "
+            f"was {ft_before:.4f}, now {ft_now:.4f} < {ftt:.2f}"
+        )
+        assert ft_now >= ft_before - 1e-9, (
+            f"FT for block #{target_number} decreased on {node.name}: "
+            f"was {ft_before:.4f}, now {ft_now:.4f}"
         )
 
     logging.info(
-        "FT stability verified: block #%d is FT=1.0 on all %d nodes", target_number, len(all_nodes)
+        "FT monotonicity verified: block #%d holds FT >= FTT on all %d nodes",
+        target_number,
+        len(all_nodes),
     )
 
 
