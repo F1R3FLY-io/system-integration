@@ -431,6 +431,11 @@ def _bond_lifecycle(
         f"map mismatch (on_boundary={on_boundary}): got {sorted(bond_block_bonds)}, "
         f"allowed {[sorted(m) for m in allowed_maps]}"
     )
+    # Not circular: the assert above pins bond_block_bonds to an
+    # independently computed candidate, so passing it here is
+    # value-identical to passing that candidate — and on a boundary it
+    # additionally rejects a split where nodes hold different (each
+    # individually valid) sides of the transition.
     assert_bonds_map_consistent_across_nodes(
         [v1, v2, v3, joiner, ro],
         bond_block_hash,

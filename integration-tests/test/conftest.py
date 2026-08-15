@@ -732,6 +732,35 @@ def check_node_logs_after_test(request, provider):
         allowed = allowed | frozenset(marker.args)
 
     forbidden: list = []
+
+    # Scan logs from retired nodes FIRST — transient nodes detached during
+    # this test (e.g., observers attached via the ``add_observer`` context
+    # manager) AND shards destroyed by module-fixture teardown, whose
+    # snapshots surface here during the NEXT test's scan. The snapshot
+    # holds the node's FULL cumulative log, so skip the prefix already
+    # judged by earlier per-test scans — those lines were judged under
+    # their own test's allowances, and re-judging them here mis-attributes
+    # them to this test (the leak that failed test_bridge_api_exploratory
+    # on the previous test's allowed ComputationOutOfPhlogistons lines).
+    # The remaining teardown-window lines are judged under this test's
+    # allowances UNION the last owning test's allowances. A transient node
+    # with no recorded scan (offset 0) still gets its whole log scanned,
+    # preserving the original panic coverage.
+    #
+    # Ordering is load-bearing: a NEW shard can reuse a retired node's
+    # name (dedicated shard torn down, session shard created — container
+    # names are identical). The retired entries must be popped before the
+    # active-handle loop below writes fresh bookkeeping for the same
+    # names, or the retired snapshot would be scanned with the new
+    # node's offset.
+    for snapshot in getattr(provider, "retired_log_snapshots", []):
+        offset = _scanned_log_offsets.pop(snapshot.name, 0)
+        snapshot_allowed = allowed | _last_scan_allowances.pop(snapshot.name, frozenset())
+        tail = snapshot.log_text.splitlines()[offset:]
+        forbidden.extend(scan_lines_for_forbidden(tail, snapshot.name, snapshot_allowed))
+    if hasattr(provider, "clear_retired_log_snapshots"):
+        provider.clear_retired_log_snapshots()
+
     for handle in provider.active_handles:
         try:
             # Scan only the lines THIS test produced: skip the prefix that
@@ -761,29 +790,16 @@ def check_node_logs_after_test(request, provider):
             _scanned_log_offsets[handle.name] = offset + scanned
             _last_scan_allowances[handle.name] = allowed
         except Exception:
+            # The scan failed (e.g. a transient provider/API hiccup), so
+            # the judged-through offset must NOT advance — but this
+            # test's allowances still applied to its window. Merge them
+            # into the handle's allowance record so a later retirement
+            # scan of the unjudged window cannot false-fail on lines
+            # this test had explicitly allowed.
+            _last_scan_allowances[handle.name] = (
+                _last_scan_allowances.get(handle.name, frozenset()) | allowed
+            )
             continue
-
-    # Also scan logs from retired nodes: transient nodes detached during
-    # this test (e.g., observers attached via the ``add_observer``
-    # context manager) AND shards destroyed by module-fixture teardown,
-    # whose snapshots surface here during the NEXT test's scan. The
-    # snapshot holds the node's FULL cumulative log, so skip the prefix
-    # already judged by earlier per-test scans — those lines were judged
-    # under their own test's allowances, and re-judging them here
-    # mis-attributes them to this test (the leak that failed
-    # test_bridge_api_exploratory on the previous test's allowed
-    # ComputationOutOfPhlogistons lines). The remaining teardown-window
-    # lines are judged under this test's allowances UNION the last
-    # owning test's allowances. A transient node with no recorded scan
-    # (offset 0) still gets its whole log scanned, preserving the
-    # original panic coverage.
-    for snapshot in getattr(provider, "retired_log_snapshots", []):
-        offset = _scanned_log_offsets.pop(snapshot.name, 0)
-        snapshot_allowed = allowed | _last_scan_allowances.pop(snapshot.name, frozenset())
-        tail = snapshot.log_text.splitlines()[offset:]
-        forbidden.extend(scan_lines_for_forbidden(tail, snapshot.name, snapshot_allowed))
-    if hasattr(provider, "clear_retired_log_snapshots"):
-        provider.clear_retired_log_snapshots()
 
     if forbidden:
         pytest.fail(format_errors(forbidden), pytrace=False)
