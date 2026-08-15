@@ -5,11 +5,13 @@ Tests that the network recovers after DAG tip divergence caused by:
 1. Validator pause -- pausing a container forces other validators to
    produce independent blocks, creating DAG forks that must be merged
    after unpause.
-2. Slow deploy -- a phlo-exhausting deploy (#224) blocks one validator
-   while others produce heartbeat blocks, causing divergence (#437).
-3. FT convergence -- fault tolerance for finalized blocks converges
+2. FT convergence -- fault tolerance for finalized blocks converges
    to 1.0 across all nodes as later finalization rounds update
    cached values.
+3. Slow deploy -- a phlo-exhausting deploy (#224) blocks one validator
+   while others produce heartbeat blocks, causing divergence (#437).
+   Runs last so its trailing phlo-exhaustion replay lines cannot land
+   in another test's log-scan window.
 
 The module uses a dedicated shard because pause and phlo-exhaustion
 change network state. Fixture teardown prevents these effects from
@@ -170,6 +172,92 @@ def test_network_recovers_from_validator_pause(convergence_shard, node_conf, tim
     logging.info("Network converged after validator pause (FT >= FTT=%.2f)", node_conf.ftt)
 
 
+def test_ft_convergence(convergence_shard, node_conf, timeouts) -> None:
+    """Verify FT for finalized blocks converges to 1.0 across all nodes.
+
+    FT is cached at finalization time and monotonically increases as later
+    finalization rounds update ancestor blocks. With all validators active,
+    FT should converge to 1.0 (all stake agrees) on every node.
+
+    Runs before ``test_network_converges_after_slow_deploy``: replay of
+    that test's errored deploy can log ``ComputationOutOfPhlogistons``
+    after the test ends, and running first keeps those lines out of this
+    test's per-test log-scan window without an allowance marker.
+
+    Test flow:
+    1. Wait for LFB to advance past genesis
+    2. Pick a finalized block from V1's LFB ancestor chain
+    3. Assert FT >= FTT on V1 (cache works)
+    4. Poll all nodes until they all report FT = 1.0 for the block
+    5. Verify FT stays at 1.0 (stability check)
+    """
+    all_nodes = convergence_shard.all_nodes
+    ftt = node_conf.ftt
+
+    # Wait for LFB to advance past genesis so we have finalized blocks
+    lfb = poll_until(
+        predicate=lambda: _lfb_past_genesis(convergence_shard.validators[0]),
+        timeout=timeouts.finalization,
+        interval=3.0,
+        description="LFB advances past genesis",
+    )
+    lfb_hash = lfb.blockInfo.blockHash
+    lfb_number = lfb.blockInfo.blockNumber
+    logging.info("LFB at block #%d on %s", lfb_number, convergence_shard.validators[0].name)
+
+    # Walk to the first non-genesis ancestor — this block was indirectly finalized
+    # and will have a conservative FT that should converge upward
+    target_block = convergence_shard.validators[0].get_block(lfb_hash)
+    parents = list(target_block.blockInfo.parentsHashList)
+    target_hash = parents[0] if parents else lfb_hash
+    target_number = convergence_shard.validators[0].get_block(target_hash).blockInfo.blockNumber
+
+    logging.info("Tracking FT convergence for block #%d (%s...)", target_number, target_hash[:16])
+
+    # Verify FT >= FTT and isFinalized on reference node
+    ref_block = convergence_shard.validators[0].get_block(target_hash)
+    ft_ref = float(ref_block.blockInfo.faultTolerance)
+    assert ft_ref >= ftt, (
+        f"Block #{target_number} has FT={ft_ref} on reference node, expected >= FTT={ftt}"
+    )
+    assert ref_block.blockInfo.isFinalized is True, (
+        f"Block #{target_number} should have isFinalized=True on reference node"
+    )
+    logging.info("Reference node FT=%.4f (>= FTT=%.2f)", ft_ref, ftt)
+
+    # Poll until all nodes report FT = 1.0 for the target block
+    def all_nodes_ft_converged():
+        ft_values = {}
+        for node in all_nodes:
+            block = node.get_block(target_hash)
+            ft = float(block.blockInfo.faultTolerance)
+            ft_values[node.name] = ft
+        all_converged = all(abs(ft - 1.0) < 0.01 for ft in ft_values.values())
+        if not all_converged:
+            logging.info("FT values: %s", {k: f"{v:.4f}" for k, v in ft_values.items()})
+        return ft_values if all_converged else None
+
+    ft_values = poll_until(
+        predicate=all_nodes_ft_converged,
+        timeout=timeouts.finalization * 6,
+        interval=5.0,
+        description=f"all nodes converge to FT=1.0 for block #{target_number}",
+    )
+    logging.info("All nodes converged to FT=1.0: %s", {k: f"{v:.4f}" for k, v in ft_values.items()})
+
+    # Stability check: query again and verify FT is still 1.0
+    for node in all_nodes:
+        block = node.get_block(target_hash)
+        ft = float(block.blockInfo.faultTolerance)
+        assert abs(ft - 1.0) < 0.01, (
+            f"FT for block #{target_number} decreased on {node.name}: was 1.0, now {ft}"
+        )
+
+    logging.info(
+        "FT stability verified: block #%d is FT=1.0 on all %d nodes", target_number, len(all_nodes)
+    )
+
+
 @pytest.mark.allow_forbidden_patterns("ComputationOutOfPhlogistons")
 def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeouts) -> None:
     """Deploy a phlo-exhausting loop and verify the shard converges.
@@ -269,88 +357,6 @@ def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeo
         "Network recovered after slow deploy (LFB spread: %d, FT >= FTT=%.2f)",
         spread,
         node_conf.ftt,
-    )
-
-
-@pytest.mark.allow_forbidden_patterns("ComputationOutOfPhlogistons")
-def test_ft_convergence(convergence_shard, node_conf, timeouts) -> None:
-    """Verify FT for finalized blocks converges to 1.0 across all nodes.
-
-    FT is cached at finalization time and monotonically increases as later
-    finalization rounds update ancestor blocks. With all validators active,
-    FT should converge to 1.0 (all stake agrees) on every node.
-
-    Test flow:
-    1. Wait for LFB to advance past genesis
-    2. Pick a finalized block from V1's LFB ancestor chain
-    3. Assert FT >= FTT on V1 (cache works)
-    4. Poll all nodes until they all report FT = 1.0 for the block
-    5. Verify FT stays at 1.0 (stability check)
-    """
-    all_nodes = convergence_shard.all_nodes
-    ftt = node_conf.ftt
-
-    # Wait for LFB to advance past genesis so we have finalized blocks
-    lfb = poll_until(
-        predicate=lambda: _lfb_past_genesis(convergence_shard.validators[0]),
-        timeout=timeouts.finalization,
-        interval=3.0,
-        description="LFB advances past genesis",
-    )
-    lfb_hash = lfb.blockInfo.blockHash
-    lfb_number = lfb.blockInfo.blockNumber
-    logging.info("LFB at block #%d on %s", lfb_number, convergence_shard.validators[0].name)
-
-    # Walk to the first non-genesis ancestor — this block was indirectly finalized
-    # and will have a conservative FT that should converge upward
-    target_block = convergence_shard.validators[0].get_block(lfb_hash)
-    parents = list(target_block.blockInfo.parentsHashList)
-    target_hash = parents[0] if parents else lfb_hash
-    target_number = convergence_shard.validators[0].get_block(target_hash).blockInfo.blockNumber
-
-    logging.info("Tracking FT convergence for block #%d (%s...)", target_number, target_hash[:16])
-
-    # Verify FT >= FTT and isFinalized on reference node
-    ref_block = convergence_shard.validators[0].get_block(target_hash)
-    ft_ref = float(ref_block.blockInfo.faultTolerance)
-    assert ft_ref >= ftt, (
-        f"Block #{target_number} has FT={ft_ref} on reference node, expected >= FTT={ftt}"
-    )
-    assert ref_block.blockInfo.isFinalized is True, (
-        f"Block #{target_number} should have isFinalized=True on reference node"
-    )
-    logging.info("Reference node FT=%.4f (>= FTT=%.2f)", ft_ref, ftt)
-
-    # Poll until all nodes report FT = 1.0 for the target block
-    def all_nodes_ft_converged():
-        ft_values = {}
-        for node in all_nodes:
-            block = node.get_block(target_hash)
-            ft = float(block.blockInfo.faultTolerance)
-            ft_values[node.name] = ft
-        all_converged = all(abs(ft - 1.0) < 0.01 for ft in ft_values.values())
-        if not all_converged:
-            logging.info("FT values: %s", {k: f"{v:.4f}" for k, v in ft_values.items()})
-        return ft_values if all_converged else None
-
-    ft_values = poll_until(
-        predicate=all_nodes_ft_converged,
-        timeout=timeouts.finalization * 6,
-        interval=5.0,
-        description=f"all nodes converge to FT=1.0 for block #{target_number}",
-    )
-    logging.info("All nodes converged to FT=1.0: %s", {k: f"{v:.4f}" for k, v in ft_values.items()})
-
-    # Stability check: query again and verify FT is still 1.0
-    for node in all_nodes:
-        block = node.get_block(target_hash)
-        ft = float(block.blockInfo.faultTolerance)
-        assert abs(ft - 1.0) < 0.01, (
-            f"FT for block #{target_number} decreased on {node.name}: was 1.0, now {ft}"
-        )
-
-    logging.info(
-        "FT stability verified: block #%d is FT=1.0 on all %d nodes", target_number, len(all_nodes)
     )
 
 

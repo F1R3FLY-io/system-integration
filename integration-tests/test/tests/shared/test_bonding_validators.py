@@ -30,10 +30,11 @@ this, the new forward-horizon code paths fire on a trivial input and
 provide little signal.
 
 Cross-node bonds verification: after every bond block finalizes, its
-active consensus map is checked on every node for exact equality. The
-bonded ledger is checked separately before the joiner activates. The
-original ``InvalidBondsCache`` bug was a per-node divergence, so map
-agreement remains a direct regression detector.
+active consensus map is checked on every node against the expected
+pre-activation set (the joiner is sealed in the ledger but not active
+until the epoch boundary). The original ``InvalidBondsCache`` bug was a
+per-node divergence; checking every node against an independently
+computed expectation catches both divergence and a wrong map.
 
 Runs under production config (heartbeat=true, ftt from rust.conf, no
 manual propose). Cross-node finalization is asserted on every step via
@@ -409,10 +410,20 @@ def _bond_lifecycle(
     )
     bond_block_info = proposer_node.get_block(bond_block_hash)
     bond_block_bonds = {b.validator: b.stake for b in bond_block_info.blockInfo.bonds}
+    # The joiner is sealed into the ledger by this block but must not
+    # activate before the epoch boundary, so the bond block's active map
+    # is exactly the pre-bond set. Asserting against that independent
+    # expectation (not the proposer's own map) keeps the cross-node
+    # check a correctness assertion rather than a divergence detector.
+    assert bond_block_bonds == bonds_pre, (
+        f"Bond block {bond_block_hash[:16]} active bonds map must equal the "
+        f"pre-bond set until the epoch boundary: got {sorted(bond_block_bonds)}, "
+        f"expected {sorted(bonds_pre)}"
+    )
     assert_bonds_map_consistent_across_nodes(
         [v1, v2, v3, joiner, ro],
         bond_block_hash,
-        bond_block_bonds,
+        bonds_pre,
         timeout=timeouts.finalization * 3,
     )
 

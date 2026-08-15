@@ -188,15 +188,24 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
-        "isolated_shard: run this test before tests that create the session-scoped shared shard",
+        "isolated_shard: order this test before tests that use the "
+        "session-scoped shared shard so both shards are not up at once. "
+        "Best-effort resource ordering only — correctness never depends "
+        "on it (isolated suites own dedicated shards).",
     )
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(config, items):
-    """Order isolated shards first and gate node-capability regressions."""
+    """Order isolated shards first and gate node-capability regressions.
+
+    ``trylast`` so this runs after other plugins' collection hooks and
+    the isolated-first ordering is not silently undone by them.
+    """
     isolated = [item for item in items if tuple(item.iter_markers("isolated_shard"))]
     if isolated:
-        items[:] = isolated + [item for item in items if item not in isolated]
+        isolated_set = set(isolated)
+        items[:] = isolated + [item for item in items if item not in isolated_set]
 
     available = config.stash[_NODE_CAPABILITIES]
     run_all = config.getoption("--run-all-node-capability-tests")
