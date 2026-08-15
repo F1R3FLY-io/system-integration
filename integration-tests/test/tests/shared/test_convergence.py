@@ -32,7 +32,10 @@ from ...infra.polling import (
 )
 from ...infra.shard import Shard
 
-pytestmark = pytest.mark.xdist_group("shared")
+pytestmark = [
+    pytest.mark.xdist_group("shared"),
+    pytest.mark.isolated_shard,
+]
 
 VALIDATOR_KEYS = [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID]
 

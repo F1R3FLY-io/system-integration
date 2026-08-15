@@ -186,10 +186,18 @@ def pytest_configure(config):
         "when the test legitimately produces the pattern as part of its "
         "verification. See infra/log_events.py for the pattern set.",
     )
+    config.addinivalue_line(
+        "markers",
+        "isolated_shard: run this test before tests that create the session-scoped shared shard",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip regressions whose node capabilities are not available."""
+    """Order isolated shards first and gate node-capability regressions."""
+    isolated = [item for item in items if tuple(item.iter_markers("isolated_shard"))]
+    if isolated:
+        items[:] = isolated + [item for item in items if item not in isolated]
+
     available = config.stash[_NODE_CAPABILITIES]
     run_all = config.getoption("--run-all-node-capability-tests")
     for item in items:
