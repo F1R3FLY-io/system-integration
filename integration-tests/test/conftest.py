@@ -22,7 +22,7 @@ from collections.abc import Iterator
 # support buys nothing here. setdefault leaves an explicit shell override intact.
 os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 
-import pytest
+import pytest  # type: ignore[import-not-found]
 
 from .infra.cleanup import DockerCleanupRegistry
 from .infra.config import NodeConf, ResourcePaths, ShardConfig, TimeoutConfig
@@ -152,6 +152,13 @@ def pytest_addoption(parser):
         "for multiple capabilities; capability-gated regressions skip unless "
         "all of their requirements are declared.",
     )
+    group.addoption(
+        "--run-all-node-capability-tests",
+        action="store_true",
+        default=False,
+        help="Run every capability-gated regression even when the node capability "
+        "manifest does not declare its requirements. Intended for full-suite gates.",
+    )
 
 
 def pytest_configure(config):
@@ -184,6 +191,7 @@ def pytest_configure(config):
 def pytest_collection_modifyitems(config, items):
     """Skip regressions whose node capabilities are not available."""
     available = config.stash[_NODE_CAPABILITIES]
+    run_all = config.getoption("--run-all-node-capability-tests")
     for item in items:
         markers = tuple(item.iter_markers("requires_node_capabilities"))
         if not markers:
@@ -200,7 +208,7 @@ def pytest_collection_modifyitems(config, items):
         except ValueError as exc:
             raise pytest.UsageError(str(exc)) from exc
         missing = missing_node_capabilities(required, available)
-        if missing:
+        if missing and not run_all:
             item.add_marker(
                 pytest.mark.skip(
                     reason="node under test lacks required capabilities: " + ", ".join(missing)
