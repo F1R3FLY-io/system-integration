@@ -72,8 +72,8 @@ from ...infra.keys import (
 from ...infra.polling import (
     poll_until,
     wait_for_block_visible,
+    wait_for_deploy_finalized,
     wait_for_deploy_included,
-    wait_for_finalized,
 )
 from ...infra.shard import Shard
 
@@ -394,21 +394,34 @@ def _bond_lifecycle(
         bond_deploy_id,
         timeouts.deploy_inclusion * 3,
     )
-    bond_block_hash = bond_block.blockHash
-    bond_block_number = bond_block.blockNumber
     logging.info(
-        "Bond deploy %s landed in block #%d (%s)",
+        "Bond deploy %s first included in block #%d (%s)",
         bond_deploy_id[:24],
-        bond_block_number,
-        bond_block_hash[:16],
+        bond_block.blockNumber,
+        bond_block.blockHash[:16],
     )
 
-    # ── Phase 4: bond block finalizes cross-node ─────────────────
-    wait_for_finalized(proposer_node, bond_block_number, timeouts.finalization * 3)
+    # ── Phase 4: bond deploy finalizes cross-node ────────────────
+    # Deploy-centric, not block-centric: under bg-load contention the
+    # FIRST containing block can lose fork choice and be orphaned while
+    # the bond deploy is re-homed into a finalized descendant (observed
+    # live: every node held the original block at FT=-1.0 forever).
+    # Wait for the DEPLOY to finalize, then re-resolve its durable
+    # containing block and anchor every downstream assertion — bonds
+    # maps and epoch arithmetic — to that block.
+    wait_for_deploy_finalized(proposer_node, bond_deploy_id, timeouts.finalization * 3)
+    bond_block = proposer_node.find_deploy(bond_deploy_id)
+    bond_block_hash = bond_block.blockHash
+    bond_block_number = bond_block.blockNumber
     assert_block_finalized_on_all_nodes(
         [v1, v2, v3, joiner, ro],
         bond_block_hash,
         timeout=timeouts.finalization * 3,
+    )
+    logging.info(
+        "Bond deploy finalized in block #%d (%s)",
+        bond_block_number,
+        bond_block_hash[:16],
     )
     bond_block_info = proposer_node.get_block(bond_block_hash)
     bond_block_bonds = {b.validator: b.stake for b in bond_block_info.blockInfo.bonds}
