@@ -662,14 +662,31 @@ def _custom_shard_cascade_guard(request):
 # ── Log scanning ────────────────────────────────────────────────────
 
 
+# Cross-test log-scan bookkeeping (per pytest process; each xdist worker
+# owns its provider, so plain module globals are correct). Keyed by node
+# name: how many log lines earlier per-test scans have already judged,
+# and the allowance set of the last test that judged them. Consumed (and
+# removed) by the retired-snapshot scan so a reused node name after a
+# shard teardown starts fresh.
+_scanned_log_offsets: dict = {}
+_last_scan_allowances: dict = {}
+
+
+def _count_lines(lines, counter):
+    """Yield ``lines`` unchanged while tallying them into ``counter[0]``."""
+    for line in lines:
+        counter[0] += 1
+        yield line
+
+
 @pytest.fixture(autouse=True)
 def check_node_logs_after_test(request, provider):
     """Post-test log scan for forbidden patterns on all active nodes.
 
     Runs after every test (shared, custom, standalone). Queries the
-    provider for all active node handles and runs ``scan_for_forbidden``
-    on each node's logs (via the provider-agnostic ``handle.logs()``
-    method).
+    provider for all active node handles and runs
+    ``scan_lines_for_forbidden`` on each node's logs (via the
+    provider-agnostic ``handle.logs()`` / ``iter_log_lines`` methods).
 
     Patterns are defined in ``infra/log_events.py`` as a single
     ``FORBIDDEN_PATTERNS`` dict — covers panics, KvStore failures,
@@ -707,7 +724,12 @@ def check_node_logs_after_test(request, provider):
 
     yield
 
-    from .infra.log_events import format_errors, scan_for_forbidden, scan_lines_for_forbidden
+    from .infra.log_events import (
+        format_errors,
+        record_scanned,
+        scan_lines_for_forbidden,
+        scan_retired_snapshot,
+    )
 
     # Collect opt-out keys from this test's markers.
     allowed = frozenset()
@@ -715,6 +737,37 @@ def check_node_logs_after_test(request, provider):
         allowed = allowed | frozenset(marker.args)
 
     forbidden: list = []
+
+    # Scan logs from retired nodes FIRST — transient nodes detached during
+    # this test (e.g., observers attached via the ``add_observer`` context
+    # manager) AND shards destroyed by module-fixture teardown, whose
+    # snapshots surface here during the NEXT test's scan. Ownership and
+    # windowing semantics live in ``scan_retired_snapshot``: the
+    # already-judged prefix is skipped (re-judging it mis-attributed the
+    # previous test's allowed ComputationOutOfPhlogistons lines to
+    # test_bridge_api_exploratory), and the teardown-window tail is judged
+    # under the OWNING test's allowances only — this test's allowances
+    # never apply to another test's lines.
+    #
+    # Ordering is load-bearing: a NEW shard can reuse a retired node's
+    # name (dedicated shard torn down, session shard created — container
+    # names are identical). The retired entries must be popped before the
+    # active-handle loop below writes fresh bookkeeping for the same
+    # names, or the retired snapshot would be scanned with the new
+    # node's offset.
+    for snapshot in getattr(provider, "retired_log_snapshots", []):
+        forbidden.extend(
+            scan_retired_snapshot(
+                snapshot.name,
+                snapshot.log_text,
+                _scanned_log_offsets,
+                _last_scan_allowances,
+                allowed,
+            )
+        )
+    if hasattr(provider, "clear_retired_log_snapshots"):
+        provider.clear_retired_log_snapshots()
+
     for handle in provider.active_handles:
         try:
             # Scan only the lines THIS test produced: skip the prefix that
@@ -727,24 +780,26 @@ def check_node_logs_after_test(request, provider):
             # into memory during the post-test scan. Fall back to the string
             # API for providers without a streaming iterator.
             iter_lines = getattr(handle, "iter_log_lines", None)
+            scanned = 0
             if iter_lines is not None:
                 new_lines = itertools.islice(iter_lines(), offset, None)
-                forbidden.extend(scan_lines_for_forbidden(new_lines, handle.name, allowed))
+                counted = _count_lines(new_lines, counter := [0])
+                forbidden.extend(scan_lines_for_forbidden(counted, handle.name, allowed))
+                scanned = counter[0]
             else:
                 tail = handle.logs().splitlines()[offset:]
                 forbidden.extend(scan_lines_for_forbidden(tail, handle.name, allowed))
+                scanned = len(tail)
+            record_scanned(
+                handle.name, offset, scanned, _scanned_log_offsets, _last_scan_allowances, allowed
+            )
         except Exception:
+            # Fail closed: a failed scan records nothing. The judged-through
+            # offset must not advance (the window was not judged), and this
+            # test's allowances must not be attached to lines it never
+            # judged — accumulating allowances across failed scans could
+            # hide a forbidden event produced under a stricter test.
             continue
-
-    # Also scan logs from transient nodes that were attached and
-    # detached during this test (e.g., observers attached via the
-    # ``add_observer`` context manager). The provider snapshots each
-    # node's log content before its handle is removed; without this
-    # path, panics on transient nodes silently escape the scanner.
-    for snapshot in getattr(provider, "retired_log_snapshots", []):
-        forbidden.extend(scan_for_forbidden(snapshot.log_text, snapshot.name, allowed))
-    if hasattr(provider, "clear_retired_log_snapshots"):
-        provider.clear_retired_log_snapshots()
 
     if forbidden:
         pytest.fail(format_errors(forbidden), pytrace=False)
