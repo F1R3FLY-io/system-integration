@@ -71,7 +71,6 @@ from ...infra.keys import (
 from ...infra.polling import (
     poll_until,
     wait_for_block_visible,
-    wait_for_block_visible_on_all_nodes,
     wait_for_deploy_included,
     wait_for_finalized,
 )
@@ -513,18 +512,27 @@ def _bond_lifecycle(
         phlo_price=1,
     )
 
-    def _joiner_proposed():
+    # Under bg-load fork-choice contention an individual joiner block can
+    # legitimately lose a merge and be orphaned — pinning the first
+    # joiner-authored block found and demanding THAT hash finalizes is a
+    # false failure (the shard is healthy, the block just lost fork
+    # choice). Select a joiner-authored block that already reports
+    # isFinalized on the joiner, then hold the cross-node assertion to
+    # that finalized block.
+    def _joiner_block_finalized():
         for blk in joiner.get_blocks(50):
             if blk.sender == joiner_identity.public_hex and blk.blockNumber > bond_block_number:
-                return blk
+                info = joiner.get_block(blk.blockHash)
+                if info.blockInfo.isFinalized:
+                    return blk
         return None
 
     try:
         joiner_block = poll_until(
-            predicate=_joiner_proposed,
-            timeout=timeouts.finalization * 2,
+            predicate=_joiner_block_finalized,
+            timeout=timeouts.finalization * 5,
             interval=3.0,
-            description=f"{joiner_identity.name} proposes a block post-activation",
+            description=f"{joiner_identity.name} authors a block that finalizes post-activation",
         )
     except TimeoutError:
         _dump_block_search_diagnostic(
@@ -534,10 +542,6 @@ def _bond_lifecycle(
             min_block=bond_block_number,
         )
         raise
-    # Background load creates contention: V1/V2/V3 produce tips
-    # constantly, slowing FT accumulation on the joiner's block.
-    # Widen the budget vs. base finalization (3×) to absorb load.
-    wait_for_finalized(joiner, joiner_block.blockNumber, timeouts.finalization * 5)
     assert_block_finalized_on_all_nodes(
         [v1, v2, v3, joiner, ro],
         joiner_block.blockHash,
@@ -558,22 +562,27 @@ def _bond_lifecycle(
         phlo_price=1,
     )
 
-    def _v1_justifies_joiner():
+    # Same orphan-safety rule as Phase 6: only a justifying V1 block that
+    # already reports isFinalized may anchor the exact-hash assertion.
+    def _v1_finalized_block_justifying_joiner():
         for blk in v1.get_blocks(50):
             if blk.blockNumber <= joiner_block.blockNumber:
                 continue
             if blk.sender != VALIDATOR1_ID.public_hex:
                 continue
-            if any(j.validator == joiner_identity.public_hex for j in blk.justifications):
+            if not any(j.validator == joiner_identity.public_hex for j in blk.justifications):
+                continue
+            info = v1.get_block(blk.blockHash)
+            if info.blockInfo.isFinalized:
                 return blk
         return None
 
     try:
         v1_post_block = poll_until(
-            predicate=_v1_justifies_joiner,
-            timeout=timeouts.finalization * 2,
+            predicate=_v1_finalized_block_justifying_joiner,
+            timeout=timeouts.finalization * 5,
             interval=3.0,
-            description=f"V1 produces a block justifying {joiner_identity.name}",
+            description=f"V1 block justifying {joiner_identity.name} finalizes",
         )
     except TimeoutError:
         # Query both the node the predicate polled (v1) and a peer (v2) so a
@@ -587,7 +596,6 @@ def _bond_lifecycle(
             cites_validator_hex=joiner_identity.public_hex,
         )
         raise
-    wait_for_finalized(v1, v1_post_block.blockNumber, timeouts.finalization * 5)
     assert_block_finalized_on_all_nodes(
         [v1, v2, v3, joiner, ro],
         v1_post_block.blockHash,
@@ -613,21 +621,20 @@ def _bond_lifecycle(
             phlo_limit=100_000_000,
             phlo_price=1,
         )
-        block = wait_for_deploy_included(
+        wait_for_deploy_included(
             node,
             deploy_id,
             timeouts.deploy_inclusion * 5,
         )
-        wait_for_finalized(node, block.blockNumber, timeouts.finalization * 5)
-        wait_for_block_visible_on_all_nodes(
+        # Deploy-centric, not block-centric: the first containing block can
+        # lose a merge and be orphaned while the deploy is re-homed into a
+        # finalized descendant. Pinning the original block hash falsely
+        # fails that case (see assert_all_deploys_finalized_on_all_nodes).
+        assert_all_deploys_finalized_on_all_nodes(
             [v1, v2, v3, joiner, ro],
-            block.blockHash,
-            timeout=timeouts.finalization * 5,
-        )
-        assert_block_finalized_on_all_nodes(
-            [v1, v2, v3, joiner, ro],
-            block.blockHash,
-            timeout=timeouts.finalization * 5,
+            [deploy_id],
+            timeouts.finalization * 5,
+            label=f"liveness-{node.name}-{joiner_identity.name}",
         )
 
     logging.info(
