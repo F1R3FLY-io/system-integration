@@ -25,12 +25,25 @@ under heartbeat. The observer must converge to the validators' LFB
 within drift tolerance and agree with them on the bonds map, finalized
 ancestor chain, and per-block post-state hashes.
 
-Runs against ``shared_shard`` (3 validators + readonly + heartbeat=True).
-The shared readonly was attached at genesis and so doesn't exercise the
-"attach against live shard" code path; this test attaches a TRANSIENT
-observer mid-session via ``add_observer`` (context-managed cleanup) so
-the assertion target is the same code an operator would hit in
-production.
+Runs against a DEDICATED module-scoped shard (3 validators, heartbeat)
+rather than ``shared_shard``: the ``isolated_shard`` ordering runs this
+module before the session shard exists, so the pre-attach DAG window is
+freshly produced under this test's own load — the multi-parent
+precondition below is verified against blocks this test caused, not
+whatever a long-lived session shard happens to have near its tip. The
+test attaches a TRANSIENT observer mid-run via ``add_observer``
+(context-managed cleanup) so the assertion target is the same code an
+operator would hit in production.
+
+Multi-parent precondition: the forward-horizon pre-state inclusion path
+is only exercised if the observer's sync window contains multi-parent
+merge blocks. The test therefore WAITS for a multi-parent block to
+appear under background load BEFORE attaching the observer (so the
+block sits within the forward-horizon depth of the LFB at attach time)
+and afterwards asserts the observer actually holds that block — a
+guaranteed precondition plus direct proof, replacing the earlier
+post-hoc sample of v1's recent blocks that could falsely fail when the
+sampled window happened to be single-parent.
 """
 
 import logging
@@ -45,6 +58,7 @@ from ...infra.assertions import (
     assert_block_finalized_on_all_nodes,
     assert_bonds_map_consistent_across_nodes,
 )
+from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import (
     all_blocks_visible,
@@ -52,8 +66,12 @@ from ...infra.polling import (
     poll_until,
     wait_for_block_visible,
 )
+from ...infra.shard import Shard
 
-pytestmark = pytest.mark.xdist_group("shared")
+pytestmark = [
+    pytest.mark.xdist_group("shared"),
+    pytest.mark.isolated_shard,
+]
 
 # Drift tolerance between observer's LFB and v1's LFB (in blocks).
 # A readonly observer has no proposer back-pressure and ingests via
@@ -78,6 +96,36 @@ _BG_LOAD_PHLO_LIMIT = 100_000_000
 # to cross from Initializing through Running and ingest several gossip
 # rounds.
 _OBSERVER_LOAD_WINDOW_SEC = 20.0
+
+# How many recent blocks to inspect when hunting for a multi-parent
+# merge block pre-attach. Twice the depth gate: covers everything the
+# depth gate guarantees plus whatever lands while polling.
+_MULTI_PARENT_SCAN_DEPTH = _MIN_PRE_ATTACH_DEPTH * 2
+
+
+@pytest.fixture(scope="module")
+def observer_shard(provider, timeouts):
+    """Dedicated shard so the observer attaches against a DAG whose
+    recent history this test fully controls (fresh genesis, own load).
+
+    No baked-in readonly: the transient ``add_observer`` node is the
+    only observer this test needs, and it must be the mid-session
+    attach variant to exercise the LFS-sync path.
+    """
+    config = ShardConfig(
+        bonds=[
+            (VALIDATOR1_ID, 100),
+            (VALIDATOR2_ID, 100),
+            (VALIDATOR3_ID, 100),
+        ],
+        heartbeat=True,
+        include_readonly=False,
+    )
+    shard = Shard.create(provider, config, timeouts)
+    try:
+        yield shard
+    finally:
+        shard.destroy()
 
 
 class _BackgroundLoad:
@@ -172,25 +220,30 @@ def _walk_finalized_chain(node, lfb_hash: str, max_blocks: int = 20) -> List[str
     return hashes
 
 
-def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
+def test_observer_lfs_sync_against_active_shard(observer_shard, timeouts) -> None:
     """A fresh observer LFS-syncs cleanly against an actively producing shard.
 
-    1. Wait until the shard's DAG has real depth (≥ _MIN_PRE_ATTACH_DEPTH
+    1. Start background load on V1/V2/V3 so the fresh shard's DAG
+       advances (and merges) from the start.
+    2. Wait until the DAG has real depth (≥ _MIN_PRE_ATTACH_DEPTH
        blocks) so the forward-horizon sync has non-trivial work.
-    2. Start background load on V1/V2/V3 to keep the chain advancing.
-    3. Attach a transient observer; observer runs full LFS-sync against
-       a moving LFB.
-    4. Wait for observer's LFB to converge within drift tolerance of v1.
-    5. Stop background load and let the chain settle.
-    6. Assert robust cross-node agreement on:
+    3. Wait for a multi-parent merge block to appear in the recent
+       window and record it — the precondition that the observer's sync
+       will exercise the pre-state inclusion path.
+    4. Immediately attach a transient observer (so the recorded block
+       is still within the forward-horizon depth of the LFB); observer
+       runs full LFS-sync against a moving LFB.
+    5. Wait for observer's LFB to converge within drift tolerance of v1.
+    6. Stop background load and let the chain settle.
+    7. Assert robust cross-node agreement on:
        - the observer's LFB block (visible + finalized everywhere)
        - the bonds map at the observer's LFB
        - per-block post-state hashes for the last several finalized
          ancestor blocks (deep agreement, not just LFB-tip)
-       - the DAG had multi-parent merges in the depth window the
-         observer had to sync (proves the test exercised the real-world
-         code path, not a degenerate single-parent chain)
-    7. Re-assert drift remains within tolerance after a settle window
+       - the observer holds the recorded multi-parent block (direct
+         proof the sync covered the real-world merge path, not a
+         degenerate single-parent chain)
+    8. Re-assert drift remains within tolerance after a settle window
        (catches "synced then stalled" regressions).
 
     The autouse log scanner in ``conftest.check_node_logs_after_test``
@@ -199,46 +252,68 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
     ``KvStoreError``, ``UnknownRootError``, or any other forbidden
     pattern during sync.
     """
-    v1 = shared_shard.node("validator1")
-    v2 = shared_shard.node("validator2")
-    v3 = shared_shard.node("validator3")
+    v1 = observer_shard.node("validator1")
+    v2 = observer_shard.node("validator2")
+    v3 = observer_shard.node("validator3")
     validators = [v1, v2, v3]
     keys = [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID]
 
-    # ── 1. Pre-attach DAG depth ────────────────────────────────────────
-    # The shared shard has been running with heartbeat since session
-    # startup, so the DAG should already have depth. Poll to be sure
-    # before we start measuring.
-    poll_until(
-        predicate=lambda: get_blocks_if_enough(v1, _MIN_PRE_ATTACH_DEPTH),
-        timeout=timeouts.finalization * 4,
-        interval=3.0,
-        description=(f"v1 accumulates ≥ {_MIN_PRE_ATTACH_DEPTH} blocks pre-attach"),
-    )
-    pre_attach_lfb_n = v1.last_finalized_block().blockInfo.blockNumber
-    logging.info(
-        "Pre-attach: v1 LFB at #%d, %d+ blocks in DAG",
-        pre_attach_lfb_n,
-        _MIN_PRE_ATTACH_DEPTH,
-    )
-
-    # ── 2. Background load drives DAG forward during attach ───────────
+    # ── 1. Background load drives the fresh DAG forward ───────────────
     bg = _BackgroundLoad(validators, keys)
     bg.start()
     try:
-        # ── 3. Attach transient observer ──────────────────────────────
+        # ── 2. Pre-attach DAG depth ───────────────────────────────────
+        poll_until(
+            predicate=lambda: get_blocks_if_enough(v1, _MIN_PRE_ATTACH_DEPTH),
+            timeout=timeouts.finalization * 4,
+            interval=3.0,
+            description=(f"v1 accumulates ≥ {_MIN_PRE_ATTACH_DEPTH} blocks pre-attach"),
+        )
+        pre_attach_lfb_n = v1.last_finalized_block().blockInfo.blockNumber
+        logging.info(
+            "Pre-attach: v1 LFB at #%d, %d+ blocks in DAG",
+            pre_attach_lfb_n,
+            _MIN_PRE_ATTACH_DEPTH,
+        )
+
+        # ── 3. Multi-parent precondition ──────────────────────────────
+        # Concurrent proposals under load + heartbeat produce merge
+        # blocks; wait until one exists so attaching now guarantees the
+        # observer's horizon window contains it. Recording the block
+        # (rather than re-sampling afterwards) is what makes the final
+        # check deterministic.
+        def _find_multi_parent():
+            candidates = [
+                b for b in v1.get_blocks(_MULTI_PARENT_SCAN_DEPTH) if len(b.parentsHashList) > 1
+            ]
+            return max(candidates, key=lambda b: b.blockNumber) if candidates else None
+
+        multi_parent = poll_until(
+            predicate=_find_multi_parent,
+            timeout=timeouts.finalization * 4,
+            interval=3.0,
+            description="a multi-parent merge block appears on v1 pre-attach",
+        )
+        logging.info(
+            "Multi-parent precondition met: block #%d (%s…) has %d parents; attaching observer now",
+            multi_parent.blockNumber,
+            multi_parent.blockHash[:16],
+            len(multi_parent.parentsHashList),
+        )
+
+        # ── 4. Attach transient observer ──────────────────────────────
         # ``add_observer`` is the context-managed (transient) variant —
         # observer is removed and its volume cleaned up on exit, so its
         # post-attach errors (if any) are still visible to the autouse
         # log scanner that runs at test end.
-        with shared_shard.add_observer() as observer:
+        with observer_shard.add_observer() as observer:
             logging.info(
                 "Observer %s attached during bg load (~%d deploys so far)",
                 observer.name,
                 bg.deploy_count,
             )
 
-            # ── 4. Wait for observer to catch up ──────────────────────
+            # ── 5. Wait for observer to catch up ──────────────────────
             def _observer_caught_up() -> bool:
                 v1_n = v1.last_finalized_block().blockInfo.blockNumber
                 obs_n = observer.last_finalized_block().blockInfo.blockNumber
@@ -256,7 +331,7 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
             # not just the bulk sync.
             time.sleep(_OBSERVER_LOAD_WINDOW_SEC)
 
-            # ── 5. Stop load + settle ─────────────────────────────────
+            # ── 6. Stop load + settle ─────────────────────────────────
             bg.stop()
 
             # Allow the chain to quiesce so observer can fully catch up
@@ -278,7 +353,7 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
                 ),
             )
 
-            # ── 6. Robust cross-node assertions ───────────────────────
+            # ── 7. Robust cross-node assertions ───────────────────────
             observer_lfb = observer.last_finalized_block().blockInfo
             observer_bonds = {b.validator: b.stake for b in observer_lfb.bonds}
             assert len(observer_bonds) == len(validators), (
@@ -341,34 +416,31 @@ def test_observer_lfs_sync_against_active_shard(shared_shard, timeouts) -> None:
                     block_hash,
                 )
 
-            # Multi-parent existence check: the test only exercises the
-            # forward-horizon's pre-state inclusion path if the synced
-            # window had multi-parent merges. With heartbeat=True + 3
-            # validators + bg load this is reliably satisfied; assert it
-            # so a future degenerate config (e.g. single-parent shard)
-            # would loudly fail rather than silently turn into a thinner
-            # test.
-            recent_blocks = v1.get_blocks(_MIN_PRE_ATTACH_DEPTH * 2)
-            multi_parent_count = sum(1 for b in recent_blocks if len(b.parentsHashList) > 1)
-            assert multi_parent_count > 0, (
-                f"No multi-parent blocks in last {len(recent_blocks)} "
-                f"blocks — observer didn't exercise pre-state inclusion "
-                f"path; bg-load cadence or heartbeat config has "
-                f"degenerated"
+            # Multi-parent coverage check: the pre-attach precondition
+            # recorded a merge block that existed before the observer
+            # attached, so the observer's genesis→LFB sync must have
+            # covered it. Verifying the observer holds THAT block is a
+            # deterministic proof it exercised the pre-state inclusion
+            # path — unlike sampling v1's recent window post-hoc, which
+            # falsely failed when the sampled tail happened to be
+            # single-parent (soak preflight, f1r3node-rust PR #273).
+            wait_for_block_visible(
+                observer,
+                multi_parent.blockHash,
+                timeout=timeouts.finalization * 2,
             )
 
             logging.info(
                 "Observer %s LFS-synced: LFB #%d (v1 #%d, drift %d), "
                 "bonds=%d, ancestor-chain-agreement=%d blocks, "
-                "multi-parent blocks=%d/%d",
+                "multi-parent block #%d held by observer",
                 observer.name,
                 observer_lfb.blockNumber,
                 v1.last_finalized_block().blockInfo.blockNumber,
                 v1.last_finalized_block().blockInfo.blockNumber - observer_lfb.blockNumber,
                 len(observer_bonds),
                 len(ancestor_chain),
-                multi_parent_count,
-                len(recent_blocks),
+                multi_parent.blockNumber,
             )
     finally:
         bg.stop()
