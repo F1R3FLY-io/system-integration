@@ -37,10 +37,11 @@ operator would hit in production.
 
 Multi-parent precondition: the forward-horizon pre-state inclusion path
 is only exercised if the observer's sync window contains multi-parent
-merge blocks. The test therefore WAITS for a multi-parent block to
-appear under background load BEFORE attaching the observer (so the
-block sits within the forward-horizon depth of the LFB at attach time)
-and afterwards asserts the observer actually holds that block — a
+merge blocks. The test therefore WAITS for a FINALIZED multi-parent
+block to appear under background load BEFORE attaching the observer
+(finalized ⇒ inside the genesis→LFB bulk-sync range, and near the
+forward horizon because the most recent finalized merge is chosen) and
+afterwards asserts the observer actually holds that block — a
 guaranteed precondition plus direct proof, replacing the earlier
 post-hoc sample of v1's recent blocks that could falsely fail when the
 sampled window happened to be single-parent.
@@ -69,6 +70,10 @@ from ...infra.polling import (
 from ...infra.shard import Shard
 
 pytestmark = [
+    # Deliberately kept in the "shared" xdist group despite the dedicated
+    # shard: under --dist=loadgroup it serializes this resource-heavy
+    # module with the other shard-owning tests on one worker, so two
+    # multi-node shards never run concurrently on a constrained host.
     pytest.mark.xdist_group("shared"),
     pytest.mark.isolated_shard,
 ]
@@ -227,9 +232,10 @@ def test_observer_lfs_sync_against_active_shard(observer_shard, timeouts) -> Non
        advances (and merges) from the start.
     2. Wait until the DAG has real depth (≥ _MIN_PRE_ATTACH_DEPTH
        blocks) so the forward-horizon sync has non-trivial work.
-    3. Wait for a multi-parent merge block to appear in the recent
-       window and record it — the precondition that the observer's sync
-       will exercise the pre-state inclusion path.
+    3. Wait for a FINALIZED multi-parent merge block to appear in the
+       recent window and record it — the precondition that the
+       observer's genesis→LFB sync will exercise the pre-state
+       inclusion path.
     4. Immediately attach a transient observer (so the recorded block
        is still within the forward-horizon depth of the LFB); observer
        runs full LFS-sync against a moving LFB.
@@ -281,12 +287,26 @@ def test_observer_lfs_sync_against_active_shard(observer_shard, timeouts) -> Non
         # blocks; wait until one exists so attaching now guarantees the
         # observer's horizon window contains it. Recording the block
         # (rather than re-sampling afterwards) is what makes the final
-        # check deterministic.
+        # check deterministic. Only a block v1 already reports as
+        # FINALIZED qualifies: a finalized pre-attach block is covered
+        # by the observer's genesis→LFB bulk sync regardless of attach
+        # latency, so the post-sync visibility check proves LFS
+        # coverage. An unfinalized tip would prove nothing (it could
+        # arrive via post-attach gossip) or flake (it could be orphaned
+        # off the finalized path entirely) — the same orphan-race family
+        # as PR #117/#118. Most-recent finalized merge wins the
+        # tie-break so the block stays near the forward horizon.
         def _find_multi_parent():
             candidates = [
                 b for b in v1.get_blocks(_MULTI_PARENT_SCAN_DEPTH) if len(b.parentsHashList) > 1
             ]
-            return max(candidates, key=lambda b: b.blockNumber) if candidates else None
+            for candidate in sorted(candidates, key=lambda b: b.blockNumber, reverse=True):
+                try:
+                    if v1.get_block(candidate.blockHash).blockInfo.isFinalized:
+                        return candidate
+                except Exception:
+                    continue
+            return None
 
         multi_parent = poll_until(
             predicate=_find_multi_parent,
@@ -295,7 +315,7 @@ def test_observer_lfs_sync_against_active_shard(observer_shard, timeouts) -> Non
             description="a multi-parent merge block appears on v1 pre-attach",
         )
         logging.info(
-            "Multi-parent precondition met: block #%d (%s…) has %d parents; attaching observer now",
+            "Multi-parent precondition met: finalized block #%d (%s…) has %d parents; attaching observer now",
             multi_parent.blockNumber,
             multi_parent.blockHash[:16],
             len(multi_parent.parentsHashList),
@@ -417,9 +437,10 @@ def test_observer_lfs_sync_against_active_shard(observer_shard, timeouts) -> Non
                 )
 
             # Multi-parent coverage check: the pre-attach precondition
-            # recorded a merge block that existed before the observer
-            # attached, so the observer's genesis→LFB sync must have
-            # covered it. Verifying the observer holds THAT block is a
+            # recorded a merge block already FINALIZED before the
+            # observer attached, so the observer's genesis→LFB bulk
+            # sync must have covered it — gossip cannot satisfy this
+            # check by accident, and the block cannot be orphaned. Verifying the observer holds THAT block is a
             # deterministic proof it exercised the pre-state inclusion
             # path — unlike sampling v1's recent window post-hoc, which
             # falsely failed when the sampled tail happened to be

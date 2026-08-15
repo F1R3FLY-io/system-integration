@@ -22,7 +22,7 @@ Single comprehensive test that:
 
 1. Starts a `_BackgroundLoad` thread on V1/V2/V3 (round-robin deploys, ~2.5 s per producer) so the fresh shard's chain advances — and merges — from the start.
 2. Polls v1 until the DAG has at least `_MIN_PRE_ATTACH_DEPTH` (12) blocks. Without depth, the forward-horizon collapses to ~genesis and the new code paths emit early — the test would silently turn into a thinner check.
-3. Polls v1's recent window (`_MULTI_PARENT_SCAN_DEPTH` = 24) until a multi-parent merge block exists, and records it. This is the precondition that the observer's sync will exercise the pre-state inclusion path.
+3. Polls v1's recent window (`_MULTI_PARENT_SCAN_DEPTH` = 24) until a **finalized** multi-parent merge block exists, and records it (most recent finalized merge wins, keeping it near the forward horizon). Finalized-only is load-bearing: a finalized pre-attach block is inside the observer's genesis→LFB bulk-sync range, so the later visibility check proves LFS coverage — an unfinalized tip could instead arrive via post-attach gossip, or be orphaned and never arrive at all.
 4. Immediately attaches a transient observer via `with observer_shard.add_observer() as observer:` — attaching right after the precondition keeps the recorded merge block within the forward-horizon depth of the LFB. (Context-managed: removed and volume cleaned up on exit, but its post-attach errors are still captured by the autouse log scanner before cleanup.)
 5. Polls until observer's LFB is within `_LFB_DRIFT_TOLERANCE` (10 blocks) of v1's LFB.
 6. Holds load for `_OBSERVER_LOAD_WINDOW_SEC` (20 s) post-attach so the observer ingests via gossip after the bulk sync — confirms the gossip path works post-LFS, not just the bulk LFS path.
@@ -38,7 +38,7 @@ The autouse fixture `check_node_logs_after_test` in `conftest.py` runs after the
 - **FTT**: From `conf/rust.conf`
 - **Background load**: 3 producers (V1/V2/V3), 2.5 s per-producer interval, ~1.2 deploys/sec aggregate
 - **Pre-attach depth gate**: `_MIN_PRE_ATTACH_DEPTH = 12` blocks on v1 before observer attach
-- **Multi-parent precondition**: a merge block must exist in v1's last `_MULTI_PARENT_SCAN_DEPTH = 24` blocks before the observer attaches; its hash is recorded for the post-sync coverage assertion
+- **Multi-parent precondition**: a **finalized** merge block must exist in v1's last `_MULTI_PARENT_SCAN_DEPTH = 24` blocks before the observer attaches; its hash is recorded for the post-sync coverage assertion
 - **Drift tolerance**: `_LFB_DRIFT_TOLERANCE = 10` blocks (observer LFB vs v1 LFB)
 - **Load window post-attach**: `_OBSERVER_LOAD_WINDOW_SEC = 20` s
 
@@ -60,7 +60,7 @@ The autouse fixture `check_node_logs_after_test` in `conftest.py` runs after the
 | C | `assert_block_finalized_on_all_nodes([v1, observer], observer_lfb_hash)` | Both report `isFinalized=True` for the same hash |
 | D | `assert_bonds_map_consistent_across_nodes([v1, v2, v3, observer], observer_lfb_hash, observer_bonds)` | All four nodes report identical bonds at that hash |
 | E | `assert_all_nodes_agree_on_block` for ≥ 5 of observer's last finalized ancestor blocks | Deep cross-node post-state agreement, not just LFB-tip — catches latent storage/replay divergence |
-| F | `wait_for_block_visible(observer, multi_parent.blockHash)` for the merge block recorded pre-attach | Observer's sync provably covered a multi-parent merge — deterministic, unlike the earlier post-hoc sample of v1's recent window, which falsely failed when the sampled tail was single-parent (soak preflight, f1r3node-rust PR #273) |
+| F | `wait_for_block_visible(observer, multi_parent.blockHash)` for the **finalized** merge block recorded pre-attach | Observer's genesis→LFB bulk sync provably covered a multi-parent merge — gossip cannot satisfy it by accident and the block cannot be orphaned. Deterministic, unlike the earlier post-hoc sample of v1's recent window, which falsely failed when the sampled tail was single-parent (soak preflight, f1r3node-rust PR #273) |
 | G | Drift remains within `_LFB_DRIFT_TOLERANCE` after settle (Step 7 poll) | Catches "synced then stalled" regressions |
 | H | (Implicit, autouse) Observer logs free of `DAGStorageMissingHash` / `RootRepositoryDivergence` / `KvStoreError` / `UnknownRootError` | The whole reason this PR exists |
 
