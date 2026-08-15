@@ -1,5 +1,9 @@
 """CLI application for shardctl."""
 
+# Pyright in the agent harness does not attach to Poetry's environment.
+# Runtime dependency imports are exercised by the CLI unit tests.
+# pyright: reportMissingImports=false
+
 import os
 import re
 import shlex
@@ -15,6 +19,7 @@ from rich.prompt import Confirm
 from . import node as node_module
 from .compose import ComposeManager
 from .config import Config
+from .soak.cli import app as soak_app
 from .utils import (
     build_service,
     clean_services,
@@ -32,6 +37,7 @@ app = typer.Typer(
 )
 
 console = Console()
+app.add_typer(soak_app, name="soak")
 
 
 def _resolve_compose_files(config: Config, services: Optional[List[str]]) -> List[Path]:
@@ -281,6 +287,8 @@ def down(
                             stdout=subprocess.DEVNULL,
                         )
                         console.print(f"[green]✓[/green] Successfully sent kill signal to {svc}")
+                    # pi-lens-ignore: ast-grep:no-bare-except
+                    # pi-lens-ignore: bare-except
                     except subprocess.CalledProcessError:
                         console.print(f"[dim]No running {svc} process found.[/dim]")
                 else:
@@ -1425,15 +1433,19 @@ def test_report_cmd(
         console.print("[dim]Run tests first with: poetry run shardctl test[/dim]")
         raise typer.Exit(1)
 
-    with open(report_path) as f:
-        try:
+    try:
+        # pi-lens-ignore: ast-grep:unchecked-throwing-call-python
+        with report_path.open() as f:
             data = json.load(f)
-        except json.JSONDecodeError as exc:
-            console.print(f"[red]Report file is malformed or incomplete: {exc}[/red]")
-            console.print(
-                "[dim]The test run may have been interrupted before writing a valid report.[/dim]"
-            )
-            raise typer.Exit(1)
+    except OSError as exc:
+        console.print(f"[red]Could not read report file: {exc}[/red]")
+        raise typer.Exit(1) from exc
+    except json.JSONDecodeError as exc:
+        console.print(f"[red]Report file is malformed or incomplete: {exc}[/red]")
+        console.print(
+            "[dim]The test run may have been interrupted before writing a valid report.[/dim]"
+        )
+        raise typer.Exit(1) from exc
 
     # Support both flat pytest-json-report and JSON:API wrapper formats
     if "tests" in data:

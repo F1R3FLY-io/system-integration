@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/F1R3FLY-io/system-integration/soak/schemas/epoch-v1.schema.json",
+  "$defs": {
+    "canonicalValue": {
+      "anyOf": [
+        {"type": "null"},
+        {"type": "boolean"},
+        {"type": "string"},
+        {"type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991},
+        {"type": "array", "items": {"$ref": "#/$defs/canonicalValue"}},
+        {
+          "type": "object",
+          "propertyNames": {"pattern": "^[\\u0000-\\u007f]*$"},
+          "additionalProperties": {"$ref": "#/$defs/canonicalValue"}
+        }
+      ]
+    }
+  },
+  "title": "F1R3FLY randomized exercise soak epoch definition v1",
+  "type": "object",
+  "propertyNames": {"pattern": "^[\\u0000-\\u007f]*$"},
+  "additionalProperties": false,
+  "required": ["catalog_schema_version", "epoch_id", "epoch_revision", "definition", "fixtures"],
+  "properties": {
+    "catalog_schema_version": {"const": 1},
+    "epoch_id": {"type": "string", "pattern": "^SOAK-EPOCH-[0-9]{3}$"},
+    "epoch_revision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["providers", "topologies", "workload", "safety_limits", "invariants"],
+      "properties": {
+        "providers": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["docker", "subprocess"]}},
+        "topologies": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"const": "six-node-single-shard"}},
+        "workload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "parameters"],
+          "properties": {
+            "kind": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+            "parameters": {"type": "object", "propertyNames": {"pattern": "^[\\u0000-\\u007f]*$"}, "additionalProperties": {"$ref": "#/$defs/canonicalValue"}}
+          }
+        },
+        "safety_limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_operations": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+            "max_concurrency": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+            "max_payload_bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+            "max_phlo_limit": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+            "max_submit_rate_per_second": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+            "max_active_phase_seconds": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+            "max_drain_seconds": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+            "max_node_rss_bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+            "min_host_available_bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+          }
+        },
+        "invariants": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"}}
+      }
+    },
+    "fixtures": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "annotations": {"type": "object", "propertyNames": {"pattern": "^[\\u0000-\\u007f]*$"}, "additionalProperties": {"$ref": "#/$defs/canonicalValue"}}
+  }
+}

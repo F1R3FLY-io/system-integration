@@ -1,0 +1,15 @@
+catalog_schema_version: 1
+epoch_id: SOAK-EPOCH-002
+epoch_revision: 1
+definition:
+  providers: [docker, subprocess]
+  topologies: [six-node-single-shard]
+  workload:
+    kind: burst_and_cooldown
+    parameters: {}
+  safety_limits: {}
+  invariants: [all_accepted_operations_finalize, shard_converges_after_cooldown]
+fixtures: []
+annotations:
+  title: Burst and cooldown
+  implementation_status: planned

@@ -1,0 +1,15 @@
+catalog_schema_version: 1
+epoch_id: SOAK-EPOCH-004
+epoch_revision: 1
+definition:
+  providers: [docker, subprocess]
+  topologies: [six-node-single-shard]
+  workload:
+    kind: large_valid_deploys
+    parameters: {}
+  safety_limits: {}
+  invariants: [all_accepted_operations_finalize, approved_payload_bounds_hold]
+fixtures: []
+annotations:
+  title: Large valid deploys
+  implementation_status: planned

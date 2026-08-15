@@ -1,0 +1,16 @@
+catalog_schema_version: 1
+epoch_id: SOAK-EPOCH-005
+epoch_revision: 1
+definition:
+  providers: [docker, subprocess]
+  topologies: [six-node-single-shard]
+  workload:
+    kind: dependent_transaction_chains
+    parameters: {}
+  safety_limits: {}
+  invariants:
+    [prerequisites_finalize_before_dependents, chain_state_is_consistent]
+fixtures: []
+annotations:
+  title: Dependent transaction chains
+  implementation_status: planned

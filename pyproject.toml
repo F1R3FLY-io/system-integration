@@ -12,6 +12,7 @@ typer = "^0.9.0"
 rich = "^13.0.0"
 pyyaml = "^6.0"
 setuptools = "*"
+jsonschema = "^4.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0.0"

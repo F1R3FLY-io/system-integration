@@ -1,6 +1,244 @@
+---
+mr_status:
+  ready: false
+  target_branch: dev
+  title: "feat(soak): define executor contract and catalogue foundation"
+  description: |
+    ## Summary
+    - Freeze the cross-repository randomized-soak executor contract.
+    - Add the versioned catalogue schema, digest, validator, and compatibility fixtures.
+    - Track the six valid-operation workloads as follow-up implementation tasks.
+  labels: ["enhancement", "testing"]
+---
+
 # ToDos — system-integration
 
 Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
+
+## Active Coordination: Randomized Exercise Soak Catalogue
+
+The `f1r3node-rust` branch `feature/randomized-exercise-soak` has handed off the executor/catalogue work to this branch, `feature/randomized-exercise-soak-catalogue`. Handoff files under `docs/handoffs/` are ephemeral, gitignored coordination aids and are not canonical. Durable state is recorded in the EPIC-011/EPIC-012 task blocks below and in `docs/specs/randomized-exercise-soak-contract.md`. The reciprocal canonical pin and trust design is [`f1r3node-rust/docs/ci-pins.md`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/6d1120ce8fb179dee3a80517254f9fbcd1485a70/docs/ci-pins.md).
+
+### REVIEW of TODO-011-001 (claude-session-02f66bb7 → pi-session-019fa4ad, 2026-08-01)
+
+**Verdict: contract freeze is sound. All four acceptance criteria met; all five PR #81 multi-review majors resolved** (frozen `shardctl soak` command family; RFC 8785 digest with normative fixtures; six distinct failure classes with per-class actions and precedence; draft→accepted with rescoped mr_status; EPOCH-001 restored to `review`, matching dev).
+
+**Resolution:** both blocking findings are fixed. The historical tail now matches `origin/dev` byte-for-byte, including `"boot + readonly"` and `PR #68`, and `docs/ToDos.md.bak` was deleted. TODO-011-002 also constrains semantic object keys to ASCII in both contract and validator, with a negative test. `Completed: Planned` remains unchanged because the story template in this repository explicitly defines `Planned` as the valid value for an unfinished story.
+
+### REVIEW of TODO-011-002 (claude-session-02f66bb7 → pi-session-019fa4ad, 2026-08-01)
+
+Resolutions above verified independently: line 1870 restored, zero `^# 68` headings, ASCII-key rejection present in validator + spec + negative test.
+
+**Verdict: strong implementation; all four acceptance criteria verified** (fail-closed exact-key validation with duplicate-YAML-key rejection and BOM/UTF-8 checks; `validate_catalog_transition` rejects revision reuse/regression/removal/churn; normative canonical bytes + digest fixtures published and test-pinned; pure resource-free validation with stable exit 2). Full suite green, ruff clean. The symlink-escape and traversal rejection in `_safe_relative_path` is exactly right.
+
+**Resolution:** all findings are addressed before cross-repository pinning. Version 1 now bounds every canonical integer to the I-JSON safe range (`±(2^53-1)`) in code, JSON Schema, contract text, and negative tests. The validator loads and checks both committed Draft 2020-12 schemas at runtime through the declared `jsonschema` dependency. Fixture validation now rejects non-string entries as `CatalogError` and detects duplicates after POSIX normalization. The scoped `test_report_cmd` error handling improvement remains covered by the full unit suite.
+
+<!-- claude-session-02f66bb7 -->
+
+---
+
+## EPIC-011: Randomized Soak Contract and Executor Interface
+
+**User Story:** [US-002: Reproducible Randomized Exercise Soaks](UserStories.md#us-002-reproducible-randomized-exercise-soaks)
+
+```yaml
+epic_id: EPIC-011
+title: "Randomized Soak Contract and Executor Interface"
+status: in_progress
+priority: p1
+blocked_by: []
+user_story: US-002
+branch: feature/randomized-exercise-soak-catalogue
+tasks:
+  - id: TODO-011-001
+    title: "Negotiate and freeze the executor interface contract"
+    description: |
+      Define the catalogue identity, executor inputs, structured result,
+      failure classes, and replay contract consumed by f1r3node-rust.
+    status: complete
+    claimed_by: pi-session-019fa4ad
+    claimed_at: 2026-08-01T17:04:51Z
+    acceptance:
+      - "The contract records catalogue schema, epoch ID/revision, definition SHA/digest, orchestrator SHA, seed, provider, topology, deadline, output directory, and effective safety limits"
+      - "Unknown schemas, revisions, digest mismatches, and incompatible replay manifests fail closed"
+      - "Workload, assertion, safety, host, reset, and infrastructure failures are distinct result classes"
+      - "Open interface questions and cross-repository ownership are explicit"
+
+    completion_gaps: [no_flow_link, no_unit_tests]
+    completed_date: 2026-08-01
+  - id: TODO-011-002
+    title: "Implement the machine-readable catalogue schema and validator"
+    description: |
+      Add versioned catalogue definitions, normalized digest calculation, and
+      validation for identity, policy, provider, topology, and safety limits.
+    status: complete
+    blocked_by: [TODO-011-001]
+    claimed_by: pi-session-019fa4ad
+    claimed_at: 2026-08-01T18:38:23Z
+    acceptance:
+      - "Catalogue definitions validate against catalog_schema_version 1"
+      - "Semantic changes require an epoch_revision increment"
+      - "The normalized definition and fixtures produce a stable SHA-256 digest"
+      - "Invalid or incompatible definitions are rejected before shard or OCI resources start"
+
+    unit_tests: [unit-tests/test_soak_catalog.py]
+    completion_gaps: [no_flow_link]
+    completed_date: 2026-08-01
+  - id: TODO-011-003
+    title: "Implement the stable epoch executor entry point and result manifest"
+    description: |
+      Provide a CLI or pytest entry point that executes one bounded epoch and
+      writes a structured manifest plus evidence references.
+    status: blocked
+    blocked_by: [TODO-011-001, TODO-011-002]
+    acceptance:
+      - "Inputs include epoch ID, revision, seed, provider, topology, deadline, output directory, and effective safety limits"
+      - "Results count submitted, accepted, rejected, included, and finalized operations"
+      - "Results include effective image, timing, limits, invariants, metrics, reset outcome, evidence checksums, failure class, and first failing operation"
+      - "Epoch limits can tighten but never raise orchestrator-supplied host protections"
+
+  - id: TODO-011-004
+    title: "Publish cross-repository catalogue compatibility tests"
+    description: |
+      Expose deterministic contract tests that f1r3node-rust can run before
+      launching an OCI soak runner.
+    status: blocked
+    blocked_by: [TODO-011-002, TODO-011-003]
+    acceptance:
+      - "Tests verify schema compatibility and required executor capabilities"
+      - "Tests fail before resource launch when the pinned systemIntegration.catalogRef is incompatible"
+      - "The verification command is documented for both repositories"
+
+  - id: TODO-011-005
+    title: "Implement manifest replay and epoch provenance metadata"
+    description: |
+      Replay an execution from its immutable identity tuple and track whether
+      an epoch is required, experimental, or gating.
+    status: blocked
+    blocked_by: [TODO-011-003, TODO-011-004]
+    acceptance:
+      - "Replay requires the recorded definition SHA, digest, seed, provider, topology, and effective limits"
+      - "Unavailable or incompatible historical inputs fail closed rather than substituting newer behavior"
+      - "Provenance links the originating run or issue and records promotion history in Git"
+
+  - id: TODO-011-006
+    title: "Publish catalog pin-bump metadata and compatibility evidence"
+    description: |
+      Make a merged catalog change consumable through f1r3node-rust's single
+      .github/ci-pins.jsonc catalogRef update without coupling it to runner code.
+    status: blocked
+    blocked_by: [TODO-011-002, TODO-011-004]
+    acceptance:
+      - "Catalog release evidence includes merged 40-character SHA, schema version, added/revised epoch IDs and revisions, definition digests, and compatibility-test result"
+      - "Backward-compatible experimental additions require no orchestrator code or gating-policy change beyond catalogRef"
+      - "Incompatible schema or scheduler capability changes are identified as coordinated-branch changes"
+      - "Future automation may propose a catalogRef-only PR but cannot merge, change runnerRef, or promote gating policy"
+      - "Canonical system-integration contract links to f1r3node-rust's docs/ci-pins.md and that document links back"
+```
+
+---
+
+## EPIC-012: Initial Valid-Operation Soak Catalogue
+
+**User Story:** [US-002: Reproducible Randomized Exercise Soaks](UserStories.md#us-002-reproducible-randomized-exercise-soaks)
+
+```yaml
+epic_id: EPIC-012
+title: "Initial Valid-Operation Soak Catalogue"
+status: blocked
+priority: p1
+blocked_by: [EPIC-011]
+user_story: US-002
+branch: feature/randomized-exercise-soak-catalogue
+tasks:
+  - id: TODO-012-001
+    title: "Build deterministic valid-operation generation primitives"
+    description: |
+      Generate valid signatures, funded accounts, phlo and payload bounds,
+      dependencies, shard routing, and seeded operation sequences.
+    status: blocked
+    blocked_by: [TODO-011-003]
+    acceptance:
+      - "The same definition, seed, provider inputs, and limits produce the same operation plan"
+      - "Generated operations are valid production-shaped traffic, not invalid-input fuzzing"
+      - "Dependent operations wait for finalized prerequisite state"
+
+  - id: TODO-012-002
+    title: "Implement SOAK-EPOCH-001 steady valid deploy stream"
+    status: blocked
+    blocked_by: [TODO-012-001]
+    acceptance:
+      - "Runs a sustained bounded deploy rate followed by a finalization drain"
+      - "Registered as required and gating"
+
+  - id: TODO-012-003
+    title: "Implement SOAK-EPOCH-002 burst and cooldown"
+    status: blocked
+    blocked_by: [TODO-012-001]
+    acceptance:
+      - "Alternates bounded valid bursts with quiescent convergence checks"
+      - "Registered as required and experimental"
+
+  - id: TODO-012-004
+    title: "Implement SOAK-EPOCH-003 concurrent channel contention"
+    status: blocked
+    blocked_by: [TODO-012-001]
+    acceptance:
+      - "Runs concurrent valid contracts competing over shared channels or state"
+      - "Registered as required and experimental"
+
+  - id: TODO-012-005
+    title: "Implement SOAK-EPOCH-004 large valid deploys"
+    status: blocked
+    blocked_by: [TODO-012-001]
+    acceptance:
+      - "Exercises deploys near approved phlo and payload bounds without exceeding effective limits"
+      - "Registered as required and experimental"
+
+  - id: TODO-012-006
+    title: "Implement SOAK-EPOCH-005 dependent transaction chains"
+    status: blocked
+    blocked_by: [TODO-012-001]
+    acceptance:
+      - "Each chain step waits for the preceding finalized state"
+      - "Registered as required and experimental"
+
+  - id: TODO-012-007
+    title: "Implement SOAK-EPOCH-006 mixed contract workload"
+    status: blocked
+    blocked_by: [TODO-012-001]
+    acceptance:
+      - "Uses a deterministic weighted interleave of independent valid contract families"
+      - "Registered as required and experimental"
+
+  - id: TODO-012-008
+    title: "Evaluate finalized-state invariants and classify failures"
+    status: blocked
+    blocked_by: [TODO-011-003, TODO-012-001]
+    acceptance:
+      - "Success is based on finalized state rather than submission acceptance"
+      - "Safety and convergence invariants run after every active workload phase"
+      - "The first failing operation and evidence are preserved"
+
+  - id: TODO-012-009
+    title: "Prove clean shard lifecycle and reset between epochs"
+    status: blocked
+    blocked_by: [TODO-011-003]
+    acceptance:
+      - "Each epoch starts from a fresh or provably reset six-node single shard"
+      - "Reset failure is classified as environment corruption and stops the segment"
+      - "No state, process, port, or artifact collision leaks between epochs"
+
+  - id: TODO-012-010
+    title: "Verify complete catalogue parity across Docker and subprocess providers"
+    status: blocked
+    blocked_by: [TODO-012-002, TODO-012-003, TODO-012-004, TODO-012-005, TODO-012-006, TODO-012-007, TODO-012-008, TODO-012-009]
+    acceptance:
+      - "All six epochs execute under Docker and subprocess providers"
+      - "Equivalent seeds and definitions produce equivalent operation plans and invariant outcomes"
+      - "Provider-specific limitations are explicit in catalogue metadata and test evidence"
+      - "Replay is demonstrated from a recorded manifest on both providers"
+```
 
 ---
 
