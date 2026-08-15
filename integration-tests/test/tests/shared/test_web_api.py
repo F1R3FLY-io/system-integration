@@ -27,7 +27,12 @@ from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto
 from f1r3fly.util import sign_deploy_data
 
 from ...infra.keys import VALIDATOR1_ID
-from ...infra.polling import poll_until, wait_for_deploy_finalized, wait_for_deploy_included
+from ...infra.polling import (
+    lfb_number,
+    poll_until,
+    wait_for_deploy_finalized,
+    wait_for_deploy_included,
+)
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -658,13 +663,18 @@ def test_deploy_via_http(shared_shard) -> None:
     v1 = shared_shard.node("validator1")
     key = VALIDATOR1_ID.private_key()
     timestamp = int(time.time() * 1000)
+    # Read from the LFB rather than hardcoding: the node rejects a deploy whose
+    # valid-after block has fallen outside `deploy_lifespan` behind the tip, and
+    # this shard is shared, so a fixed low value expires once enough tests have
+    # run against it. The LFB trails the tip by far less than the lifespan.
+    valid_after_block_number = lfb_number(v1)
 
     deploy_proto = DeployDataProto(
         term="@2!(1)",
         timestamp=timestamp,
         phloLimit=100_000,
         phloPrice=1,
-        validAfterBlockNumber=5,
+        validAfterBlockNumber=valid_after_block_number,
         shardId="root",
     )
     deploy_req = {
@@ -673,7 +683,7 @@ def test_deploy_via_http(shared_shard) -> None:
             "timestamp": timestamp,
             "phloLimit": 100_000,
             "phloPrice": 1,
-            "validAfterBlockNumber": 5,
+            "validAfterBlockNumber": valid_after_block_number,
             "shardId": "root",
         },
         "deployer": key.get_public_key().to_hex(),
@@ -811,11 +821,38 @@ def test_is_finalized_http(shared_shard, timeouts) -> None:
     logging.info("is-finalized verified: HTTP=%s, gRPC=%s", result, grpc_result)
 
 
+def _status_pair_over_stable_lfb(node, attempts: int = 5):
+    """Sample HTTP and gRPC status across a window where the LFB did not move.
+
+    ``lastFinalizedBlockNumber`` advances on a live shard, so reading the two
+    endpoints in sequence is a torn read — the later call legitimately observes
+    a higher value, and comparing them is not a well-posed assertion. Bracket
+    the gRPC call with two HTTP reads and accept the sample only when both
+    agree: the value was then stationary for the whole window, so any residual
+    difference is a real parity defect rather than elapsed time.
+
+    Deliberately not "retry until the two endpoints agree" — that would also
+    converge when the endpoints genuinely disagree, hiding the defect this
+    test exists to catch.
+    """
+    for _ in range(attempts):
+        before = node.api_get("/status")
+        grpc_status = node.grpc_status()
+        after = node.api_get("/status")
+        if before["lastFinalizedBlockNumber"] == after["lastFinalizedBlockNumber"]:
+            return before, grpc_status
+
+    raise AssertionError(
+        f"{node.name}: lastFinalizedBlockNumber advanced during all {attempts} "
+        "sampling attempts; could not compare HTTP and gRPC status over a "
+        "stable window"
+    )
+
+
 def test_grpc_status_matches_http(shared_shard, node_conf) -> None:
     """gRPC status() returns same fields as HTTP /api/status on all nodes."""
     for node in shared_shard.all_nodes:
-        http_status = node.api_get("/status")
-        grpc_status = node.grpc_status()
+        http_status, grpc_status = _status_pair_over_stable_lfb(node)
 
         assert grpc_status.shardId == http_status["shardId"], f"{node.name}: shardId mismatch"
         assert grpc_status.networkId == http_status["networkId"], f"{node.name}: networkId mismatch"

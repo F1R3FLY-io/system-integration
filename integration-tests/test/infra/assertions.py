@@ -358,7 +358,7 @@ def _pick_reader(nodes):
 
 
 def assert_value_consistent_across_nodes(
-    nodes, read_fn, block_hash: str, what: str, *, block_timeout: float = 5.0
+    nodes, read_fn, block_hash: str, *, block_timeout: float = 5.0
 ):
     """Read a finalized value (via ``read_fn``) on the read-only node at
     ``block_hash`` and assert every node agrees on that block's POST-STATE HASH.
@@ -377,16 +377,12 @@ def assert_value_consistent_across_nodes(
 
 def assert_channel_consistent_across_nodes(nodes, channel: str, block_hash: str):
     """All-node FS node-identity for a named channel at ``block_hash``."""
-    return assert_value_consistent_across_nodes(
-        nodes, _channel_reader(channel), block_hash, f'@"{channel}"'
-    )
+    return assert_value_consistent_across_nodes(nodes, _channel_reader(channel), block_hash)
 
 
 def assert_balance_consistent_across_nodes(nodes, vault_addr: str, block_hash: str):
     """All-node FS node-identity for a vault balance at ``block_hash``."""
-    return assert_value_consistent_across_nodes(
-        nodes, _balance_reader(vault_addr), block_hash, f"balance({vault_addr[:12]})"
-    )
+    return assert_value_consistent_across_nodes(nodes, _balance_reader(vault_addr), block_hash)
 
 
 def await_value_converges_on_all_nodes(

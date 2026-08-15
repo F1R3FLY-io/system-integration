@@ -6,7 +6,7 @@ Three layers of documentation:
 - **This file** — running tests
 - [test/docs/ARCHITECTURE.md](test/docs/ARCHITECTURE.md) — framework internals (fixtures, Provider protocol, cleanup, ports, timeouts)
 - [test/docs/WRITING_TESTS.md](test/docs/WRITING_TESTS.md) — how to add a test
-- [test/docs/INDEX.md](test/docs/INDEX.md) — catalog of all 25 test files
+- [test/docs/INDEX.md](test/docs/INDEX.md) — catalog of all 38 test files
 
 ---
 
@@ -51,7 +51,7 @@ poetry run pytest
 
 # By directory
 poetry run pytest integration-tests/test/tests/shared/       # 69 tests, one shard
-poetry run pytest integration-tests/test/tests/custom/        # 20 tests, one shard per test
+poetry run pytest integration-tests/test/tests/custom/        # 41 tests, one shard per test
 poetry run pytest integration-tests/test/tests/standalone/    # 14 tests, standalone nodes
 
 # Single file
@@ -104,6 +104,7 @@ Each worker gets a non-overlapping host port range automatically. No coordinatio
 | `--skip-setup --session-id <id>` | Adopt a shard from a previous `--keep-running` run. Skip bring-up (~2s vs ~60s fresh). |
 | `--monitor` | Sample Docker resource usage (peak memory, CPU) across all framework containers. Report embedded in `report.json`. (Docker provider only.) |
 | `--timeout-scale <f>` | Multiplier for every derived timeout. Use `1.5`–`2.0` on slow CI runners. |
+| `--readonly-history-blocks <n>` | Blocks of history built before the observer attaches in the readonly catch-up regression (default 40). Raise it to make catch-up deeper; each block costs one propose round trip. |
 
 ---
 
@@ -172,5 +173,5 @@ The session ID is the one printed by `--keep-running` (and recorded in subproces
 
 - **Writing a test?** → [test/docs/WRITING_TESTS.md](test/docs/WRITING_TESTS.md) (recipes for shared/custom/standalone)
 - **Understanding the framework?** → [test/docs/ARCHITECTURE.md](test/docs/ARCHITECTURE.md) (fixtures, Provider protocol, cleanup, ports, timeouts)
-- **Looking for a specific test?** → [test/docs/INDEX.md](test/docs/INDEX.md) (all 22 files, one-line summaries, links)
+- **Looking for a specific test?** → [test/docs/INDEX.md](test/docs/INDEX.md) (all 38 files, one-line summaries, links)
 - **Adding a new backend (K8s, local processes)?** → [test/docs/ARCHITECTURE.md § 9](test/docs/ARCHITECTURE.md#9-how-to-add-a-new-provider)

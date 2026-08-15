@@ -11,6 +11,7 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import Iterator
 
 # Disable gRPC's pthread_atfork handlers before the gRPC C-core loads (pulled in
 # transitively by the .infra imports below via pyf1r3fly.client). The test
@@ -27,12 +28,19 @@ from .infra.cleanup import DockerCleanupRegistry
 from .infra.config import NodeConf, ResourcePaths, ShardConfig, TimeoutConfig
 from .infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from .infra.node import Node
+from .infra.node_capabilities import (
+    missing_node_capabilities,
+    required_node_capabilities,
+    validate_node_capabilities,
+)
 from .infra.ports import PortAllocator
 from .infra.providers.docker import DockerProvider
 from .infra.shard import Shard
 from .infra.timeouts import TimeoutHierarchy
 
 # ── Hooks ────────────────────────────────────────────────────────────
+
+_NODE_CAPABILITIES = pytest.StashKey[frozenset[str]]()
 
 
 def pytest_addoption(parser):
@@ -117,6 +125,15 @@ def pytest_addoption(parser):
         "CPU-saturation freeze. Subprocess provider only. 0 disables. Default 8.0.",
     )
     group.addoption(
+        "--readonly-history-blocks",
+        action="store",
+        type=int,
+        default=40,
+        help="Number of blocks of history to build before attaching the observer "
+        "in the readonly catch-up regression. Raise it to make catch-up deeper; "
+        "each block costs one propose round trip.",
+    )
+    group.addoption(
         "--provider",
         action="store",
         default="docker",
@@ -125,6 +142,15 @@ def pytest_addoption(parser):
         "containers; 'subprocess' spawns the locally-built node binary "
         "directly on the host (set F1R3FLY_NODE_BINARY or build "
         "services/f1r3node-rust first).",
+    )
+    group.addoption(
+        "--node-capability",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="Declare a capability implemented by the node under test. Repeat "
+        "for multiple capabilities; capability-gated regressions skip unless "
+        "all of their requirements are declared.",
     )
 
 
@@ -136,6 +162,16 @@ def pytest_configure(config):
             "The session ID is printed by a prior `shardctl test --keep-running` run."
         )
 
+    if config.getoption("--readonly-history-blocks") <= 0:
+        raise pytest.UsageError("--readonly-history-blocks must be a positive integer")
+
+    try:
+        config.stash[_NODE_CAPABILITIES] = validate_node_capabilities(
+            config.getoption("--node-capability") or (), source="--node-capability"
+        )
+    except ValueError as exc:
+        raise pytest.UsageError(str(exc)) from exc
+
     config.addinivalue_line(
         "markers",
         "allow_forbidden_patterns(*keys): exempt this test from named "
@@ -143,6 +179,33 @@ def pytest_configure(config):
         "when the test legitimately produces the pattern as part of its "
         "verification. See infra/log_events.py for the pattern set.",
     )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip regressions whose node capabilities are not available."""
+    available = config.stash[_NODE_CAPABILITIES]
+    for item in items:
+        markers = tuple(item.iter_markers("requires_node_capabilities"))
+        if not markers:
+            continue
+        if any(marker.kwargs for marker in markers):
+            raise pytest.UsageError(
+                "requires_node_capabilities accepts positional capability names only"
+            )
+        try:
+            required = required_node_capabilities(
+                (marker.args for marker in markers),
+                source=f"{item.nodeid} requires_node_capabilities marker",
+            )
+        except ValueError as exc:
+            raise pytest.UsageError(str(exc)) from exc
+        missing = missing_node_capabilities(required, available)
+        if missing:
+            item.add_marker(
+                pytest.mark.skip(
+                    reason="node under test lacks required capabilities: " + ", ".join(missing)
+                )
+            )
 
 
 def _stale_cleanup_for_provider(provider_choice: str) -> None:
@@ -223,6 +286,12 @@ def resource_paths() -> ResourcePaths:
 
 
 @pytest.fixture(scope="session")
+def readonly_history_blocks(request) -> int:
+    """Blocks of history to build before attaching the catch-up observer."""
+    return request.config.getoption("--readonly-history-blocks")
+
+
+@pytest.fixture(scope="session")
 def provider(request, port_allocator, session_id, timeouts, resource_paths):
     """Construct the chosen Provider (Docker or Subprocess).
 
@@ -283,7 +352,7 @@ def provider(request, port_allocator, session_id, timeouts, resource_paths):
 
 
 @pytest.fixture(scope="session")
-def shared_shard(request, provider, timeouts) -> Shard:
+def shared_shard(request, provider, timeouts) -> Iterator[Shard]:
     """Session-scoped 3-validator shard (boot + v1 + v2 + v3).
 
     Used by tests that need a pre-running shard. Tests that modify

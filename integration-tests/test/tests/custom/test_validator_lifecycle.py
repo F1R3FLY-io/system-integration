@@ -543,27 +543,6 @@ def _await_bonds_monotone(
     )
 
 
-def _assert_bg_load_deploys_finalized(
-    producers, all_nodes, deploy_ids: List[str], timeouts, label: str = "bg-load"
-) -> None:
-    """Every background-load transfer must land in a block that finalizes ON ALL
-    NODES.
-
-    Strict regression detector for the fork-choice + multi-parent-merge orphan
-    path: a transfer that lands in a losing-fork block and is never merged into
-    a finalized descendant is silently dropped work. Same-vault transfers from a
-    well-funded source never fail for balance reasons, so any missing or
-    unfinalized deploy here is a real merge/orphan regression — zero tolerance.
-
-    Finalization is verified on EVERY node (not just the proposer): a block can
-    finalize on its proposer but be rejected/never-finalized on a peer.
-    """
-    del producers  # deploy-status is queried per node directly; no block lookup
-    assert_all_deploys_finalized_on_all_nodes(
-        all_nodes, deploy_ids, timeouts.finalization * 2, label=label
-    )
-
-
 def _balance(ro, addr: str) -> int:
     """FS-backed (block_hash='') vault balance via the readonly node."""
     return ro.get_vault().get_balance(addr)
@@ -585,7 +564,13 @@ def _assert_bg_load_robust(
     and ended debited by at least the transferred total.
     """
     bg_ids = bg.deploy_ids()
-    _assert_bg_load_deploys_finalized(producers, all_nodes, bg_ids, timeouts, label)
+    # Zero tolerance: same-vault transfers from a well-funded source never fail for
+    # balance reasons, so an unfinalized one is a real merge/orphan regression.
+    # Checked on EVERY node — a block can finalize on its proposer and never
+    # finalize on a peer.
+    assert_all_deploys_finalized_on_all_nodes(
+        all_nodes, bg_ids, timeouts.finalization * 2, label=label
+    )
     n = len(bg_ids)
     want_dst = dst0 + n * _BG_TRANSFER_AMOUNT
     min_src_debit = n * _BG_TRANSFER_AMOUNT

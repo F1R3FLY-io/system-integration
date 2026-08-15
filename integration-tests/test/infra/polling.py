@@ -96,6 +96,23 @@ def poll_until(
     )
 
 
+# Owned by pyf1r3fly (f1r3fly/polling.py); the raise site there is the only
+# writer of this wording. unit-tests/test_empty_par_translation.py fails if
+# the upstream wording drifts, so the translation below cannot silently die.
+_EMPTY_PAR_MARKER = "empty par list"
+
+
+class EmptyParListError(DeployError):
+    """The deploy finalized but its deployId channel read back empty.
+
+    pyf1r3fly reports this only via the message text of a generic
+    ``DeployError``, which callers were matching with a substring check —
+    brittle across upstream rewording (PR #88 review, major finding).
+    ``deploy_and_read`` translates that one message into this type at the
+    wrapper boundary so callers can catch it structurally.
+    """
+
+
 __all__ = [
     "poll_until",
     "wait_for_node_running",
@@ -105,13 +122,19 @@ __all__ = [
     "wait_for_lfb_with_ft",
     "deploy_and_read",
     "deploy_with_fallback",
+    "propose_until_included",
     "wait_for_block_visible",
     "wait_for_block_visible_on_all_nodes",
+    "wait_for_block_justified",
     "lfb_number",
     "wait_for_lfb_at_least",
     "wait_for_lfb_converged",
     "wait_for_node_quiet",
+    "get_blocks_if_enough",
+    "try_find_deploy",
+    "all_blocks_visible",
     "DeployError",
+    "EmptyParListError",
 ]
 
 _RUNNING_MARKER = "Making a transition to Running state"
@@ -426,6 +449,8 @@ def deploy_and_read(
 
     Raises:
         TimeoutError: If inclusion or finalization times out.
+        EmptyParListError: If the deploy finalized but the deployId
+            channel read back empty.
         DeployError: If the deploy is errored or returns no data.
     """
     import os
@@ -444,16 +469,23 @@ def deploy_and_read(
         for key, value in substitutions.items():
             term = term.replace(key, value)
 
-    return _client_deploy_and_read(
-        client=node._external_client(),
-        term=term,
-        private_key=private_key,
-        inclusion_timeout=inclusion_timeout,
-        finalization_timeout=finalization_timeout,
-        phlo_limit=phlo_limit,
-        phlo_price=phlo_price,
-        shard_id=shard_id,
-    )
+    try:
+        return _client_deploy_and_read(
+            client=node._external_client(),
+            term=term,
+            private_key=private_key,
+            inclusion_timeout=inclusion_timeout,
+            finalization_timeout=finalization_timeout,
+            phlo_limit=phlo_limit,
+            phlo_price=phlo_price,
+            shard_id=shard_id,
+        )
+    except EmptyParListError:
+        raise
+    except DeployError as err:
+        if _EMPTY_PAR_MARKER in str(err):
+            raise EmptyParListError(str(err)) from err
+        raise
 
 
 def deploy_with_fallback(
@@ -498,6 +530,47 @@ def deploy_with_fallback(
         phlo_price=phlo_price,
         valid_after_block_no=valid_after_block_no,
         shard_id=shard_id,
+    )
+
+
+def propose_until_included(node, deploy_id: str, timeout: int, interval: float = 0.5) -> str:
+    """Drive ``node`` to propose until ``deploy_id`` lands in a block; return its hash.
+
+    For building deterministic history on a shard with ``heartbeat=False``, where
+    nothing proposes unless a test asks it to. Each attempt re-checks inclusion
+    before and after proposing, because the deploy may have been picked up by a
+    propose already in flight.
+
+    ``No new deploys`` and ``another propose is in progress`` are expected while
+    racing an in-flight propose and are retried; any other propose failure is a
+    real error and propagates.
+    """
+    from f1r3fly.client import F1r3flyClientException
+
+    retryable = ("No new deploys", "another propose is in progress")
+
+    def _attempt():
+        try:
+            return node.find_deploy(deploy_id).blockHash
+        except F1r3flyClientException:
+            pass
+
+        try:
+            node.propose()
+        except F1r3flyClientException as exc:
+            if not any(text in str(exc) for text in retryable):
+                raise
+
+        try:
+            return node.find_deploy(deploy_id).blockHash
+        except F1r3flyClientException:
+            return None
+
+    return poll_until(
+        _attempt,
+        timeout=timeout,
+        interval=interval,
+        description=f"deploy {deploy_id[:24]} becomes available and is proposed",
     )
 
 
