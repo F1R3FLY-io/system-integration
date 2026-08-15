@@ -323,6 +323,58 @@ def scan_lines_for_forbidden(
     return matches
 
 
+def record_scanned(
+    name: str,
+    offset: int,
+    scanned: int,
+    offsets: Dict[str, int],
+    owners: Dict[str, FrozenSet[str]],
+    allowed: FrozenSet[str],
+) -> None:
+    """Record a SUCCESSFUL per-test scan for later retirement judging.
+
+    ``offsets[name]`` becomes the judged-through line count and
+    ``owners[name]`` the allowance set the lines were judged under. Call
+    only after a completed scan — a failed scan must fail closed by
+    recording nothing (the window was not judged, and accumulating
+    allowances across failed scans could hide a forbidden event produced
+    under a stricter test).
+    """
+    offsets[name] = offset + scanned
+    owners[name] = allowed
+
+
+def scan_retired_snapshot(
+    name: str,
+    log_text: str,
+    offsets: Dict[str, int],
+    owners: Dict[str, FrozenSet[str]],
+    current_allowed: FrozenSet[str],
+) -> List[LogError]:
+    """Judge a retired node's unjudged log tail under its OWNER's allowances.
+
+    The snapshot holds the node's full cumulative log; the prefix through
+    ``offsets[name]`` was already judged by per-test scans under their own
+    tests' allowances and is skipped (re-judging it would mis-attribute
+    lines to the consuming test). The remaining teardown-window lines
+    belong to the node's last owning test and are judged under THAT
+    test's recorded allowances only — the consuming test's allowances
+    never apply to another test's lines, so they cannot hide a forbidden
+    teardown event. ``current_allowed`` is used only when no owner is
+    recorded: a transient node attached and detached within the current
+    test, whose whole log belongs to the current test.
+
+    Pops the bookkeeping entries, so a new node reusing the retired name
+    starts fresh. Callers must invoke this BEFORE recording the current
+    test's scans (see conftest ordering comment).
+    """
+    offset = offsets.pop(name, 0)
+    owner_allowances = owners.pop(name, None)
+    effective = current_allowed if owner_allowances is None else owner_allowances
+    tail = log_text.splitlines()[offset:]
+    return scan_lines_for_forbidden(tail, name, effective)
+
+
 def format_errors(errors: List[LogError], max_display: int = 30) -> str:
     """Format a list of ``LogError`` entries into a readable assertion message."""
     node_names = sorted(set(e.node for e in errors))

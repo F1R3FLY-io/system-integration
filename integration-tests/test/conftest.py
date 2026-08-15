@@ -724,7 +724,12 @@ def check_node_logs_after_test(request, provider):
 
     yield
 
-    from .infra.log_events import format_errors, scan_lines_for_forbidden
+    from .infra.log_events import (
+        format_errors,
+        record_scanned,
+        scan_lines_for_forbidden,
+        scan_retired_snapshot,
+    )
 
     # Collect opt-out keys from this test's markers.
     allowed = frozenset()
@@ -736,16 +741,13 @@ def check_node_logs_after_test(request, provider):
     # Scan logs from retired nodes FIRST — transient nodes detached during
     # this test (e.g., observers attached via the ``add_observer`` context
     # manager) AND shards destroyed by module-fixture teardown, whose
-    # snapshots surface here during the NEXT test's scan. The snapshot
-    # holds the node's FULL cumulative log, so skip the prefix already
-    # judged by earlier per-test scans — those lines were judged under
-    # their own test's allowances, and re-judging them here mis-attributes
-    # them to this test (the leak that failed test_bridge_api_exploratory
-    # on the previous test's allowed ComputationOutOfPhlogistons lines).
-    # The remaining teardown-window lines are judged under this test's
-    # allowances UNION the last owning test's allowances. A transient node
-    # with no recorded scan (offset 0) still gets its whole log scanned,
-    # preserving the original panic coverage.
+    # snapshots surface here during the NEXT test's scan. Ownership and
+    # windowing semantics live in ``scan_retired_snapshot``: the
+    # already-judged prefix is skipped (re-judging it mis-attributed the
+    # previous test's allowed ComputationOutOfPhlogistons lines to
+    # test_bridge_api_exploratory), and the teardown-window tail is judged
+    # under the OWNING test's allowances only — this test's allowances
+    # never apply to another test's lines.
     #
     # Ordering is load-bearing: a NEW shard can reuse a retired node's
     # name (dedicated shard torn down, session shard created — container
@@ -754,10 +756,15 @@ def check_node_logs_after_test(request, provider):
     # names, or the retired snapshot would be scanned with the new
     # node's offset.
     for snapshot in getattr(provider, "retired_log_snapshots", []):
-        offset = _scanned_log_offsets.pop(snapshot.name, 0)
-        snapshot_allowed = allowed | _last_scan_allowances.pop(snapshot.name, frozenset())
-        tail = snapshot.log_text.splitlines()[offset:]
-        forbidden.extend(scan_lines_for_forbidden(tail, snapshot.name, snapshot_allowed))
+        forbidden.extend(
+            scan_retired_snapshot(
+                snapshot.name,
+                snapshot.log_text,
+                _scanned_log_offsets,
+                _last_scan_allowances,
+                allowed,
+            )
+        )
     if hasattr(provider, "clear_retired_log_snapshots"):
         provider.clear_retired_log_snapshots()
 
@@ -783,22 +790,15 @@ def check_node_logs_after_test(request, provider):
                 tail = handle.logs().splitlines()[offset:]
                 forbidden.extend(scan_lines_for_forbidden(tail, handle.name, allowed))
                 scanned = len(tail)
-            # Bookkeeping for retirement: record how far this node's log
-            # has been judged, and under which allowances, so a later
-            # retired-snapshot scan neither re-judges these lines nor
-            # drops this test's opt-outs for its teardown-window lines.
-            _scanned_log_offsets[handle.name] = offset + scanned
-            _last_scan_allowances[handle.name] = allowed
-        except Exception:
-            # The scan failed (e.g. a transient provider/API hiccup), so
-            # the judged-through offset must NOT advance — but this
-            # test's allowances still applied to its window. Merge them
-            # into the handle's allowance record so a later retirement
-            # scan of the unjudged window cannot false-fail on lines
-            # this test had explicitly allowed.
-            _last_scan_allowances[handle.name] = (
-                _last_scan_allowances.get(handle.name, frozenset()) | allowed
+            record_scanned(
+                handle.name, offset, scanned, _scanned_log_offsets, _last_scan_allowances, allowed
             )
+        except Exception:
+            # Fail closed: a failed scan records nothing. The judged-through
+            # offset must not advance (the window was not judged), and this
+            # test's allowances must not be attached to lines it never
+            # judged — accumulating allowances across failed scans could
+            # hide a forbidden event produced under a stricter test.
             continue
 
     if forbidden:
