@@ -136,3 +136,10 @@ def test_collection_hook_combines_every_marker_and_uses_pytest_stash():
     assert 'item.iter_markers("requires_node_capabilities")' in conftest
     assert "config.stash[_NODE_CAPABILITIES]" in conftest
     assert "get_closest_marker" not in conftest
+
+
+def test_full_suite_option_runs_capability_gated_regressions():
+    conftest = (REPO_ROOT / "integration-tests/test/conftest.py").read_text()
+    assert '"--run-all-node-capability-tests"' in conftest
+    assert 'run_all = config.getoption("--run-all-node-capability-tests")' in conftest
+    assert "if missing and not run_all:" in conftest
