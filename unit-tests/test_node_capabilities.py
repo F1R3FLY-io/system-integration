@@ -1,6 +1,7 @@
 """Unit coverage for unreleased-node capability gating."""
 
 import ast
+import importlib
 import importlib.util
 import unittest
 from pathlib import Path
@@ -136,3 +137,40 @@ def test_collection_hook_combines_every_marker_and_uses_pytest_stash():
     assert 'item.iter_markers("requires_node_capabilities")' in conftest
     assert "config.stash[_NODE_CAPABILITIES]" in conftest
     assert "get_closest_marker" not in conftest
+
+
+def test_full_suite_option_controls_capability_gated_regressions(monkeypatch):
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "integration-tests"))
+    integration_conftest = importlib.import_module("test.conftest")
+
+    for run_all, expect_skip in ((False, True), (True, False)):
+
+        class Config:
+            stash = {integration_conftest._NODE_CAPABILITIES: frozenset()}
+
+            @staticmethod
+            def getoption(name):
+                return {"--run-all-node-capability-tests": run_all}[name]
+
+        class Item:
+            nodeid = "test_capability_gate.py::test_regression"
+
+            def __init__(self):
+                self.added_markers = []
+
+            @staticmethod
+            def iter_markers(name):
+                marker = integration_conftest.pytest.mark.requires_node_capabilities(
+                    "missing-capability"
+                ).mark
+                return iter([marker] if name == "requires_node_capabilities" else ())
+
+            def add_marker(self, marker):
+                self.added_markers.append(marker)
+
+        item = Item()
+        integration_conftest.pytest_collection_modifyitems(Config(), [item])
+
+        assert bool(item.added_markers) is expect_skip
+        if expect_skip:
+            assert item.added_markers[0].name == "skip"
