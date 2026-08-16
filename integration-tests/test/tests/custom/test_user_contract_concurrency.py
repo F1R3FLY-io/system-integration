@@ -329,8 +329,11 @@ def _await_map_settles(all_nodes, channel, accept, allowed_keys, timeout, label)
         # a sequential sweep against a healthy moving frontier (sibling
         # blocker on PR #120 at d22f4040 — the loop burned its whole
         # budget with 'all-node-consistent read=None').
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
         try:
-            lfb = common_finalized_anchor(all_nodes, min(30.0, max(5.0, deadline - time.time())))
+            lfb = common_finalized_anchor(all_nodes, min(30.0, remaining))
         except AssertionError:
             time.sleep(1.0)
             continue
@@ -364,8 +367,11 @@ def _await_settles(all_nodes, channel, accept, timeout, label):
     last = None
     while time.time() < deadline:
         # Fresh stable anchor per poll — see _await_map_settles.
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
         try:
-            lfb = common_finalized_anchor(all_nodes, min(30.0, max(5.0, deadline - time.time())))
+            lfb = common_finalized_anchor(all_nodes, min(30.0, remaining))
         except AssertionError:
             time.sleep(1.0)
             continue
@@ -798,10 +804,11 @@ def test_overdraft_cost_priority_keeps_higher_cost_transfer(user_shard, timeouts
         settled = False
         while time.time() < deadline:
             # Fresh stable anchor per poll — see _await_map_settles.
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
             try:
-                lfb = common_finalized_anchor(
-                    all_nodes, min(30.0, max(5.0, deadline - time.time()))
-                )
+                lfb = common_finalized_anchor(all_nodes, min(30.0, remaining))
             except AssertionError:
                 time.sleep(1.0)
                 continue

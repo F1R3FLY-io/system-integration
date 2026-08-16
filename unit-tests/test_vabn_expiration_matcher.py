@@ -40,16 +40,22 @@ def test_wrapped_rejection_still_matches():
 
 def test_ambiguous_transport_failures_do_not_authorize_a_retry():
     # Messages that merely CONTAIN the keywords must not pass the gate —
-    # only the exact rejection shape proves the node accepted nothing.
+    # only the FULL rejection sentence (through the lifespan suffix)
+    # proves the node accepted nothing.
     for message in [
         "DEADLINE_EXCEEDED while sending deploy",
         "connection reset by peer",
         "validAfterBlockNumber lease expired",  # keywords present, wrong shape
         "deploy expired in client queue before send (validAfterBlockNumber set)",
+        # Round-4 review negatives: the prefix alone, without the
+        # lifespan suffix, must not authorize a retry.
+        "validAfterBlockNumber 1 has expired at block 51, but submission status is unknown",
+        "Deploy validAfterBlockNumber 7 has expired at block 90",
         "",
     ]:
         assert parse_vabn_expiration(message) is None, message
 
 
 def test_height_zero_edge_parses():
-    assert parse_vabn_expiration("Deploy validAfterBlockNumber 0 has expired at block 51 …") == 51
+    message = "Deploy validAfterBlockNumber 0 has expired at block 51 with deploy lifespan 50."
+    assert parse_vabn_expiration(message) == 51

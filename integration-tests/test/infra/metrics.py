@@ -653,11 +653,13 @@ class LifecycleTracker:
                     if fail_streak >= self._SWEEP_FAIL_STREAK_WARN:
                         # Real recovery attempt: gRPC channels self-heal
                         # from transient failures, but a permanently dead
-                        # channel object never will. Dropping the node's
-                        # cached client makes the next cycle build a fresh
-                        # channel instead of warning forever.
-                        node._grpc_external_client = None
-                        client = node._external_client()
+                        # channel object never will. Build a DEDICATED
+                        # replacement client for this sweep only — the
+                        # node's cached client is shared with concurrent
+                        # deploy-submitter threads, and nulling it from
+                        # here could race a submitter mid-_external_client
+                        # (leaked duplicate channels / half-built client).
+                        client = self._fresh_client(node) or client
                 else:
                     fail_streak = 0
 
@@ -669,6 +671,27 @@ class LifecycleTracker:
             # Don't block thread exit on probes still riding out their
             # gRPC deadlines — stop_lfb_monitor joins with a 10s budget.
             pool.shutdown(wait=False, cancel_futures=True)
+
+    @staticmethod
+    def _fresh_client(node):
+        """A NEW gRPC client to the node's external port, or None.
+
+        Mirrors ``Node._external_client``'s construction without touching
+        its shared cache (cross-thread safety — see the fail-streak site).
+        Returns None when construction fails (node down), leaving the
+        sweep on its current client to keep retrying.
+        """
+        try:
+            from f1r3fly.client import F1r3flyClient
+
+            from .node import _GRPC_OPTIONS
+
+            return F1r3flyClient(
+                node.grpc_host, node.external_grpc_port, grpc_options=_GRPC_OPTIONS
+            )
+        except Exception as exc:
+            logger.debug("fresh sweep client construction failed: %s", exc)
+            return None
 
     def _sweep_cycle(self, pool, node, client, finalized_state, terminal_states):
         """One sweep pass over every pending deploy.
@@ -727,6 +750,13 @@ class LifecycleTracker:
                 logger.debug("block-number lookup failed for %s: %s", block_hash[:16], exc)
                 return block_hash, 0
 
+        # Every hash counts as attempted this cycle, FAILURES INCLUDED:
+        # per-deploy enrichment must not re-issue the RPC for a hash the
+        # pool already tried and lost — one unavailable block shared by
+        # hundreds of deploys would otherwise serialize hundreds of
+        # deadline-length lookups (round-4 review). Failed hashes stay
+        # uncached, so the pooled path retries them next cycle.
+        attempted = set(unresolved)
         for block_hash, number in pool.map(_resolve, unresolved):
             if self._stop_event.is_set():
                 return len(pending), errors
@@ -737,7 +767,7 @@ class LifecycleTracker:
         for deploy_id, status in succeeded:
             if self._stop_event.is_set():
                 break
-            self._enrich_inclusion(node, deploy_id, status)
+            self._enrich_inclusion(node, deploy_id, status, attempted)
         return len(pending), errors
 
     def _apply_state(self, deploy_id, status, finalized_state, terminal_states):
@@ -759,15 +789,23 @@ class LifecycleTracker:
                 if deploy_id in self._records:
                     self._terminal[deploy_id] = terminal_states[status.state]
 
-    def _enrich_inclusion(self, node, deploy_id, status):
+    def _enrich_inclusion(self, node, deploy_id, status, attempted=None):
         """Resolve inclusion telemetry (block number) for one deploy.
 
         Telemetry only — runs strictly AFTER every state write of the
         sweep, so a slow or broken ``get_block`` can never delay a
         finalization the verdict depends on. Same ``clear()`` gating as
-        ``_apply_state``.
+        ``_apply_state``. ``attempted``: hashes the pooled pre-resolution
+        already tried this cycle (failures included) — for those, a
+        cache miss records 0 WITHOUT another RPC, so one unavailable
+        block shared by many deploys costs one lookup per cycle, not one
+        per deploy. Timestamps are sweep-granular: the inclusion time is
+        when a sweep first observed a containing block (~cycle cadence
+        after actual inclusion), which slightly skews latency
+        percentiles derived from it.
         """
         now = time.time()
+        attempted = attempted if attempted is not None else frozenset()
         if not status.latestBlockHash:
             return
         with self._lock:
@@ -781,7 +819,7 @@ class LifecycleTracker:
         block_hash = status.latestBlockHash.hex()
         with self._lock:
             block_number = self._block_numbers.get(block_hash, 0)
-        if block_number == 0:
+        if block_number == 0 and block_hash not in attempted:
             try:
                 block_number = node.get_block(block_hash).blockInfo.blockNumber
             except Exception as exc:
@@ -799,22 +837,26 @@ class LifecycleTracker:
         with self._lock:
             self._records[record.deploy_id] = record
 
-    def wait_for_finalization(self, timeout: float):
+    def wait_for_finalization(self, timeout: float) -> bool:
         """Block until every tracked deploy is settled, or timeout.
 
         Settled means finalized OR terminal (FAILED/EXPIRED). Terminal
         deploys still surface as unfinalized in ``get_results`` — this
         just avoids burning the full timeout waiting on a deploy the
-        node has already declared dead.
+        node has already declared dead. Returns True when everything
+        settled, False on timeout (a final check runs AT the deadline so
+        a deploy settling in the last polling gap is not misreported).
         """
         deadline = time.time() + timeout
-        while time.time() < deadline:
+        while True:
             with self._lock:
                 settled = all(
                     did in self._finalization or did in self._terminal for did in self._records
                 )
             if settled:
-                return
+                return True
+            if time.time() >= deadline:
+                return False
             time.sleep(1)
 
     def get_results(self) -> List[DeployResult]:

@@ -137,7 +137,7 @@ def assert_all_nodes_agree_on_lfb(nodes, timeout: float = 0) -> str:
         time.sleep(2.0)
 
 
-def common_finalized_anchor(nodes, timeout) -> str:
+def common_finalized_anchor(nodes, timeout: float) -> str:
     """A block hash FINALIZED on every node — a stable aligned-read cut.
 
     Takes the first node's current LFB as the anchor and waits (bounded)
@@ -306,7 +306,7 @@ def assert_block_finalized_on_all_nodes(
     )
 
 
-def assert_deploy_block_finalized_on_all_nodes(node, deploy_id: str, nodes, timeout) -> str:
+def assert_deploy_block_finalized_on_all_nodes(node, deploy_id: str, nodes, timeout: float) -> str:
     """Canonical-inclusion anchor: resolve the deploy's FINALIZED containing
     block via ``deploy_finalization_status``, assert THAT hash is finalized on
     every node, and return the hash (use it for any per-block follow-up reads,
@@ -324,6 +324,8 @@ def assert_deploy_block_finalized_on_all_nodes(node, deploy_id: str, nodes, time
     value — deliberate slack, since both phases legitimately need a full
     finalization budget under load.
     """
+    # Local import keeps the assertions -> polling edge lazy (no import
+    # cycle; polling imports nothing from assertions but shares infra).
     from .polling import wait_for_deploy_finalized
 
     status = wait_for_deploy_finalized(node, deploy_id, timeout)
@@ -488,12 +490,17 @@ def await_value_converges_on_all_nodes(
             time.sleep(interval)
             continue
         # Anchor alignment: every node has finalized the reader's cut.
+        # The inner budget is clamped to the REMAINING outer budget (no
+        # floor) so the function cannot overshoot its stated timeout, and
+        # ANY failure — assertion or raw transport error mid-hiccup —
+        # just means "not aligned this iteration", never a loop kill.
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
         try:
-            assert_block_finalized_on_all_nodes(
-                nodes, ref_block, timeout=min(30.0, max(5.0, deadline - time.time()))
-            )
+            assert_block_finalized_on_all_nodes(nodes, ref_block, timeout=min(30.0, remaining))
             aligned = True
-        except AssertionError:
+        except Exception:  # noqa: BLE001 — alignment is a wait, not an invariant
             aligned = False
         if aligned:
             # All-node FS node-identity at the shared finalized cut. Retrieval

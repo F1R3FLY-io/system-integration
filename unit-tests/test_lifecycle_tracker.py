@@ -222,6 +222,24 @@ class TerminalStatesSettleWithoutFinalizing(unittest.TestCase):
 
 
 class EnrichmentIsPooledPerUniqueBlock(unittest.TestCase):
+    def test_failed_block_lookup_costs_one_rpc_per_cycle_not_per_deploy(self):
+        """Round-4 review: a hash whose pooled resolution FAILS must not
+        fall back to one serial get_block per sharing deploy — the
+        attempted-set makes per-deploy enrichment record 0 without
+        another RPC, and the pooled path retries the hash next cycle."""
+        statuses = {f"d{i:02d}": _Status(DEPLOY_STATE_PENDING, HASH_A) for i in range(25)}
+        tracker, node, client = _tracker_with(statuses, fail_lookups=True)
+        _run_cycle(tracker, node, client)
+        self.assertEqual(node.get_block_calls, 1)  # one pooled attempt, no fallback
+        # All 25 recorded as included with number-unknown (0).
+        self.assertEqual(sum(1 for v in tracker._inclusion.values() if v[0] == 0), 25)
+        # Next cycle retries the hash once via the pooled path; on
+        # success every sharing deploy re-resolves from the cache.
+        node.fail_lookups = False
+        _run_cycle(tracker, node, client)
+        self.assertEqual(node.get_block_calls, 2)
+        self.assertTrue(all(v[0] == 7 for v in tracker._inclusion.values()))
+
     def test_many_unique_blocks_resolve_one_lookup_each(self):
         """Enrichment must not serialize across unique containing blocks:
         the sweep pre-resolves every uncached hash through the worker

@@ -108,7 +108,9 @@ def poll_until(
 # failure, never retried. unit-tests/test_vabn_expiration_matcher.py pins
 # the shape against the captured node wording, so silent drift on either
 # side fails a sub-second test instead of degrading retry behavior.
-VABN_EXPIRED_PATTERN = re.compile(r"validAfterBlockNumber \d+ has expired at block (\d+)")
+VABN_EXPIRED_PATTERN = re.compile(
+    r"Deploy validAfterBlockNumber \d+ has expired at block (\d+) with deploy lifespan \d+"
+)
 
 
 def parse_vabn_expiration(message: str) -> Optional[int]:
