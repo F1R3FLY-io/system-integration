@@ -13,7 +13,7 @@ from typing import Optional
 from f1r3fly.deploy import (
     DeployError,
     check_deploy_errored,
-    check_deploy_succeeded,
+    check_deploy_not_errored,
 )
 
 from .types import NodeRole
@@ -27,9 +27,9 @@ from .types import NodeRole
 
 
 def assert_deploy_succeeded(block_info, deploy_id: str) -> None:
-    """Assert the deploy is in the block, not errored, and has cost > 0."""
+    """Assert the deploy is in the block and completed without an error."""
     try:
-        check_deploy_succeeded(block_info, deploy_id)
+        check_deploy_not_errored(block_info, deploy_id)
     except DeployError as e:
         raise AssertionError(str(e)) from None
 

@@ -35,7 +35,9 @@ def test_deploy_invalid_syntax_rejected(shared_shard, timeouts) -> None:
             private_key=v1_key,
         )
 
-    # Valid deploy immediately after — must succeed
+    # An unmatched send is a successful zero-COMM deploy. This distinguishes
+    # semantic success from the separate question of whether a reduction
+    # consumed cost.
     deploy_id = v1.deploy_string(
         '@"valid-after-invalid"!(42)',
         v1_key,
@@ -46,6 +48,8 @@ def test_deploy_invalid_syntax_rejected(shared_shard, timeouts) -> None:
 
     full_block = v1.get_block(block_hash)
     assert_deploy_succeeded(full_block, deploy_id)
+    deploy = next(d for d in full_block.deploys if d.sig == deploy_id)
+    assert deploy.cost == 0, f"unmatched send should have zero COMM cost, got {deploy.cost}"
 
     logging.info("Invalid syntax rejected, valid deploy succeeded in block %s", block_hash[:16])
 

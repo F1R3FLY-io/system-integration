@@ -10,8 +10,8 @@ Verifies deploy syntax validation, cross-validator lookup consistency, and explo
 
 1. Deploys `resources/invalid.rho` on validator 1.
 2. Expects `F1r3flyClientException` from the parser.
-3. Immediately deploys a valid contract.
-4. Waits for inclusion and verifies the valid deploy succeeded.
+3. Immediately deploys a valid unmatched send.
+4. Waits for inclusion and verifies the deploy succeeded with zero COMM cost.
 
 ### test_deploy_lookup_consistent_across_validators
 

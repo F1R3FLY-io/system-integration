@@ -186,20 +186,36 @@ def test_epoch_rewards(shared_shard) -> None:
 # ===========================================================================
 
 
+def _assert_estimate_context(result) -> None:
+    assert isinstance(result["blockNumber"], int) and result["blockNumber"] >= 0
+    assert isinstance(result["blockHash"], str) and len(result["blockHash"]) > 0
+
+
 def test_estimate_cost(shared_shard) -> None:
-    """POST /api/estimate-cost returns cost for valid Rholang on readonly."""
+    """POST /api/estimate-cost charges a valid COMM reduction on readonly."""
     ro = shared_shard.readonly
 
-    resp = ro.api_post("/estimate-cost", {"term": "new ret in { ret!(42) }"})
+    term = "new ret in { ret!(42) | for (_ <- ret) { Nil } }"
+    resp = ro.api_post("/estimate-cost", {"term": term})
     result = resp.json()
 
     assert isinstance(result["cost"], int) and result["cost"] > 0, (
         f"cost should be positive int, got {result.get('cost')}"
     )
-    assert isinstance(result["blockNumber"], int) and result["blockNumber"] >= 0
-    assert isinstance(result["blockHash"], str) and len(result["blockHash"]) > 0
+    _assert_estimate_context(result)
 
-    logging.info("Estimate cost: %d phlo for ret!(42)", result["cost"])
+    logging.info("Estimate cost: %d phlo for one COMM reduction", result["cost"])
+
+
+def test_estimate_cost_zero_reduction(shared_shard) -> None:
+    """POST /api/estimate-cost preserves zero cost for an unmatched send."""
+    ro = shared_shard.readonly
+
+    resp = ro.api_post("/estimate-cost", {"term": "new ret in { ret!(42) }"})
+    result = resp.json()
+
+    assert result["cost"] == 0, f"unmatched send should cost zero, got {result.get('cost')}"
+    _assert_estimate_context(result)
 
 
 def test_estimate_cost_invalid_syntax(shared_shard) -> None:

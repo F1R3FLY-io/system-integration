@@ -72,7 +72,7 @@ def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
     deploy_ids = []
     for i in range(count):
         did = node.deploy_string(
-            f"@{2000 + i}!({i})",
+            f"new ret in {{ ret!({i}) | for (_ <- ret) {{ Nil }} }}",
             VALIDATOR1_ID.private_key(),
         )
         deploy_ids.append(did)
@@ -630,7 +630,7 @@ def test_explore_deploy_returns_cost(shared_shard) -> None:
     Exploratory deploy is restricted to read-only nodes on the Rust node.
     """
     ro = shared_shard.readonly
-    term = "new x in { x!(1 + 1) }"
+    term = "new x in { x!(1 + 1) | for (_ <- x) { Nil } }"
 
     resp = ro.api_post("/explore-deploy", {"term": term})
     result = resp.json()

@@ -4,7 +4,7 @@
 
 Tests the high-level HTTP query endpoints added in Phase 7+ of the API redesign. These are convenience endpoints wrapping exploratory deploy or genesis config. Tests verify correct responses on readonly and validator nodes, cross-check gRPC parity where applicable, and cover edge cases (unknown validators, explicit block_hash params).
 
-## Tests (12)
+## Tests (13)
 
 ### test_validators_endpoint
 `GET /api/validators` on **readonly**. Asserts correct validator count, pubkeys match genesis config, stakes match, totalStake correct, blockNumber/blockHash present.
@@ -22,7 +22,10 @@ Tests the high-level HTTP query endpoints added in Phase 7+ of the API redesign.
 `GET /api/epoch/rewards` on **readonly**. Asserts reward map contains all genesis validator pubkeys.
 
 ### test_estimate_cost
-`POST /api/estimate-cost` on **readonly**. Asserts cost > 0 for valid Rholang.
+`POST /api/estimate-cost` on **readonly**. Executes one COMM reduction and asserts cost > 0.
+
+### test_estimate_cost_zero_reduction
+`POST /api/estimate-cost` on **readonly**. Executes an unmatched send and asserts cost is exactly zero while block context remains available.
 
 ### test_estimate_cost_invalid_syntax
 `POST /api/estimate-cost` on **readonly** with invalid Rholang. Asserts error response.
