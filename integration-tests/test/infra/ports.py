@@ -1,7 +1,7 @@
 """Port allocation for the test framework.
 
-Allocates non-overlapping 6-port blocks from the reserved range
-(41000-42999). Each block maps to a single node's port layout:
+Allocates non-overlapping 6-port blocks from a range below Linux's
+ephemeral source-port range. Each block maps to a single node's port layout:
 protocol, gRPC-ext, gRPC-int, HTTP, discovery, admin-HTTP.
 
 Thread-safe via ``threading.Lock`` for pytest-xdist compatibility.
@@ -13,18 +13,38 @@ from __future__ import annotations
 
 import logging
 import socket
+import sys
 import threading
 import time
-from typing import List
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 from .types import PortMapping
 
 logger = logging.getLogger(__name__)
 
-_BASE = 41000
-_CEILING = 49000
+_BASE = 12000
+_CEILING = 32000
 _BLOCK_SIZE = 6
 _WORKER_RANGE = 500  # ports per xdist worker (83 nodes max per worker)
+_LINUX_EPHEMERAL_RANGE = Path("/proc/sys/net/ipv4/ip_local_port_range")
+
+
+def _kernel_ephemeral_range() -> Optional[Tuple[int, int]]:
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        fields = _LINUX_EPHEMERAL_RANGE.read_text(encoding="utf-8").split()
+        if len(fields) != 2:
+            raise ValueError("expected two port bounds")
+        lower, upper = (int(field) for field in fields)
+    except (OSError, ValueError) as error:
+        raise RuntimeError(
+            f"unable to read Linux ephemeral port range from {_LINUX_EPHEMERAL_RANGE}"
+        ) from error
+    if not (0 < lower <= upper <= 65535):
+        raise RuntimeError(f"invalid Linux ephemeral port range: {lower}-{upper}")
+    return lower, upper
 
 
 class PortAllocator:
@@ -38,12 +58,27 @@ class PortAllocator:
 
     def __init__(self, base: int = _BASE, ceiling: int = _CEILING, worker_id: str = "") -> None:
         self._lock = threading.Lock()
+        configured_base = base
+        configured_ceiling = ceiling
         if worker_id and worker_id.startswith("gw"):
             worker_num = int(worker_id[2:])
-            base = _BASE + (worker_num * _WORKER_RANGE)
-            ceiling = base + _WORKER_RANGE
+            base = configured_base + (worker_num * _WORKER_RANGE)
+            ceiling = min(base + _WORKER_RANGE, configured_ceiling)
+        if not (0 < base < ceiling <= 65536):
+            raise RuntimeError(f"invalid test listener port range: {base}-{ceiling - 1}")
+
+        ephemeral_range = _kernel_ephemeral_range()
+        if ephemeral_range is not None:
+            ephemeral_lower, ephemeral_upper = ephemeral_range
+            if base <= ephemeral_upper and ceiling - 1 >= ephemeral_lower:
+                raise RuntimeError(
+                    f"test listener port range {base}-{ceiling - 1} overlaps Linux ephemeral "
+                    f"source-port range {ephemeral_lower}-{ephemeral_upper}"
+                )
+
+        self._range_start = base
         self._next = base
-        self._ceiling = min(ceiling, _CEILING)
+        self._ceiling = ceiling
 
     def allocate(self) -> PortMapping:
         """Allocate a 6-port block for a single node.
@@ -68,7 +103,7 @@ class PortAllocator:
                     "Block %d-%d skipped: port %d in use", base, base + _BLOCK_SIZE - 1, busy
                 )
             raise RuntimeError(
-                f"test port range exhausted ({_BASE}-{self._ceiling}). "
+                f"test port range exhausted ({self._range_start}-{self._ceiling - 1}). "
                 f"Too many concurrent nodes or leftover TIME_WAIT sockets."
             )
 

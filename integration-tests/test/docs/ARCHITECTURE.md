@@ -127,12 +127,13 @@ Three entry points:
 
 | Worker | Range | Notes |
 |---|---|---|
-| `gw0` / master | 41000–41499 | Main worker |
-| `gw1` | 41500–41999 | |
-| `gw2` | 42000–42499 | |
+| master (no xdist) | 12000–31999 | Entire pool |
+| `gw0` | 12000–12499 | First parallel worker |
+| `gw1` | 12500–12999 | |
+| `gw2` | 13000–13499 | |
 | ... | 500 per worker | Socket-verified before allocation |
 
-The allocator binds a test socket to each candidate port and releases it immediately — catches transient conflicts before the real container tries to bind.
+The listener pool ends below Linux's default ephemeral source-port range (`32768–60999`). This is required because a bind probe followed by process or container startup cannot reserve the released port: an outbound connection could otherwise acquire it as an ephemeral source port during that handoff and make the node fail with `EADDRINUSE`. On Linux, the allocator reads `/proc/sys/net/ipv4/ip_local_port_range` and fails before shard startup if the configured listener pool overlaps the active kernel range. It also binds a test socket to every candidate and skips blocks with an existing explicit listener or `TIME_WAIT` socket.
 
 A shard needs 6 ports per node (the 40400-series internal ports mapped to host), so one shard consumes ~30-36 host ports; a 500-port range handles ~15 concurrent shards per worker.
 
