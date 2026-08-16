@@ -105,12 +105,13 @@ def test_genesis_asymmetric_bonds(asymmetric_shard, node_conf) -> None:
 
 
 def test_fault_tolerance_asymmetric_bonds(asymmetric_shard, timeouts) -> None:
-    """Verify FT monotonicity and multi-parent blocks with asymmetric bonds.
+    """Verify FT proof invariants and multi-parent blocks with asymmetric bonds.
 
     1. Deploy on all validators
     2. Wait for 10+ blocks on all nodes (including readonly)
     3. Multi-parent blocks exist
-    4. FT non-increasing by height on ALL validators
+    4. Finalized proof certificates exceed FTT
+    5. Live FT is ancestor-monotone within one DAG snapshot
     """
     validators = asymmetric_shard.validators
     all_nodes = asymmetric_shard.all_nodes
@@ -137,35 +138,61 @@ def test_fault_tolerance_asymmetric_bonds(asymmetric_shard, timeouts) -> None:
     logging.info("Asymmetric DAG: %d blocks, %d multi-parent", len(blocks), multi_parent_count)
     assert multi_parent_count > 0, "No multi-parent blocks in asymmetric-bond DAG"
 
-    # FT monotonicity along the MAIN-PARENT CHAIN (the finality spine), not by height.
-    #
-    # Finality flows along main_parent (parents[0]), not by block height. In a
-    # multi-parent DAG a height-N sibling that sits off the main-parent spine (only
-    # ever a merged-in secondary parent) is witnessed by fewer validators than a
-    # height-(N+1) block on the spine, so per-height FT is NOT monotone -- that is
-    # topology, not a finality bug. The invariant that DOES hold deterministically:
-    # any validator agreeing on a block also agrees on all of its main-parent
-    # ancestors (they are DAG-ancestors of the same latest message), so agreeing
-    # weight -- and thus FT -- is non-increasing as you walk from the tip down the
-    # main-parent chain toward genesis. Assert exactly that.
     for node in validators:
         by_hash = {b.blockHash: b for b in node.get_blocks(50)}
+        finalized_proofs = 0
+        for block in by_hash.values():
+            ft = float(block.faultTolerance)
+            assert -1.0 <= ft <= 1.0, (
+                f"FT outside normalized range on {node.name}: block #{block.blockNumber} FT={ft}"
+            )
+            if block.isFinalized and block.blockNumber > 0:
+                assert ft > _FTT, (
+                    f"Finalized block below strict FTT on {node.name}: "
+                    f"block #{block.blockNumber} FT={ft} <= FTT={_FTT}"
+                )
+                finalized_proofs += 1
+
         tip = max(by_hash.values(), key=lambda b: b.blockNumber)
         cur = tip
         steps = 0
+        live_pairs = 0
+        finalized_pairs = 0
+        provenance_boundaries = 0
         while cur.parentsHashList:
             main_parent = by_hash.get(cur.parentsHashList[0])
             if main_parent is None:
-                break  # walked past the fetched window
-            assert float(main_parent.faultTolerance) >= float(cur.faultTolerance), (
-                f"FT not monotone along main-parent chain on {node.name}: "
-                f"ancestor #{main_parent.blockNumber} FT={main_parent.faultTolerance} < "
-                f"descendant #{cur.blockNumber} FT={cur.faultTolerance}"
-            )
+                break
+            if cur.isFinalized:
+                assert main_parent.isFinalized, (
+                    f"Finalized descendant has an unfinalized main parent on {node.name}: "
+                    f"descendant #{cur.blockNumber}, ancestor #{main_parent.blockNumber}"
+                )
+                finalized_pairs += 1
+            elif not main_parent.isFinalized:
+                assert float(main_parent.faultTolerance) >= float(cur.faultTolerance), (
+                    f"Live FT not ancestor-monotone on {node.name}: "
+                    f"ancestor #{main_parent.blockNumber} FT={main_parent.faultTolerance} < "
+                    f"descendant #{cur.blockNumber} FT={cur.faultTolerance}"
+                )
+                live_pairs += 1
+            else:
+                provenance_boundaries += 1
             cur = main_parent
             steps += 1
         assert steps > 0, f"main-parent chain walk did no steps on {node.name}"
-        logging.info("FT monotone along main-parent chain on %s (%d steps)", node.name, steps)
+        assert finalized_proofs + live_pairs > 0, (
+            f"No comparable FT proof evidence observed on {node.name}"
+        )
+        logging.info(
+            "%s FT evidence: %d finalized proofs, %d live pairs, "
+            "%d finalized pairs, %d provenance boundaries",
+            node.name,
+            finalized_proofs,
+            live_pairs,
+            finalized_pairs,
+            provenance_boundaries,
+        )
 
 
 def test_finalization_asymmetric_bonds(asymmetric_shard, timeouts) -> None:
@@ -173,14 +200,9 @@ def test_finalization_asymmetric_bonds(asymmetric_shard, timeouts) -> None:
 
     No single validator can finalize alone. V1 + at least one other
     validator must build on a block for it to finalize (FT > 0.33).
-    Finalized blocks must have FT >= FTT on all nodes including readonly.
-
-    In a multi-parent DAG with asymmetric bonds, the LFB pointer can
-    advance ahead of the cached per-block FT field — a block becomes
-    the LFB via V1 alone (FT = 60/95 = 0.263) before V2's signature
-    lifts the clique to FT = 80/95 = 0.368. ``wait_for_lfb_with_ft``
-    polls the combined predicate (single gRPC call per iteration, no
-    torn reads).
+    Every non-genesis LFB must expose a frozen finalization certificate with
+    FT > FTT on all nodes including readonly. ``wait_for_lfb_with_ft`` polls
+    the target height and certificate in one gRPC snapshot.
     """
     all_nodes = asymmetric_shard.all_nodes
     validators = asymmetric_shard.validators
@@ -205,7 +227,7 @@ def test_finalization_asymmetric_bonds(asymmetric_shard, timeouts) -> None:
             float(info.faultTolerance),
         )
 
-    logging.info("Finalization verified on all %d nodes (FT >= %.2f)", len(all_nodes), _FTT)
+    logging.info("Finalization verified on all %d nodes (FT > %.2f)", len(all_nodes), _FTT)
 
 
 def test_cross_validator_state_agreement_asymmetric(asymmetric_shard, timeouts) -> None:

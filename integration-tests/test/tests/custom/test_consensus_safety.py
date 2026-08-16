@@ -495,6 +495,7 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
             "--synchrony-constraint-threshold": "0",
         },
         extra_wallets=[(joiner_vault, 50_000_000_000_000_000)],
+        client_fuel_allocations=[(VALIDATOR4_ID.public_hex, 1_000_000)],
     )
     shard = Shard.create(provider, config, timeouts)
     try:
@@ -527,11 +528,20 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
         )
         logging.info("Bond deploy submitted: %s", bond_deploy_id[:24])
 
-        # Wait for bond to be included
-        from ...infra.polling import wait_for_deploy_included
+        from ...infra.polling import wait_for_deploy_finalized
 
-        bond_block = wait_for_deploy_included(v1, bond_deploy_id, timeouts.deploy_inclusion)
-        logging.info("Bond included in block #%d", bond_block.blockNumber)
+        bond_status = wait_for_deploy_finalized(
+            v1,
+            bond_deploy_id,
+            timeouts.finalization * 3,
+        )
+        assert bond_status.latestBlockHash
+        canonical_bond_hash = bond_status.latestBlockHash.hex()
+        canonical_bond_block = v1.get_block(canonical_bond_hash).blockInfo
+        logging.info("Bond finalized canonically in block #%d", canonical_bond_block.blockNumber)
+        checkpoint_floor = canonical_bond_block.blockNumber + 2
+        wait_for_lfb_at_least(v1, checkpoint_floor, timeouts.finalization * 3)
+        logging.info("Late-join checkpoint floor reached at LFB #%d", lfb_number(v1))
 
         # Add joiner node to the shard
         logging.info("Adding joiner to shard network...")
@@ -546,10 +556,10 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
             # Wait for joiner to sync
             wait_for_block_visible(
                 joiner,
-                bond_block.blockHash,
+                canonical_bond_hash,
                 timeout=timeouts.node_startup * 2,
             )
-            logging.info("Joiner synced to block #%d", bond_block.blockNumber)
+            logging.info("Joiner synced to block #%d", canonical_bond_block.blockNumber)
 
             # Record LFB before epoch transition
             pre_epoch_lfb = lfb_number(v1)

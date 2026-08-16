@@ -42,7 +42,7 @@ Kill V3 (50 stake). V1+V2 (150 stake) have FT = (150\*2 - 200) / 200 = 0.5. Sinc
 
 **Config:** FTT=0.1, bonds 100/100, epoch-length=4, heartbeat, readonly, joiner wallet seeded
 
-Bond VALIDATOR4 via `bond.rho` during active heartbeat (not manual propose). Wait for chain to advance past at least one epoch boundary automatically. Verify finalization continues throughout (no stall during epoch transition). Check if joiner produced blocks after activation.
+Bond VALIDATOR4 via `bond.rho` during active heartbeat (not manual propose). Resolve the bond's canonical finalized block, advance the LFB beyond that checkpoint, and only then start the joiner. Wait for the chain to pass at least one epoch boundary automatically. Verify finalization continues throughout and check whether the joiner produced blocks after activation.
 
 **What it proves:** Epoch-based validator activation works under production conditions (heartbeat, real FTT). The epoch transition doesn't stall finalization.
 
