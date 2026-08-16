@@ -8,6 +8,7 @@ startup logs).
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Callable, Dict, Optional, TypeVar
 
@@ -94,6 +95,31 @@ def poll_until(
         f"{description or 'poll_until'}: timed out after {timeout}s "
         f"({attempts} attempts){err_detail}"
     )
+
+
+# The node's vabn-expiration rejection, verbatim shape (captured from soak
+# preflight 31919610258):
+#   "Deploy validAfterBlockNumber 157 has expired at block 207 with deploy
+#    lifespan 50."
+# Retrying a submission is safe ONLY on this rejection — it is the node's
+# guarantee that the deploy was NOT accepted, so a resend cannot
+# double-submit. The regex is the retry GATE, not just a height extractor:
+# anything that does not match this exact shape must be recorded as a
+# failure, never retried. unit-tests/test_vabn_expiration_matcher.py pins
+# the shape against the captured node wording, so silent drift on either
+# side fails a sub-second test instead of degrading retry behavior.
+VABN_EXPIRED_PATTERN = re.compile(r"validAfterBlockNumber \d+ has expired at block (\d+)")
+
+
+def parse_vabn_expiration(message: str) -> Optional[int]:
+    """The node's CURRENT height from a vabn-expiration rejection, else None.
+
+    A non-None return simultaneously authorizes a retry (the node rejected,
+    nothing was accepted) and supplies the freshest possible height for the
+    replacement validAfterBlockNumber.
+    """
+    match = VABN_EXPIRED_PATTERN.search(message)
+    return int(match.group(1)) if match else None
 
 
 # Owned by pyf1r3fly (f1r3fly/polling.py); the raise site there is the only

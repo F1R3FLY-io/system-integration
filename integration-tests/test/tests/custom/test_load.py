@@ -29,7 +29,6 @@ finalization/convergence gates.
 
 import logging
 import os
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
@@ -54,7 +53,12 @@ from ...infra.metrics import (
     percentiles,
     scrape_metrics,
 )
-from ...infra.polling import lfb_number, poll_until, wait_for_lfb_converged
+from ...infra.polling import (
+    lfb_number,
+    parse_vabn_expiration,
+    poll_until,
+    wait_for_lfb_converged,
+)
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
@@ -230,25 +234,19 @@ def _run_phase(nodes, tracker, phase, start_index, monitor=None):
                 tracker.track_deploy(rec)
                 deploy_count += 1
             except Exception as first_err:
-                # Retry ONLY the vabn-expiration rejection ("Deploy
-                # validAfterBlockNumber N has expired at block M with
-                # deploy lifespan 50") with a freshly-read vabn — that
-                # rejection is a guarantee the node did NOT accept the
-                # deploy. Any other failure (deadline, connection loss)
-                # is ambiguous: the first submission may have landed, and
-                # a blind retry would double-submit untracked load.
-                message = str(first_err)
-                if "validAfterBlockNumber" in message and "expired" in message:
+                # Retry ONLY the exact vabn-expiration rejection — the one
+                # failure that guarantees the node did NOT accept the
+                # deploy. parse_vabn_expiration is the GATE (its regex pins
+                # the node's rejection shape, unit-tested against captured
+                # wording) AND the freshness source: the rejection carries
+                # the node's current height. Any other failure (deadline,
+                # connection loss) is ambiguous — the first submission may
+                # have landed, and a blind retry would double-submit
+                # untracked load — so it is recorded, never retried.
+                height = parse_vabn_expiration(str(first_err))
+                if height is not None:
                     try:
-                        # The rejection itself carries the node's CURRENT
-                        # height ("… has expired at block M …") — the most
-                        # direct freshness source there is. Fall back to a
-                        # tip read only if the message shape ever changes.
-                        height = re.search(r"expired at block (\d+)", message)
-                        if height:
-                            vabn = max(0, int(height.group(1)) - 1)
-                        else:
-                            vabn = max(0, _current_block_number(node_list[0][0], monitor) - 1)
+                        vabn = max(0, height - 1)
                         vabn_refreshed_at = time.time()
                         rec = _submit_deploy(node, key, idx, vabn, phase_name)
                         tracker.track_deploy(rec)

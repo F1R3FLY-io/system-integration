@@ -289,6 +289,11 @@ def assert_deploy_block_finalized_on_all_nodes(node, deploy_id: str, nodes, time
     the pinned hash then never finalizes anywhere even though the deploy does
     (ft -1.0 on every node — nine sightings across the suites as of the
     43e9f844 preflight; PR #118's bonding anchor was the first fix).
+
+    ``timeout`` bounds EACH of the two waits (the deploy's own finalization,
+    then the cross-node block check), so worst-case wall time is 2x the
+    value — deliberate slack, since both phases legitimately need a full
+    finalization budget under load.
     """
     from .polling import wait_for_deploy_finalized
 

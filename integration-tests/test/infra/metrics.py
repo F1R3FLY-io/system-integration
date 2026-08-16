@@ -586,6 +586,10 @@ class LifecycleTracker:
         # Block-hash → block-number cache for inclusion enrichment. Many
         # deploys share a containing block, so this collapses the
         # get_block volume from per-deploy to per-unique-block.
+        # Deliberately clear()-exempt within a sweep (a hash→number
+        # mapping is immutable truth, so a stale write cannot corrupt
+        # the next phase); clear() empties it between phases, which
+        # bounds its growth to one entry per unique block per phase.
         self._block_numbers: Dict[str, int] = {}
         self._max_block = 0
         self._lfb_thread: Optional[threading.Thread] = None
@@ -621,15 +625,14 @@ class LifecycleTracker:
             DEPLOY_STATE_FINALIZED,
         )
 
-        terminal_states = (DEPLOY_STATE_FAILED, DEPLOY_STATE_EXPIRED)
+        # Human-readable names for terminal diagnostics (get_results /
+        # logs) instead of opaque stringified enum ints.
+        terminal_states = {DEPLOY_STATE_FAILED: "FAILED", DEPLOY_STATE_EXPIRED: "EXPIRED"}
         node = self._node_list[0]
-        # NOTE: the node's client is cached, so this is NOT a
-        # reconnection mechanism — gRPC channels reconnect transient
-        # failures on their own, per-probe failures are tolerated, and a
-        # permanently dead channel surfaces via the fail-streak warning.
         client = node._external_client()
         fail_streak = 0
-        with ThreadPoolExecutor(max_workers=self._SWEEP_WORKERS) as pool:
+        pool = ThreadPoolExecutor(max_workers=self._SWEEP_WORKERS)
+        try:
             while not self._stop_event.is_set():
                 cycle_start = time.time()
                 pending, errors = self._sweep_cycle(
@@ -642,10 +645,19 @@ class LifecycleTracker:
                         logger.warning(
                             "LifecycleTracker: every status probe has failed for %d "
                             "consecutive cycles (%d pending) — node unreachable or "
-                            "channel dead; deploys will report unfinalized",
+                            "channel dead; dropping the cached client to force a "
+                            "fresh channel",
                             fail_streak,
                             pending,
                         )
+                    if fail_streak >= self._SWEEP_FAIL_STREAK_WARN:
+                        # Real recovery attempt: gRPC channels self-heal
+                        # from transient failures, but a permanently dead
+                        # channel object never will. Dropping the node's
+                        # cached client makes the next cycle build a fresh
+                        # channel instead of warning forever.
+                        node._grpc_external_client = None
+                        client = node._external_client()
                 else:
                     fail_streak = 0
 
@@ -653,6 +665,10 @@ class LifecycleTracker:
                 # pause — target ~1s between cycle STARTS.
                 elapsed = time.time() - cycle_start
                 self._stop_event.wait(timeout=max(0.0, 1.0 - elapsed))
+        finally:
+            # Don't block thread exit on probes still riding out their
+            # gRPC deadlines — stop_lfb_monitor joins with a 10s budget.
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def _sweep_cycle(self, pool, node, client, finalized_state, terminal_states):
         """One sweep pass over every pending deploy.
@@ -692,6 +708,32 @@ class LifecycleTracker:
                 continue
             self._apply_state(deploy_id, status, finalized_state, terminal_states)
             succeeded.append((deploy_id, status))
+
+        # Pre-resolve block numbers for every UNIQUE uncached containing
+        # block through the worker pool: a first cycle over a large
+        # backlog can span hundreds of distinct blocks, and resolving
+        # them serially would stall the cycle for the sum of the lookup
+        # latencies. After this, _enrich_inclusion is cache-hits only.
+        with self._lock:
+            unresolved = list(
+                {status.latestBlockHash.hex() for _, status in succeeded if status.latestBlockHash}
+                - {h for h, n in self._block_numbers.items() if n}
+            )
+
+        def _resolve(block_hash):
+            try:
+                return block_hash, node.get_block(block_hash).blockInfo.blockNumber
+            except Exception as exc:
+                logger.debug("block-number lookup failed for %s: %s", block_hash[:16], exc)
+                return block_hash, 0
+
+        for block_hash, number in pool.map(_resolve, unresolved):
+            if self._stop_event.is_set():
+                return len(pending), errors
+            if number:
+                with self._lock:
+                    self._block_numbers[block_hash] = number
+
         for deploy_id, status in succeeded:
             if self._stop_event.is_set():
                 break
@@ -715,7 +757,7 @@ class LifecycleTracker:
         elif status.state in terminal_states:
             with self._lock:
                 if deploy_id in self._records:
-                    self._terminal[deploy_id] = str(status.state)
+                    self._terminal[deploy_id] = terminal_states[status.state]
 
     def _enrich_inclusion(self, node, deploy_id, status):
         """Resolve inclusion telemetry (block number) for one deploy.

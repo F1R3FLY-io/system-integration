@@ -40,7 +40,7 @@ metrics = importlib.util.module_from_spec(SPEC)
 sys.modules["metrics"] = metrics
 SPEC.loader.exec_module(metrics)
 
-TERMINAL = (DEPLOY_STATE_FAILED, DEPLOY_STATE_EXPIRED)
+TERMINAL = {DEPLOY_STATE_FAILED: "FAILED", DEPLOY_STATE_EXPIRED: "EXPIRED"}
 HASH_A = b"\xaa" * 32
 HASH_B = b"\xbb" * 32
 
@@ -216,7 +216,27 @@ class TerminalStatesSettleWithoutFinalizing(unittest.TestCase):
         self.assertEqual(pending, 0)  # no longer swept
         results = tracker.get_results()
         self.assertTrue(all(r.finalization_time is None for r in results))
+        # Terminal diagnostics carry readable names, not enum ints.
+        self.assertEqual(tracker._terminal, {"dead": "FAILED", "old": "EXPIRED"})
         tracker.wait_for_finalization(timeout=1)  # settles fast, no timeout burn
+
+
+class EnrichmentIsPooledPerUniqueBlock(unittest.TestCase):
+    def test_many_unique_blocks_resolve_one_lookup_each(self):
+        """Enrichment must not serialize across unique containing blocks:
+        the sweep pre-resolves every uncached hash through the worker
+        pool, then per-deploy enrichment is cache-hits only — one
+        get_block per unique block regardless of deploy count."""
+        statuses = {}
+        for i in range(20):
+            block_hash = bytes([i]) * 32
+            statuses[f"a{i:02d}"] = _Status(DEPLOY_STATE_FINALIZED, block_hash)
+            statuses[f"b{i:02d}"] = _Status(DEPLOY_STATE_FINALIZED, block_hash)
+        tracker, node, client = _tracker_with(statuses)
+        _run_cycle(tracker, node, client)
+        self.assertEqual(node.get_block_calls, 20)  # one per unique block, not 40
+        results = tracker.get_results()
+        self.assertEqual(sum(1 for r in results if r.finalization_time is not None), 40)
 
 
 if __name__ == "__main__":
