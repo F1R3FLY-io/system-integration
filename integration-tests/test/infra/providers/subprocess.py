@@ -1381,7 +1381,7 @@ class SubprocessProvider:
             "Adopted subprocess shard for session %s: %d nodes (%s)",
             session_id,
             len(handles),
-            ", ".join(h.role_key for h in handles),
+            ", ".join(h.name.rsplit(".", 1)[-1] for h in handles),
         )
         return handles
 

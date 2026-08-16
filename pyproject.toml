@@ -92,3 +92,11 @@ ignore = ["N999"]
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
+
+# Static-analysis environment (Pyright / pi lens): resolve imports from the
+# in-project poetry venv and treat integration-tests as a source root so
+# `test.infra.*` and unit-test loader paths type-check.
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["integration-tests"]
