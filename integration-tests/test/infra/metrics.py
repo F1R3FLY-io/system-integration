@@ -599,49 +599,114 @@ class LifecycleTracker:
         if self._lfb_thread:
             self._lfb_thread.join(timeout=10)
 
+    # Bounded concurrency for the per-cycle status probes. Small enough
+    # to be gentle on a loaded node, large enough that one slow RPC
+    # (e.g. a call riding out its whole gRPC deadline) delays a cycle by
+    # deadline/8 rather than blocking every deploy queued behind it.
+    _SWEEP_WORKERS = 8
+    # Consecutive all-fail cycles before warning: distinguishes a dead
+    # channel / crashed node from ordinary not-yet-included polling.
+    _SWEEP_FAIL_STREAK_WARN = 5
+
     def _sweep_loop(self):
+        from concurrent.futures import ThreadPoolExecutor
+
         from f1r3fly.pb.DeployServiceCommon_pb2 import (
             DEPLOY_STATE_EXPIRED,
             DEPLOY_STATE_FAILED,
             DEPLOY_STATE_FINALIZED,
         )
 
+        terminal_states = (DEPLOY_STATE_FAILED, DEPLOY_STATE_EXPIRED)
         node = self._node_list[0]
-        client = node._external_client()
-        while not self._stop_event.is_set():
-            with self._lock:
-                pending = [
-                    did
-                    for did in self._records
-                    if did not in self._finalization and did not in self._terminal
-                ]
-            for deploy_id in pending:
-                if self._stop_event.is_set():
-                    return
-                try:
-                    status = client.deploy_finalization_status(deploy_id)
-                except Exception:
-                    continue
-                now = time.time()
-                included = bool(status.latestBlockHash)
-                if included and deploy_id not in self._inclusion:
-                    block_number = 0
+        fail_streak = 0
+        with ThreadPoolExecutor(max_workers=self._SWEEP_WORKERS) as pool:
+            while not self._stop_event.is_set():
+                cycle_start = time.time()
+                # Re-resolved each cycle so a channel that died mid-run
+                # (node restart, connection reset) is not fatal for the
+                # remainder of the sweep's lifetime.
+                client = node._external_client()
+                with self._lock:
+                    pending = [
+                        did
+                        for did in self._records
+                        if did not in self._finalization and did not in self._terminal
+                    ]
+
+                def _probe(deploy_id, client=client):
                     try:
-                        block_number = node.get_block(
-                            status.latestBlockHash.hex()
-                        ).blockInfo.blockNumber
-                    except Exception:
-                        pass
-                    with self._lock:
-                        self._inclusion[deploy_id] = (block_number, now)
+                        return deploy_id, client.deploy_finalization_status(deploy_id), None
+                    except Exception as exc:
+                        return deploy_id, None, exc
+
+                errors = 0
+                for deploy_id, status, exc in pool.map(_probe, pending):
+                    if self._stop_event.is_set():
+                        return
+                    if exc is not None:
+                        errors += 1
+                        logger.debug("status probe failed for %s: %s", deploy_id[:16], exc)
+                        continue
+                    self._apply_status(
+                        node, deploy_id, status, DEPLOY_STATE_FINALIZED, terminal_states
+                    )
+
+                if pending and errors == len(pending):
+                    fail_streak += 1
+                    if fail_streak == self._SWEEP_FAIL_STREAK_WARN:
+                        logger.warning(
+                            "LifecycleTracker: every status probe has failed for %d "
+                            "consecutive cycles (%d pending) — node unreachable or "
+                            "channel dead; deploys will report unfinalized",
+                            fail_streak,
+                            len(pending),
+                        )
+                else:
+                    fail_streak = 0
+
+                # Don't compound a long sweep with the full inter-cycle
+                # pause — target ~1s between cycle STARTS.
+                elapsed = time.time() - cycle_start
+                self._stop_event.wait(timeout=max(0.0, 1.0 - elapsed))
+
+    def _apply_status(self, node, deploy_id, status, finalized_state, terminal_states):
+        """Fold one status response into the bookkeeping maps.
+
+        Every write is gated on ``deploy_id in self._records`` under the
+        lock: ``clear()`` runs between load phases while the sweep thread
+        is alive, and a stale write after the clear would corrupt the
+        next phase's counts.
+        """
+        now = time.time()
+        if status.latestBlockHash:
+            with self._lock:
+                tracked = deploy_id in self._records
+                existing = self._inclusion.get(deploy_id)
+            # (Re-)resolve the block number when unknown — including a
+            # previous cycle's failed lookup, stored as 0. The original
+            # inclusion timestamp is preserved on re-resolution.
+            if tracked and (existing is None or existing[0] == 0):
+                block_number = 0
+                try:
+                    block_number = node.get_block(
+                        status.latestBlockHash.hex()
+                    ).blockInfo.blockNumber
+                except Exception as exc:
+                    logger.debug("block-number lookup failed for %s: %s", deploy_id[:16], exc)
+                with self._lock:
+                    if deploy_id in self._records:
+                        included_at = existing[1] if existing else now
+                        self._inclusion[deploy_id] = (block_number, included_at)
                         self._max_block = max(self._max_block, block_number)
-                if status.state == DEPLOY_STATE_FINALIZED:
-                    with self._lock:
-                        self._finalization[deploy_id] = now
-                elif status.state in (DEPLOY_STATE_FAILED, DEPLOY_STATE_EXPIRED):
-                    with self._lock:
-                        self._terminal[deploy_id] = str(status.state)
-            self._stop_event.wait(timeout=1)
+        if status.state == finalized_state:
+            with self._lock:
+                if deploy_id in self._records:
+                    self._finalization[deploy_id] = now
+        elif status.state in terminal_states:
+            with self._lock:
+                if deploy_id in self._records:
+                    self._terminal[deploy_id] = str(status.state)
 
     def track_deploy(self, record: DeployRecord):
         """Register a deploy; the sweep thread picks it up on its next pass."""

@@ -948,23 +948,27 @@ class DockerProvider:
 
         shard_key = f"shard-{self._session_id}"
         compose_files = getattr(self, "_compose_files", {})
-        if shard_key in compose_files:
-            compose_path, project_name, genesis_dir = compose_files.pop(shard_key)
-            _compose(
-                "down",
-                "--volumes",
-                "--remove-orphans",
-                compose_file=compose_path,
-                project_name=project_name,
-            )
-        else:
+        try:
+            if shard_key in compose_files:
+                compose_path, project_name, genesis_dir = compose_files.pop(shard_key)
+                _compose(
+                    "down",
+                    "--volumes",
+                    "--remove-orphans",
+                    compose_file=compose_path,
+                    project_name=project_name,
+                )
+            else:
+                for handle in handles:
+                    handle.remove()
+        finally:
+            # Hand the port blocks back even when teardown raises midway
+            # — a block whose container survived stays bind-probe busy,
+            # so releasing it is safe, while NOT releasing on the error
+            # path would leak the whole shard's blocks for the session
+            # (the exhaustion defect this fix exists for).
             for handle in handles:
-                handle.remove()
-
-        # Containers are gone; hand the port blocks back so a long
-        # session of sequential shards cannot exhaust the worker range.
-        for handle in handles:
-            self._ports.release(handle.ports)
+                self._ports.release(handle.ports)
 
         logger.info("Shard destroyed")
 
@@ -1219,12 +1223,14 @@ class DockerProvider:
 
         archive_handles([handle], self._archive_dir)
 
-        handle.remove()
-        suffix = handle.name.split("standalone")[-1] if "standalone" in handle.name else ""
-        vol = f"test-{self._session_id}-standalone{suffix}-data"
-        _docker("volume", "rm", "-f", vol)
-        _docker("network", "rm", handle.network_name)
-        self._ports.release(handle.ports)
+        try:
+            handle.remove()
+            suffix = handle.name.split("standalone")[-1] if "standalone" in handle.name else ""
+            vol = f"test-{self._session_id}-standalone{suffix}-data"
+            _docker("volume", "rm", "-f", vol)
+            _docker("network", "rm", handle.network_name)
+        finally:
+            self._ports.release(handle.ports)
 
     # ── Joiner / observer lifecycle ─────────────────────────────────
 
@@ -1373,10 +1379,12 @@ class DockerProvider:
 
         archive_handles([handle], self._archive_dir)
 
-        handle.remove()
-        if handle.volume_name:
-            _docker("volume", "rm", "-f", handle.volume_name)
-        self._ports.release(handle.ports)
+        try:
+            handle.remove()
+            if handle.volume_name:
+                _docker("volume", "rm", "-f", handle.volume_name)
+        finally:
+            self._ports.release(handle.ports)
 
     # ── Global cleanup ──────────────────────────────────────────────
 

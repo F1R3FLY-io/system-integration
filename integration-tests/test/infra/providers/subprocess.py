@@ -1040,8 +1040,10 @@ class SubprocessProvider:
             logger.info("Standalone %s kept running (--keep-running)", handle.name)
             return
         archive_handles([handle], self._archive_dir)
-        handle.remove()
-        self._ports.release(handle.ports)
+        try:
+            handle.remove()
+        finally:
+            self._ports.release(handle.ports)
 
     # ── Joiner / observer lifecycle ─────────────────────────────────
 
@@ -1128,8 +1130,10 @@ class SubprocessProvider:
             logger.info("Joiner %s kept running (--keep-running)", handle.name)
             return
         archive_handles([handle], self._archive_dir)
-        handle.remove()
-        self._ports.release(handle.ports)
+        try:
+            handle.remove()
+        finally:
+            self._ports.release(handle.ports)
 
     # ── Cleanup ─────────────────────────────────────────────────────
 

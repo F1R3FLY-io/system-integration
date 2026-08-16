@@ -13,7 +13,6 @@ that is handed out but not yet bound by its node can never be handed out
 a second time.
 """
 
-import socket
 import sys
 from pathlib import Path
 
@@ -27,6 +26,30 @@ from test.infra.ports import _BLOCK_SIZE, PortAllocator  # noqa: E402
 # A private base far from the real test range so these tests never fight
 # live shards or TIME_WAIT from integration runs.
 BASE = 45600
+
+# Ports the fake probe reports as busy. Tests mutate this instead of
+# binding real sockets.
+BUSY_PORTS: set = set()
+
+
+@pytest.fixture(autouse=True)
+def deterministic_probe(monkeypatch):
+    """Decouple the bind-probe from the host's real port state.
+
+    Shared CI runners bind arbitrary ports: run 31923986341 had one of
+    this file's two-block range occupied, so ``allocate()`` skipped the
+    block and the exhaustion test raised one call early. With the probe
+    faked, every test controls busyness exclusively via ``BUSY_PORTS``
+    and the allocator logic is exercised deterministically everywhere.
+    """
+    BUSY_PORTS.clear()
+    monkeypatch.setattr(
+        PortAllocator,
+        "_is_port_free",
+        staticmethod(lambda port: port not in BUSY_PORTS),
+    )
+    yield
+    BUSY_PORTS.clear()
 
 
 def _allocator(blocks: int) -> PortAllocator:
@@ -79,11 +102,11 @@ def test_busy_released_block_is_skipped_and_requeued():
     alloc = _allocator(blocks=3)
     a = alloc.allocate()
     alloc.release(a)
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
-        blocker.bind(("0.0.0.0", a.protocol))
-        b = alloc.allocate()
-        assert b.protocol != a.protocol  # served fresh instead
-    # Blocker gone: the requeued block is served again.
+    BUSY_PORTS.add(a.protocol)
+    b = alloc.allocate()
+    assert b.protocol != a.protocol  # served fresh instead
+    # Port freed: the requeued block is served again.
+    BUSY_PORTS.discard(a.protocol)
     c = alloc.allocate()
     assert c.protocol == a.protocol
 

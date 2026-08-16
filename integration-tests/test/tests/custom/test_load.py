@@ -216,18 +216,26 @@ def _run_phase(nodes, tracker, phase, start_index, monitor=None):
                 rec = _submit_deploy(node, key, idx, vabn, phase_name)
                 tracker.track_deploy(rec)
                 deploy_count += 1
-            except Exception:
-                # One retry with a freshly-read vabn: covers the race
-                # where the DAG crossed the deploy-lifespan horizon
-                # between refreshes despite the short interval.
-                try:
-                    vabn = max(0, _current_block_number(node_list[0][0], monitor) - 1)
-                    vabn_refreshed_at = time.time()
-                    rec = _submit_deploy(node, key, idx, vabn, phase_name)
-                    tracker.track_deploy(rec)
-                    deploy_count += 1
-                except Exception as e:
-                    errors.append(f"deploy {idx}: {e}")
+            except Exception as first_err:
+                # Retry ONLY the vabn-expiration rejection ("Deploy
+                # validAfterBlockNumber N has expired at block M with
+                # deploy lifespan 50") with a freshly-read vabn — that
+                # rejection is a guarantee the node did NOT accept the
+                # deploy. Any other failure (deadline, connection loss)
+                # is ambiguous: the first submission may have landed, and
+                # a blind retry would double-submit untracked load.
+                message = str(first_err)
+                if "validAfterBlockNumber" in message and "expired" in message:
+                    try:
+                        vabn = max(0, _current_block_number(node_list[0][0], monitor) - 1)
+                        vabn_refreshed_at = time.time()
+                        rec = _submit_deploy(node, key, idx, vabn, phase_name)
+                        tracker.track_deploy(rec)
+                        deploy_count += 1
+                    except Exception as e:
+                        errors.append(f"deploy {idx}: {e} (vabn-refresh retry after: {first_err})")
+                else:
+                    errors.append(f"deploy {idx}: {first_err}")
             target_time = phase_start + (i + 1) * interval
             sleep_time = target_time - time.time()
             if sleep_time > 0:
