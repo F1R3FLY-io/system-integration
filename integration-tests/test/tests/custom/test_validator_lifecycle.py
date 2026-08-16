@@ -75,9 +75,10 @@ _JOINER_STAKE = {
 }
 _BOND_MINIMUM = 100
 _BOND_MAXIMUM = 1000
-# These mirror conf/rust.conf (epoch-length=4, quarantine-length=10), which the
-# shard already boots from — kept as constants for quarantine/epoch poll-budget
-# math, NOT passed as CLI flags (that would be redundant with rust.conf).
+# This suite's epoch/quarantine geometry. These are passed to the shard as CLI
+# flags (see _GENESIS_CLI) and used for the quarantine/epoch poll-budget math,
+# so the two can never drift: conf/rust.conf carries a longer epoch for suites
+# that do not bond.
 _EPOCH_LENGTH = 4
 _QUARANTINE_LENGTH = 10
 
@@ -88,13 +89,18 @@ _BOND_PHLO_PRICE = 1
 # bond contract to completion, so the deploy runs out of phlo mid-execution and errors.
 _MODE_A_PHLO_LIMIT = 50_000
 
-# Only the bond bounds genuinely deviate from rust.conf / node defaults.
-# epoch-length, quarantine-length, and synchrony-constraint-threshold=0 are
-# already the effective values from conf/rust.conf + node defaults, so passing
-# them as CLI flags would be redundant.
+# Bond bounds deviate from node defaults; epoch and quarantine length are set
+# here because this suite depends on them and conf/rust.conf no longer carries
+# a short epoch.
 _GENESIS_CLI = {
     "--bond-minimum": str(_BOND_MINIMUM),
     "--bond-maximum": str(_BOND_MAXIMUM),
+    # This suite is epoch-driven (activation, epoch-move, quarantine), so it
+    # sets the short epoch it needs rather than inheriting it. conf/rust.conf
+    # carries a longer epoch for the suites that never bond, where frequent
+    # PoS closeBlock transitions are pure overhead.
+    "--epoch-length": str(_EPOCH_LENGTH),
+    "--quarantine-length": str(_QUARANTINE_LENGTH),
 }
 
 # ── Background load: same-vault transfer contention ──────────────────────────

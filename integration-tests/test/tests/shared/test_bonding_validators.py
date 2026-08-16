@@ -81,7 +81,9 @@ pytestmark = pytest.mark.xdist_group("shared")
 
 _BOND_AMOUNT = 100
 
-# Matches conf/rust.conf:genesis-block-data.epoch-length
+# Matches the epoch the shared_shard fixture boots with (conftest passes
+# --epoch-length explicitly; conf/rust.conf carries a longer one for suites
+# that never bond).
 _EPOCH_LENGTH = 4
 
 # Background-load knobs. Interval is per-producer; with 3 producers
