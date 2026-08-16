@@ -132,9 +132,7 @@ def clone_services(service_repos: Dict[str, Dict], services_dir: Path, force: bo
                 console.print(success_msg)
 
             except subprocess.CalledProcessError as e:
-                console.print(
-                    f"[red]✗ Failed to clone {service_name}[/red]\n" f"[dim]{e.stderr}[/dim]"
-                )
+                console.print(f"[red]✗ Failed to clone {service_name}[/red]\n[dim]{e.stderr}[/dim]")
             except Exception as e:
                 console.print(f"[red]✗ Error cloning {service_name}: {e}[/red]")
 
@@ -227,7 +225,7 @@ def format_ports(publishers: list) -> str:
 
 
 def _docker_platform_for_f1r3node() -> str:
-    """Resolve PLATFORM for f1r3node (Scala) Docker build: env override or host arch."""
+    """Resolve PLATFORM for the f1r3node Docker build: env override or host arch."""
     if os.environ.get("PLATFORM"):
         return os.environ["PLATFORM"]
     machine = platform.machine().lower()

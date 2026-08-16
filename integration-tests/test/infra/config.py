@@ -3,6 +3,7 @@
 Pure data — describes what to create, not how to create it.
 The Provider implementations interpret these to build infrastructure.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -106,7 +107,13 @@ class TimeoutConfig:
     # plus headroom; tests against shallow/empty DAGs unaffected
     # since the sync just completes faster.
     node_startup: int = 300
-    deploy_inclusion: int = 10
+    # 30s (was 10s) — this gates on *block production*, not network latency:
+    # the deploy has to land in a proposed block, so the floor is heartbeat
+    # cadence. At 10s it was 3x smaller than the next smallest timeout here and
+    # on the same order as a single gRPC probe under `-n 16` load, which let
+    # poll_until degenerate to one attempt (see infra/polling.py). 30s puts it
+    # in line with port_release/finalization/command.
+    deploy_inclusion: int = 30
     finalization: int = 45
     command: int = 60
     port_release: int = 30
@@ -165,6 +172,31 @@ class ShardConfig:
     @property
     def validator_count(self) -> int:
         return len(self.bonds)
+
+
+def deterministic_history_shard_config(**overrides) -> "ShardConfig":
+    """A shard whose block history is entirely test-driven.
+
+    One validator holds effectively all the stake and ``ftt=-1`` finalizes on its
+    vote alone, so every propose finalizes immediately and without waiting on
+    peers. ``heartbeat=False`` means nothing is proposed unless a test asks, so
+    block heights are a function of the test rather than of elapsed time.
+
+    Use for building a known-depth history — observer catch-up, LFS sync,
+    missing-block retry. Do NOT use where the point is multi-validator agreement:
+    the stake split makes the other two validators unable to affect finalization.
+
+    ``overrides`` are applied on top, e.g. ``include_readonly=True``.
+    """
+    from .keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+
+    params = dict(
+        bonds=[(VALIDATOR1_ID, 10_000_000), (VALIDATOR2_ID, 1), (VALIDATOR3_ID, 1)],
+        ftt=-1,
+        heartbeat=False,
+    )
+    params.update(overrides)
+    return ShardConfig(**params)
 
 
 @dataclasses.dataclass(frozen=True)

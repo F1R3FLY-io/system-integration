@@ -22,6 +22,7 @@ data directories are tracked in instance state, not in the Docker-specific
 ``pytest_sessionstart``) discovers prior runs by scanning the
 session-scoped data-dir base.
 """
+
 from __future__ import annotations
 
 import logging
@@ -620,7 +621,15 @@ class SubprocessProvider:
         for idx, (identity, _stake) in enumerate(config.bonds):
             slot = idx + 1
             role_key = f"validator{slot}"
-            cert_subdir = f"validator{slot}" if slot <= 3 else None  # certs shipped for v1-v3
+            # Use the shipped TLS keypair for this slot when both halves are present;
+            # slots without a complete fixture let the node self-generate. Requiring
+            # both files keeps a partial/empty validator{N}/ dir from suppressing
+            # self-generation and failing startup (see certs/README.md).
+            cert_dir = Path(self._paths.certs_dir) / role_key
+            has_fixture = (cert_dir / "node.certificate.pem").is_file() and (
+                cert_dir / "node.key.pem"
+            ).is_file()
+            cert_subdir = role_key if has_fixture else None
             v_cli = [
                 f"--bootstrap={bootstrap_url}",
                 f"--validator-public-key={identity.public_hex}",
@@ -726,8 +735,7 @@ class SubprocessProvider:
             )
         if self._keep_running:
             logger.info(
-                "Subprocess shard for session %s kept running (--keep-running). "
-                "PIDs: %s. Data: %s",
+                "Subprocess shard for session %s kept running (--keep-running). PIDs: %s. Data: %s",
                 self._session_id,
                 ", ".join(str(h.pid) for h in handles),
                 self._session_root,
@@ -751,6 +759,7 @@ class SubprocessProvider:
             finally:
                 if h in self._active_handles:
                     self._active_handles.remove(h)
+                self._ports.release(h.ports)
 
     # ── Standalone ──────────────────────────────────────────────────
 
@@ -1031,7 +1040,10 @@ class SubprocessProvider:
             logger.info("Standalone %s kept running (--keep-running)", handle.name)
             return
         archive_handles([handle], self._archive_dir)
-        handle.remove()
+        try:
+            handle.remove()
+        finally:
+            self._ports.release(handle.ports)
 
     # ── Joiner / observer lifecycle ─────────────────────────────────
 
@@ -1118,7 +1130,10 @@ class SubprocessProvider:
             logger.info("Joiner %s kept running (--keep-running)", handle.name)
             return
         archive_handles([handle], self._archive_dir)
-        handle.remove()
+        try:
+            handle.remove()
+        finally:
+            self._ports.release(handle.ports)
 
     # ── Cleanup ─────────────────────────────────────────────────────
 
@@ -1311,7 +1326,7 @@ class SubprocessProvider:
         session_dir = self._session_data_root(self._paths, session_id)
         if not session_dir.is_dir():
             raise ValueError(
-                f"No subprocess session data at {session_dir} " f"for session_id={session_id!r}"
+                f"No subprocess session data at {session_dir} for session_id={session_id!r}"
             )
 
         # Each subdir corresponds to a role (boot, validator1, …, readonly).
@@ -1366,7 +1381,7 @@ class SubprocessProvider:
             "Adopted subprocess shard for session %s: %d nodes (%s)",
             session_id,
             len(handles),
-            ", ".join(h.role_key for h in handles),
+            ", ".join(h.name.rsplit(".", 1)[-1] for h in handles),
         )
         return handles
 
@@ -1528,7 +1543,7 @@ class _AdoptedHandle(SubprocessNodeHandle):
 
     def restart(self) -> None:
         raise NotImplementedError(
-            "restart() unsupported for adopted handles. " "Run a fresh `shardctl test` invocation."
+            "restart() unsupported for adopted handles. Run a fresh `shardctl test` invocation."
         )
 
     def _stop_once(self) -> None:

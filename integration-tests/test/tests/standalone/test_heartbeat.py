@@ -80,9 +80,9 @@ def test_heartbeat_creates_blocks_when_idle(provider, node_conf, timeouts) -> No
         logs = node.logs()
 
         # Heartbeat startup message
-        assert (
-            "Heartbeat: Starting with random initial delay" in logs
-        ), "Should log heartbeat startup message"
+        assert "Heartbeat: Starting with random initial delay" in logs, (
+            "Should log heartbeat startup message"
+        )
 
         # Block count
         assert block_count >= 4, f"Expected >= 4 blocks (genesis + 3 heartbeat), got {block_count}"
@@ -91,17 +91,16 @@ def test_heartbeat_creates_blocks_when_idle(provider, node_conf, timeouts) -> No
         assert success_count >= 3, f"Expected >= 3 heartbeat success logs, got {success_count}"
 
         # No regression error
-        assert (
-            "has not made progress" not in logs
-        ), "Should NOT see 'has not made progress' error in standalone mode"
+        assert "has not made progress" not in logs, (
+            "Should NOT see 'has not made progress' error in standalone mode"
+        )
 
         # Verify a block's shardId matches config
         blocks = node.get_blocks(5)
         for b in blocks:
             if b.blockNumber > 0:
                 assert b.shardId == node_conf.shard_id, (
-                    f"Block #{b.blockNumber} shardId '{b.shardId}' != "
-                    f"config '{node_conf.shard_id}'"
+                    f"Block #{b.blockNumber} shardId '{b.shardId}' != config '{node_conf.shard_id}'"
                 )
                 break
 

@@ -14,6 +14,7 @@ Provides two capabilities:
 Both work on raw log strings (from ``node.logs()``), not Docker handles
 directly, keeping this module provider-agnostic.
 """
+
 from __future__ import annotations
 
 import json
@@ -64,6 +65,46 @@ def find_events(logs: str, **fields: object) -> List[dict]:
         for event in iter_json_events(logs)
         if all(event.get(k) == v for k, v in fields.items())
     ]
+
+
+# ── Expected progress markers ─────────────────────────────────────────
+#
+# Substrings tests wait FOR, as opposed to FORBIDDEN_PATTERNS below, which they
+# must never see. Centralized for the same reason: each one couples a test to a
+# node log line, so when the node rewords one there is a single place to fix
+# rather than a grep across suites. Every entry names the node behaviour it
+# marks, not the test that waits on it.
+SYNC_MARKERS: Dict[str, str] = {
+    # Node has begun requesting the approved state from its peers — the start of
+    # last-finalized-state sync on a fresh observer or joiner.
+    "ApprovedStateRequestStarted": "request_approved_state: start",
+    # LFS block requester's stream is up, so block requests are being issued and
+    # their responses tracked. Emitted after the approved state is settled.
+    "LfsBlockRequesterStarted": "LFS Block Requester stream initialized",
+    # Requested blocks went unanswered within the requester's window and are
+    # being re-requested. The retry path, not an error.
+    "BlockRequestResend": "No responses for",
+    # Heartbeat proposer created a block. Fires for every heartbeat-created
+    # block, whether or not it carried user deploys.
+    "HeartbeatBlockCreated": "Heartbeat: Successfully created block",
+    # A peer was dropped from the connections table, after its heartbeat failure
+    # streak reached the configured threshold.
+    "PeerRemoved": "Removing peer",
+}
+
+
+def marker(key: str) -> str:
+    """Return the node log substring registered under ``key``.
+
+    Raises ``KeyError`` naming the available keys, so a typo fails at once rather
+    than as a poll that can never succeed.
+    """
+    try:
+        return SYNC_MARKERS[key]
+    except KeyError:
+        raise KeyError(
+            f"unknown sync marker {key!r}; registered markers: {sorted(SYNC_MARKERS)}"
+        ) from None
 
 
 # ── Forbidden-pattern scanning ────────────────────────────────────────
@@ -420,6 +461,58 @@ def scan_lines_for_forbidden(
                 )
                 break
     return matches
+
+
+def record_scanned(
+    name: str,
+    offset: int,
+    scanned: int,
+    offsets: Dict[str, int],
+    owners: Dict[str, FrozenSet[str]],
+    allowed: FrozenSet[str],
+) -> None:
+    """Record a SUCCESSFUL per-test scan for later retirement judging.
+
+    ``offsets[name]`` becomes the judged-through line count and
+    ``owners[name]`` the allowance set the lines were judged under. Call
+    only after a completed scan — a failed scan must fail closed by
+    recording nothing (the window was not judged, and accumulating
+    allowances across failed scans could hide a forbidden event produced
+    under a stricter test).
+    """
+    offsets[name] = offset + scanned
+    owners[name] = allowed
+
+
+def scan_retired_snapshot(
+    name: str,
+    log_text: str,
+    offsets: Dict[str, int],
+    owners: Dict[str, FrozenSet[str]],
+    current_allowed: FrozenSet[str],
+) -> List[LogError]:
+    """Judge a retired node's unjudged log tail under its OWNER's allowances.
+
+    The snapshot holds the node's full cumulative log; the prefix through
+    ``offsets[name]`` was already judged by per-test scans under their own
+    tests' allowances and is skipped (re-judging it would mis-attribute
+    lines to the consuming test). The remaining teardown-window lines
+    belong to the node's last owning test and are judged under THAT
+    test's recorded allowances only — the consuming test's allowances
+    never apply to another test's lines, so they cannot hide a forbidden
+    teardown event. ``current_allowed`` is used only when no owner is
+    recorded: a transient node attached and detached within the current
+    test, whose whole log belongs to the current test.
+
+    Pops the bookkeeping entries, so a new node reusing the retired name
+    starts fresh. Callers must invoke this BEFORE recording the current
+    test's scans (see conftest ordering comment).
+    """
+    offset = offsets.pop(name, 0)
+    owner_allowances = owners.pop(name, None)
+    effective = current_allowed if owner_allowances is None else owner_allowances
+    tail = log_text.splitlines()[offset:]
+    return scan_lines_for_forbidden(tail, name, effective)
 
 
 def format_errors(errors: List[LogError], max_display: int = 30) -> str:

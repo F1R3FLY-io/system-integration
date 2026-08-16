@@ -15,7 +15,7 @@ The two pools coexist without contention because their labels are distinct.
 
 ## Overview
 
-Self-hosted GitHub Actions runners for the F1R3FLY blockchain CI pipeline, hosted on Oracle Cloud Infrastructure (OCI). Scala and Rust runners are separate instances with distinct labels to prevent cross-routing (both workflows live in the same repo).
+Self-hosted GitHub Actions runners for the F1R3FLY blockchain CI pipeline, hosted on Oracle Cloud Infrastructure (OCI).
 
 ## Instance Configuration
 
@@ -33,8 +33,6 @@ Self-hosted GitHub Actions runners for the F1R3FLY blockchain CI pipeline, hoste
 
 | Name | Arch | Stack | Labels |
 |------|------|-------|--------|
-| ci-scala-amd64 | x64 | Scala | `self-hosted,Linux,X64,f1r3fly-scala-ci,oracle-cloud` |
-| ci-scala-arm64 | arm64 | Scala | `self-hosted,Linux,ARM64,f1r3fly-scala-ci,oracle-cloud` |
 | ci-rust-amd64 | x64 | Rust | `self-hosted,Linux,X64,f1r3fly-rust-ci,oracle-cloud` |
 | ci-rust-arm64 | arm64 | Rust | `self-hosted,Linux,ARM64,f1r3fly-rust-ci,oracle-cloud` |
 
@@ -52,18 +50,11 @@ gh api repos/F1R3FLY-io/f1r3node/actions/runners --jq '.runners[] | {name, statu
 
 ### Label Routing
 
-Both Scala and Rust workflows live in `F1R3FLY-io/f1r3node`. Distinct labels prevent cross-routing:
-- Scala workflow uses `runs-on: [self-hosted, Linux, X64, f1r3fly-scala-ci]`
-- Rust workflow uses `runs-on: [self-hosted, Linux, X64, f1r3fly-rust-ci]`
+The Rust workflow uses `runs-on: [self-hosted, Linux, X64, f1r3fly-rust-ci]`. The
+label is retained rather than generalised so that a runner from another pool
+cannot silently pick up these jobs.
 
 ## Installed Software
-
-### Scala Runners
-- Docker CE + docker-compose v2
-- Java 17 (Eclipse Temurin) + SBT
-- Python 3.10 + Poetry
-- GHC + Cabal (alex, happy, BNFC)
-- Build tools: make, cmake, autoconf, libtool, protobuf-compiler, jflex
 
 ### Rust Runners
 - Docker CE + docker-compose v2
@@ -76,7 +67,6 @@ Both Scala and Rust workflows live in `F1R3FLY-io/f1r3node`. Distinct labels pre
 ```bash
 # Health check instances (IPs provided as arguments, never stored)
 ci/healthcheck-runners.sh --type rust  <IP1> <IP2>
-ci/healthcheck-runners.sh --type scala <IP1> <IP2>
 ci/healthcheck-runners.sh <IP>   # auto-detects type
 
 # SSH into an instance
@@ -97,14 +87,6 @@ sudo /usr/local/bin/ci-cleanup.sh
 # Generate a registration token
 gh api -X POST repos/F1R3FLY-io/f1r3node/actions/runners/registration-token --jq '.token'
 
-# Scala runner
-scp ci/setup-f1r3node-scala-runner.sh ubuntu@<IP>:/tmp/
-ssh ubuntu@<IP> "sudo bash /tmp/setup-f1r3node-scala-runner.sh \
-  --repo F1R3FLY-io/f1r3node \
-  --name <ci-scala-amd64|ci-scala-arm64> \
-  --labels 'self-hosted,linux,<x64|arm64>,f1r3fly-scala-ci,oracle-cloud' \
-  --token <TOKEN>"
-
 # Rust runner
 scp ci/setup-f1r3node-rust-runner.sh ubuntu@<IP>:/tmp/
 ssh ubuntu@<IP> "sudo bash /tmp/setup-f1r3node-rust-runner.sh \
@@ -120,7 +102,7 @@ ssh ubuntu@<IP> "sudo bash /tmp/setup-f1r3node-rust-runner.sh \
 # Generate a removal token
 gh api -X POST repos/F1R3FLY-io/f1r3node/actions/runners/remove-token --jq '.token'
 
-# Run teardown (same script for both Scala and Rust)
+# Run teardown
 scp ci/teardown-runner.sh ubuntu@<IP>:/tmp/
 ssh ubuntu@<IP> "sudo bash /tmp/teardown-runner.sh --token <TOKEN>"
 ```

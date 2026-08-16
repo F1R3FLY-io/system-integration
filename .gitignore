@@ -47,7 +47,6 @@ ENV/
 *.swo
 *~
 .metals/
-.scala-build/
 
 # OS
 .DS_Store
@@ -75,3 +74,6 @@ integration-tests/.pytest_cache/
 integration-tests/data/
 docs/discoveries/
 docs/work-logs/
+
+# Stigmergic Collaboration 
+services/f1r3node-rust

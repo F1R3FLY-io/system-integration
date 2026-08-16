@@ -15,18 +15,15 @@
 # The 'up' command brings up each compose file in order, waiting for each to succeed.
 # This ensures dependencies (like networks) are created before dependent services start.
 startup_order:
-  - f1r3node    # compose/f1r3node.yml - creates the f1r3fly-shard network
+  - f1r3node-rust  # compose/f1r3node-rust.yml - creates the f1r3fly network
   - monitoring  # compose/monitoring.yml - Prometheus + Grafana (joins f1r3fly-shard)
   - embers      # compose/embers.yml - depends on f1r3fly network
   - f1r3sky     # compose/f1r3sky.yml - depends on f1r3fly network
 
 repositories:
-  f1r3node:
-    url: git@github.com:F1R3FLY-io/f1r3node.git
-    branch: dev
   f1r3node-rust:
     url: git@github.com:F1R3FLY-io/f1r3node-rust.git
-    branch: staging
+    branch: dev
   monitoring:
     enabled: true
   rust-client:
@@ -60,30 +57,6 @@ repositories:
 
 # Build configuration for services
 builds:
-  f1r3node:
-    # Scala node build configuration
-    # Main build command (compiles Scala and stages executable)
-    build_command: "sbt stage"
-
-    # Docker build command for Scala node
-    docker_build_command: "sbt node/docker:publishLocal"
-
-    # Build environment
-    environment: "nix" # Uses nix develop shell
-
-    # Docker image produced
-    docker_image: "f1r3flyindustries/f1r3fly-scala-node:latest"
-
-    # Build dependencies
-    dependencies:
-      - "sbt"
-      - "nix (optional but recommended)"
-
-    # Notes:
-    # - Scala-based node implementation on chosen branch
-    # - Uses SBT (Scala Build Tool) as primary build system
-    # - Nix flake provides complete dev environment
-
   f1r3node-rust:
     # Pure Rust node — standard cargo + system deps (no Nix, no SBT)
     build_command: "cargo build --release -p node"
@@ -94,7 +67,7 @@ builds:
     # Standard cargo build (toolchain auto-installed via rust-toolchain.toml)
     environment: "cargo"
 
-    # Docker image produced (CI publishes :latest, :staging, :dev, :VERSION)
+    # Docker image produced (CI publishes :latest, :dev, :VERSION)
     docker_image: "f1r3flyindustries/f1r3fly-rust:latest"
 
     # Build dependencies

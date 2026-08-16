@@ -1,4 +1,4 @@
-"""Node management utilities for F1R3FLY nodes (Scala/Rust, standalone/shard).
+"""Node management utilities for F1R3FLY Rust nodes (standalone/shard).
 
 This module provides utility functions and classes for managing F1R3FLY blockchain nodes.
 It is used by the main CLI (cli.py) when handling 'f1r3node' as a service.
@@ -18,11 +18,6 @@ from rich.prompt import Confirm, Prompt
 from .utils import get_docker_compose_command
 
 console = Console()
-
-
-class NodeType(str, Enum):
-    SCALA = "scala"
-    RUST = "rust"
 
 
 class Topology(str, Enum):
@@ -62,19 +57,16 @@ class NodeConfig:
         self.genesis_dir = self.root_dir / "genesis"
         self.env_file = self.root_dir / ".env.node"
 
-    def get_compose_file(self, node_type: NodeType, topology: Topology) -> Path:
-        """Get the compose file for a node type and topology.
+    def get_compose_file(self, topology: Topology) -> Path:
+        """Get the compose file for a topology.
 
-        Naming convention:
-            Scala shard:      f1r3node.yml
-            Scala standalone: f1r3node-standalone.yml
-            Rust shard:       f1r3node-rust.yml
-            Rust standalone:  f1r3node-rust-standalone.yml
+        Naming convention (the repo is Rust-only; the `-rust` infix is kept so
+        existing scripts and docs that name compose files keep working):
+            shard:       f1r3node-rust.yml
+            standalone:  f1r3node-rust-standalone.yml
+            shard-light: f1r3node-rust-shard-light.yml
         """
-        if node_type == NodeType.SCALA:
-            base = "f1r3node"
-        else:
-            base = "f1r3node-rust"
+        base = "f1r3node-rust"
 
         if topology == Topology.SHARD:
             filename = f"{base}.yml"
@@ -133,25 +125,13 @@ class NodeConfig:
                 containers.append({"name": name, "topology_label": label})
         return containers
 
-    def _detect_node_type_from_container(self, container: str) -> NodeType:
-        """Determine node type (Scala/Rust) from a container's image."""
-        result = subprocess.run(
-            ["docker", "inspect", "--format", "{{.Config.Image}}", container],
-            capture_output=True,
-            text=True,
-        )
-        image = result.stdout.strip()
-        if "rust" in image.lower():
-            return NodeType.RUST
-        return NodeType.SCALA
-
-    def detect_all_running_configs(self) -> List[Tuple[NodeType, Topology, Path]]:
+    def detect_all_running_configs(self) -> List[Tuple[Topology, Path]]:
         """Detect all node configurations currently running.
 
         Checks for each topology independently, so multiple configs can be
         detected simultaneously (e.g., shard + validator4 + observer).
 
-        Returns list of (node_type, topology, compose_file) tuples.
+        Returns list of (topology, compose_file) tuples.
         """
         container_infos = self._get_rnode_containers()
         if not container_infos:
@@ -173,22 +153,21 @@ class NodeConfig:
 
         for topology, marker_container in topology_checks:
             if marker_container in container_names:
-                node_type = self._detect_node_type_from_container(marker_container)
                 # Distinguish shard vs shard-light using Docker labels
                 if topology == Topology.SHARD:
                     if label_by_name.get(marker_container) == "shard-light":
                         topology = Topology.SHARD_LIGHT
-                compose_file = self.get_compose_file(node_type, topology)
-                configs.append((node_type, topology, compose_file))
+                compose_file = self.get_compose_file(topology)
+                configs.append((topology, compose_file))
 
         return configs
 
-    def detect_running_config(self) -> Optional[Tuple[NodeType, Topology, Path]]:
+    def detect_running_config(self) -> Optional[Tuple[Topology, Path]]:
         """Detect the primary node configuration currently running.
 
         Convenience wrapper around detect_all_running_configs() that returns
         the first detected config (typically shard or standalone).
-        Returns (node_type, topology, compose_file) or None.
+        Returns (topology, compose_file) or None.
         """
         configs = self.detect_all_running_configs()
         return configs[0] if configs else None
@@ -298,42 +277,39 @@ def run_compose_command(
 
 
 def up(
-    node_type: Optional[NodeType] = typer.Option(
-        None,
-        "--node-type",
-        "-n",
-        help="Node type: scala or rust",
-    ),
     topology: Optional[Topology] = typer.Option(
         None,
         "--topology",
         "-t",
-        help="Topology: standalone, shard, observer, validator4",
+        help="Topology: standalone, shard, shard-light, observer, validator4",
     ),
-    scala: bool = typer.Option(False, "--scala", help="Use Scala node"),
-    rust: bool = typer.Option(False, "--rust", help="Use Rust node"),
+    # Retained after the Scala node was retired so existing scripts and docs
+    # that pass --rust keep working. It selects the only implementation there
+    # is, so it is accepted and ignored rather than removed.
+    rust: bool = typer.Option(
+        False, "--rust", help="Use Rust node (default; retained for compatibility)"
+    ),
     standalone: bool = typer.Option(False, "--standalone", help="Standalone topology"),
     shard: bool = typer.Option(False, "--shard", help="Shard topology"),
+    shard_light: bool = typer.Option(
+        False, "--shard-light", help="Light shard topology (2 validators)"
+    ),
     observer: bool = typer.Option(False, "--observer", help="Observer topology"),
     validator4: bool = typer.Option(False, "--validator4", help="Validator4 topology"),
-    default: bool = typer.Option(False, "--default", help="Use defaults (scala + shard)"),
+    default: bool = typer.Option(False, "--default", help="Use defaults (shard)"),
     interactive: bool = typer.Option(False, "--interactive", "-i", help="Interactive selection"),
     build: bool = typer.Option(False, "--build", "-b", help="Build images before starting"),
 ):
     """Start F1R3FLY node containers."""
     config = NodeConfig()
 
-    # Resolve node type from flags
-    if scala:
-        node_type = NodeType.SCALA
-    elif rust:
-        node_type = NodeType.RUST
-
     # Resolve topology from flags
     if standalone:
         topology = Topology.STANDALONE
     elif shard:
         topology = Topology.SHARD
+    elif shard_light:
+        topology = Topology.SHARD_LIGHT
     elif observer:
         topology = Topology.OBSERVER
     elif validator4:
@@ -341,48 +317,39 @@ def up(
 
     # Handle --default
     if default:
-        node_type = node_type or NodeType.SCALA
         topology = topology or Topology.SHARD
 
     # Interactive mode if flags not provided
-    if interactive or (node_type is None or topology is None):
+    if interactive or topology is None:
         console.print()
         console.print("[bold blue]F1R3FLY Docker Setup[/bold blue]")
         console.print("=" * 20)
         console.print()
-
-        if node_type is None:
-            console.print("Select node implementation:")
-            console.print("  [1] Scala  (development)")
-            console.print("  [2] Rust   (experimental)")
-            console.print()
-            choice = Prompt.ask("Choice", default="1")
-            if choice == "2":
-                node_type = NodeType.RUST
-            else:
-                node_type = NodeType.SCALA
 
         if topology is None:
             console.print()
             console.print("Select network topology:")
             console.print("  [1] Standalone  (single node)")
             console.print("  [2] Shard       (multi-node: 1 bootstrap, 3 validators, 1 observer)")
+            console.print("  [3] Shard-light (1 bootstrap, 2 validators — lower memory)")
             console.print()
             choice = Prompt.ask("Choice", default="1")
             if choice == "2":
                 topology = Topology.SHARD
+            elif choice == "3":
+                topology = Topology.SHARD_LIGHT
             else:
                 topology = Topology.STANDALONE
 
     # Get compose file
-    compose_file = config.get_compose_file(node_type, topology)
+    compose_file = config.get_compose_file(topology)
 
     if not compose_file.exists():
         console.print(f"[red]Compose file not found: {compose_file}[/red]")
         raise typer.Exit(1)
 
     console.print()
-    console.print(f"[green]Starting {node_type.value} {topology.value} node...[/green]")
+    console.print(f"[green]Starting {topology.value} node...[/green]")
     console.print(f"Using: [blue]{compose_file}[/blue]")
     console.print()
 
@@ -415,11 +382,8 @@ def down():
         return
 
     all_ok = True
-    for node_type, topology, compose_file in all_configs:
-        console.print(
-            f"[yellow]Stopping {node_type.value} {topology.value} "
-            f"using {compose_file.name}...[/yellow]"
-        )
+    for topology, compose_file in all_configs:
+        console.print(f"[yellow]Stopping {topology.value} using {compose_file.name}...[/yellow]")
         result = run_compose_command(config, compose_file, ["down"])
         if result.returncode != 0:
             all_ok = False
@@ -447,7 +411,7 @@ def logs(
 
     # Build command with all compose files
     cmd = get_docker_compose_command() + ["--env-file", str(config.env_file)]
-    for node_type, topology, compose_file in all_configs:
+    for topology, compose_file in all_configs:
         cmd.extend(["-f", str(compose_file)])
 
     args = ["logs"]
@@ -472,10 +436,8 @@ def status():
         console.print("[yellow]No F1R3FLY containers found[/yellow]")
         return
 
-    for node_type, topology, compose_file in all_configs:
-        console.print(
-            f"[blue]Configuration: {node_type.value} {topology.value} ({compose_file.name})[/blue]"
-        )
+    for topology, compose_file in all_configs:
+        console.print(f"[blue]Configuration: {topology.value} ({compose_file.name})[/blue]")
         console.print()
         run_compose_command(config, compose_file, ["ps"])
         console.print()
@@ -497,15 +459,15 @@ def wait_for_ready(
         return
 
     console.print("[blue]Waiting for nodes to be ready...[/blue]")
-    for node_type, topology, compose_file in all_configs:
-        console.print(f"  Detected: {node_type.value} {topology.value} ({compose_file.name})")
+    for topology, compose_file in all_configs:
+        console.print(f"  Detected: {topology.value} ({compose_file.name})")
     console.print()
 
     start_time = time.time()
 
     # Collect containers from ALL detected topologies
     service_containers = {}
-    for node_type, topology, compose_file in all_configs:
+    for topology, compose_file in all_configs:
         service_containers.update(config.get_services_for_topology(topology))
 
     total_nodes = len(service_containers)
@@ -605,29 +567,18 @@ def reset(
             console.print("[yellow]Cancelled[/yellow]")
             return
 
-    for node_type, topology, compose_file in all_configs:
-        console.print(
-            f"[yellow]Stopping {node_type.value} {topology.value} and removing volumes...[/yellow]"
-        )
+    for topology, compose_file in all_configs:
+        console.print(f"[yellow]Stopping {topology.value} and removing volumes...[/yellow]")
         run_compose_command(config, compose_file, ["down", "--volumes"])
 
     console.print("[green]Containers stopped and data volumes removed[/green]")
 
 
-def pull(node_type: Optional[NodeType] = None):
-    """Pull latest node images.
+def pull():
+    """Pull the latest node image."""
+    images_to_pull = [("Rust", "f1r3flyindustries/f1r3fly-rust:latest")]
 
-    Args:
-        node_type: If specified, pull only that node type's image. If None, pull both.
-    """
-    images_to_pull = []
-
-    if node_type is None or node_type == NodeType.SCALA:
-        images_to_pull.append(("Scala", "f1r3flyindustries/f1r3fly-scala-node:latest"))
-    if node_type is None or node_type == NodeType.RUST:
-        images_to_pull.append(("Rust", "f1r3flyindustries/f1r3fly-rust:latest"))
-
-    label = images_to_pull[0][0] if len(images_to_pull) == 1 else "all"
+    label = images_to_pull[0][0]
     console.print(f"[blue]Pulling latest {label} node image(s)...[/blue]")
     console.print()
 
@@ -659,29 +610,28 @@ def info():
         return
 
     console.print("[bold]Current Node Configuration(s)[/bold]")
-    for node_type, topology, compose_file in all_configs:
-        console.print(f"  Node Type: [cyan]{node_type.value}[/cyan]")
+    for topology, compose_file in all_configs:
         console.print(f"  Topology:  [cyan]{topology.value}[/cyan]")
         console.print(f"  Compose:   [dim]{compose_file}[/dim]")
-        if all_configs.index((node_type, topology, compose_file)) < len(all_configs) - 1:
+        if all_configs.index((topology, compose_file)) < len(all_configs) - 1:
             console.print()
     console.print(f"  Env File:  [dim]{config.env_file}[/dim]")
 
 
 # Export for use in main CLI
-def detect_running_node_config() -> Optional[Tuple[NodeType, Topology, Path]]:
+def detect_running_node_config() -> Optional[Tuple[Topology, Path]]:
     """Utility function to detect primary running node config from outside this module."""
     config = NodeConfig()
     return config.detect_running_config()
 
 
-def detect_all_running_node_configs() -> List[Tuple[NodeType, Topology, Path]]:
+def detect_all_running_node_configs() -> List[Tuple[Topology, Path]]:
     """Utility function to detect all running node configs from outside this module."""
     config = NodeConfig()
     return config.detect_all_running_configs()
 
 
 def get_default_node_compose_file() -> Path:
-    """Get the default node compose file (f1r3node.yml = scala shard)."""
+    """Get the default node compose file (f1r3node-rust.yml = the shard)."""
     config = NodeConfig()
-    return config.get_compose_file(NodeType.SCALA, Topology.SHARD)
+    return config.get_compose_file(Topology.SHARD)

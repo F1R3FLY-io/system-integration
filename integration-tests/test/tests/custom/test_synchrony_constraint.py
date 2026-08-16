@@ -23,6 +23,7 @@ be reliably tested with FTT=-1 because the finalized-baseline fallback
 rescues the proposer. The `--synchrony-finalized-baseline-enabled` config
 key is not exposed as a CLI flag.
 """
+
 import logging
 
 import pytest

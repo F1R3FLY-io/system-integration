@@ -3,6 +3,7 @@
 Par extraction and deploy checking: re-exported from pyf1r3fly.
 Shard assertions: test-specific helpers for multi-node agreement checks.
 """
+
 from __future__ import annotations
 
 import logging
@@ -51,7 +52,7 @@ def assert_deploy_errored(
 # ── Shard assertions (test-specific, needs multiple nodes) ─────────────
 
 
-def _get_block_with_retry(node, block_hash: str, timeout: int):
+def _get_block_with_retry(node, block_hash: str, timeout: float):
     """Retrieve a block from one node, polling through transient lookup races.
 
     A peer can have the block hash in its reception buffer but not yet
@@ -85,7 +86,7 @@ def _get_block_with_retry(node, block_hash: str, timeout: int):
             time.sleep(1.0)
 
 
-def assert_all_nodes_agree_on_block(nodes, block_hash: str, timeout: int = 0) -> None:
+def assert_all_nodes_agree_on_block(nodes, block_hash: str, timeout: float = 0) -> None:
     """Assert every node can retrieve the block and has the same post-state.
 
     Retrieval may be polled per-node through transient "not added yet"
@@ -102,11 +103,11 @@ def assert_all_nodes_agree_on_block(nodes, block_hash: str, timeout: int = 0) ->
         post_states[node.name] = block.blockInfo.postStateHash
     unique = set(post_states.values())
     assert len(unique) == 1, (
-        f"Nodes disagree on post-state for block {block_hash[:16]}. " f"States: {post_states}"
+        f"Nodes disagree on post-state for block {block_hash[:16]}. States: {post_states}"
     )
 
 
-def assert_all_nodes_agree_on_lfb(nodes, timeout: int = 0) -> str:
+def assert_all_nodes_agree_on_lfb(nodes, timeout: float = 0) -> str:
     """Assert all nodes report the same LFB hash. Returns the common hash.
 
     Default (timeout=0) is one-shot: a snapshot disagreement raises
@@ -117,6 +118,13 @@ def assert_all_nodes_agree_on_lfb(nodes, timeout: int = 0) -> str:
     the same LFB hash or the budget elapses. A persistent fork still
     surfaces as a loud AssertionError with the per-node state, just
     after the timeout instead of immediately.
+
+    NOT suitable as an aligned-read cut under CONTINUOUS proposals: the
+    sequential sweep reads a moving frontier, and healthy finalizers a
+    few heights apart may never coincide within any single sweep — the
+    poll then burns its whole budget spuriously (sibling blocker on
+    PR #120 at ``d22f4040``). For a read cut under load, use
+    ``common_finalized_anchor`` instead.
     """
     deadline = time.monotonic() + timeout
     while True:
@@ -130,6 +138,28 @@ def assert_all_nodes_agree_on_lfb(nodes, timeout: int = 0) -> str:
         if time.monotonic() >= deadline:
             raise AssertionError(f"Nodes disagree on LFB after {timeout}s: {lfb_info}")
         time.sleep(2.0)
+
+
+def common_finalized_anchor(nodes, timeout: float) -> str:
+    """A block hash FINALIZED on every node — a stable aligned-read cut.
+
+    Takes the first node's current LFB as the anchor and waits (bounded)
+    until every node reports THAT hash finalized. Unlike comparing live
+    LFB pointers across nodes, the anchor cannot be missed by a moving
+    frontier: finalization is monotonic, so once a node catches up to
+    the anchor's height, the anchor stays finalized there permanently.
+    Under continuous proposals, live pointers may never coincide within
+    a sequential sweep even though every finalizer is healthy and only a
+    few heights apart — settle loops built on pointer agreement then
+    time out with "all-node-consistent read=None" against a working
+    shard (sibling blocker on PR #120 at ``d22f4040``).
+
+    Callers polling toward a settled value should take a FRESH anchor
+    each iteration so the cut advances with the chain.
+    """
+    anchor = nodes[0].last_finalized_block().blockInfo.blockHash
+    assert_block_finalized_on_all_nodes(nodes, anchor, timeout=timeout)
+    return anchor
 
 
 def assert_contracts_consistent_across_nodes(
@@ -175,7 +205,7 @@ def assert_bonds_map_consistent_across_nodes(
     nodes,
     block_hash: str,
     expected_bonds: dict,
-    timeout: int = 0,
+    timeout: float = 0,
 ) -> None:
     """Assert every node's view of ``block_hash`` carries the same bonds map.
 
@@ -220,7 +250,7 @@ def assert_bonds_map_consistent_across_nodes(
 def assert_block_finalized_on_all_nodes(
     nodes,
     block_hash: str,
-    timeout: int = 0,
+    timeout: float = 0,
     interval: float = 2.0,
 ) -> None:
     """Assert every node has the block AND reports `isFinalized=True`.
@@ -279,10 +309,38 @@ def assert_block_finalized_on_all_nodes(
     )
 
 
+def assert_deploy_block_finalized_on_all_nodes(node, deploy_id: str, nodes, timeout: float) -> str:
+    """Canonical-inclusion anchor: resolve the deploy's FINALIZED containing
+    block via ``deploy_finalization_status``, assert THAT hash is finalized on
+    every node, and return the hash (use it for any per-block follow-up reads,
+    e.g. ``pos.read_result``).
+
+    Replaces the recurring anti-pattern
+    ``wait_for_deploy_included -> pin blockHash -> assert finalized everywhere``:
+    the first inclusion block can lose fork choice under load and re-home, and
+    the pinned hash then never finalizes anywhere even though the deploy does
+    (ft -1.0 on every node — nine sightings across the suites as of the
+    43e9f844 preflight; PR #118's bonding anchor was the first fix).
+
+    ``timeout`` bounds EACH of the two waits (the deploy's own finalization,
+    then the cross-node block check), so worst-case wall time is 2x the
+    value — deliberate slack, since both phases legitimately need a full
+    finalization budget under load.
+    """
+    # Local import keeps the assertions -> polling edge lazy (no import
+    # cycle; polling imports nothing from assertions but shares infra).
+    from .polling import wait_for_deploy_finalized
+
+    status = wait_for_deploy_finalized(node, deploy_id, timeout)
+    block_hash = status.latestBlockHash.hex()
+    assert_block_finalized_on_all_nodes(nodes, block_hash, timeout=timeout)
+    return block_hash
+
+
 def assert_all_deploys_finalized_on_all_nodes(
     nodes,
     deploy_ids: list[str],
-    timeout: int,
+    timeout: float,
     *,
     label: str = "deploys",
 ) -> None:
@@ -407,8 +465,7 @@ def collect_forensics(nodes, *, channel: Optional[str] = None, label: str = "") 
         advanced = {n for n, num in second.items() if num > first.get(n, (-1, ""))[0]}
         lines.append(
             f"  chain advancing on {len(advanced)}/{len(second)} nodes"
-            f" over {_ADVANCE_SAMPLE_SECONDS:.0f}s"
-            + ("" if advanced else "  <-- FROZEN")
+            f" over {_ADVANCE_SAMPLE_SECONDS:.0f}s" + ("" if advanced else "  <-- FROZEN")
         )
 
     if channel:
@@ -500,9 +557,8 @@ class DeployVerdicts:
         return set(self.finalized)
 
     def summary(self) -> str:
-        return (
-            f"{len(self.finalized)} finalized, {len(self.expired)} expired"
-            + (f" ({', '.join(sorted(self.expired))})" if self.expired else "")
+        return f"{len(self.finalized)} finalized, {len(self.expired)} expired" + (
+            f" ({', '.join(sorted(self.expired))})" if self.expired else ""
         )
 
 
@@ -590,9 +646,7 @@ def resolve_deploy_verdicts(
         elif "Failed" in distinct:
             integrity.append((sig16, _nodes_in_state(states, "Failed"), "terminal Failed"))
         else:
-            integrity.append(
-                (sig16, "all", f"verdict differs across nodes: {sorted(distinct)}")
-            )
+            integrity.append((sig16, "all", f"verdict differs across nodes: {sorted(distinct)}"))
 
     if integrity:
         causes = _classify(nodes, {sig16 for sig16, _, _ in integrity})
@@ -638,13 +692,6 @@ def _classify(nodes, sig16s: set) -> dict:
 # ── Cross-node channel-value agreement (FS node-identity) ──────────────
 
 
-def _values_agree(values) -> bool:
-    """True iff every value equals the first. Works for dicts (which are
-    unhashable and so cannot go through a ``set``)."""
-    items = list(values)
-    return all(v == items[0] for v in items[1:])
-
-
 def _channel_reader(channel: str):
     return lambda node, bh: node.read_channel(channel, bh)
 
@@ -666,7 +713,7 @@ def _pick_reader(nodes):
 
 
 def assert_value_consistent_across_nodes(
-    nodes, read_fn, block_hash: str, what: str, *, block_timeout: float = 5.0
+    nodes, read_fn, block_hash: str, *, block_timeout: float = 5.0
 ):
     """Read a finalized value (via ``read_fn``) on the read-only node at
     ``block_hash`` and assert every node agrees on that block's POST-STATE HASH.
@@ -685,16 +732,12 @@ def assert_value_consistent_across_nodes(
 
 def assert_channel_consistent_across_nodes(nodes, channel: str, block_hash: str):
     """All-node FS node-identity for a named channel at ``block_hash``."""
-    return assert_value_consistent_across_nodes(
-        nodes, _channel_reader(channel), block_hash, f'@"{channel}"'
-    )
+    return assert_value_consistent_across_nodes(nodes, _channel_reader(channel), block_hash)
 
 
 def assert_balance_consistent_across_nodes(nodes, vault_addr: str, block_hash: str):
     """All-node FS node-identity for a vault balance at ``block_hash``."""
-    return assert_value_consistent_across_nodes(
-        nodes, _balance_reader(vault_addr), block_hash, f"balance({vault_addr[:12]})"
-    )
+    return assert_value_consistent_across_nodes(nodes, _balance_reader(vault_addr), block_hash)
 
 
 def await_value_converges_on_all_nodes(
@@ -731,27 +774,39 @@ def await_value_converges_on_all_nodes(
         below — catches a double-applied decrement, the item-1 ``FS=-20`` mode)
         fail immediately rather than as an opaque convergence timeout.
 
-    Between finalization rounds, nodes' LFBs can momentarily differ; those
-    iterations still advance convergence/non-regression against the read-only
-    node's finalized read but defer the cross-node identity check until aligned.
+    An "aligned cut" is the reader's finalized block VERIFIED FINALIZED on
+    every node — not instantaneous LFB-pointer agreement across a sequential
+    sweep, which under continuous proposals may never occur even though every
+    finalizer is healthy and a few heights apart (sibling blocker on PR #120
+    at ``d22f4040``: pointer-gated acceptance burned whole settle budgets
+    against a working shard). Finalization is monotonic, so the anchor cut is
+    always achievable; iterations where other nodes have not yet caught up to
+    the anchor still advance convergence/non-regression against the reader's
+    finalized read but defer the cross-node identity check.
     """
     reader = _pick_reader(nodes)
     deadline = time.time() + timeout
     water = None  # high/low-water: dict for "map", int for "up"/"down"
     last = None
-    last_lfb_view = None  # per-node (number, hash-prefix) at the final poll
     while time.time() < deadline:
         try:
-            infos = {n.name: n.last_finalized_block().blockInfo for n in nodes}
-            lfbs = {name: info.blockHash for name, info in infos.items()}
-            last_lfb_view = {
-                name: f"#{info.blockNumber}:{info.blockHash[:10]}" for name, info in infos.items()
-            }
+            ref_block = reader.last_finalized_block().blockInfo.blockHash
         except Exception:  # noqa: BLE001 — transient query race during contention
             time.sleep(interval)
             continue
-        aligned = _values_agree(lfbs.values())
-        ref_block = lfbs[reader.name]
+        # Anchor alignment: every node has finalized the reader's cut.
+        # The inner budget is clamped to the REMAINING outer budget (no
+        # floor) so the function cannot overshoot its stated timeout, and
+        # ANY failure — assertion or raw transport error mid-hiccup —
+        # just means "not aligned this iteration", never a loop kill.
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        try:
+            assert_block_finalized_on_all_nodes(nodes, ref_block, timeout=min(30.0, remaining))
+            aligned = True
+        except Exception:  # noqa: BLE001 — alignment is a wait, not an invariant
+            aligned = False
         if aligned:
             # All-node FS node-identity at the shared finalized cut. Retrieval
             # races ("not added yet") are absorbed; a post-state divergence is
@@ -783,9 +838,9 @@ def await_value_converges_on_all_nodes(
                     f"full finalized map {cur}"
                 )
         elif non_regression == "up" and water is not None:
-            assert (
-                cur >= water
-            ), f"[{label}] finalized-value REGRESSION: dropped from {water} to {cur}"
+            assert cur >= water, (
+                f"[{label}] finalized-value REGRESSION: dropped from {water} to {cur}"
+            )
         elif non_regression == "down" and water is not None:
             assert cur <= water, f"[{label}] finalized-value REGRESSION: rose from {water} to {cur}"
 
@@ -816,6 +871,20 @@ def await_value_converges_on_all_nodes(
         if aligned and cur == expected:
             return cur
         time.sleep(interval)
+
+    # Where each node thinks finality is, collected once on the way out. A
+    # convergence timeout is usually a disagreement about that, and the answer
+    # is not recoverable from the message otherwise. Best-effort: a node that
+    # cannot answer reports why rather than masking the real failure. Read here
+    # rather than in the poll loop so a single flaky node cannot stall every
+    # iteration.
+    last_lfb_view = {}
+    for n in nodes:
+        try:
+            info = n.last_finalized_block().blockInfo
+            last_lfb_view[n.name] = f"#{info.blockNumber}:{info.blockHash[:10]}"
+        except Exception as exc:  # noqa: BLE001 — diagnostics never mask the failure
+            last_lfb_view[n.name] = f"unreachable ({type(exc).__name__})"
 
     channel_name = what[2:-1] if what.startswith('@"') and what.endswith('"') else None
     raise AssertionError(

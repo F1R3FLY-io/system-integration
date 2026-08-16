@@ -27,7 +27,12 @@ from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto
 from f1r3fly.util import sign_deploy_data
 
 from ...infra.keys import VALIDATOR1_ID
-from ...infra.polling import poll_until, wait_for_deploy_finalized, wait_for_deploy_included
+from ...infra.polling import (
+    lfb_number,
+    poll_until,
+    wait_for_deploy_finalized,
+    wait_for_deploy_included,
+)
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -101,48 +106,48 @@ def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
 
 
 def _assert_valid_block_hash(value, context=""):
-    assert isinstance(value, str) and _HEX_64.match(
-        value
-    ), f"{context}: expected 64-char hex block hash, got '{value}'"
+    assert isinstance(value, str) and _HEX_64.match(value), (
+        f"{context}: expected 64-char hex block hash, got '{value}'"
+    )
 
 
 def _assert_light_block_info(block, expect, context=""):
     """Assert all fields of a LightBlockInfoSerde against shard expectations."""
     _assert_valid_block_hash(block["blockHash"], f"{context} blockHash")
-    assert (
-        block["shardId"] == expect["shard_id"]
-    ), f"{context}: shardId '{block['shardId']}' != '{expect['shard_id']}'"
-    assert (
-        block["sigAlgorithm"] == expect["sig_algorithm"]
-    ), f"{context}: sigAlgorithm '{block['sigAlgorithm']}' != '{expect['sig_algorithm']}'"
-    assert (
-        isinstance(block["blockNumber"], int) and block["blockNumber"] >= 0
-    ), f"{context}: blockNumber should be non-negative int, got {block['blockNumber']}"
-    assert (
-        isinstance(block["timestamp"], int) and block["timestamp"] > 0
-    ), f"{context}: timestamp should be positive, got {block['timestamp']}"
-    assert (
-        isinstance(block["seqNum"], int) and block["seqNum"] >= 0
-    ), f"{context}: seqNum should be non-negative, got {block['seqNum']}"
+    assert block["shardId"] == expect["shard_id"], (
+        f"{context}: shardId '{block['shardId']}' != '{expect['shard_id']}'"
+    )
+    assert block["sigAlgorithm"] == expect["sig_algorithm"], (
+        f"{context}: sigAlgorithm '{block['sigAlgorithm']}' != '{expect['sig_algorithm']}'"
+    )
+    assert isinstance(block["blockNumber"], int) and block["blockNumber"] >= 0, (
+        f"{context}: blockNumber should be non-negative int, got {block['blockNumber']}"
+    )
+    assert isinstance(block["timestamp"], int) and block["timestamp"] > 0, (
+        f"{context}: timestamp should be positive, got {block['timestamp']}"
+    )
+    assert isinstance(block["seqNum"], int) and block["seqNum"] >= 0, (
+        f"{context}: seqNum should be non-negative, got {block['seqNum']}"
+    )
     assert block["version"] == 1, f"{context}: version should be 1, got {block['version']}"
     _assert_valid_block_hash(block["preStateHash"], f"{context} preStateHash")
     _assert_valid_block_hash(block["postStateHash"], f"{context} postStateHash")
 
     # Sender should be a valid secp256k1 uncompressed pubkey (130 hex chars)
-    assert isinstance(block["sender"], str) and _HEX_130.match(
-        block["sender"]
-    ), f"{context}: sender should be 130-char hex pubkey, got len={len(block.get('sender', ''))}"
+    assert isinstance(block["sender"], str) and _HEX_130.match(block["sender"]), (
+        f"{context}: sender should be 130-char hex pubkey, got len={len(block.get('sender', ''))}"
+    )
 
     # Bonds
     bonds = block["bonds"]
-    assert (
-        len(bonds) == expect["bond_count"]
-    ), f"{context}: expected {expect['bond_count']} bonds, got {len(bonds)}"
+    assert len(bonds) == expect["bond_count"], (
+        f"{context}: expected {expect['bond_count']} bonds, got {len(bonds)}"
+    )
     for bond in bonds:
         validator = bond["validator"]
-        assert (
-            validator in expect["stakes"]
-        ), f"{context}: unknown validator in bonds: {validator[:24]}..."
+        assert validator in expect["stakes"], (
+            f"{context}: unknown validator in bonds: {validator[:24]}..."
+        )
         assert bond["stake"] == expect["stakes"][validator], (
             f"{context}: stake for {validator[:24]}... is {bond['stake']}, "
             f"expected {expect['stakes'][validator]}"
@@ -150,15 +155,15 @@ def _assert_light_block_info(block, expect, context=""):
 
     # Fault tolerance
     ft = block["faultTolerance"]
-    assert isinstance(
-        ft, (int, float)
-    ), f"{context}: faultTolerance should be numeric, got {type(ft)}"
+    assert isinstance(ft, (int, float)), (
+        f"{context}: faultTolerance should be numeric, got {type(ft)}"
+    )
 
     # Justifications — list of {validator, latestBlockHash}
     for j in block.get("justifications", []):
-        assert (
-            "validator" in j and "latestBlockHash" in j
-        ), f"{context}: justification missing fields: {j}"
+        assert "validator" in j and "latestBlockHash" in j, (
+            f"{context}: justification missing fields: {j}"
+        )
 
 
 # ===========================================================================
@@ -189,7 +194,7 @@ def test_status(shared_shard, node_conf, timeouts) -> None:
         predicate=_discovery_converged,
         timeout=timeouts.node_startup,
         interval=2.0,
-        description=(f"every node's discovery table has >= " f"{expect['validator_count']} peers"),
+        description=(f"every node's discovery table has >= {expect['validator_count']} peers"),
     )
 
     statuses = {}
@@ -198,26 +203,26 @@ def test_status(shared_shard, node_conf, timeouts) -> None:
         statuses[node.name] = status
 
         # Version info
-        assert "version" in status and isinstance(
-            status["version"], dict
-        ), f"{node.name}: missing or invalid version"
+        assert "version" in status and isinstance(status["version"], dict), (
+            f"{node.name}: missing or invalid version"
+        )
         assert status["version"].get("api"), f"{node.name}: empty api version"
         assert status["version"].get("node"), f"{node.name}: empty node version"
 
         # Network identity
-        assert (
-            status["shardId"] == expect["shard_id"]
-        ), f"{node.name}: shardId '{status['shardId']}' != '{expect['shard_id']}'"
+        assert status["shardId"] == expect["shard_id"], (
+            f"{node.name}: shardId '{status['shardId']}' != '{expect['shard_id']}'"
+        )
         assert status.get("networkId"), f"{node.name}: empty networkId"
         assert status.get("address"), f"{node.name}: empty address"
 
         # Peers
-        assert (
-            isinstance(status["peers"], int) and status["peers"] >= 1
-        ), f"{node.name}: expected peers >= 1, got {status['peers']}"
-        assert (
-            isinstance(status["nodes"], int) and status["nodes"] >= expect["validator_count"]
-        ), f"{node.name}: expected nodes >= {expect['validator_count']}, got {status['nodes']}"
+        assert isinstance(status["peers"], int) and status["peers"] >= 1, (
+            f"{node.name}: expected peers >= 1, got {status['peers']}"
+        )
+        assert isinstance(status["nodes"], int) and status["nodes"] >= expect["validator_count"], (
+            f"{node.name}: expected nodes >= {expect['validator_count']}, got {status['nodes']}"
+        )
 
         # Phlo
         assert status["minPhloPrice"] == expect["min_phlo_price"], (
@@ -226,42 +231,44 @@ def test_status(shared_shard, node_conf, timeouts) -> None:
         )
 
         # Token metadata
-        assert (
-            status["nativeTokenName"] == expect["native_token_name"]
-        ), f"{node.name}: nativeTokenName '{status['nativeTokenName']}' != '{expect['native_token_name']}'"
-        assert (
-            status["nativeTokenSymbol"] == expect["native_token_symbol"]
-        ), f"{node.name}: nativeTokenSymbol '{status['nativeTokenSymbol']}' != '{expect['native_token_symbol']}'"
-        assert (
-            status["nativeTokenDecimals"] == expect["native_token_decimals"]
-        ), f"{node.name}: nativeTokenDecimals {status['nativeTokenDecimals']} != {expect['native_token_decimals']}"
+        assert status["nativeTokenName"] == expect["native_token_name"], (
+            f"{node.name}: nativeTokenName '{status['nativeTokenName']}' != '{expect['native_token_name']}'"
+        )
+        assert status["nativeTokenSymbol"] == expect["native_token_symbol"], (
+            f"{node.name}: nativeTokenSymbol '{status['nativeTokenSymbol']}' != '{expect['native_token_symbol']}'"
+        )
+        assert status["nativeTokenDecimals"] == expect["native_token_decimals"], (
+            f"{node.name}: nativeTokenDecimals {status['nativeTokenDecimals']} != {expect['native_token_decimals']}"
+        )
 
         # Operational state (Phase 4b)
         assert (
             isinstance(status["lastFinalizedBlockNumber"], int)
             and status["lastFinalizedBlockNumber"] >= 0
-        ), f"{node.name}: lastFinalizedBlockNumber should be >= 0, got {status.get('lastFinalizedBlockNumber')}"
-        assert (
-            isinstance(status["isReady"], bool) and status["isReady"] is True
-        ), f"{node.name}: isReady should be True (shard is running)"
+        ), (
+            f"{node.name}: lastFinalizedBlockNumber should be >= 0, got {status.get('lastFinalizedBlockNumber')}"
+        )
+        assert isinstance(status["isReady"], bool) and status["isReady"] is True, (
+            f"{node.name}: isReady should be True (shard is running)"
+        )
         assert isinstance(status["isValidator"], bool), f"{node.name}: isValidator should be bool"
         assert isinstance(status["isReadOnly"], bool), f"{node.name}: isReadOnly should be bool"
-        assert (
-            isinstance(status["currentEpoch"], int) and status["currentEpoch"] >= 0
-        ), f"{node.name}: currentEpoch should be >= 0"
-        assert (
-            isinstance(status["epochLength"], int) and status["epochLength"] > 0
-        ), f"{node.name}: epochLength should be > 0"
+        assert isinstance(status["currentEpoch"], int) and status["currentEpoch"] >= 0, (
+            f"{node.name}: currentEpoch should be >= 0"
+        )
+        assert isinstance(status["epochLength"], int) and status["epochLength"] > 0, (
+            f"{node.name}: epochLength should be > 0"
+        )
 
         # Node role consistency
         if node == shared_shard.readonly:
-            assert (
-                status["isReadOnly"] is True
-            ), f"{node.name}: readonly node should have isReadOnly=True"
+            assert status["isReadOnly"] is True, (
+                f"{node.name}: readonly node should have isReadOnly=True"
+            )
         else:
-            assert (
-                status["isReadOnly"] is False
-            ), f"{node.name}: non-readonly node should have isReadOnly=False"
+            assert status["isReadOnly"] is False, (
+                f"{node.name}: non-readonly node should have isReadOnly=False"
+            )
 
     # Cross-node consistency
     versions = {n: s["version"]["node"] for n, s in statuses.items()}
@@ -281,9 +288,9 @@ def test_status(shared_shard, node_conf, timeouts) -> None:
 
     # Addresses should be unique per node
     addresses = {n: s["address"] for n, s in statuses.items()}
-    assert len(set(addresses.values())) == len(
-        all_nodes
-    ), f"Node addresses should be unique: {addresses}"
+    assert len(set(addresses.values())) == len(all_nodes), (
+        f"Node addresses should be unique: {addresses}"
+    )
 
     logging.info("Status verified on %d nodes", len(all_nodes))
 
@@ -325,9 +332,9 @@ def test_prepare_deploy(shared_shard, timeouts) -> None:
     )
     resp.raise_for_status()
     result = resp.json()
-    assert (
-        len(result.get("names", [])) == 2
-    ), f"Expected 2 names for nameQty=2, got {len(result.get('names', []))}"
+    assert len(result.get("names", [])) == 2, (
+        f"Expected 2 names for nameQty=2, got {len(result.get('names', []))}"
+    )
 
 
 def test_last_finalized_block(shared_shard, node_conf, timeouts) -> None:
@@ -367,9 +374,9 @@ def test_last_finalized_block(shared_shard, node_conf, timeouts) -> None:
         info = lfb["blockInfo"]
         _assert_light_block_info(info, expect, context=f"{node.name} LFB")
 
-        assert (
-            info["blockNumber"] > 0
-        ), f"{node.name}: LFB blockNumber should be > 0, got {info['blockNumber']}"
+        assert info["blockNumber"] > 0, (
+            f"{node.name}: LFB blockNumber should be > 0, got {info['blockNumber']}"
+        )
 
         # isFinalized should be True for LFB
         assert info.get("isFinalized") is True, f"{node.name}: LFB should have isFinalized=True"
@@ -381,9 +388,9 @@ def test_last_finalized_block(shared_shard, node_conf, timeouts) -> None:
         )
 
         # Non-genesis blocks have parents
-        assert (
-            len(info["parentsHashList"]) > 0
-        ), f"{node.name}: LFB should have parents (not genesis)"
+        assert len(info["parentsHashList"]) > 0, (
+            f"{node.name}: LFB should have parents (not genesis)"
+        )
 
         lfb_data[node.name] = info
         logging.info("%s: LFB #%d, FT=%s", node.name, info["blockNumber"], info["faultTolerance"])
@@ -395,7 +402,7 @@ def test_last_finalized_block(shared_shard, node_conf, timeouts) -> None:
         grpc_ft = float(grpc_block.blockInfo.faultTolerance)
         http_ft = lfb_data[node.name]["faultTolerance"]
         assert abs(grpc_ft - http_ft) < 0.001, (
-            f"{node.name}: FT mismatch for LFB {lfb_hash[:16]}: " f"gRPC={grpc_ft}, HTTP={http_ft}"
+            f"{node.name}: FT mismatch for LFB {lfb_hash[:16]}: gRPC={grpc_ft}, HTTP={http_ft}"
         )
 
     logging.info(
@@ -420,9 +427,9 @@ def test_get_block(shared_shard, node_conf, timeouts) -> None:
         info = block["blockInfo"]
         _assert_light_block_info(info, expect, context=f"{node.name} block")
 
-        assert (
-            info["blockHash"] == block_hash
-        ), f"{node.name}: returned blockHash doesn't match queried hash"
+        assert info["blockHash"] == block_hash, (
+            f"{node.name}: returned blockHash doesn't match queried hash"
+        )
 
         # Block should be finalized (we waited for finalization)
         assert info.get("isFinalized") is True, f"{node.name}: queried block should be finalized"
@@ -435,12 +442,12 @@ def test_get_block(shared_shard, node_conf, timeouts) -> None:
                 break
         assert our_deploy is not None, f"{node.name}: deploy {deploy_id[:24]} not found in block"
         assert our_deploy["errored"] is False, f"{node.name}: deploy should not be errored"
-        assert (
-            isinstance(our_deploy["cost"], int) and our_deploy["cost"] > 0
-        ), f"{node.name}: deploy cost should be > 0, got {our_deploy['cost']}"
-        assert (
-            our_deploy["systemDeployError"] == ""
-        ), f"{node.name}: systemDeployError should be empty"
+        assert isinstance(our_deploy["cost"], int) and our_deploy["cost"] > 0, (
+            f"{node.name}: deploy cost should be > 0, got {our_deploy['cost']}"
+        )
+        assert our_deploy["systemDeployError"] == "", (
+            f"{node.name}: systemDeployError should be empty"
+        )
 
         blocks[node.name] = info
 
@@ -469,17 +476,17 @@ def test_get_blocks(shared_shard, node_conf, timeouts) -> None:
             assert "blockInfo" in b, f"{node.name}: block missing blockInfo wrapper"
             info = b["blockInfo"]
             _assert_valid_block_hash(info["blockHash"], f"{node.name} blocks list")
-            assert (
-                isinstance(info["blockNumber"], int) and info["blockNumber"] >= 0
-            ), f"{node.name}: invalid blockNumber {info.get('blockNumber')}"
+            assert isinstance(info["blockNumber"], int) and info["blockNumber"] >= 0, (
+                f"{node.name}: invalid blockNumber {info.get('blockNumber')}"
+            )
             assert len(info["bonds"]) == expect["bond_count"], (
                 f"{node.name}: block #{info['blockNumber']} has {len(info['bonds'])} bonds, "
                 f"expected {expect['bond_count']}"
             )
             # Summary view: deploys should be omitted
-            assert (
-                "deploys" not in b
-            ), f"{node.name}: block #{info['blockNumber']} should not have deploys in summary view"
+            assert "deploys" not in b, (
+                f"{node.name}: block #{info['blockNumber']} should not have deploys in summary view"
+            )
 
     logging.info("Blocks list verified on %d nodes", len(shared_shard.all_nodes))
 
@@ -499,44 +506,44 @@ def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
         # Core fields (always present)
         assert detail["deployId"] == deploy_id, f"{node.name}: deployId should match queried id"
         _assert_valid_block_hash(detail["blockHash"], f"{node.name} deploy detail")
-        assert (
-            isinstance(detail["blockNumber"], int) and detail["blockNumber"] > 0
-        ), f"{node.name}: blockNumber should be > 0"
-        assert (
-            isinstance(detail["timestamp"], int) and detail["timestamp"] > 0
-        ), f"{node.name}: timestamp should be > 0"
-        assert (
-            isinstance(detail["cost"], int) and detail["cost"] > 0
-        ), f"{node.name}: cost should be > 0, got {detail['cost']}"
+        assert isinstance(detail["blockNumber"], int) and detail["blockNumber"] > 0, (
+            f"{node.name}: blockNumber should be > 0"
+        )
+        assert isinstance(detail["timestamp"], int) and detail["timestamp"] > 0, (
+            f"{node.name}: timestamp should be > 0"
+        )
+        assert isinstance(detail["cost"], int) and detail["cost"] > 0, (
+            f"{node.name}: cost should be > 0, got {detail['cost']}"
+        )
         assert detail["errored"] is False, f"{node.name}: deploy should not be errored"
         assert detail["isFinalized"] is True, f"{node.name}: deploy should be finalized"
 
         # Full view fields
         assert detail["deployer"] == v1_pubkey, f"{node.name}: deployer mismatch"
         assert detail["systemDeployError"] == "", f"{node.name}: systemDeployError should be empty"
-        assert (
-            detail["phloPrice"] == 1
-        ), f"{node.name}: phloPrice should be 1, got {detail['phloPrice']}"
-        assert (
-            detail["phloLimit"] == 100_000
-        ), f"{node.name}: phloLimit should be 100000, got {detail['phloLimit']}"
-        assert (
-            detail["sigAlgorithm"] == expect["sig_algorithm"]
-        ), f"{node.name}: sigAlgorithm mismatch"
+        assert detail["phloPrice"] == 1, (
+            f"{node.name}: phloPrice should be 1, got {detail['phloPrice']}"
+        )
+        assert detail["phloLimit"] == 100_000, (
+            f"{node.name}: phloLimit should be 100000, got {detail['phloLimit']}"
+        )
+        assert detail["sigAlgorithm"] == expect["sig_algorithm"], (
+            f"{node.name}: sigAlgorithm mismatch"
+        )
 
         # Transfers: omitted on validators (block replay unavailable),
         # present as list on readonly
         if node == shared_shard.readonly:
-            assert (
-                "transfers" in detail
-            ), f"{node.name} (readonly): transfers field should be present"
-            assert isinstance(
-                detail["transfers"], list
-            ), f"{node.name} (readonly): transfers should be a list"
+            assert "transfers" in detail, (
+                f"{node.name} (readonly): transfers field should be present"
+            )
+            assert isinstance(detail["transfers"], list), (
+                f"{node.name} (readonly): transfers should be a list"
+            )
         else:
-            assert (
-                "transfers" not in detail
-            ), f"{node.name} (validator): transfers field should be omitted"
+            assert "transfers" not in detail, (
+                f"{node.name} (validator): transfers field should be omitted"
+            )
 
         details[node.name] = detail
 
@@ -566,15 +573,15 @@ def test_deploy_summary_view(shared_shard, node_conf, timeouts) -> None:
         # Core fields that MUST be present
         assert summary["deployId"] == deploy_id, f"{node.name}: deployId should match queried id"
         _assert_valid_block_hash(summary["blockHash"], f"{node.name} summary view")
-        assert (
-            isinstance(summary["blockNumber"], int) and summary["blockNumber"] > 0
-        ), f"{node.name}: blockNumber should be > 0"
-        assert (
-            isinstance(summary["timestamp"], int) and summary["timestamp"] > 0
-        ), f"{node.name}: timestamp should be > 0"
-        assert (
-            isinstance(summary["cost"], int) and summary["cost"] > 0
-        ), f"{node.name}: cost should be > 0, got {summary.get('cost')}"
+        assert isinstance(summary["blockNumber"], int) and summary["blockNumber"] > 0, (
+            f"{node.name}: blockNumber should be > 0"
+        )
+        assert isinstance(summary["timestamp"], int) and summary["timestamp"] > 0, (
+            f"{node.name}: timestamp should be > 0"
+        )
+        assert isinstance(summary["cost"], int) and summary["cost"] > 0, (
+            f"{node.name}: cost should be > 0, got {summary.get('cost')}"
+        )
         assert isinstance(summary["errored"], bool), f"{node.name}: errored should be bool"
         assert isinstance(summary["isFinalized"], bool), f"{node.name}: isFinalized should be bool"
 
@@ -589,9 +596,9 @@ def test_deploy_summary_view(shared_shard, node_conf, timeouts) -> None:
             "validAfterBlockNumber",
             "transfers",
         ]:
-            assert (
-                excluded not in summary
-            ), f"{node.name}: summary view should not include '{excluded}'"
+            assert excluded not in summary, (
+                f"{node.name}: summary view should not include '{excluded}'"
+            )
 
         summary_responses[node.name] = summary
 
@@ -620,12 +627,12 @@ def test_get_data_at_name_empty_payload(shared_shard, timeouts) -> None:
 
     for node in [v1, v2]:
         result = node.get_deploy_data(deploy_ids[0], block_hash=block_hashes[0])
-        assert (
-            result is not None
-        ), f"{node.name}: getDataAtName should return empty payload, not None"
-        assert (
-            len(result.par) == 0
-        ), f"{node.name}: expected empty par, got {len(result.par)} entries"
+        assert result is not None, (
+            f"{node.name}: getDataAtName should return empty payload, not None"
+        )
+        assert len(result.par) == 0, (
+            f"{node.name}: expected empty par, got {len(result.par)} entries"
+        )
 
     logging.info("Empty payload verified on V1 and V2")
 
@@ -642,9 +649,9 @@ def test_explore_deploy_returns_cost(shared_shard) -> None:
     result = resp.json()
 
     assert "cost" in result, "missing cost"
-    assert (
-        isinstance(result["cost"], int) and result["cost"] > 0
-    ), f"cost should be positive int, got {result['cost']}"
+    assert isinstance(result["cost"], int) and result["cost"] > 0, (
+        f"cost should be positive int, got {result['cost']}"
+    )
     assert "expr" in result, "missing expr"
     assert "block" in result, "missing block"
 
@@ -656,13 +663,18 @@ def test_deploy_via_http(shared_shard) -> None:
     v1 = shared_shard.node("validator1")
     key = VALIDATOR1_ID.private_key()
     timestamp = int(time.time() * 1000)
+    # Read from the LFB rather than hardcoding: the node rejects a deploy whose
+    # valid-after block has fallen outside `deploy_lifespan` behind the tip, and
+    # this shard is shared, so a fixed low value expires once enough tests have
+    # run against it. The LFB trails the tip by far less than the lifespan.
+    valid_after_block_number = lfb_number(v1)
 
     deploy_proto = DeployDataProto(
         term="@2!(1)",
         timestamp=timestamp,
         phloLimit=100_000,
         phloPrice=1,
-        validAfterBlockNumber=5,
+        validAfterBlockNumber=valid_after_block_number,
         shardId="root",
     )
     deploy_req = {
@@ -671,7 +683,7 @@ def test_deploy_via_http(shared_shard) -> None:
             "timestamp": timestamp,
             "phloLimit": 100_000,
             "phloPrice": 1,
-            "validAfterBlockNumber": 5,
+            "validAfterBlockNumber": valid_after_block_number,
             "shardId": "root",
         },
         "deployer": key.get_public_key().to_hex(),
@@ -727,7 +739,7 @@ def test_block_list_full_view(shared_shard, timeouts) -> None:
         f"response ({len(blocks)} blocks returned)"
     )
     assert target.get("deploys"), (
-        f"full view for block {target_hash[:16]}... should include deploys, " f"got {target!r}"
+        f"full view for block {target_hash[:16]}... should include deploys, got {target!r}"
     )
     logging.info(
         "Block list full view: %d blocks, target block #%d includes deploys",
@@ -809,31 +821,58 @@ def test_is_finalized_http(shared_shard, timeouts) -> None:
     logging.info("is-finalized verified: HTTP=%s, gRPC=%s", result, grpc_result)
 
 
+def _status_pair_over_stable_lfb(node, attempts: int = 5):
+    """Sample HTTP and gRPC status across a window where the LFB did not move.
+
+    ``lastFinalizedBlockNumber`` advances on a live shard, so reading the two
+    endpoints in sequence is a torn read — the later call legitimately observes
+    a higher value, and comparing them is not a well-posed assertion. Bracket
+    the gRPC call with two HTTP reads and accept the sample only when both
+    agree: the value was then stationary for the whole window, so any residual
+    difference is a real parity defect rather than elapsed time.
+
+    Deliberately not "retry until the two endpoints agree" — that would also
+    converge when the endpoints genuinely disagree, hiding the defect this
+    test exists to catch.
+    """
+    for _ in range(attempts):
+        before = node.api_get("/status")
+        grpc_status = node.grpc_status()
+        after = node.api_get("/status")
+        if before["lastFinalizedBlockNumber"] == after["lastFinalizedBlockNumber"]:
+            return before, grpc_status
+
+    raise AssertionError(
+        f"{node.name}: lastFinalizedBlockNumber advanced during all {attempts} "
+        "sampling attempts; could not compare HTTP and gRPC status over a "
+        "stable window"
+    )
+
+
 def test_grpc_status_matches_http(shared_shard, node_conf) -> None:
     """gRPC status() returns same fields as HTTP /api/status on all nodes."""
     for node in shared_shard.all_nodes:
-        http_status = node.api_get("/status")
-        grpc_status = node.grpc_status()
+        http_status, grpc_status = _status_pair_over_stable_lfb(node)
 
         assert grpc_status.shardId == http_status["shardId"], f"{node.name}: shardId mismatch"
         assert grpc_status.networkId == http_status["networkId"], f"{node.name}: networkId mismatch"
-        assert (
-            grpc_status.minPhloPrice == http_status["minPhloPrice"]
-        ), f"{node.name}: minPhloPrice mismatch"
+        assert grpc_status.minPhloPrice == http_status["minPhloPrice"], (
+            f"{node.name}: minPhloPrice mismatch"
+        )
         assert grpc_status.lastFinalizedBlockNumber == http_status["lastFinalizedBlockNumber"], (
             f"{node.name}: lastFinalizedBlockNumber mismatch: "
             f"gRPC={grpc_status.lastFinalizedBlockNumber}, HTTP={http_status['lastFinalizedBlockNumber']}"
         )
-        assert (
-            grpc_status.isValidator == http_status["isValidator"]
-        ), f"{node.name}: isValidator mismatch"
-        assert (
-            grpc_status.isReadOnly == http_status["isReadOnly"]
-        ), f"{node.name}: isReadOnly mismatch"
+        assert grpc_status.isValidator == http_status["isValidator"], (
+            f"{node.name}: isValidator mismatch"
+        )
+        assert grpc_status.isReadOnly == http_status["isReadOnly"], (
+            f"{node.name}: isReadOnly mismatch"
+        )
         assert grpc_status.isReady == http_status["isReady"], f"{node.name}: isReady mismatch"
-        assert (
-            grpc_status.epochLength == http_status["epochLength"]
-        ), f"{node.name}: epochLength mismatch"
+        assert grpc_status.epochLength == http_status["epochLength"], (
+            f"{node.name}: epochLength mismatch"
+        )
 
     logging.info("gRPC/HTTP status parity verified on %d nodes", len(shared_shard.all_nodes))
 
@@ -848,9 +887,9 @@ def test_transfers_null_on_validator_http(shared_shard, timeouts) -> None:
     # Validator: transfers should be null (omitted) on deploys
     v1_block = v1.api_get(f"/block/{block_hash}")
     for deploy in v1_block.get("deploys", []):
-        assert (
-            deploy.get("transfers") is None
-        ), f"validator: deploy transfers should be null, got {deploy.get('transfers')}"
+        assert deploy.get("transfers") is None, (
+            f"validator: deploy transfers should be null, got {deploy.get('transfers')}"
+        )
 
     # Readonly: transfers should be present as list
     ro_block = ro.api_get(f"/block/{block_hash}")
@@ -903,14 +942,14 @@ def test_show_main_chain(shared_shard, timeouts) -> None:
     for i in range(len(blocks) - 1):
         assert blocks[i].blockNumber >= blocks[i + 1].blockNumber, (
             f"main chain blocks not in descending order: "
-            f"#{blocks[i].blockNumber} followed by #{blocks[i+1].blockNumber}"
+            f"#{blocks[i].blockNumber} followed by #{blocks[i + 1].blockNumber}"
         )
 
     # Each block should have a valid hash
     for b in blocks:
-        assert (
-            len(b.blockHash) == 64
-        ), f"block hash should be 64-char hex, got len={len(b.blockHash)}"
+        assert len(b.blockHash) == 64, (
+            f"block hash should be 64-char hex, got len={len(b.blockHash)}"
+        )
 
     logging.info(
         "showMainChain: %d blocks, heights %d-%d",
@@ -961,9 +1000,9 @@ def test_get_event_data(shared_shard, timeouts) -> None:
     assert result is not None, "getEventByHash should return result"
 
     # Block info should match
-    assert (
-        result.blockInfo.blockHash == block_hash
-    ), f"blockHash mismatch: {result.blockInfo.blockHash[:16]} != {block_hash[:16]}"
+    assert result.blockInfo.blockHash == block_hash, (
+        f"blockHash mismatch: {result.blockInfo.blockHash[:16]} != {block_hash[:16]}"
+    )
 
     # Should have deploy execution data
     assert len(result.deploys) > 0, "block should have at least 1 deploy in event data"

@@ -18,7 +18,7 @@ from f1r3fly.par import par_as_string, par_as_uri
 
 from ...infra.assertions import assert_block_finalized_on_all_nodes
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import wait_for_deploy_finalized, wait_for_deploy_included
+from ...infra.polling import poll_until, wait_for_deploy_finalized, wait_for_deploy_included
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -57,13 +57,23 @@ def _store_data(node, key, random_data, timeouts):
     return uri, store_deploy_id, block_info.blockNumber
 
 
-def _read_data(readonly_node, uri):
-    """Read stored data via exploratory deploy on the readonly node.
+def _read_data_when_visible(readonly_node, uri, timeout):
+    """Poll until stored data is visible in the readonly node's canonical LFB state."""
 
-    Exploratory deploy is restricted to read-only nodes on the Rust node.
-    """
-    results = readonly_node.registry_lookup(uri)
-    return par_as_string(results[0])
+    def _read():
+        lfb_hash = readonly_node.last_finalized_block().blockInfo.blockHash
+        try:
+            results = readonly_node.registry_lookup(uri, block_hash=lfb_hash)
+            return par_as_string(results[0])
+        except (IndexError, RuntimeError, ValueError) as err:
+            logging.debug("Registry value %s not visible yet: %s", uri, err)
+            return None
+
+    return poll_until(
+        predicate=_read,
+        timeout=timeout,
+        description=f"registry value {uri} visible as a string in canonical LFB state",
+    )
 
 
 def test_data_is_stored_and_served_by_node(shared_shard, timeouts) -> None:
@@ -96,11 +106,11 @@ def test_data_is_stored_and_served_by_node(shared_shard, timeouts) -> None:
         timeout=timeouts.finalization,
     )
 
-    read_data = _read_data(ro, uri)
+    read_data = _read_data_when_visible(ro, uri, timeouts.finalization)
 
-    assert (
-        read_data == random_data
-    ), f"Read data '{read_data}' should match stored data '{random_data}'"
+    assert read_data == random_data, (
+        f"Read data '{read_data}' should match stored data '{random_data}'"
+    )
     logging.info("Store on V1, read on readonly verified: '%s'", random_data)
 
 
@@ -135,7 +145,7 @@ def test_data_stored_on_one_validator_readable_on_readonly(shared_shard, timeout
             timeout=timeouts.finalization,
         )
 
-        read_data = _read_data(ro, uri)
+        read_data = _read_data_when_visible(ro, uri, timeouts.finalization)
 
         assert read_data == random_data, (
             f"Data stored on {node.name} '{read_data}' should match "

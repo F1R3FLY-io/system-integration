@@ -1,7 +1,7 @@
 #cloud-config
 # Golden-image bootstrap. Installs every dependency the ephemeral runner
 # needs, downloads the GitHub Actions runner agent binary, pre-pulls the
-# staging test image, then halts. Run once to bake; the resulting image
+# node test image, then halts. Run once to bake; the resulting image
 # replaces the stock Ubuntu image for production runner launches.
 #
 # Production runners use cloud-init.yml.tmpl, which only does the
@@ -136,8 +136,8 @@ write_files:
       bash -c "$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)" -- \
         --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
 
-      log "=== Pre-pull staging test image ==="
-      docker pull "f1r3flyindustries/f1r3fly-rust:staging"
+      log "=== Pre-pull node test image ==="
+      docker pull "f1r3flyindustries/f1r3fly-rust:dev"
 
       log "=== Install GitHub Actions runner v$RUNNER_VERSION ==="
       ARCH=$(uname -m)

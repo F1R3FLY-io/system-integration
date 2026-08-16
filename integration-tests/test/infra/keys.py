@@ -4,6 +4,7 @@ Single source of truth for all test key material. These match the
 genesis files shipped in ``integration-tests/genesis/`` and the
 credentials in ``.env.node``.
 """
+
 from __future__ import annotations
 
 from .types import ValidatorIdentity

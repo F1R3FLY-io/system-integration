@@ -19,9 +19,12 @@ with an output directory, writes:
 
 * ``resource-timeseries.csv``      — per-node RSS/CPU + a ``__system__`` row
                                       (host free/swap) per sample
+* ``resource-percore-timeseries.csv`` — per-node per-CORE CPU% (providers
+                                      whose handles expose it; Docker today)
 * ``node-metrics-timeseries.csv``  — per-node subsystem timers from /metrics
 * ``resource-summary.txt``         — peak/avg table
 """
+
 from __future__ import annotations
 
 import csv
@@ -41,6 +44,40 @@ from typing import Dict, List, Optional
 from .providers.docker import _parse_mem
 
 logger = logging.getLogger(__name__)
+
+# Per-node RSS a single observer must stay under while it is doing heavy work
+# (catching up, or shedding an exploratory-query overload). Distinct from
+# ``--rss-ceiling-mb``, which is the whole-run host-protection kill across every
+# node; this is one node's budget, asserted by the tests that stress it.
+OBSERVER_MEMORY_CEILING_MB = 1500
+
+
+def sample_peak_memory_mb(node, stop, into: List[float], interval: float = 0.5) -> List[float]:
+    """Append ``node``'s RSS readings to ``into`` until ``stop`` is set.
+
+    For running in a daemon thread alongside a test that stresses one node. Zero
+    and unavailable readings are dropped so a provider that cannot answer yet
+    does not look like a node using no memory — callers assert the list is
+    non-empty to catch that case.
+
+    Readings land in ``into`` as they are taken rather than being returned at the
+    end, so a caller whose ``join`` times out still sees what was collected.
+
+    ``interval`` is a floor, not a period: a reading costs a provider round trip
+    (``docker stats --no-stream`` for the Docker provider, which is a subprocess
+    and takes on the order of a second), so the real rate is bounded by that.
+    """
+    while not stop.is_set():
+        try:
+            usage = node.resource_usage()
+            memory = float(usage.get("memory_mb", 0) or 0)
+        except Exception:  # noqa: BLE001 — a failed sample must not kill the test
+            memory = 0.0
+        if memory > 0:
+            into.append(memory)
+        stop.wait(interval)
+    return into
+
 
 # Prometheus metric-name substrings worth recording for bottleneck attribution.
 # A scraped sample is kept if its (punctuation-normalized) metric name contains
@@ -330,6 +367,8 @@ class ResourceMonitor:
         self._ts_fh = None
         self._metrics_writer = None
         self._metrics_fh = None
+        self._percore_writer = None
+        self._percore_fh = None
         # Watchdog: if total node RSS exceeds rss_ceiling_mb for
         # ceiling_consecutive samples, kill the nodes and record a breach so the
         # run aborts before the host is driven into swap-thrash / freeze.
@@ -342,7 +381,11 @@ class ResourceMonitor:
         # a child process independently enforces the RSS ceiling + host free-RAM
         # floor + load cap and SIGKILLs the nodes on breach, surviving a freeze
         # that starves this in-process monitor. Providers that return no token
-        # (Docker/K8s — platform-capped) keep the in-process ceiling.
+        # (Docker/K8s) keep the in-process ceiling — which dies with this
+        # process: the docker provider sets no per-container memory limit, so
+        # if pytest is killed (kernel OOM on run 30713818751) the containers
+        # run on uncapped and unwatched. Host-level protection independent of
+        # pytest is the orchestrator's job (run-merge-recovery-soak.sh).
         self._guardian_token = guardian_token
         self._host_free_floor_mb = host_free_floor_mb
         self._host_load_factor = host_load_factor
@@ -357,6 +400,17 @@ class ResourceMonitor:
         self._maybe_start_guardian()
         if self._output_dir is not None:
             self._output_dir.mkdir(parents=True, exist_ok=True)
+            # Session dirs are normally unique per run, but the --skip-setup
+            # --session-id debug loop reuses one — a prior run's breach marker
+            # must not survive into this run, or "marker present" stops
+            # meaning "this run breached". Mirrors the guardian's own
+            # .guardian-breach unlink.
+            try:
+                (self._output_dir / "host-protection-breach.txt").unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:  # noqa: BLE001
+                pass
             self._ts_fh = open(self._output_dir / "resource-timeseries.csv", "w", newline="")
             self._ts_writer = csv.writer(self._ts_fh)
             self._ts_writer.writerow(
@@ -367,6 +421,15 @@ class ResourceMonitor:
             )
             self._metrics_writer = csv.writer(self._metrics_fh)
             self._metrics_writer.writerow(["elapsed_s", "node", "metric", "value"])
+            # Per-core CPU lives in its OWN file, not as extra rows in
+            # resource-timeseries.csv: the soak driver's awk aggregates sum
+            # cpu_percent across all rows per timestamp, so interleaving
+            # per-core rows there would double-count every node's CPU.
+            self._percore_fh = open(
+                self._output_dir / "resource-percore-timeseries.csv", "w", newline=""
+            )
+            self._percore_writer = csv.writer(self._percore_fh)
+            self._percore_writer.writerow(["elapsed_s", "node", "core", "cpu_percent"])
         self._thread = threading.Thread(target=self._sample_loop, daemon=True)
         self._thread.start()
 
@@ -434,7 +497,21 @@ class ResourceMonitor:
                 (self._output_dir / "resource-summary.txt").write_text(self.report())
             except Exception:  # noqa: BLE001
                 pass
-        for fh in (self._ts_fh, self._metrics_fh):
+            # Machine-readable breach marker for the orchestrator. The soak
+            # driver otherwise has to grep pytest logs for the breach message
+            # strings, which couples it to human-facing wording; a marker file
+            # in the data dir is a stable contract.
+            if self._breach is not None:
+                try:
+                    # Write-then-rename so a concurrent reader (the soak
+                    # driver polls this path) never sees a partial file.
+                    marker = self._output_dir / "host-protection-breach.txt"
+                    tmp = marker.with_suffix(".txt.tmp")
+                    tmp.write_text(self._breach + "\n")
+                    tmp.replace(marker)
+                except Exception:  # noqa: BLE001
+                    pass
+        for fh in (self._ts_fh, self._metrics_fh, self._percore_fh):
             if fh is not None:
                 try:
                     fh.close()
@@ -483,6 +560,7 @@ class ResourceMonitor:
                         "" if limit is None else f"{limit:.1f}",
                     ]
                 )
+            self._write_per_core(handle, name, elapsed)
             self._scrape_metrics(handle, name, elapsed)
 
         # System-wide row (page cache / swap not visible in per-proc RSS).
@@ -501,6 +579,8 @@ class ResourceMonitor:
             self._ts_fh.flush()
         if self._metrics_fh is not None:
             self._metrics_fh.flush()
+        if self._percore_fh is not None:
+            self._percore_fh.flush()
 
         if session_memory > self._total_peak_memory_mb:
             self._total_peak_memory_mb = session_memory
@@ -611,6 +691,26 @@ class ResourceMonitor:
             # New process under this name (or no time elapsed) — don't diff across it.
             return 0.0
         return max(0.0, (float(cpu_s) - prev_cpu) / dt * 100.0)
+
+    def _write_per_core(self, handle, name: str, elapsed: float) -> None:
+        """Record per-core CPU% rows for handles that can sample them.
+
+        Optional per the ``NodeHandle`` protocol — only the Docker handle
+        exposes ``per_core_cpu_percent()`` today; other providers silently
+        contribute no rows and the downstream node × core heatmap keeps its
+        aggregate-only rendering for those runs.
+        """
+        if self._percore_writer is None:
+            return
+        percore_fn = getattr(handle, "per_core_cpu_percent", None)
+        if percore_fn is None:
+            return
+        try:
+            per_core = percore_fn() or {}
+        except Exception:  # noqa: BLE001 — best-effort telemetry
+            return
+        for core, pct in sorted(per_core.items()):
+            self._percore_writer.writerow([f"{elapsed:.1f}", name, core, f"{pct:.1f}"])
 
     def _scrape_metrics(self, handle, name: str, elapsed: float) -> None:
         if self._metrics_writer is None:
@@ -733,6 +833,7 @@ class ResourceMonitor:
         lines.append(f"  Samples collected: {max_samples}")
         if self._output_dir is not None:
             lines.append(f"  Time-series: {self._output_dir / 'resource-timeseries.csv'}")
+            lines.append(f"  Per-core CPU: {self._output_dir / 'resource-percore-timeseries.csv'}")
             lines.append(f"  Node metrics: {self._output_dir / 'node-metrics-timeseries.csv'}")
         lines.append("=" * 90)
         return "\n".join(lines)

@@ -5,6 +5,7 @@ Every polling function, fixture, and test derives its timeout from a
 (``TimeoutConfig.scale``) so CI runners with slower hardware can
 uniformly inflate all timeouts without per-test adjustments.
 """
+
 from __future__ import annotations
 
 from .config import TimeoutConfig
@@ -55,6 +56,15 @@ class TimeoutHierarchy:
     def custom(self, base_seconds: int) -> int:
         """Apply the scale factor to an arbitrary base timeout."""
         return self._scaled(base_seconds)
+
+    def custom_float(self, base_seconds: float) -> float:
+        """Apply the scale factor to a fractional base timeout.
+
+        ``custom`` truncates to an int, so any budget below a second collapses to
+        ``0`` — an immediate failure rather than a scaled deadline. Use this for
+        sub-second budgets such as a short HTTP probe timeout.
+        """
+        return base_seconds * self._config.scale
 
     def _scaled(self, base: int) -> int:
         return int(base * self._config.scale)

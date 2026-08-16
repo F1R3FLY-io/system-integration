@@ -15,6 +15,7 @@ Lives in its OWN file (not woven into ``test_validator_lifecycle``) because:
 Reuses the lifecycle module's shard helpers (`_attach_prebond`, `_validators_on`, etc.)
 rather than duplicating them.
 """
+
 import logging
 
 import pytest
@@ -30,8 +31,7 @@ from ...infra.keys import (
 )
 from ...infra.polling import (
     poll_until,
-    wait_for_deploy_included,
-    wait_for_finalized,
+    wait_for_deploy_finalized,
 )
 from ...infra.shard import Shard
 from .test_validator_lifecycle import (
@@ -42,9 +42,9 @@ from .test_validator_lifecycle import (
     _GENESIS_STAKE,
     _JOINER_STAKE,
     _WALLET_BALANCE,
+    _active_set,
     _advance_lfb,
     _attach_prebond,
-    _validators_on,
     _vault_addr,
 )
 
@@ -81,17 +81,20 @@ def cap_shard(provider, timeouts):
 
 def test_active_validator_cap(cap_shard, timeouts) -> None:
     """``pickActiveValidators`` take(numberOfActiveValidators): with the cap == 3 and 5
-    validators bonded, exactly 3 are ACTIVE (``/validators``) while all 5 are BONDED
-    (``getBonds``) — the 2 over-cap joiners are bonded-but-inactive. Count-based (which 3
-    are active depends on pubkey sort order); the cap (== 3) and the full bonded set
-    (== 5) are the invariants, and the capped shard must keep finalizing on all nodes."""
+    validators bonded, exactly 3 are ACTIVE (the finalized tip's bonds map, via
+    ``_active_set``) while all 5 are BONDED (``getBonds``) — the 2 over-cap joiners are
+    bonded-but-inactive. Count-based (which 3 are active depends on pubkey sort order);
+    the cap (== 3) and the full bonded set (== 5) are the invariants, and the capped
+    shard must keep finalizing on all nodes."""
     shard = cap_shard
     v1, v2, v3 = (shard.node("validator1"), shard.node("validator2"), shard.node("validator3"))
     ro = shard.readonly
 
-    # Genesis fills the cap exactly at boot.
+    # Genesis fills the cap exactly at boot. Active set == the finalized
+    # tip's bonds map (_active_set); /api/validators cannot observe the
+    # cap because it returns ALL bonds (soak preflight 31919610258).
     poll_until(
-        predicate=lambda: True if len(_validators_on(ro)) == _ACTIVE_CAP else None,
+        predicate=lambda: True if len(_active_set(ro)) == _ACTIVE_CAP else None,
         timeout=timeouts.epoch_transition,
         interval=timeouts.poll_interval,
         description=f"genesis active set == cap ({_ACTIVE_CAP})",
@@ -104,9 +107,12 @@ def test_active_validator_cap(cap_shard, timeouts) -> None:
     _attach_prebond(shard, VALIDATOR5_ID, timeouts)
     for proposer, ident in [(v1, VALIDATOR4_ID), (v2, VALIDATOR5_ID)]:
         did = proposer.pos.bond(ident.private_key(), _JOINER_STAKE[ident.name])
-        blk = wait_for_deploy_included(proposer, did, timeouts.deploy_inclusion * 3)
-        wait_for_finalized(proposer, blk.blockNumber, timeouts.finalization * 3)
-        assert proposer.pos.read_result(did, blk.blockHash).success, f"{ident.name} bond failed"
+        # Canonical-inclusion anchor: read the bond result at the block
+        # that actually carried the deploy into canonical state, not the
+        # first (orphanable) find_deploy inclusion.
+        status = wait_for_deploy_finalized(proposer, did, timeouts.finalization * 3)
+        bond_hash = status.latestBlockHash.hex()
+        assert proposer.pos.read_result(did, bond_hash).success, f"{ident.name} bond failed"
 
     # All five land in allBonds, but the active set stays capped.
     poll_until(
@@ -119,11 +125,11 @@ def test_active_validator_cap(cap_shard, timeouts) -> None:
     _advance_lfb(v1, _EPOCH_LENGTH + 1, timeouts)
 
     bonded = ro.pos.get_bonds()
-    active = _validators_on(ro)
+    active = _active_set(ro)
     assert len(bonded) == 5, f"expected 5 bonded, got {len(bonded)}: {bonded}"
-    assert (
-        len(active) == _ACTIVE_CAP
-    ), f"active set must cap at {_ACTIVE_CAP} despite 5 bonded, got {len(active)}: {active}"
+    assert len(active) == _ACTIVE_CAP, (
+        f"active set must cap at {_ACTIVE_CAP} despite 5 bonded, got {len(active)}: {active}"
+    )
     assert set(active) <= set(bonded), f"active not a subset of bonded: {active} vs {bonded}"
 
     # The capped shard must still finalize — prove via an ACTIVE genesis (at most 2 of 5
@@ -139,11 +145,14 @@ def test_active_validator_cap(cap_shard, timeouts) -> None:
         phlo_limit=_BOND_PHLO_LIMIT,
         phlo_price=_BOND_PHLO_PRICE,
     )
-    lb = wait_for_deploy_included(live_node, lid, timeouts.deploy_inclusion * 5)
-    wait_for_finalized(live_node, lb.blockNumber, timeouts.finalization * 5)
-    assert_block_finalized_on_all_nodes(
-        shard.all_nodes, lb.blockHash, timeout=timeouts.finalization * 5
-    )
+    # Canonical-inclusion anchor: resolve the block through the deploy's
+    # own finalization status, never a pinned find_deploy hash — the
+    # first inclusion can lose fork choice and re-home, and the pinned
+    # hash then never finalizes (ft -1.0 on every node in the 43e9f844
+    # preflight; same orphan race as the PR #118 bonding fix).
+    status = wait_for_deploy_finalized(live_node, lid, timeouts.finalization * 5)
+    lb_hash = status.latestBlockHash.hex()
+    assert_block_finalized_on_all_nodes(shard.all_nodes, lb_hash, timeout=timeouts.finalization * 5)
     logging.info(
         "active-validator cap: 5 bonded, exactly %d active, shard still finalizes", _ACTIVE_CAP
     )

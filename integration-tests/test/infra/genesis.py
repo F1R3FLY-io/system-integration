@@ -4,6 +4,7 @@ Creates temporary ``bonds.txt`` and ``wallets.txt`` files for shards
 with non-default validator sets. The temp directory is registered with
 ``DockerCleanupRegistry`` for crash-safe cleanup.
 """
+
 from __future__ import annotations
 
 import logging

@@ -172,9 +172,9 @@ def up(
 
     Examples:
         poetry run shardctl up                    # Start all (startup_order)
-        poetry run shardctl up f1r3node           # Scala shard (default)
-        poetry run shardctl up f1r3node-rust      # Rust shard
-        poetry run shardctl up f1r3node-standalone # Scala standalone
+        poetry run shardctl up f1r3node-rust      # Shard (3 validators + observer)
+        poetry run shardctl up f1r3node-rust-shard-light  # Light shard (2 validators)
+        poetry run shardctl up f1r3node-rust-standalone   # Standalone
         poetry run shardctl up f1r3drive          # F1r3Drive (native, foreground)
         poetry run shardctl up embers             # Embers API + frontend
         poetry run shardctl up f1r3node embers    # Multiple services
@@ -251,7 +251,7 @@ def down(
 
     Examples:
         poetry run shardctl down              # Stop all (reverse startup_order)
-        poetry run shardctl down f1r3node     # Stop scala shard
+        poetry run shardctl down f1r3node-rust   # Stop the shard
         poetry run shardctl down embers       # Stop embers
     """
     config = Config()
@@ -998,7 +998,7 @@ def wait_cmd(
     message and reports per-node timing. Useful after starting a shard network.
 
     Example:
-        poetry run shardctl up f1r3node --default    # Start scala shard
+        poetry run shardctl up f1r3node-rust --default   # Start the shard
         poetry run shardctl wait                     # Wait for all nodes to be ready
     """
     node_config = node_module.NodeConfig()
@@ -1125,11 +1125,8 @@ def reset_cmd(
         node_config = node_module.NodeConfig()
         all_configs = node_config.detect_all_running_configs()
         if all_configs:
-            for node_type, topology, compose_file in all_configs:
-                console.print(
-                    f"[yellow]Stopping {node_type.value} {topology.value} "
-                    f"and removing volumes...[/yellow]"
-                )
+            for topology, compose_file in all_configs:
+                console.print(f"[yellow]Stopping {topology.value} and removing volumes...[/yellow]")
                 node_module.run_compose_command(node_config, compose_file, ["down", "--volumes"])
         else:
             console.print(
@@ -1156,8 +1153,11 @@ def test_cmd(
         "-i",
         help="Docker image for test shard nodes (default: f1r3flyindustries/f1r3fly-rust)",
     ),
-    scala: bool = typer.Option(False, "--scala", help="Use Scala node image"),
-    rust: bool = typer.Option(False, "--rust", help="Use Rust node image"),
+    # Retained after the Scala node was retired so existing invocations keep
+    # working; it selects the only image there is.
+    rust: bool = typer.Option(
+        False, "--rust", help="Use Rust node image (default; retained for compatibility)"
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose pytest output"),
     skip_setup: bool = typer.Option(
         False,
@@ -1196,12 +1196,11 @@ def test_cmd(
     Use --skip-setup to run tests against an already-running shard (no start, no teardown).
     Use --keep-running to start shard normally but leave it running after tests (for debugging).
 
-    Image priority: F1R3FLY_NODE_IMAGE env > --image flag > --rust/--scala flag > default (Rust).
+    Image priority: F1R3FLY_NODE_IMAGE env > --image flag > default (Rust).
 
     Examples:
         poetry run shardctl test                              # Run all tests (Rust default)
         poetry run shardctl test test_wallets                 # Run wallet tests only
-        poetry run shardctl test --scala                      # Use Scala node image
         poetry run shardctl test --rust                       # Use Rust node image
         poetry run shardctl test test_web_api --verbose       # Verbose output
         poetry run shardctl test --skip-setup                 # Test against running shard
@@ -1219,14 +1218,12 @@ def test_cmd(
         raise typer.Exit(1)
 
     # Resolve the node image.
-    # Priority: F1R3FLY_NODE_IMAGE env var > --image flag > --rust/--scala flag > Rust default.
+    # Priority: F1R3FLY_NODE_IMAGE env var > --image flag > Rust default.
     env_image = os.environ.get("F1R3FLY_NODE_IMAGE")
     if env_image:
         docker_image = env_image
     elif image:
         docker_image = image
-    elif scala:
-        docker_image = "f1r3flyindustries/f1r3fly-scala-node:latest"
     else:
         docker_image = "f1r3flyindustries/f1r3fly-rust:latest"
 
@@ -1256,7 +1253,7 @@ def test_cmd(
         )
         if not [n for n in result.stdout.strip().splitlines() if n]:
             console.print(
-                f"[red]ERROR: no running containers found for session-id " f"'{session_id}'[/red]"
+                f"[red]ERROR: no running containers found for session-id '{session_id}'[/red]"
             )
             console.print(
                 "[dim]Pass a session-id from a prior `shardctl test "
@@ -1536,11 +1533,11 @@ def main():
 
     Examples:
         poetry run shardctl up                        # Start all services (startup_order)
-        poetry run shardctl up f1r3node               # Start Scala shard
+        poetry run shardctl up f1r3node-rust          # Start the shard
         poetry run shardctl up f1r3node-rust           # Start Rust shard
-        poetry run shardctl up f1r3node-standalone     # Start Scala standalone
+        poetry run shardctl up f1r3node-rust-standalone  # Start standalone
         poetry run shardctl up embers                  # Start Embers API + frontend
-        poetry run shardctl down f1r3node              # Stop Scala shard
+        poetry run shardctl down f1r3node-rust         # Stop the shard
         poetry run shardctl logs f1r3node -f           # Follow f1r3node logs
     """
     pass

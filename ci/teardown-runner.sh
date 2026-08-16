@@ -4,7 +4,7 @@
 # =================================================================
 # Cleanly stops, unregisters, and removes a GitHub Actions self-hosted
 # runner. Run this before decommissioning or migrating an instance.
-# Works for both Scala and Rust runners (same teardown logic).
+# Works for any self-hosted runner (same teardown logic).
 #
 # Usage:
 #   ./teardown-runner.sh --token <REMOVAL_TOKEN>

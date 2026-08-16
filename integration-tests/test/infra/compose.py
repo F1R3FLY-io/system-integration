@@ -11,6 +11,7 @@ Resource naming:
   - Rust-only (no Scala/JVM support)
   - All resources registered with ``DockerCleanupRegistry``
 """
+
 from __future__ import annotations
 
 import logging
@@ -67,9 +68,7 @@ def generate_compose(
         return f"{role}-data"
 
     bootstrap_host = container_name("boot")
-    bootstrap_url = (
-        f"rnode://{BOOTSTRAP_NODE_ID}@{bootstrap_host}" f"?protocol=40400&discovery=40404"
-    )
+    bootstrap_url = f"rnode://{BOOTSTRAP_NODE_ID}@{bootstrap_host}?protocol=40400&discovery=40404"
 
     def _extra_cli(node_key: str) -> List[str]:
         merged = dict(config.global_cli_options)
@@ -250,7 +249,7 @@ def generate_compose(
 
     # ── Compose structure ──
     all_volumes = [volume_name("boot")]
-    all_volumes += [volume_name(f"validator{i+1}") for i in range(len(config.bonds))]
+    all_volumes += [volume_name(f"validator{i + 1}") for i in range(len(config.bonds))]
     if config.include_readonly:
         all_volumes.append(volume_name("readonly"))
 

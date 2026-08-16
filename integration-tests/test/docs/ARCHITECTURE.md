@@ -194,7 +194,7 @@ The model is **allowlist-of-fatal**, not blacklist-of-acceptable. An earlier ite
   docker compose up -d                      DockerProvider.create_shard
 ```
 
-All three use sites read `resolve_node_image()`; nothing hardcodes image names (except the fallback default). `shardctl test --rust` / `--scala` / `--image` are ergonomic shortcuts that all end up exporting `F1R3FLY_NODE_IMAGE` to the pytest subprocess.
+All three use sites read `resolve_node_image()`; nothing hardcodes image names (except the fallback default). `shardctl test --rust` / `--image` are ergonomic shortcuts that all end up exporting `F1R3FLY_NODE_IMAGE` to the pytest subprocess.
 
 Fallback default: `f1r3flyindustries/f1r3fly-rust:latest` (in `infra/config.py`).
 
@@ -239,8 +239,9 @@ Design for `NotImplementedError` with clear guidance as a first pass — `K8sPro
 | `ports.py` | `PortAllocator` |
 | `cleanup.py` | `DockerCleanupRegistry` (see Section 4); other providers own their own resource lifetime |
 | `polling.py` | Node-aware wrappers around `f1r3fly.polling` (`deploy_and_read`, `wait_for_deploy_finalized` for canonical-state per-deploy tracking, `wait_for_finalized` for block-height advancement, `deploy_with_fallback`, `poll_until`) |
-| `assertions.py` | Deploy/shard assertions re-exported from `f1r3fly.deploy` + `f1r3fly.par`; cross-node helpers (`assert_block_finalized_on_all_nodes`, `assert_all_deploys_finalized_on_all_nodes`, `assert_bonds_map_consistent_across_nodes`, `assert_all_nodes_agree_on_block`, `assert_all_nodes_agree_on_lfb`, `assert_contracts_consistent_across_nodes`). **Deploy- vs block-level finalization:** `assert_all_deploys_finalized_on_all_nodes` is the bg-load/orphan-regression helper — it polls each node's `deploy_finalization_status` (re-homing-aware: a deploy whose first block loses a merge and is re-included into a finalized descendant counts as finalized), where `assert_block_finalized_on_all_nodes` checks one fixed block hash (correct only when the block itself is the one that finalizes, e.g. a specific PoS/foreground block). |
-| `log_events.py` | Structured log event parsing + `scan_for_forbidden` (single unified `FORBIDDEN_PATTERNS` dict with per-pattern marker opt-out) |
+| `assertions.py` | Deploy/shard assertions re-exported from `f1r3fly.deploy` + `f1r3fly.par`; cross-node helpers (`assert_block_finalized_on_all_nodes`, `assert_all_deploys_finalized_on_all_nodes`, `assert_bonds_map_consistent_across_nodes`, `assert_all_nodes_agree_on_block`, `assert_all_nodes_agree_on_lfb`, `assert_contracts_consistent_across_nodes`), plus the finalized-value family (`assert_channel_consistent_across_nodes`, `assert_balance_consistent_across_nodes`, and the polling `await_channel_converges_on_all_nodes` / `await_balance_converges_on_all_nodes`, which enforce non-regression and anti-double-apply bounds while converging). **Deploy- vs block-level finalization:** `assert_all_deploys_finalized_on_all_nodes` is the bg-load/orphan-regression helper — it polls each node's `deploy_finalization_status` (re-homing-aware: a deploy whose first block loses a merge and is re-included into a finalized descendant counts as finalized), where `assert_block_finalized_on_all_nodes` checks one fixed block hash (correct only when the block itself is the one that finalizes, e.g. a specific PoS/foreground block). |
+| `bridge.py` | Shared bridge-contract helpers — `BRIDGE_CONTRACT`, `extract_bridge_uris`, `make_query_rho`, `query_one`, `wait_for_registry_visible` (effects-visible barrier, not just block-visible) |
+| `log_events.py` | `SYNC_MARKERS` + `marker()` for node log lines tests wait FOR; structured log event parsing + `scan_for_forbidden` (single unified `FORBIDDEN_PATTERNS` dict with per-pattern marker opt-out) |
 | `token_metadata.py` | HTTP `/api/status` token helper (on-chain queries via pyf1r3fly) |
 | `genesis.py` | Custom genesis file generation |
 | `compose.py` | Dynamic Docker Compose YAML generation |

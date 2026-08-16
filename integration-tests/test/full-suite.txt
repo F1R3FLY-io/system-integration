@@ -1,0 +1,3 @@
+integration-tests/test/tests/shared/
+integration-tests/test/tests/custom/
+integration-tests/test/tests/standalone/

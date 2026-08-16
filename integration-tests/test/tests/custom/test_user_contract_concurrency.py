@@ -48,6 +48,7 @@ finalization the merge must survive. Forbidden node-log patterns (including
 ``StaleConsume`` and the single-value-cell invariant) are enforced on every
 node by the autouse ``check_node_logs_after_test`` fixture.
 """
+
 import logging
 import threading
 import time
@@ -57,19 +58,19 @@ import pytest
 from f1r3fly.crypto import PrivateKey
 
 from ...infra.assertions import (
-    assert_all_nodes_agree_on_lfb,
     assert_balance_consistent_across_nodes,
-    assert_block_finalized_on_all_nodes,
     assert_chain_advances,
     assert_channel_consistent_across_nodes,
+    assert_deploy_block_finalized_on_all_nodes,
     await_balance_converges_on_all_nodes,
     await_channel_converges_on_all_nodes,
+    common_finalized_anchor,
     lowest_lfb_number,
     resolve_deploy_verdicts,
 )
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import wait_for_deploy_included, wait_for_finalized
+from ...infra.polling import wait_for_deploy_included
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
@@ -223,18 +224,14 @@ def _assert_all_finalized(producers, all_nodes, deploy_ids: List[str], timeouts,
     ~12s short.
     """
     del producers  # deploy-status is queried per node directly; no block lookup
-    return resolve_deploy_verdicts(
-        all_nodes, deploy_ids, timeouts.finalization * 3, label=label
-    )
+    return resolve_deploy_verdicts(all_nodes, deploy_ids, timeouts.finalization * 3, label=label)
 
 
 def _finalized_names(deploy_ids: List[str], verdicts) -> List[str]:
     """Producer names whose deploy finalized, for ids returned by
     ``_deploy_on_each`` (one per producer, in ``_PRODUCER_KEYS`` order)."""
     finalized = verdicts.finalized_set()
-    return [
-        name for name, did in zip(_PRODUCER_KEYS, deploy_ids) if did in finalized
-    ]
+    return [name for name, did in zip(_PRODUCER_KEYS, deploy_ids) if did in finalized]
 
 
 def _assert_bg_load_robust(
@@ -271,7 +268,9 @@ def _assert_bg_load_robust(
         non_regression="up",
         upper_bound=want_dst,
     )
-    lfb = assert_all_nodes_agree_on_lfb(all_nodes, timeout=timeouts.finalization)
+    # Stable finalized anchor, not live-pointer agreement: under the
+    # always-on bg load the LFB pointers may never coincide in a sweep.
+    lfb = common_finalized_anchor(all_nodes, timeouts.finalization)
     src_final = assert_balance_consistent_across_nodes(all_nodes, _BG_SRC_ADDR, lfb)
     assert src0 - src_final >= min_src_debit, (
         f"[{label}] bg-src under-debited: source fell by {src0 - src_final} < transferred "
@@ -330,11 +329,10 @@ def _finalize_setup(shard, term: str, timeouts) -> None:
     did = v1.deploy_string(
         term, _PRODUCER_KEYS["validator1"], phlo_limit=_PHLO_LIMIT, phlo_price=_PHLO_PRICE
     )
-    block = wait_for_deploy_included(v1, did, timeouts.deploy_inclusion * 3)
-    wait_for_finalized(v1, block.blockNumber, timeouts.finalization * 3)
-    assert_block_finalized_on_all_nodes(
-        shard.all_nodes, block.blockHash, timeout=timeouts.finalization * 2
-    )
+    # Canonical-inclusion anchor: the first inclusion block can be
+    # orphaned under load and the deploy re-homed (pinned-hash
+    # anti-pattern, see assert_deploy_block_finalized_on_all_nodes).
+    assert_deploy_block_finalized_on_all_nodes(v1, did, shard.all_nodes, timeouts.finalization * 3)
 
 
 def _await_map_settles(all_nodes, channel, accept, allowed_keys, timeout, label):
@@ -348,8 +346,17 @@ def _await_map_settles(all_nodes, channel, accept, allowed_keys, timeout, label)
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
+        # Fresh stable anchor per poll: a hash every node has FINALIZED
+        # is an achievable aligned cut under continuous proposals,
+        # whereas instantaneous LFB-pointer agreement may never occur in
+        # a sequential sweep against a healthy moving frontier (sibling
+        # blocker on PR #120 at d22f4040 — the loop burned its whole
+        # budget with 'all-node-consistent read=None').
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
         try:
-            lfb = assert_all_nodes_agree_on_lfb(all_nodes)
+            lfb = common_finalized_anchor(all_nodes, min(30.0, remaining))
         except AssertionError:
             time.sleep(1.0)
             continue
@@ -382,8 +389,12 @@ def _await_settles(all_nodes, channel, accept, timeout, label):
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
+        # Fresh stable anchor per poll — see _await_map_settles.
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
         try:
-            lfb = assert_all_nodes_agree_on_lfb(all_nodes)
+            lfb = common_finalized_anchor(all_nodes, min(30.0, remaining))
         except AssertionError:
             time.sleep(1.0)
             continue
@@ -533,9 +544,7 @@ def test_single_cell_map_concurrent_adds_all_resolve(user_shard, timeouts):
                         f'for (@m <- @"ucc_map_cell") {{ '
                         f'@"ucc_map_cell"!(m.set("{op[1]}", {op[2]})) }}'
                     )
-                return (
-                    f'for (@m <- @"ucc_map_cell") {{ ' f'@"ucc_map_cell"!(m.delete("{op[1]}")) }}'
-                )
+                return f'for (@m <- @"ucc_map_cell") {{ @"ucc_map_cell"!(m.delete("{op[1]}")) }}'
 
             lfb0 = lowest_lfb_number(all_nodes)
             ids = _deploy_on_each(shard, term_for, timeouts)
@@ -859,8 +868,12 @@ def test_overdraft_cost_priority_keeps_higher_cost_transfer(user_shard, timeouts
         last_dst = None
         settled = False
         while time.time() < deadline:
+            # Fresh stable anchor per poll — see _await_map_settles.
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
             try:
-                lfb = assert_all_nodes_agree_on_lfb(all_nodes)
+                lfb = common_finalized_anchor(all_nodes, min(30.0, remaining))
             except AssertionError:
                 time.sleep(1.0)
                 continue
@@ -1002,9 +1015,7 @@ def test_concurrent_delete_and_set_same_key(user_shard, timeouts):
                 return f'for (@m <- @"ucc_delset") {{ @"ucc_delset"!(m.set("y", {yv})) }}'
 
             ids = _deploy_on_each(shard, term_for, timeouts)
-            verdicts = _assert_all_finalized(
-                producers, all_nodes, ids, timeouts, f"del-set-{rnd}"
-            )
+            verdicts = _assert_all_finalized(producers, all_nodes, ids, timeouts, f"del-set-{rnd}")
             # Settle: "y" == this round's value; "x" either absent (del last) or == set_val
             # (set last); single-valued, node-identical, no spurious keys (per-poll in helper).
             # Each outcome is admitted only if the deploy that produces it finalized —
@@ -1021,8 +1032,7 @@ def test_concurrent_delete_and_set_same_key(user_shard, timeouts):
             settled = _await_map_settles(
                 all_nodes,
                 "ucc_delset",
-                accept=lambda m, xa=x_allowed, ye=y_expected: m.get("y") == ye
-                and m.get("x") in xa,
+                accept=lambda m, xa=x_allowed, ye=y_expected: m.get("y") == ye and m.get("x") in xa,
                 allowed_keys={"x", "y"},
                 timeout=timeouts.finalization * 3,
                 label=f"del-set-{rnd}",
@@ -1128,9 +1138,7 @@ def test_set_cell_concurrent_distinct_elements_union(user_shard, timeouts):
             }
             ids = _deploy_on_each(
                 shard,
-                lambda name, e=elems: (
-                    f'for (@s <- @"ucc_set") {{ ' f'@"ucc_set"!(s.add({e[name]})) }}'
-                ),
+                lambda name, e=elems: f'for (@s <- @"ucc_set") {{ @"ucc_set"!(s.add({e[name]})) }}',
                 timeouts,
             )
             verdicts = _assert_all_finalized(
@@ -1195,7 +1203,7 @@ def test_scalar_value_conflict_resolves_deterministically(user_shard, timeouts):
                 ids = _deploy_on_each(
                     shard,
                     lambda name, c=cell, lts=lits: (
-                        f'for (@m <- @"{c}") {{ ' f'@"{c}"!(m.set("v", {lts[name]})) }}'
+                        f'for (@m <- @"{c}") {{ @"{c}"!(m.set("v", {lts[name]})) }}'
                     ),
                     timeouts,
                 )

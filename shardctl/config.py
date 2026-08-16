@@ -22,8 +22,9 @@ class Config:
     def resolve_compose_file(self, name: str) -> Path:
         """Resolve a service name or filename to a compose file path.
 
-        Accepts bare service names (e.g. 'f1r3node') or filenames (e.g. 'f1r3node.yml'
-        or 'compose/f1r3node.yml') and returns an absolute path under compose/.
+        Accepts bare service names (e.g. 'f1r3node-rust') or filenames (e.g.
+        'f1r3node-rust.yml' or 'compose/f1r3node-rust.yml') and returns an
+        absolute path under compose/.
 
         Args:
             name: Service name or compose file path.

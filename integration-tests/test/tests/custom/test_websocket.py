@@ -242,8 +242,7 @@ def test_startup_events_boot(ws_shard: WsShardResult) -> None:
     seen = {e.get("event") for e in events}
     missing = EXPECTED_BOOT_EVENTS - seen
     assert not missing, (
-        f"Missing boot events: {sorted(missing)}. "
-        f"Received: {sorted(seen)} ({len(events)} total)"
+        f"Missing boot events: {sorted(missing)}. Received: {sorted(seen)} ({len(events)} total)"
     )
 
     for event in events:
@@ -300,9 +299,9 @@ def test_startup_events_readonly(ws_shard: WsShardResult) -> None:
     )
 
     # block-created should NOT be in readonly events
-    assert (
-        "block-created" not in seen
-    ), "Readonly should not receive block-created events (it doesn't propose)"
+    assert "block-created" not in seen, (
+        "Readonly should not receive block-created events (it doesn't propose)"
+    )
 
     for event in events:
         event_type = event.get("event")
@@ -378,26 +377,26 @@ def test_deploy_appears_in_block_event(ws_shard: WsShardResult, provider, timeou
     )
 
     # Verify deploy fields
-    assert (
-        found_deploy_info["id"] == deploy_id
-    ), f"Deploy ID mismatch: {found_deploy_info['id'][:24]} != {deploy_id[:24]}"
-    assert (
-        isinstance(found_deploy_info["cost"], int) and found_deploy_info["cost"] >= 0
-    ), f"Deploy cost should be non-negative int, got {found_deploy_info.get('cost')}"
+    assert found_deploy_info["id"] == deploy_id, (
+        f"Deploy ID mismatch: {found_deploy_info['id'][:24]} != {deploy_id[:24]}"
+    )
+    assert isinstance(found_deploy_info["cost"], int) and found_deploy_info["cost"] >= 0, (
+        f"Deploy cost should be non-negative int, got {found_deploy_info.get('cost')}"
+    )
     assert found_deploy_info["deployer"] == v1_pubkey, (
         f"Deploy deployer '{found_deploy_info.get('deployer', '')[:24]}' != "
         f"expected '{v1_pubkey[:24]}'"
     )
-    assert (
-        found_deploy_info["errored"] is False
-    ), f"Deploy should not be errored, got errored={found_deploy_info.get('errored')}"
+    assert found_deploy_info["errored"] is False, (
+        f"Deploy should not be errored, got errored={found_deploy_info.get('errored')}"
+    )
 
     # Transfers should be omitted on block-created/block-added events
     # (transfer extraction hasn't happened yet)
     if found_event_type in ("block-created", "block-added"):
-        assert (
-            "transfers" not in found_deploy_info
-        ), f"Deploy in {found_event_type} should not have transfers field"
+        assert "transfers" not in found_deploy_info, (
+            f"Deploy in {found_event_type} should not have transfers field"
+        )
 
     logging.info(
         "Deploy fields verified: cost=%d, deployer=%s, errored=%s",
@@ -465,9 +464,9 @@ def test_transfers_available_event(ws_shard: WsShardResult, provider, timeouts) 
     payload = found_event["payload"]
     assert payload["block-hash"] == block_info.blockHash
     assert isinstance(payload["block-number"], int) and payload["block-number"] >= 0
-    assert (
-        isinstance(payload["deploys"], list) and len(payload["deploys"]) > 0
-    ), "transfers-available should have at least 1 deploy with transfers"
+    assert isinstance(payload["deploys"], list) and len(payload["deploys"]) > 0, (
+        "transfers-available should have at least 1 deploy with transfers"
+    )
 
     # Verify deploy transfer structure
     for deploy_transfers in payload["deploys"]:

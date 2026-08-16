@@ -17,7 +17,7 @@ Each launched VM boots, registers with GitHub using a short-lived token, picks u
 
 ## Status
 
-- ✓ amd64 baked image (`Canonical Ubuntu 22.04` + Docker, Python 3.10, Poetry 1.8.5, Rust, OCI CLI, GH runner agent 2.334.0, staging Docker image pre-pulled)
+- ✓ amd64 baked image (`Canonical Ubuntu 22.04` + Docker, Python 3.10, Poetry 1.8.5, Rust, OCI CLI, GH runner agent 2.334.0, node test Docker image pre-pulled)
 - ✓ arm64 baked image (same stack)
 - ✓ Wired into `f1r3node`'s `build-test-and-deploy.yml` as the integration test pool
 - ✓ OCI CLI secrets configured on `F1R3FLY-io/f1r3node` (5 secrets, `OCI_*`)
@@ -51,11 +51,11 @@ Both arches use **16 OCPU / 32 GB / boot from baked image**:
 |---|---|
 | `state.env` | All OCIDs + config (image OCIDs, compartment, VCN, subnet, shapes, runner version, SSH key paths). Sourced by every script. |
 | `ssh-authorized-key.pub` | SSH public key authorized for launched runner VMs. Committed in-repo (safe — public keys are designed to be public). The private key lives only on the operator's laptop. |
-| `cloud-init-golden.yml` | Bake-target cloud-init. Installs every dependency, downloads the runner agent, pre-pulls the staging Docker image, symlinks tools into `/usr/local/bin`, then `shutdown -h`. Used by `bake-image.sh` only. |
+| `cloud-init-golden.yml` | Bake-target cloud-init. Installs every dependency, downloads the runner agent, pre-pulls the node test Docker image, symlinks tools into `/usr/local/bin`, then `shutdown -h`. Used by `bake-image.sh` only. |
 | `cloud-init-runner.yml.tmpl` | Production cloud-init template. Assumes the baked image; runs only the runner-specific steps (config.sh, run.sh, self-terminate). An idle watchdog self-terminates the VM if no job arrives within 45 min, so over-provisioned/cancelled-run runners don't leak. Variables (`__REG_TOKEN__`, `__GH_REPO__`, etc.) substituted at launch time by `launch-runner.sh`. |
-| `bake-image.sh` | One-shot bake. Launches a golden VM, waits for it to STOP, snapshots its boot volume to a custom image, terminates the golden VM. Re-run when the runner agent version is deprecated or the staging Docker image needs refreshing. |
+| `bake-image.sh` | One-shot bake. Launches a golden VM, waits for it to STOP, snapshots its boot volume to a custom image, terminates the golden VM. Re-run when the runner agent version is deprecated or the pre-pulled node test Docker image needs refreshing. |
 | `launch-runner.sh` | Launches one ephemeral runner VM. Mints a short-lived (1-hour) registration token via `gh api`, renders cloud-init, calls `oci compute instance launch`. Called by the CI workflow + can be invoked manually for debugging. |
-| `reap-stale-runners.sh` | Safety net: terminates `ci-runner` VMs older than `MAX_AGE_HOURS` (default 6h, well past the ~45-min pipeline) and deregisters offline `ci-eph-*` runner entries. Run automatically every 30 min by `.github/workflows/reap-runners.yml`; safe to run manually. Supersedes the old `cleanup-orphan-runners.sh`. |
+| `reap-stale-runners.sh` | Safety net: terminates `ci-runner` VMs older than `MAX_AGE_HOURS` (default 6h, well past the ~45-min pipeline) and deregisters offline `ci-eph-*` runner entries. **Manual / on-demand only from this repo** — the scheduled reaping runs in `f1r3node-rust` (`.github/workflows/ci-runner-reaper.yml`), which is where the `ci-eph-*` pool registers and where the OCI credentials are provisioned. Supersedes the old `cleanup-orphan-runners.sh`. |
 | `destroy-all.sh` | Emergency: interactively force-terminates every instance in `ci-runner` compartment. |
 | `README.md` | This file. |
 
@@ -99,10 +99,38 @@ After baking, update `AMD64_BAKED_IMAGE_OCID` / `ARM64_BAKED_IMAGE_OCID` in `sta
 
 Useful for triaging an issue without going through the full PR pipeline. The runner will sit idle waiting for a queued job that matches its labels; cancel by manually terminating the instance (`destroy-all.sh`) if no job arrives.
 
+### Exclusive runners (`RUNNER_LABELS`)
+
+By default every VM registers with the same labels, so GitHub routes each queued job to whichever matching runner claims it first — regardless of which workflow paid to launch it. For a long-running job that must own its VM, override the label set:
+
+```bash
+RUNNER_LABELS="self-hosted,linux,x64,f1r3fly-rust-soak,oracle-cloud" ./launch-runner.sh amd64
+```
+
+The override replaces the **whole** set, but in practice you are only swapping the pool label (`f1r3fly-rust-ci-ephemeral` → your own). The script refuses the launch rather than let a bad set through silently:
+
+| Refused | Why |
+|---|---|
+| Missing `oracle-cloud` | **The one that actually breaks routing.** Nothing else supplies this label, so a runner without it matches no `runs-on` in f1r3node-rust. Nothing errors — the job just queues until it times out. |
+| Missing `self-hosted`, `linux` or `<arch>` | Routing would still work: GitHub assigns these itself. Required anyway, so the set stays honest about what the VM is — a caller dropping them has misunderstood something worth stopping on. |
+| Still contains `f1r3fly-rust-ci-ephemeral` | Adding your label without dropping the shared one leaves the VM claimable by ordinary CI. The race is reopened while the config reads as though it were closed. |
+| No pool label at all — only the four required | Matches every `runs-on` that does not name a pool, so the runner is not exclusive. |
+| Blank or whitespace-only | Would register a VM with no labels: billed, running, and unmatchable. Unset the variable to get the default. |
+
+Only `oracle-cloud` is a custom label. `gh api .../actions/runners` shows every runner carrying `self-hosted(read-only)`, `Linux(read-only)`, `X64(read-only)`, `oracle-cloud(custom)`, `<pool>(custom)` — the `linux` and `x64` passed to `config.sh` never become custom labels, because GitHub absorbs them into its own auto-assigned read-only set.
+
+The absorption is **silent**; nothing warns about it. (`SUPPRESS_LABEL_WARNING` is unrelated — it is an OCI CLI variable set in the launcher's environment, and `config.sh` runs on the VM where it is never in scope.)
+
+Exclusivity is enforced, not merely documented — the shared-label and no-pool-label checks exist because presence of the required labels does not by itself make a runner exclusive.
+
+Keep this in step with the consuming `runs-on`. The two have to be edited together, or the soak queues forever.
+
+Prefer this over registering with the shared label and relabelling afterwards. Relabelling leaves a window between registration and the label removal in which any queued job can still claim the VM. That window cost the merge-recovery soak run 30606130771, and it has a second, quieter effect: the soak then runs on whatever cloud-init the *other* workflow pinned, so `SYSTEM_INTEGRATION_REF` stops describing the machine the soak actually runs on. Launching with the dedicated label from the start is what makes that pin binding.
+
 ### Emergency cleanup
 
 ```bash
-./reap-stale-runners.sh        # terminate VMs >6h old + deregister offline GH runners (also auto-runs every 30m via reap-runners.yml)
+./reap-stale-runners.sh        # terminate VMs >6h old + deregister offline GH runners (manual; the scheduled reaper lives in f1r3node-rust)
 ./destroy-all.sh               # nuke EVERY instance in ci-runner now (interactive) — only when no run is active
 ```
 
@@ -118,7 +146,7 @@ The current matrix is 5+5 = 10 samples per PR push. If you need more samples (e.
 
 The persistent runners (documented in [`../CLAUDE.md`](../CLAUDE.md)) live in compartment `f1r3fly-devops` with labels `[..., f1r3fly-rust-ci]` (no `-ephemeral` suffix). After this PR merges:
 
-- **Persistent runners** still run: `build_rust_docker_image` (the Docker image build itself) + the smoke tests + Scala CI workflows.
+- **Persistent runners** still run: `build_rust_docker_image` (the Docker image build itself) + the smoke tests.
 - **Ephemeral runners** now run: the integration test matrix (was `required_rust_integration_tests`).
 - The two pools coexist by distinct labels.
 
@@ -143,11 +171,12 @@ The baked image freezes a snapshot of:
 - Python 3.10 + Poetry 1.8.5
 - Rust stable toolchain
 - OCI CLI
-- `f1r3flyindustries/f1r3fly-rust:staging` Docker image
+- `f1r3flyindustries/f1r3fly-rust:dev` Docker image (images baked before the
+  `staging` branch deprecation contain `:staging` instead — re-bake to refresh)
 - `/etc/sysctl.d/99-ci-port-reservation.conf` reserving the test
   PortAllocator's range (41000-49000) from kernel ephemeral
   assignment (`net.ipv4.ip_local_reserved_ports`). Eliminates the
   ephemeral-port race that surfaces as `Address already in use` at
   rnode bind time under subprocess provider.
 
-The runner agent self-updates at registration if newer (no `--disableupdate` flag), so a stale baked agent is auto-recovered. But the **staging test image** is frozen as baked — re-bake when the node image is bumped or every quarter.
+The runner agent self-updates at registration if newer (no `--disableupdate` flag), so a stale baked agent is auto-recovered. But the **node test image** is frozen as baked — re-bake when the node image is bumped or every quarter.
