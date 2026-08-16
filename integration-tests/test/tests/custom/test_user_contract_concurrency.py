@@ -59,12 +59,12 @@ from f1r3fly.crypto import PrivateKey
 
 from ...infra.assertions import (
     assert_all_deploys_finalized_on_all_nodes,
-    assert_all_nodes_agree_on_lfb,
     assert_balance_consistent_across_nodes,
     assert_channel_consistent_across_nodes,
     assert_deploy_block_finalized_on_all_nodes,
     await_balance_converges_on_all_nodes,
     await_channel_converges_on_all_nodes,
+    common_finalized_anchor,
 )
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
@@ -245,7 +245,9 @@ def _assert_bg_load_robust(
         non_regression="up",
         upper_bound=want_dst,
     )
-    lfb = assert_all_nodes_agree_on_lfb(all_nodes, timeout=timeouts.finalization)
+    # Stable finalized anchor, not live-pointer agreement: under the
+    # always-on bg load the LFB pointers may never coincide in a sweep.
+    lfb = common_finalized_anchor(all_nodes, timeouts.finalization)
     src_final = assert_balance_consistent_across_nodes(all_nodes, _BG_SRC_ADDR, lfb)
     assert src0 - src_final >= min_src_debit, (
         f"[{label}] bg-src under-debited: source fell by {src0 - src_final} < transferred "
@@ -321,8 +323,14 @@ def _await_map_settles(all_nodes, channel, accept, allowed_keys, timeout, label)
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
+        # Fresh stable anchor per poll: a hash every node has FINALIZED
+        # is an achievable aligned cut under continuous proposals,
+        # whereas instantaneous LFB-pointer agreement may never occur in
+        # a sequential sweep against a healthy moving frontier (sibling
+        # blocker on PR #120 at d22f4040 — the loop burned its whole
+        # budget with 'all-node-consistent read=None').
         try:
-            lfb = assert_all_nodes_agree_on_lfb(all_nodes)
+            lfb = common_finalized_anchor(all_nodes, min(30.0, max(5.0, deadline - time.time())))
         except AssertionError:
             time.sleep(1.0)
             continue
@@ -355,8 +363,9 @@ def _await_settles(all_nodes, channel, accept, timeout, label):
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
+        # Fresh stable anchor per poll — see _await_map_settles.
         try:
-            lfb = assert_all_nodes_agree_on_lfb(all_nodes)
+            lfb = common_finalized_anchor(all_nodes, min(30.0, max(5.0, deadline - time.time())))
         except AssertionError:
             time.sleep(1.0)
             continue
@@ -788,8 +797,11 @@ def test_overdraft_cost_priority_keeps_higher_cost_transfer(user_shard, timeouts
         last_dst = None
         settled = False
         while time.time() < deadline:
+            # Fresh stable anchor per poll — see _await_map_settles.
             try:
-                lfb = assert_all_nodes_agree_on_lfb(all_nodes)
+                lfb = common_finalized_anchor(
+                    all_nodes, min(30.0, max(5.0, deadline - time.time()))
+                )
             except AssertionError:
                 time.sleep(1.0)
                 continue

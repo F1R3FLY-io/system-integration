@@ -49,7 +49,7 @@ def assert_deploy_errored(
 # ── Shard assertions (test-specific, needs multiple nodes) ─────────────
 
 
-def _get_block_with_retry(node, block_hash: str, timeout: int):
+def _get_block_with_retry(node, block_hash: str, timeout: float):
     """Retrieve a block from one node, polling through transient lookup races.
 
     A peer can have the block hash in its reception buffer but not yet
@@ -83,7 +83,7 @@ def _get_block_with_retry(node, block_hash: str, timeout: int):
             time.sleep(1.0)
 
 
-def assert_all_nodes_agree_on_block(nodes, block_hash: str, timeout: int = 0) -> None:
+def assert_all_nodes_agree_on_block(nodes, block_hash: str, timeout: float = 0) -> None:
     """Assert every node can retrieve the block and has the same post-state.
 
     Retrieval may be polled per-node through transient "not added yet"
@@ -104,7 +104,7 @@ def assert_all_nodes_agree_on_block(nodes, block_hash: str, timeout: int = 0) ->
     )
 
 
-def assert_all_nodes_agree_on_lfb(nodes, timeout: int = 0) -> str:
+def assert_all_nodes_agree_on_lfb(nodes, timeout: float = 0) -> str:
     """Assert all nodes report the same LFB hash. Returns the common hash.
 
     Default (timeout=0) is one-shot: a snapshot disagreement raises
@@ -115,6 +115,13 @@ def assert_all_nodes_agree_on_lfb(nodes, timeout: int = 0) -> str:
     the same LFB hash or the budget elapses. A persistent fork still
     surfaces as a loud AssertionError with the per-node state, just
     after the timeout instead of immediately.
+
+    NOT suitable as an aligned-read cut under CONTINUOUS proposals: the
+    sequential sweep reads a moving frontier, and healthy finalizers a
+    few heights apart may never coincide within any single sweep — the
+    poll then burns its whole budget spuriously (sibling blocker on
+    PR #120 at ``d22f4040``). For a read cut under load, use
+    ``common_finalized_anchor`` instead.
     """
     deadline = time.monotonic() + timeout
     while True:
@@ -128,6 +135,28 @@ def assert_all_nodes_agree_on_lfb(nodes, timeout: int = 0) -> str:
         if time.monotonic() >= deadline:
             raise AssertionError(f"Nodes disagree on LFB after {timeout}s: {lfb_info}")
         time.sleep(2.0)
+
+
+def common_finalized_anchor(nodes, timeout) -> str:
+    """A block hash FINALIZED on every node — a stable aligned-read cut.
+
+    Takes the first node's current LFB as the anchor and waits (bounded)
+    until every node reports THAT hash finalized. Unlike comparing live
+    LFB pointers across nodes, the anchor cannot be missed by a moving
+    frontier: finalization is monotonic, so once a node catches up to
+    the anchor's height, the anchor stays finalized there permanently.
+    Under continuous proposals, live pointers may never coincide within
+    a sequential sweep even though every finalizer is healthy and only a
+    few heights apart — settle loops built on pointer agreement then
+    time out with "all-node-consistent read=None" against a working
+    shard (sibling blocker on PR #120 at ``d22f4040``).
+
+    Callers polling toward a settled value should take a FRESH anchor
+    each iteration so the cut advances with the chain.
+    """
+    anchor = nodes[0].last_finalized_block().blockInfo.blockHash
+    assert_block_finalized_on_all_nodes(nodes, anchor, timeout=timeout)
+    return anchor
 
 
 def assert_contracts_consistent_across_nodes(
@@ -173,7 +202,7 @@ def assert_bonds_map_consistent_across_nodes(
     nodes,
     block_hash: str,
     expected_bonds: dict,
-    timeout: int = 0,
+    timeout: float = 0,
 ) -> None:
     """Assert every node's view of ``block_hash`` carries the same bonds map.
 
@@ -218,7 +247,7 @@ def assert_bonds_map_consistent_across_nodes(
 def assert_block_finalized_on_all_nodes(
     nodes,
     block_hash: str,
-    timeout: int = 0,
+    timeout: float = 0,
     interval: float = 2.0,
 ) -> None:
     """Assert every node has the block AND reports `isFinalized=True`.
@@ -306,7 +335,7 @@ def assert_deploy_block_finalized_on_all_nodes(node, deploy_id: str, nodes, time
 def assert_all_deploys_finalized_on_all_nodes(
     nodes,
     deploy_ids: list[str],
-    timeout: int,
+    timeout: float,
     *,
     label: str = "deploys",
 ) -> None:
@@ -354,13 +383,6 @@ def assert_all_deploys_finalized_on_all_nodes(
 
 
 # ── Cross-node channel-value agreement (FS node-identity) ──────────────
-
-
-def _values_agree(values) -> bool:
-    """True iff every value equals the first. Works for dicts (which are
-    unhashable and so cannot go through a ``set``)."""
-    items = list(values)
-    return all(v == items[0] for v in items[1:])
 
 
 def _channel_reader(channel: str):
@@ -445,9 +467,15 @@ def await_value_converges_on_all_nodes(
         below — catches a double-applied decrement, the item-1 ``FS=-20`` mode)
         fail immediately rather than as an opaque convergence timeout.
 
-    Between finalization rounds, nodes' LFBs can momentarily differ; those
-    iterations still advance convergence/non-regression against the read-only
-    node's finalized read but defer the cross-node identity check until aligned.
+    An "aligned cut" is the reader's finalized block VERIFIED FINALIZED on
+    every node — not instantaneous LFB-pointer agreement across a sequential
+    sweep, which under continuous proposals may never occur even though every
+    finalizer is healthy and a few heights apart (sibling blocker on PR #120
+    at ``d22f4040``: pointer-gated acceptance burned whole settle budgets
+    against a working shard). Finalization is monotonic, so the anchor cut is
+    always achievable; iterations where other nodes have not yet caught up to
+    the anchor still advance convergence/non-regression against the reader's
+    finalized read but defer the cross-node identity check.
     """
     reader = _pick_reader(nodes)
     deadline = time.time() + timeout
@@ -455,12 +483,18 @@ def await_value_converges_on_all_nodes(
     last = None
     while time.time() < deadline:
         try:
-            lfbs = {n.name: n.last_finalized_block().blockInfo.blockHash for n in nodes}
+            ref_block = reader.last_finalized_block().blockInfo.blockHash
         except Exception:  # noqa: BLE001 — transient query race during contention
             time.sleep(interval)
             continue
-        aligned = _values_agree(lfbs.values())
-        ref_block = lfbs[reader.name]
+        # Anchor alignment: every node has finalized the reader's cut.
+        try:
+            assert_block_finalized_on_all_nodes(
+                nodes, ref_block, timeout=min(30.0, max(5.0, deadline - time.time()))
+            )
+            aligned = True
+        except AssertionError:
+            aligned = False
         if aligned:
             # All-node FS node-identity at the shared finalized cut. Retrieval
             # races ("not added yet") are absorbed; a post-state divergence is
