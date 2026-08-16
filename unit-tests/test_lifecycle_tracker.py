@@ -122,6 +122,28 @@ class SweepScalesPastWorkerCount(unittest.TestCase):
 
 
 class FinalizationNeverWaitsOnEnrichment(unittest.TestCase):
+    def test_all_state_writes_land_before_the_first_block_lookup(self):
+        """The sibling-review blocker on da55af67: a SLOW (not failing)
+        get_block must not delay later deploys' finalization writes in
+        the same sweep. Pinned structurally: when the FIRST enrichment
+        RPC is issued, every finalization of the sweep is already
+        recorded — so enrichment latency, however large, delays no
+        verdict-relevant write."""
+        statuses = {f"d{i:02d}": _Status(DEPLOY_STATE_FINALIZED, HASH_A) for i in range(12)}
+        tracker, node, client = _tracker_with(statuses)
+        finalized_at_first_lookup = []
+        original_get_block = node.get_block
+
+        def observing_get_block(block_hash):
+            if not finalized_at_first_lookup:
+                with tracker._lock:
+                    finalized_at_first_lookup.append(len(tracker._finalization))
+            return original_get_block(block_hash)
+
+        node.get_block = observing_get_block
+        _run_cycle(tracker, node, client)
+        self.assertEqual(finalized_at_first_lookup, [12])
+
     def test_finalization_recorded_even_when_block_lookup_is_broken(self):
         statuses = {f"d{i}": _Status(DEPLOY_STATE_FINALIZED, HASH_A) for i in range(5)}
         tracker, node, client = _tracker_with(statuses, fail_lookups=True)

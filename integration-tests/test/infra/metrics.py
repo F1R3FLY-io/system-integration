@@ -657,6 +657,13 @@ class LifecycleTracker:
     def _sweep_cycle(self, pool, node, client, finalized_state, terminal_states):
         """One sweep pass over every pending deploy.
 
+        Two phases, strictly ordered: phase 1 folds EVERY probe result's
+        finalized/terminal state into the bookkeeping; phase 2 runs
+        block-number enrichment. A slow (not just failing) ``get_block``
+        therefore cannot delay any deploy's finalization write in the
+        same sweep — the verdict ``wait_for_finalization`` reads is fully
+        recorded before the first enrichment RPC is issued.
+
         Returns ``(pending_count, probe_error_count)``. Factored out of
         the loop so lifecycle unit tests can drive a cycle synchronously
         (no thread, no inter-cycle wait).
@@ -675,31 +682,30 @@ class LifecycleTracker:
                 return deploy_id, None, exc
 
         errors = 0
+        succeeded = []
         for deploy_id, status, exc in pool.map(_probe, pending):
             if self._stop_event.is_set():
-                break
+                return len(pending), errors
             if exc is not None:
                 errors += 1
                 logger.debug("status probe failed for %s: %s", deploy_id[:16], exc)
                 continue
-            self._apply_status(node, deploy_id, status, finalized_state, terminal_states)
+            self._apply_state(deploy_id, status, finalized_state, terminal_states)
+            succeeded.append((deploy_id, status))
+        for deploy_id, status in succeeded:
+            if self._stop_event.is_set():
+                break
+            self._enrich_inclusion(node, deploy_id, status)
         return len(pending), errors
 
-    def _apply_status(self, node, deploy_id, status, finalized_state, terminal_states):
-        """Fold one status response into the bookkeeping maps.
+    def _apply_state(self, deploy_id, status, finalized_state, terminal_states):
+        """Fold one status response's STATE into the bookkeeping maps.
 
-        Two load-bearing properties:
-
-        - Every write is gated on ``deploy_id in self._records`` under
-          the lock: ``clear()`` runs between load phases while the sweep
-          thread is alive, and a stale write after the clear would
-          corrupt the next phase's counts.
-        - Finalized/terminal state is recorded BEFORE block-number
-          enrichment. The ``get_block`` lookup is telemetry only — it
-          must never sit between the node saying "finalized" and the
-          verdict ``wait_for_finalization`` reads, or a slow lookup
-          backlog recreates false unfinalized results at sustained-phase
-          volume.
+        Pure dictionary writes — no RPCs, nothing here can be slow.
+        Every write is gated on ``deploy_id in self._records`` under the
+        lock: ``clear()`` runs between load phases while the sweep
+        thread is alive, and a stale write after the clear would corrupt
+        the next phase's counts.
         """
         now = time.time()
         if status.state == finalized_state:
@@ -711,6 +717,15 @@ class LifecycleTracker:
                 if deploy_id in self._records:
                     self._terminal[deploy_id] = str(status.state)
 
+    def _enrich_inclusion(self, node, deploy_id, status):
+        """Resolve inclusion telemetry (block number) for one deploy.
+
+        Telemetry only — runs strictly AFTER every state write of the
+        sweep, so a slow or broken ``get_block`` can never delay a
+        finalization the verdict depends on. Same ``clear()`` gating as
+        ``_apply_state``.
+        """
+        now = time.time()
         if not status.latestBlockHash:
             return
         with self._lock:
