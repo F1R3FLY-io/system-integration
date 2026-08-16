@@ -61,14 +61,14 @@ from ...infra.assertions import (
     assert_all_deploys_finalized_on_all_nodes,
     assert_all_nodes_agree_on_lfb,
     assert_balance_consistent_across_nodes,
-    assert_block_finalized_on_all_nodes,
     assert_channel_consistent_across_nodes,
+    assert_deploy_block_finalized_on_all_nodes,
     await_balance_converges_on_all_nodes,
     await_channel_converges_on_all_nodes,
 )
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import wait_for_deploy_included, wait_for_finalized
+from ...infra.polling import wait_for_deploy_included
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
@@ -304,11 +304,10 @@ def _finalize_setup(shard, term: str, timeouts) -> None:
     did = v1.deploy_string(
         term, _PRODUCER_KEYS["validator1"], phlo_limit=_PHLO_LIMIT, phlo_price=_PHLO_PRICE
     )
-    block = wait_for_deploy_included(v1, did, timeouts.deploy_inclusion * 3)
-    wait_for_finalized(v1, block.blockNumber, timeouts.finalization * 3)
-    assert_block_finalized_on_all_nodes(
-        shard.all_nodes, block.blockHash, timeout=timeouts.finalization * 2
-    )
+    # Canonical-inclusion anchor: the first inclusion block can be
+    # orphaned under load and the deploy re-homed (pinned-hash
+    # anti-pattern, see assert_deploy_block_finalized_on_all_nodes).
+    assert_deploy_block_finalized_on_all_nodes(v1, did, shard.all_nodes, timeouts.finalization * 3)
 
 
 def _await_map_settles(all_nodes, channel, accept, allowed_keys, timeout, label):

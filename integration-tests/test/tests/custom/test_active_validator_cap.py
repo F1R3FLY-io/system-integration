@@ -32,8 +32,6 @@ from ...infra.keys import (
 from ...infra.polling import (
     poll_until,
     wait_for_deploy_finalized,
-    wait_for_deploy_included,
-    wait_for_finalized,
 )
 from ...infra.shard import Shard
 from .test_validator_lifecycle import (
@@ -109,9 +107,12 @@ def test_active_validator_cap(cap_shard, timeouts) -> None:
     _attach_prebond(shard, VALIDATOR5_ID, timeouts)
     for proposer, ident in [(v1, VALIDATOR4_ID), (v2, VALIDATOR5_ID)]:
         did = proposer.pos.bond(ident.private_key(), _JOINER_STAKE[ident.name])
-        blk = wait_for_deploy_included(proposer, did, timeouts.deploy_inclusion * 3)
-        wait_for_finalized(proposer, blk.blockNumber, timeouts.finalization * 3)
-        assert proposer.pos.read_result(did, blk.blockHash).success, f"{ident.name} bond failed"
+        # Canonical-inclusion anchor: read the bond result at the block
+        # that actually carried the deploy into canonical state, not the
+        # first (orphanable) find_deploy inclusion.
+        status = wait_for_deploy_finalized(proposer, did, timeouts.finalization * 3)
+        bond_hash = status.latestBlockHash.hex()
+        assert proposer.pos.read_result(did, bond_hash).success, f"{ident.name} bond failed"
 
     # All five land in allBonds, but the active set stays capped.
     poll_until(

@@ -277,6 +277,27 @@ def assert_block_finalized_on_all_nodes(
     )
 
 
+def assert_deploy_block_finalized_on_all_nodes(node, deploy_id: str, nodes, timeout) -> str:
+    """Canonical-inclusion anchor: resolve the deploy's FINALIZED containing
+    block via ``deploy_finalization_status``, assert THAT hash is finalized on
+    every node, and return the hash (use it for any per-block follow-up reads,
+    e.g. ``pos.read_result``).
+
+    Replaces the recurring anti-pattern
+    ``wait_for_deploy_included -> pin blockHash -> assert finalized everywhere``:
+    the first inclusion block can lose fork choice under load and re-home, and
+    the pinned hash then never finalizes anywhere even though the deploy does
+    (ft -1.0 on every node — nine sightings across the suites as of the
+    43e9f844 preflight; PR #118's bonding anchor was the first fix).
+    """
+    from .polling import wait_for_deploy_finalized
+
+    status = wait_for_deploy_finalized(node, deploy_id, timeout)
+    block_hash = status.latestBlockHash.hex()
+    assert_block_finalized_on_all_nodes(nodes, block_hash, timeout=timeout)
+    return block_hash
+
+
 def assert_all_deploys_finalized_on_all_nodes(
     nodes,
     deploy_ids: list[str],
