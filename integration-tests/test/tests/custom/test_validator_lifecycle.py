@@ -43,6 +43,7 @@ from ...infra.assertions import (
     assert_all_deploys_finalized_on_all_nodes,
     assert_block_finalized_on_all_nodes,
     assert_bonds_map_consistent_across_nodes,
+    assert_deploy_block_finalized_on_all_nodes,
     assert_deploy_errored,
 )
 from ...infra.config import ShardConfig
@@ -57,7 +58,7 @@ from ...infra.keys import (
 from ...infra.polling import (
     poll_until,
     wait_for_block_visible,
-    wait_for_block_visible_on_all_nodes,
+    wait_for_deploy_finalized,
     wait_for_deploy_included,
     wait_for_finalized,
 )
@@ -210,14 +211,12 @@ def _assert_bond_rejected(
     """
     bonds_before = ro.pos.get_bonds()
     deploy_id = proposer.pos.bond(key, amount)
-    # Runs under bg_load; scale like retired Phase 4 (deploy_inclusion * 3 /
-    # finalization * 3) so a lumpy under-load finalization doesn't false-fail.
-    block = wait_for_deploy_included(proposer, deploy_id, timeouts.deploy_inclusion * 3)
-    wait_for_finalized(proposer, block.blockNumber, timeouts.finalization * 3)
-    assert_block_finalized_on_all_nodes(
-        all_nodes, block.blockHash, timeout=timeouts.finalization * 3
+    # Canonical-inclusion anchor (runs under bg_load, where the first
+    # inclusion block can be orphaned and the deploy re-homed).
+    block_hash = assert_deploy_block_finalized_on_all_nodes(
+        proposer, deploy_id, all_nodes, timeouts.finalization * 3
     )
-    result = proposer.pos.read_result(deploy_id, block.blockHash)
+    result = proposer.pos.read_result(deploy_id, block_hash)
     assert not result.success, f"expected bond rejection, got success: {result}"
     assert expected_reason in result.reason, (
         f"expected reason containing {expected_reason!r}, got {result.reason!r}"
@@ -232,14 +231,11 @@ def _assert_bond_rejected(
 def _assert_withdraw_rejected(actor, all_nodes, ro, key, expected_reason: str, timeouts) -> None:
     bonds_before = ro.pos.get_bonds()
     deploy_id = actor.pos.withdraw(key)
-    # Runs under bg_load; scale like retired Phase 4 (deploy_inclusion * 3 /
-    # finalization * 3) so a lumpy under-load finalization doesn't false-fail.
-    block = wait_for_deploy_included(actor, deploy_id, timeouts.deploy_inclusion * 3)
-    wait_for_finalized(actor, block.blockNumber, timeouts.finalization * 3)
-    assert_block_finalized_on_all_nodes(
-        all_nodes, block.blockHash, timeout=timeouts.finalization * 3
+    # Canonical-inclusion anchor (same orphan-race rationale as above).
+    block_hash = assert_deploy_block_finalized_on_all_nodes(
+        actor, deploy_id, all_nodes, timeouts.finalization * 3
     )
-    result = actor.pos.read_result(deploy_id, block.blockHash)
+    result = actor.pos.read_result(deploy_id, block_hash)
     assert not result.success, f"expected withdraw rejection, got success: {result}"
     assert expected_reason in result.reason, (
         f"expected reason containing {expected_reason!r}, got {result.reason!r}"
@@ -252,18 +248,36 @@ def _pos_call_result(actor, all_nodes, deploy_id: str, timeouts):
     """Await a PoS mutating deploy (commit/reveal/posVaultTransfer) for inclusion +
     all-node finalization, then return its contract ``PosResult`` ack. Same load
     budgets as the rejection helpers (deploy_inclusion * 3 / finalization * 3)."""
-    block = wait_for_deploy_included(actor, deploy_id, timeouts.deploy_inclusion * 3)
-    wait_for_finalized(actor, block.blockNumber, timeouts.finalization * 3)
-    assert_block_finalized_on_all_nodes(
-        all_nodes, block.blockHash, timeout=timeouts.finalization * 3
+    block_hash = assert_deploy_block_finalized_on_all_nodes(
+        actor, deploy_id, all_nodes, timeouts.finalization * 3
     )
-    return actor.pos.read_result(deploy_id, block.blockHash)
+    return actor.pos.read_result(deploy_id, block_hash)
 
 
 def _validators_on(ro) -> Dict[str, int]:
-    """{publicKey_hex: stake} from the readonly node's /api/validators."""
+    """{publicKey_hex: stake} from the readonly node's /api/validators.
+
+    NOTE: this endpoint returns ALL BONDED validators, including
+    bonded-but-inactive ones on a shard whose active-validator cap is
+    below its bonded count (soak preflight 31919610258 proved this live:
+    it returned 5 on a cap-3 shard). Use it for bonded-set membership
+    only; for the ACTIVE consensus set use ``_active_set``.
+    """
     resp = ro.api_get("/validators")
     return {v["publicKey"]: v["stake"] for v in resp["validators"]}
+
+
+def _active_set(node) -> Dict[str, int]:
+    """{publicKey_hex: stake} of the ACTIVE consensus set.
+
+    Reads the finalized tip's bonds map (``last_finalized_block().
+    blockInfo.bonds``) — the weights consensus actually runs on, which
+    is what the active-validator cap constrains. Distinct from both
+    ``/api/validators`` (all bonds, see ``_validators_on``) and
+    ``pos.get_bonds()`` (PoS allBonds ledger state).
+    """
+    info = node.last_finalized_block().blockInfo
+    return {b.validator: b.stake for b in info.bonds}
 
 
 _GENESIS_BY_NAME = {
@@ -399,21 +413,29 @@ def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bo
         phlo_price=_BOND_PHLO_PRICE,
     )
 
-    def _joiner_proposed():
+    # Only a joiner-sent block the JOINER already reports FINALIZED may
+    # anchor the cross-node exact-hash assert: an arbitrary sender-match
+    # candidate can be orphaned under bg load and then never finalizes
+    # anywhere (the pinned-hash anti-pattern; same fix as the bonding
+    # suite's Phase 6 in PR #117 — this instance failed the focused
+    # revalidation after the 43e9f844 preflight). Polling directly for a
+    # finalized candidate subsumes the number-based wait.
+    def _joiner_finalized_block():
         for blk in joiner.get_blocks(50):
             if blk.sender == pk and blk.blockNumber > bond_block.blockNumber:
-                return blk
+                try:
+                    if joiner.get_block(blk.blockHash).blockInfo.isFinalized:
+                        return blk
+                except Exception:
+                    continue
         return None
 
     joiner_block = poll_until(
-        predicate=_joiner_proposed,
-        timeout=timeouts.finalization * 2,
+        predicate=_joiner_finalized_block,
+        timeout=timeouts.finalization * 5,
         interval=timeouts.poll_interval,
-        description=f"{identity.name} proposes a block post-activation",
+        description=f"{identity.name} proposes a post-activation block that finalizes locally",
     )
-    # Widen the finalize budget vs base finalization to absorb load (finalization
-    # under bg_load finalizes in lumpy batches); matches retired (finalization * 5).
-    wait_for_finalized(joiner, joiner_block.blockNumber, timeouts.finalization * 5)
     assert_block_finalized_on_all_nodes(
         shard.all_nodes, joiner_block.blockHash, timeout=timeouts.finalization * 5
     )
@@ -426,23 +448,28 @@ def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bo
         phlo_price=_BOND_PHLO_PRICE,
     )
 
-    def _proposer_justifies_joiner():
+    # Same finalized-candidate discipline as step 6: only a justifying
+    # block the proposer already reports finalized may be pinned.
+    def _proposer_justifies_joiner_finalized():
         for blk in proposer.get_blocks(50):
             if blk.blockNumber <= joiner_block.blockNumber:
                 continue
             if blk.sender != proposer_id.public_hex:
                 continue
             if any(j.validator == pk for j in blk.justifications):
-                return blk
+                try:
+                    if proposer.get_block(blk.blockHash).blockInfo.isFinalized:
+                        return blk
+                except Exception:
+                    continue
         return None
 
     just_block = poll_until(
-        predicate=_proposer_justifies_joiner,
-        timeout=timeouts.finalization * 2,
+        predicate=_proposer_justifies_joiner_finalized,
+        timeout=timeouts.finalization * 5,
         interval=timeouts.poll_interval,
-        description=f"{proposer.name} produces a block justifying {identity.name}",
+        description=f"{proposer.name} produces a finalized block justifying {identity.name}",
     )
-    wait_for_finalized(proposer, just_block.blockNumber, timeouts.finalization * 5)
     assert_block_finalized_on_all_nodes(
         shard.all_nodes, just_block.blockHash, timeout=timeouts.finalization * 5
     )
@@ -466,13 +493,10 @@ def _assert_full_liveness(shard, active, timeouts):
             phlo_limit=_BOND_PHLO_LIMIT,
             phlo_price=_BOND_PHLO_PRICE,
         )
-        live_block = wait_for_deploy_included(node, live_id, timeouts.deploy_inclusion * 5)
-        wait_for_finalized(node, live_block.blockNumber, timeouts.finalization * 5)
-        wait_for_block_visible_on_all_nodes(
-            shard.all_nodes, live_block.blockHash, timeout=timeouts.finalization * 5
-        )
-        assert_block_finalized_on_all_nodes(
-            shard.all_nodes, live_block.blockHash, timeout=timeouts.finalization * 5
+        # Canonical-inclusion anchor; subsumes the number-based wait and
+        # the pinned visibility check on the possibly-orphaned block.
+        assert_deploy_block_finalized_on_all_nodes(
+            node, live_id, shard.all_nodes, timeouts.finalization * 5
         )
 
 
@@ -748,16 +772,22 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # finalizes on every node, and the map agrees across nodes. Budgets match
     # retired Phase 4 (finalization * 3).
     for r in results:
-        proposer, identity, stake, bond_block = (
+        proposer, identity, stake = (
             r["proposer"],
             r["identity"],
             r["stake"],
-            r["bond_block"],
         )
         pk = identity.public_hex
-        wait_for_finalized(proposer, bond_block.blockNumber, timeouts.finalization * 3)
+        # Canonical-inclusion anchor: the deploy's finalization status
+        # names the block that actually carried it into canonical state.
+        # Pinning the find_deploy inclusion block (r["bond_block"]) is
+        # the orphan race the PR #118 bonding fix removed — that block
+        # can lose fork choice and never finalize even though the bond
+        # does (ft -1.0 on all 7 nodes in the 43e9f844 preflight).
+        status = wait_for_deploy_finalized(proposer, r["deploy_id"], timeouts.finalization * 3)
+        bond_block_hash = status.latestBlockHash.hex()
         assert_block_finalized_on_all_nodes(
-            shard.all_nodes, bond_block.blockHash, timeout=timeouts.finalization * 3
+            shard.all_nodes, bond_block_hash, timeout=timeouts.finalization * 3
         )
         # The bond is in the FS-backed bonded set (/validators) immediately, but a
         # block's `bonds` field is the ACTIVE consensus set, which includes the joiner
@@ -765,10 +795,10 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         # ledger predicate (/validators), and assert the block's active-bonds field is
         # node-identical across nodes (the consensus-state agreement the seal guards).
         bonds_now = {
-            b.validator: b.stake for b in proposer.get_block(bond_block.blockHash).blockInfo.bonds
+            b.validator: b.stake for b in proposer.get_block(bond_block_hash).blockInfo.bonds
         }
         assert_bonds_map_consistent_across_nodes(
-            shard.all_nodes, bond_block.blockHash, bonds_now, timeout=timeouts.finalization * 3
+            shard.all_nodes, bond_block_hash, bonds_now, timeout=timeouts.finalization * 3
         )
         _wait_for_active(ro, pk, True, timeouts, f"{identity.name} in /validators")
         bonded_now = _validators_on(ro)

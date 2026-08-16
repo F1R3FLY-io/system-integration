@@ -8,6 +8,7 @@ startup logs).
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Callable, Dict, Optional, TypeVar
 
@@ -40,7 +41,7 @@ MIN_POLL_ATTEMPTS = 3
 
 def poll_until(
     predicate: Callable[[], Optional[T]],
-    timeout: int,
+    timeout: float,
     interval: float = 3.0,
     description: str = "",
     min_attempts: int = MIN_POLL_ATTEMPTS,
@@ -96,6 +97,33 @@ def poll_until(
     )
 
 
+# The node's vabn-expiration rejection, verbatim shape (captured from soak
+# preflight 31919610258):
+#   "Deploy validAfterBlockNumber 157 has expired at block 207 with deploy
+#    lifespan 50."
+# Retrying a submission is safe ONLY on this rejection — it is the node's
+# guarantee that the deploy was NOT accepted, so a resend cannot
+# double-submit. The regex is the retry GATE, not just a height extractor:
+# anything that does not match this exact shape must be recorded as a
+# failure, never retried. unit-tests/test_vabn_expiration_matcher.py pins
+# the shape against the captured node wording, so silent drift on either
+# side fails a sub-second test instead of degrading retry behavior.
+VABN_EXPIRED_PATTERN = re.compile(
+    r"Deploy validAfterBlockNumber \d+ has expired at block (\d+) with deploy lifespan \d+"
+)
+
+
+def parse_vabn_expiration(message: str) -> Optional[int]:
+    """The node's CURRENT height from a vabn-expiration rejection, else None.
+
+    A non-None return simultaneously authorizes a retry (the node rejected,
+    nothing was accepted) and supplies the freshest possible height for the
+    replacement validAfterBlockNumber.
+    """
+    match = VABN_EXPIRED_PATTERN.search(message)
+    return int(match.group(1)) if match else None
+
+
 # Owned by pyf1r3fly (f1r3fly/polling.py); the raise site there is the only
 # writer of this wording. unit-tests/test_empty_par_translation.py fails if
 # the upstream wording drifts, so the translation below cannot silently die.
@@ -144,7 +172,7 @@ def wait_for_node_running(
     get_logs: Callable[[], str],
     is_running: Callable[[], bool],
     node_name: str,
-    timeout: int,
+    timeout: float,
     interval: float = 2.0,
     status_url: str = "",
 ) -> None:
@@ -202,7 +230,7 @@ def wait_for_node_running(
     )
 
 
-def wait_for_deploy_included(node, deploy_id: str, timeout: int):
+def wait_for_deploy_included(node, deploy_id: str, timeout: float):
     """Poll ``find_deploy`` until the deploy is included in a block.
 
     Node-aware wrapper around ``f1r3fly.polling.wait_for_deploy_included``.
@@ -211,7 +239,7 @@ def wait_for_deploy_included(node, deploy_id: str, timeout: int):
     return _client_wait_for_deploy_included(node._external_client(), deploy_id, timeout)
 
 
-def wait_for_finalized(node, block_number: int, timeout: int) -> None:
+def wait_for_finalized(node, block_number: int, timeout: float) -> None:
     """Poll until the last finalized block reaches or exceeds ``block_number``.
 
     Node-aware wrapper around ``f1r3fly.polling.wait_for_finalized``.
@@ -235,7 +263,7 @@ def lfb_number(node) -> int:
 def wait_for_lfb_at_least(
     node,
     height: int,
-    timeout: int,
+    timeout: float,
     interval: float = 2.0,
 ) -> int:
     """Poll until ``node``'s LFB.blockNumber >= ``height``. Returns the
@@ -252,7 +280,7 @@ def wait_for_lfb_at_least(
 
 def wait_for_lfb_converged(
     nodes,
-    timeout: int,
+    timeout: float,
     min_height: Optional[int] = None,
     max_spread: int = 3,
     interval: float = 3.0,
@@ -327,7 +355,7 @@ def wait_for_lfb_converged(
         )
 
 
-def wait_for_node_quiet(node, timeout: int, interval: float = 1.0) -> None:
+def wait_for_node_quiet(node, timeout: float, interval: float = 1.0) -> None:
     """Block until ``node``'s HTTP API stops responding.
 
     Used after ``node.pause()`` to confirm SIGSTOP has actually landed
@@ -357,7 +385,7 @@ def wait_for_node_quiet(node, timeout: int, interval: float = 1.0) -> None:
 def wait_for_deploy_finalized(
     node,
     deploy_id: str,
-    timeout: int,
+    timeout: float,
     interval: float = 3.0,
 ):
     """Poll ``deploy_finalization_status`` until the deploy reaches Finalized.
@@ -379,7 +407,7 @@ def wait_for_lfb_with_ft(
     node,
     target_number: int,
     ftt: float,
-    timeout: int,
+    timeout: float,
     interval: float = 2.0,
 ):
     """Poll until ``node``'s LFB satisfies BOTH invariants:
@@ -417,8 +445,8 @@ def deploy_and_read(
     node,
     term: str,
     private_key,
-    inclusion_timeout: int,
-    finalization_timeout: int,
+    inclusion_timeout: float,
+    finalization_timeout: float,
     *,
     rho_file: str = None,
     substitutions: Optional[Dict[str, str]] = None,
@@ -533,7 +561,7 @@ def deploy_with_fallback(
     )
 
 
-def propose_until_included(node, deploy_id: str, timeout: int, interval: float = 0.5) -> str:
+def propose_until_included(node, deploy_id: str, timeout: float, interval: float = 0.5) -> str:
     """Drive ``node`` to propose until ``deploy_id`` lands in a block; return its hash.
 
     For building deterministic history on a shard with ``heartbeat=False``, where
@@ -574,7 +602,7 @@ def propose_until_included(node, deploy_id: str, timeout: int, interval: float =
     )
 
 
-def wait_for_block_visible(node, block_hash: str, timeout: int):
+def wait_for_block_visible(node, block_hash: str, timeout: float):
     """Poll ``get_block`` until the block is visible on the node."""
 
     def _check():
@@ -592,7 +620,7 @@ def wait_for_block_visible(node, block_hash: str, timeout: int):
     )
 
 
-def wait_for_block_visible_on_all_nodes(nodes, block_hash: str, timeout: int):
+def wait_for_block_visible_on_all_nodes(nodes, block_hash: str, timeout: float):
     """Poll until every node can return the block via ``get_block``.
 
     Synchronization barrier for assertions on freshly-proposed blocks.
@@ -625,7 +653,7 @@ def wait_for_block_visible_on_all_nodes(nodes, block_hash: str, timeout: int):
     )
 
 
-def wait_for_block_justified(node, validator_pubkey: str, block_hash: str, timeout: int):
+def wait_for_block_justified(node, validator_pubkey: str, block_hash: str, timeout: float):
     """Poll until a validator's block appears in the node's justifications.
 
     Stronger than ``wait_for_block_visible`` — checks that the block has
