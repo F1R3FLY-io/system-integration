@@ -75,6 +75,20 @@ Session-scoped fixtures are built once; tests sharing a fixture run on one pytes
 | `cleanup_session(session_id)` **classmethod** | **User-invoked only.** Same aggressiveness as the above, but scoped to one `session_id`. Other sessions are untouched. Backs `shardctl test-reset --session-id <id>` for the multi-agent-on-one-repo case. Idempotent. |
 | `adopt_session(session_id) -> List[NodeHandle]` | Reuse a shard from a previous `--keep-running` run. Backs `pytest --skip-setup --session-id <id>`. |
 
+Shard startup is transactional. Providers register every spawned handle before
+readiness polling so log scanning and teardown can see partial starts. A failed
+or interrupted readiness check archives the node logs and force-removes that
+partial shard even when preservation flags are enabled; those flags apply only
+to successfully returned resources. Docker and subprocess providers both use
+the same lifecycle helper.
+
+Each shard also owns an immutable generated `rnode.conf`. The generator copies
+the base Rust configuration byte-for-byte when no client fuel is requested, or
+adds a canonical, validated `client-fuel-allocations` list for cost-accounting
+tests. Bootstrap nodes, validators, readonly nodes, and later joiners all use
+that same shard-specific file. Subprocess shard directories are numbered so a
+second shard cannot overwrite the configuration of the first.
+
 Three provider impls today (selected via `--provider={docker,subprocess}`; default is `docker`):
 - **`DockerProvider`** (`infra/providers/docker.py`) — full impl, shells out to `docker` + `docker compose`.
 - **`SubprocessProvider`** (`infra/providers/subprocess.py`) — full impl, spawns the locally-built `services/f1r3node-rust/target/release/node` binary directly as `subprocess.Popen` instances on `localhost`. No Docker, no image build. Per-session data dirs under `integration-tests/.subprocess-data/<session_id>/`. Pre-built binary required (set `F1R3FLY_NODE_BINARY` to override path).

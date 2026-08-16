@@ -24,9 +24,9 @@ from ..timeouts import TimeoutHierarchy
 from ..types import NodeRole, PortMapping, ValidatorIdentity
 from .base import (
     RetiredLogSnapshot,
+    activate_handles_then_wait,
     archive_handles,
     archive_root_for,
-    wait_for_handles_or_archive,
 )
 
 logger = logging.getLogger(__name__)
@@ -273,6 +273,7 @@ class DockerNodeHandle:
         role: NodeRole,
         identity: Optional[ValidatorIdentity] = None,
         volume_name: Optional[str] = None,
+        config_file: Optional[str] = None,
     ) -> None:
         self._name = name
         self._ports = ports
@@ -280,10 +281,15 @@ class DockerNodeHandle:
         self._role = role
         self._identity = identity
         self._volume_name = volume_name
+        self._config_file = config_file
 
     @property
     def volume_name(self) -> Optional[str]:
         return self._volume_name
+
+    @property
+    def config_file(self) -> Optional[str]:
+        return self._config_file
 
     @property
     def name(self) -> str:
@@ -511,6 +517,13 @@ class DockerNodeHandle:
         # reliably; best-effort for cleanup hooks that need it).
         session_id = parts[2]
         volume_name = f"test-{session_id}-{role_suffix}-data"
+        config_result = _docker(
+            "inspect",
+            "-f",
+            '{{range .Mounts}}{{if eq .Destination "/var/lib/rnode/rnode.conf"}}{{.Source}}{{end}}{{end}}',
+            container_name,
+        )
+        config_file = (config_result.stdout or "").strip() or None
 
         return cls(
             name=container_name,
@@ -519,6 +532,7 @@ class DockerNodeHandle:
             role=role,
             identity=None,
             volume_name=volume_name,
+            config_file=config_file,
         )
 
 
@@ -725,6 +739,7 @@ class DockerProvider:
             ports=port_map["boot"],
             network=f"f1r3fly-test-{self._session_id}",
             role=NodeRole.BOOTSTRAP,
+            config_file=f"{genesis_dir}/rnode.conf",
         )
         handles.append(boot_handle)
 
@@ -737,6 +752,7 @@ class DockerProvider:
                     network=f"f1r3fly-test-{self._session_id}",
                     role=NodeRole.VALIDATOR,
                     identity=identity,
+                    config_file=f"{genesis_dir}/rnode.conf",
                 )
             )
 
@@ -747,15 +763,8 @@ class DockerProvider:
                     ports=port_map["readonly"],
                     network=f"f1r3fly-test-{self._session_id}",
                     role=NodeRole.READONLY,
+                    config_file=f"{genesis_dir}/rnode.conf",
                 )
-            )
-
-        # Wait for all nodes to reach Running state
-        if wait_running:
-            wait_for_handles_or_archive(
-                handles,
-                self._archive_dir / f"shard{self._shard_counter}",
-                self._timeouts.node_startup,
             )
 
         # Store compose path for teardown
@@ -763,7 +772,14 @@ class DockerProvider:
         shard_key = f"shard-{self._session_id}"
         self._compose_files[shard_key] = (compose_path, project_name, genesis_dir)
 
-        self._active_handles.extend(handles)
+        activate_handles_then_wait(
+            self._active_handles,
+            handles,
+            self._archive_dir / f"shard{self._shard_counter}",
+            self._timeouts.node_startup,
+            wait_running,
+            lambda: self.destroy_shard(handles, force=True),
+        )
         logger.info(
             "Shard created: %d nodes (%s)",
             len(handles),
@@ -771,7 +787,12 @@ class DockerProvider:
         )
         return handles
 
-    def destroy_shard(self, handles: Sequence[DockerNodeHandle]) -> None:
+    def destroy_shard(
+        self,
+        handles: Sequence[DockerNodeHandle],
+        *,
+        force: bool = False,
+    ) -> None:
         """Destroy a shard — compose down with volumes.
 
         Snapshots each handle's log into the retired bucket before the
@@ -781,6 +802,17 @@ class DockerProvider:
         Symmetric to the per-handle snapshot in ``remove_node`` used by
         ``add_joiner`` / ``add_observer``.
         """
+        if not force and self.keep_running:
+            logger.info("Shard kept running (--keep-running)")
+            return
+        if not force and self.keep_on_failure and current_test_failed():
+            self._registry.preserved_on_failure = True
+            logger.warning(
+                "Shard PRESERVED (--keep-on-failure; test failed). Run "
+                "`shardctl test-reset` when done inspecting."
+            )
+            return
+
         for h in handles:
             try:
                 snapshot_text = h.logs()
@@ -791,17 +823,6 @@ class DockerProvider:
             )
             if h in self._active_handles:
                 self._active_handles.remove(h)
-        if self.keep_running:
-            logger.info("Shard kept running (--keep-running)")
-            return
-        if self.keep_on_failure and current_test_failed():
-            self._registry.preserved_on_failure = True
-            logger.warning(
-                "Shard PRESERVED (--keep-on-failure; test failed). Run "
-                "`shardctl test-reset` when done inspecting."
-            )
-            return
-
         archive_handles(handles, self._archive_dir / f"shard{self._shard_counter}")
 
         shard_key = f"shard-{self._session_id}"
@@ -952,14 +973,14 @@ class DockerProvider:
             volume_name=volume_name,
         )
 
-        if wait_running:
-            wait_for_handles_or_archive(
-                [handle],
-                self._archive_dir,
-                self._timeouts.node_startup,
-            )
-
-        self._active_handles.append(handle)
+        activate_handles_then_wait(
+            self._active_handles,
+            [handle],
+            self._archive_dir,
+            self._timeouts.node_startup,
+            wait_running,
+            lambda: self.destroy_standalone(handle, force=True),
+        )
         return handle
 
     def recreate_standalone(
@@ -1054,21 +1075,30 @@ class DockerProvider:
             volume_name=volume_name,
         )
 
-        if wait_running:
-            wait_for_handles_or_archive(
-                [new_handle],
-                self._archive_dir,
-                self._timeouts.node_startup,
-            )
+        if handle in self._active_handles:
+            self._active_handles.remove(handle)
+        activate_handles_then_wait(
+            self._active_handles,
+            [new_handle],
+            self._archive_dir,
+            self._timeouts.node_startup,
+            wait_running,
+            lambda: self.destroy_standalone(new_handle, force=True),
+        )
 
         return new_handle
 
-    def destroy_standalone(self, handle: DockerNodeHandle) -> None:
-        if handle in self._active_handles:
-            self._active_handles.remove(handle)
-        if self.keep_running:
+    def destroy_standalone(
+        self,
+        handle: DockerNodeHandle,
+        *,
+        force: bool = False,
+    ) -> None:
+        if not force and self.keep_running:
             logger.info("Standalone %s kept running (--keep-running)", handle.name)
             return
+        if handle in self._active_handles:
+            self._active_handles.remove(handle)
 
         archive_handles([handle], self._archive_dir)
 
@@ -1158,7 +1188,7 @@ class DockerProvider:
             "-v",
             f"{volume_name}:/var/lib/rnode",
             "-v",
-            f"{self._paths.rust_conf}:/var/lib/rnode/rnode.conf:ro",
+            f"{bootstrap_handle.config_file or self._paths.rust_conf}:/var/lib/rnode/rnode.conf:ro",
             "-p",
             f"{ports.protocol}:40400",
             "-p",
@@ -1193,19 +1223,28 @@ class DockerProvider:
             role=role,
             identity=identity,
             volume_name=volume_name,
+            config_file=bootstrap_handle.config_file,
         )
 
-        if wait_running:
-            wait_for_handles_or_archive(
-                [handle],
-                self._archive_dir,
-                self._timeouts.node_startup,
-            )
-
-        self._active_handles.append(handle)
+        activate_handles_then_wait(
+            self._active_handles,
+            [handle],
+            self._archive_dir,
+            self._timeouts.node_startup,
+            wait_running,
+            lambda: self.remove_node(handle, force=True),
+        )
         return handle
 
-    def remove_node(self, handle: DockerNodeHandle) -> None:
+    def remove_node(
+        self,
+        handle: DockerNodeHandle,
+        *,
+        force: bool = False,
+    ) -> None:
+        if not force and self.keep_running:
+            logger.info("Node %s kept running (--keep-running)", handle.name)
+            return
         if handle in self._active_handles:
             self._active_handles.remove(handle)
         # Snapshot the node's logs before any teardown that would
@@ -1219,10 +1258,6 @@ class DockerProvider:
         self._retired_log_snapshots.append(
             RetiredLogSnapshot(name=handle.name, log_text=snapshot_text)
         )
-        if self.keep_running:
-            logger.info("Node %s kept running (--keep-running)", handle.name)
-            return
-
         archive_handles([handle], self._archive_dir)
 
         handle.remove()

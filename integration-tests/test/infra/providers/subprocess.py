@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_binary
+from ..genesis import write_node_config
 from ..keys import BOOTSTRAP_NODE_ID
 from ..ports import PortAllocator
 from ..run_outcome import current_test_failed
@@ -43,9 +44,9 @@ from ..timeouts import TimeoutHierarchy
 from ..types import NodeRole, PortMapping, ValidatorIdentity
 from .base import (
     RetiredLogSnapshot,
+    activate_handles_then_wait,
     archive_handles,
     archive_root_for,
-    wait_for_handles_or_archive,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,7 @@ class SubprocessNodeHandle:
         identity: Optional[ValidatorIdentity] = None,
         volume_name: Optional[str] = None,
         use_shard_conf: bool = False,
+        config_file: Optional[Path] = None,
     ) -> None:
         self._name = name
         self._ports = ports
@@ -118,6 +120,7 @@ class SubprocessNodeHandle:
         # subdir in subprocess-data/).
         self._volume_name = volume_name
         self._use_shard_conf = use_shard_conf
+        self._config_file = config_file
 
     # ── Properties ──────────────────────────────────────────────────
 
@@ -171,6 +174,10 @@ class SubprocessNodeHandle:
         new process keeps the same config family.
         """
         return self._use_shard_conf
+
+    @property
+    def config_file(self) -> Optional[Path]:
+        return self._config_file
 
     @property
     def pid(self) -> int:
@@ -457,13 +464,16 @@ class SubprocessProvider:
     def _node_name(self, role_key: str) -> str:
         return f"rnode.test.{self._session_id}.{role_key}"
 
-    def _bootstrap_url(self, boot_handle: SubprocessNodeHandle) -> str:
-        # 127.0.0.1, not localhost — see grpc_host comment.
+    @staticmethod
+    def _bootstrap_url_for_ports(ports: PortMapping) -> str:
         return (
             f"rnode://{BOOTSTRAP_NODE_ID}@127.0.0.1"
-            f"?protocol={boot_handle.ports.protocol}"
-            f"&discovery={boot_handle.ports.discovery}"
+            f"?protocol={ports.protocol}"
+            f"&discovery={ports.discovery}"
         )
+
+    def _bootstrap_url(self, boot_handle: SubprocessNodeHandle) -> str:
+        return self._bootstrap_url_for_ports(boot_handle.ports)
 
     def _build_extra_cli(self, node_config: NodeConfig) -> List[str]:
         extra: List[str] = []
@@ -482,6 +492,7 @@ class SubprocessProvider:
         cert_subdir: Optional[str],
         identity: Optional[ValidatorIdentity] = None,
         extra_env: Optional[dict] = None,
+        config_file: Optional[Path] = None,
     ) -> SubprocessNodeHandle:
         """Spawn a node process. ``cli_args`` is the list of arguments AFTER
         ``run`` (i.e. flags like ``--data-dir``, ``--bootstrap``, etc.).
@@ -495,7 +506,7 @@ class SubprocessProvider:
             str(self._binary),
             "run",
             "--config-file",
-            self._paths.rust_conf,
+            str(config_file or self._paths.rust_conf),
             "--data-dir",
             str(data_dir),
             "--host",
@@ -550,6 +561,7 @@ class SubprocessProvider:
             spawn_args=cmd,
             spawn_env=env,
             identity=identity,
+            config_file=config_file,
         )
 
     # ── Shard lifecycle ─────────────────────────────────────────────
@@ -572,7 +584,7 @@ class SubprocessProvider:
         self._shard_counter += 1
         # Genesis files (bonds.txt + wallets.txt) — written to a temp dir
         # under the session root so cleanup catches them.
-        tmp_genesis_dir = self._session_root / "genesis"
+        tmp_genesis_dir = self._session_root / f"genesis-{self._shard_counter}"
         tmp_genesis_dir.mkdir(parents=True, exist_ok=True)
         # Use the existing generate_genesis machinery; it writes into a
         # NamedTemporaryDirectory but registers nothing here (we own
@@ -593,7 +605,9 @@ class SubprocessProvider:
         handles: List[SubprocessNodeHandle] = []
 
         # ── Bootstrap ──
+        bootstrap_url = self._bootstrap_url_for_ports(port_map["boot"])
         boot_cli = [
+            f"--bootstrap={bootstrap_url}",
             f"--validator-private-key={_BOOTSTRAP_PRIVATE_KEY}",
             f"--required-signatures={config.effective_required_signatures}",
             "--ceremony-master-mode",
@@ -613,11 +627,11 @@ class SubprocessProvider:
             ports=port_map["boot"],
             cli_args=boot_cli,
             cert_subdir="bootstrap",
+            config_file=genesis_dir / "rnode.conf",
         )
         handles.append(boot_handle)
 
         # ── Validators ──
-        bootstrap_url = self._bootstrap_url(boot_handle)
         for idx, (identity, _stake) in enumerate(config.bonds):
             slot = idx + 1
             role_key = f"validator{slot}"
@@ -654,6 +668,7 @@ class SubprocessProvider:
                     cli_args=v_cli,
                     cert_subdir=cert_subdir,
                     identity=identity,
+                    config_file=genesis_dir / "rnode.conf",
                 )
             )
 
@@ -675,18 +690,18 @@ class SubprocessProvider:
                     ports=port_map["readonly"],
                     cli_args=ro_cli,
                     cert_subdir=None,  # readonly auto-generates its own cert
+                    config_file=genesis_dir / "rnode.conf",
                 )
             )
 
-        # ── Wait for all to reach Running ──
-        if wait_running:
-            wait_for_handles_or_archive(
-                handles,
-                self._archive_dir / f"shard{self._shard_counter}",
-                self._timeouts.node_startup,
-            )
-
-        self._active_handles.extend(handles)
+        activate_handles_then_wait(
+            self._active_handles,
+            handles,
+            self._archive_dir / f"shard{self._shard_counter}",
+            self._timeouts.node_startup,
+            wait_running,
+            lambda: self.destroy_shard(handles, force=True),
+        )
         return handles
 
     def _write_genesis(self, config: ShardConfig, target_dir: Path) -> Path:
@@ -710,30 +725,30 @@ class SubprocessProvider:
                 for vault_addr, balance in config.extra_wallets:
                     f.write(f"{vault_addr},{balance}\n")
 
+        write_node_config(config, self._paths.rust_conf, target_dir)
+
         logger.info(
-            "Subprocess genesis written to %s (bonds: %s, extra_wallets: %d)",
+            "Subprocess genesis written to %s (bonds: %s, extra_wallets: %d, client_fuel_allocations: %d)",
             target_dir,
             ", ".join(f"{v.public_hex[:8]}...={s}" for v, s in config.bonds),
             len(config.extra_wallets or []),
+            len(config.client_fuel_allocations or []),
         )
         return target_dir
 
-    def destroy_shard(self, handles: Sequence[SubprocessNodeHandle]) -> None:
+    def destroy_shard(
+        self,
+        handles: Sequence[SubprocessNodeHandle],
+        *,
+        force: bool = False,
+    ) -> None:
         # Snapshot logs into the retired bucket before the handles are
         # removed; the autouse forbidden-pattern scanner reads from this
         # bucket plus `active_handles`, and the test's own `finally:
         # shard.destroy()` runs ahead of the scanner. Symmetric to the
         # per-handle snapshot in `remove_node` used by `add_joiner` /
         # `add_observer`.
-        for h in handles:
-            try:
-                snapshot_text = h.logs()
-            except Exception:
-                snapshot_text = ""
-            self._retired_log_snapshots.append(
-                RetiredLogSnapshot(name=h.name, log_text=snapshot_text)
-            )
-        if self._keep_running:
+        if not force and self._keep_running:
             logger.info(
                 "Subprocess shard for session %s kept running (--keep-running). PIDs: %s. Data: %s",
                 self._session_id,
@@ -741,7 +756,7 @@ class SubprocessProvider:
                 self._session_root,
             )
             return
-        if self._keep_on_failure and current_test_failed():
+        if not force and self._keep_on_failure and current_test_failed():
             self._preserved_on_failure = True
             logger.warning(
                 "Subprocess shard for session %s PRESERVED (--keep-on-failure; "
@@ -752,6 +767,15 @@ class SubprocessProvider:
                 self._session_root,
             )
             return
+
+        for h in handles:
+            try:
+                snapshot_text = h.logs()
+            except Exception:
+                snapshot_text = ""
+            self._retired_log_snapshots.append(
+                RetiredLogSnapshot(name=h.name, log_text=snapshot_text)
+            )
         archive_handles(handles, self._archive_dir / f"shard{self._shard_counter}")
         for h in handles:
             try:
@@ -838,14 +862,14 @@ class SubprocessProvider:
             use_shard_conf=use_shard_conf,
         )
 
-        if wait_running:
-            wait_for_handles_or_archive(
-                [handle],
-                self._archive_dir,
-                self._timeouts.node_startup,
-            )
-
-        self._active_handles.append(handle)
+        activate_handles_then_wait(
+            self._active_handles,
+            [handle],
+            self._archive_dir,
+            self._timeouts.node_startup,
+            wait_running,
+            lambda: self.destroy_standalone(handle, force=True),
+        )
         return handle
 
     def recreate_standalone(
@@ -931,14 +955,14 @@ class SubprocessProvider:
             use_shard_conf=use_shard_conf,
         )
 
-        if wait_running:
-            wait_for_handles_or_archive(
-                [new_handle],
-                self._archive_dir,
-                self._timeouts.node_startup,
-            )
-
-        self._active_handles.append(new_handle)
+        activate_handles_then_wait(
+            self._active_handles,
+            [new_handle],
+            self._archive_dir,
+            self._timeouts.node_startup,
+            wait_running,
+            lambda: self.destroy_standalone(new_handle, force=True),
+        )
         return new_handle
 
     def _spawn_with_config_override(
@@ -1032,12 +1056,17 @@ class SubprocessProvider:
             use_shard_conf=use_shard_conf,
         )
 
-    def destroy_standalone(self, handle: SubprocessNodeHandle) -> None:
-        if handle in self._active_handles:
-            self._active_handles.remove(handle)
-        if self._keep_running:
+    def destroy_standalone(
+        self,
+        handle: SubprocessNodeHandle,
+        *,
+        force: bool = False,
+    ) -> None:
+        if not force and self._keep_running:
             logger.info("Standalone %s kept running (--keep-running)", handle.name)
             return
+        if handle in self._active_handles:
+            self._active_handles.remove(handle)
         archive_handles([handle], self._archive_dir)
         handle.remove()
 
@@ -1096,19 +1125,28 @@ class SubprocessProvider:
             cli_args=cli,
             cert_subdir=None,  # joiners/observers auto-generate
             identity=identity,
+            config_file=bootstrap_handle.config_file,
         )
 
-        if wait_running:
-            wait_for_handles_or_archive(
-                [handle],
-                self._archive_dir,
-                self._timeouts.node_startup,
-            )
-
-        self._active_handles.append(handle)
+        activate_handles_then_wait(
+            self._active_handles,
+            [handle],
+            self._archive_dir,
+            self._timeouts.node_startup,
+            wait_running,
+            lambda: self.remove_node(handle, force=True),
+        )
         return handle
 
-    def remove_node(self, handle: SubprocessNodeHandle) -> None:
+    def remove_node(
+        self,
+        handle: SubprocessNodeHandle,
+        *,
+        force: bool = False,
+    ) -> None:
+        if not force and self._keep_running:
+            logger.info("Joiner %s kept running (--keep-running)", handle.name)
+            return
         if handle in self._active_handles:
             self._active_handles.remove(handle)
         # Snapshot the node's logs before any teardown that would
@@ -1122,9 +1160,6 @@ class SubprocessProvider:
         self._retired_log_snapshots.append(
             RetiredLogSnapshot(name=handle.name, log_text=snapshot_text)
         )
-        if self._keep_running:
-            logger.info("Joiner %s kept running (--keep-running)", handle.name)
-            return
         archive_handles([handle], self._archive_dir)
         handle.remove()
 

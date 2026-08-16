@@ -116,7 +116,7 @@ def generate_compose(
         ],
         "volumes": [
             f"{volume_name('boot')}:/var/lib/rnode",
-            f"{paths.rust_conf}:/var/lib/rnode/rnode.conf",
+            f"{genesis_dir}/rnode.conf:/var/lib/rnode/rnode.conf:ro",
             f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
             f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
             f"{paths.certs_dir}/bootstrap/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
@@ -174,7 +174,7 @@ def generate_compose(
             ],
             "volumes": [
                 f"{volume_name(node_key)}:/var/lib/rnode",
-                f"{paths.rust_conf}:/var/lib/rnode/rnode.conf",
+                f"{genesis_dir}/rnode.conf:/var/lib/rnode/rnode.conf:ro",
                 f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
                 f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
                 f"{paths.certs_dir}/{cert_dir}/node.certificate.pem:/var/lib/rnode/node.certificate.pem:ro",
@@ -223,7 +223,7 @@ def generate_compose(
             ],
             "volumes": [
                 f"{volume_name(ro_key)}:/var/lib/rnode",
-                f"{paths.rust_conf}:/var/lib/rnode/rnode.conf",
+                f"{genesis_dir}/rnode.conf:/var/lib/rnode/rnode.conf:ro",
                 f"{genesis_dir}/wallets.txt:/var/lib/rnode/genesis/wallets.txt",
                 f"{genesis_dir}/bonds.txt:/var/lib/rnode/genesis/bonds.txt",
             ],
