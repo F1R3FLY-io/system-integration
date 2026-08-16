@@ -583,6 +583,10 @@ class LifecycleTracker:
         # deliberately left un-finalized so they count against the load
         # test's unfinalized assertion instead of hiding.
         self._terminal: Dict[str, str] = {}
+        # Block-hash → block-number cache for inclusion enrichment. Many
+        # deploys share a containing block, so this collapses the
+        # get_block volume from per-deploy to per-unique-block.
+        self._block_numbers: Dict[str, int] = {}
         self._max_block = 0
         self._lfb_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -619,40 +623,20 @@ class LifecycleTracker:
 
         terminal_states = (DEPLOY_STATE_FAILED, DEPLOY_STATE_EXPIRED)
         node = self._node_list[0]
+        # NOTE: the node's client is cached, so this is NOT a
+        # reconnection mechanism — gRPC channels reconnect transient
+        # failures on their own, per-probe failures are tolerated, and a
+        # permanently dead channel surfaces via the fail-streak warning.
+        client = node._external_client()
         fail_streak = 0
         with ThreadPoolExecutor(max_workers=self._SWEEP_WORKERS) as pool:
             while not self._stop_event.is_set():
                 cycle_start = time.time()
-                # Re-resolved each cycle so a channel that died mid-run
-                # (node restart, connection reset) is not fatal for the
-                # remainder of the sweep's lifetime.
-                client = node._external_client()
-                with self._lock:
-                    pending = [
-                        did
-                        for did in self._records
-                        if did not in self._finalization and did not in self._terminal
-                    ]
+                pending, errors = self._sweep_cycle(
+                    pool, node, client, DEPLOY_STATE_FINALIZED, terminal_states
+                )
 
-                def _probe(deploy_id, client=client):
-                    try:
-                        return deploy_id, client.deploy_finalization_status(deploy_id), None
-                    except Exception as exc:
-                        return deploy_id, None, exc
-
-                errors = 0
-                for deploy_id, status, exc in pool.map(_probe, pending):
-                    if self._stop_event.is_set():
-                        return
-                    if exc is not None:
-                        errors += 1
-                        logger.debug("status probe failed for %s: %s", deploy_id[:16], exc)
-                        continue
-                    self._apply_status(
-                        node, deploy_id, status, DEPLOY_STATE_FINALIZED, terminal_states
-                    )
-
-                if pending and errors == len(pending):
+                if pending and errors == pending:
                     fail_streak += 1
                     if fail_streak == self._SWEEP_FAIL_STREAK_WARN:
                         logger.warning(
@@ -660,7 +644,7 @@ class LifecycleTracker:
                             "consecutive cycles (%d pending) — node unreachable or "
                             "channel dead; deploys will report unfinalized",
                             fail_streak,
-                            len(pending),
+                            pending,
                         )
                 else:
                     fail_streak = 0
@@ -670,35 +654,54 @@ class LifecycleTracker:
                 elapsed = time.time() - cycle_start
                 self._stop_event.wait(timeout=max(0.0, 1.0 - elapsed))
 
+    def _sweep_cycle(self, pool, node, client, finalized_state, terminal_states):
+        """One sweep pass over every pending deploy.
+
+        Returns ``(pending_count, probe_error_count)``. Factored out of
+        the loop so lifecycle unit tests can drive a cycle synchronously
+        (no thread, no inter-cycle wait).
+        """
+        with self._lock:
+            pending = [
+                did
+                for did in self._records
+                if did not in self._finalization and did not in self._terminal
+            ]
+
+        def _probe(deploy_id):
+            try:
+                return deploy_id, client.deploy_finalization_status(deploy_id), None
+            except Exception as exc:
+                return deploy_id, None, exc
+
+        errors = 0
+        for deploy_id, status, exc in pool.map(_probe, pending):
+            if self._stop_event.is_set():
+                break
+            if exc is not None:
+                errors += 1
+                logger.debug("status probe failed for %s: %s", deploy_id[:16], exc)
+                continue
+            self._apply_status(node, deploy_id, status, finalized_state, terminal_states)
+        return len(pending), errors
+
     def _apply_status(self, node, deploy_id, status, finalized_state, terminal_states):
         """Fold one status response into the bookkeeping maps.
 
-        Every write is gated on ``deploy_id in self._records`` under the
-        lock: ``clear()`` runs between load phases while the sweep thread
-        is alive, and a stale write after the clear would corrupt the
-        next phase's counts.
+        Two load-bearing properties:
+
+        - Every write is gated on ``deploy_id in self._records`` under
+          the lock: ``clear()`` runs between load phases while the sweep
+          thread is alive, and a stale write after the clear would
+          corrupt the next phase's counts.
+        - Finalized/terminal state is recorded BEFORE block-number
+          enrichment. The ``get_block`` lookup is telemetry only — it
+          must never sit between the node saying "finalized" and the
+          verdict ``wait_for_finalization`` reads, or a slow lookup
+          backlog recreates false unfinalized results at sustained-phase
+          volume.
         """
         now = time.time()
-        if status.latestBlockHash:
-            with self._lock:
-                tracked = deploy_id in self._records
-                existing = self._inclusion.get(deploy_id)
-            # (Re-)resolve the block number when unknown — including a
-            # previous cycle's failed lookup, stored as 0. The original
-            # inclusion timestamp is preserved on re-resolution.
-            if tracked and (existing is None or existing[0] == 0):
-                block_number = 0
-                try:
-                    block_number = node.get_block(
-                        status.latestBlockHash.hex()
-                    ).blockInfo.blockNumber
-                except Exception as exc:
-                    logger.debug("block-number lookup failed for %s: %s", deploy_id[:16], exc)
-                with self._lock:
-                    if deploy_id in self._records:
-                        included_at = existing[1] if existing else now
-                        self._inclusion[deploy_id] = (block_number, included_at)
-                        self._max_block = max(self._max_block, block_number)
         if status.state == finalized_state:
             with self._lock:
                 if deploy_id in self._records:
@@ -707,6 +710,32 @@ class LifecycleTracker:
             with self._lock:
                 if deploy_id in self._records:
                     self._terminal[deploy_id] = str(status.state)
+
+        if not status.latestBlockHash:
+            return
+        with self._lock:
+            tracked = deploy_id in self._records
+            existing = self._inclusion.get(deploy_id)
+        # (Re-)resolve the block number when unknown — including a
+        # previous cycle's failed lookup, stored as 0. The original
+        # inclusion timestamp is preserved on re-resolution.
+        if not tracked or (existing is not None and existing[0] != 0):
+            return
+        block_hash = status.latestBlockHash.hex()
+        with self._lock:
+            block_number = self._block_numbers.get(block_hash, 0)
+        if block_number == 0:
+            try:
+                block_number = node.get_block(block_hash).blockInfo.blockNumber
+            except Exception as exc:
+                logger.debug("block-number lookup failed for %s: %s", deploy_id[:16], exc)
+        with self._lock:
+            if block_number:
+                self._block_numbers[block_hash] = block_number
+            if deploy_id in self._records:
+                included_at = existing[1] if existing else now
+                self._inclusion[deploy_id] = (block_number, included_at)
+                self._max_block = max(self._max_block, block_number)
 
     def track_deploy(self, record: DeployRecord):
         """Register a deploy; the sweep thread picks it up on its next pass."""
@@ -758,6 +787,7 @@ class LifecycleTracker:
             self._inclusion.clear()
             self._finalization.clear()
             self._terminal.clear()
+            self._block_numbers.clear()
             self._max_block = 0
 
     def shutdown(self):

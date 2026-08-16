@@ -29,6 +29,7 @@ finalization/convergence gates.
 
 import logging
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
@@ -114,7 +115,16 @@ def _submit_deploy(node, key, index, vabn, phase):
 
 
 def _current_block_number(node, monitor=None) -> int:
-    """``node.get_current_block_number()``, but explaining itself when it fails.
+    """The node's DAG-TIP height, with watchdog attribution on failure.
+
+    ``Node.get_current_block_number()`` returns the LAST FINALIZED block
+    number — the wrong height for validAfterBlockNumber freshness, since
+    deploy expiration compares against the latest DAG height. When the
+    un-finalized cone runs deep (tip − LFB > deploy lifespan), an
+    LFB-derived vabn is expired on arrival no matter how recently it was
+    read (sibling review of eace78ff). ``get_blocks(1)`` reports the
+    actual tip; LFB remains only as a fallback when the tip read comes
+    back empty.
 
     When the host-protection watchdog trips it SIGKILLs every node, so the next
     query dies with a bare ``grpc StatusCode.UNAVAILABLE / Connection refused``.
@@ -126,6 +136,9 @@ def _current_block_number(node, monitor=None) -> int:
     failure, instead of leaving the two halves to be correlated by hand.
     """
     try:
+        blocks = node.get_blocks(1)
+        if blocks:
+            return max(b.blockNumber for b in blocks)
         return node.get_current_block_number()
     # Deliberately broad. A watchdog kill arrives as grpc.RpcError, but a dead
     # node also surfaces as connection resets and client-wrapper errors, and all
@@ -155,8 +168,8 @@ def _current_block_number(node, monitor=None) -> int:
                 "failure rather than a watchdog kill — check that node's logs"
             )
         raise AssertionError(
-            f"Node {node.name} became unreachable while querying the last "
-            f"finalized block. {diagnosis}. Underlying error: {exc}"
+            f"Node {node.name} became unreachable while querying the chain "
+            f"height. {diagnosis}. Underlying error: {exc}"
         ) from exc
 
 
@@ -227,7 +240,15 @@ def _run_phase(nodes, tracker, phase, start_index, monitor=None):
                 message = str(first_err)
                 if "validAfterBlockNumber" in message and "expired" in message:
                     try:
-                        vabn = max(0, _current_block_number(node_list[0][0], monitor) - 1)
+                        # The rejection itself carries the node's CURRENT
+                        # height ("… has expired at block M …") — the most
+                        # direct freshness source there is. Fall back to a
+                        # tip read only if the message shape ever changes.
+                        height = re.search(r"expired at block (\d+)", message)
+                        if height:
+                            vabn = max(0, int(height.group(1)) - 1)
+                        else:
+                            vabn = max(0, _current_block_number(node_list[0][0], monitor) - 1)
                         vabn_refreshed_at = time.time()
                         rec = _submit_deploy(node, key, idx, vabn, phase_name)
                         tracker.track_deploy(rec)
@@ -268,9 +289,15 @@ def _format_report(reports):
 
 def _get_tip(node) -> int:
     """Highest block number the node knows (the DAG tip). ``tip - LFB`` is the
-    un-finalized cone depth — the direct finalization-lag / runaway signal."""
+    un-finalized cone depth — the direct finalization-lag / runaway signal.
+
+    Must read the ACTUAL tip (``get_blocks(1)``): the previous
+    implementation used ``get_current_block_number()``, which returns the
+    LFB — making the cone telemetry compute LFB − LFB = 0 and hiding the
+    very lag it exists to expose (sibling review of eace78ff)."""
     try:
-        return node.get_current_block_number()
+        blocks = node.get_blocks(1)
+        return max(b.blockNumber for b in blocks) if blocks else 0
     except Exception:
         return 0
 
