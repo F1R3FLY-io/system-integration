@@ -293,15 +293,35 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
             f"Bond block expected at #4 (epoch boundary), got #{b4_info.blockNumber}"
         )
         assert b4_info.blockNumber % _EPOCH_LENGTH == 0
-        # closeBlock at #4 activates V4 — bond block's bonds map includes V4.
-        assert_bonds_map_consistent_across_nodes(all_nodes, b4, bonds_4)
+        # closeBlock at #4 activates V4, but the BOUNDARY block itself may
+        # validly expose either side of the transition: its header can carry
+        # the pre-activation weights (bonds_3) or the post-activation set
+        # (bonds_4) depending on when the epoch transition is applied
+        # relative to header construction (same semantics as the bonding
+        # suite's boundary handling; soak preflight 31919610258 failed here
+        # by demanding bonds_4 unconditionally). Pin whichever side b4
+        # actually shows, then require ALL nodes to agree on that exact map.
+        b4_bonds = {b.validator: b.stake for b in b4_info.bonds}
+        assert b4_bonds in (bonds_3, bonds_4), (
+            f"Bond block #4 bonds map matches neither transition side:\n"
+            f"  got:      {sorted(b4_bonds)}\n"
+            f"  pre-set:  {sorted(bonds_3)}\n"
+            f"  post-set: {sorted(bonds_4)}"
+        )
+        assert_bonds_map_consistent_across_nodes(all_nodes, b4, b4_bonds)
+        # Activation is verified in a finalized DESCENDANT: block #5 is past
+        # the boundary, so its bonds map must unconditionally include V4.
+        b5 = _propose_with_filler(v1, VALIDATOR1_ID, "post-boundary")
+        for n in (v2, v3, joiner, ro):
+            wait_for_block_visible(n, b5, t)
+        assert_bonds_map_consistent_across_nodes(all_nodes, b5, bonds_4)
         logging.info(
-            "Bond block #4 (%s): bonds=%s — V4 successfully bonded + activated",
+            "Bond block #4 (%s): bonds=%s — V4 bonded (activation proven at #5)",
             b4[:16],
             sorted(_bonds_set(b4_info)),
         )
 
-        # ── Blocks #5+: continuous bg proposers create chaotic chain advance ──
+        # ── Blocks #6+: continuous bg proposers create chaotic chain advance ──
         # Linear AND concurrent-burst-style proposing does NOT reproduce
         # the bug. The hypothesis is that the bug needs the actor-message
         # timing race that continuous heartbeat-driven proposing creates.

@@ -13,7 +13,6 @@ import math
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -537,11 +536,28 @@ class DeployResult:
 
 
 class LifecycleTracker:
-    """Tracks deploy inclusion and finalization in background threads.
+    """Tracks deploy inclusion and finalization with one batch-poll thread.
 
-    For each deploy, a background thread polls find_deploy until the deploy
-    appears in a block. A separate background thread polls last_finalized_block
-    continuously and marks deploys as finalized when LFB passes their block.
+    A single background thread sweeps every pending deploy through
+    ``deploy_finalization_status`` — the node's authoritative canonical-state
+    answer. Inclusion is observed when the status first reports a containing
+    block; finalization when the state reaches ``DEPLOY_STATE_FINALIZED``.
+
+    This replaces two unreliable mechanisms that produced the 640 bogus
+    "unfinalized" results in soak preflight 31919610258:
+
+    - a 6-worker pool running one ``find_deploy`` poll loop PER DEPLOY
+      (each occupying a worker for up to ``inclusion_timeout``) — at
+      sustained-phase volume (1200 deploys) the pool starved and most
+      deploys were never polled at all, and
+    - finalization inferred from ``included_block_number <= LFB_number``,
+      which is orphan-unsafe: the recorded inclusion block can lose fork
+      choice and the deploy re-home to a later block (the same
+      ``find_deploy`` race fixed in PR #118's bonding anchor).
+
+    A batch sweep visits EVERY pending deploy each cycle regardless of
+    backlog, and the status API already accounts for merge rejection and
+    re-homing, so no block-number inference is involved.
 
     Usage::
 
@@ -556,72 +572,98 @@ class LifecycleTracker:
     def __init__(self, nodes: dict, inclusion_timeout: int = 90):
         self._nodes = nodes
         self._node_list = list(nodes.values())
+        # Kept for API compatibility; the sweep is continuous and the
+        # overall bound is wait_for_finalization's timeout.
         self._inclusion_timeout = inclusion_timeout
         self._lock = threading.Lock()
         self._records: Dict[str, DeployRecord] = {}
         self._inclusion: Dict[str, Tuple[int, float]] = {}
         self._finalization: Dict[str, float] = {}
+        # Terminal FAILED/EXPIRED deploys: excluded from further sweeps but
+        # deliberately left un-finalized so they count against the load
+        # test's unfinalized assertion instead of hiding.
+        self._terminal: Dict[str, str] = {}
         self._max_block = 0
-        self._executor = ThreadPoolExecutor(max_workers=6)
         self._lfb_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
     def start_lfb_monitor(self):
-        """Start background LFB polling thread."""
+        """Start the background status-sweep thread."""
         self._stop_event.clear()
-        self._lfb_thread = threading.Thread(target=self._lfb_poll_loop, daemon=True)
+        self._lfb_thread = threading.Thread(target=self._sweep_loop, daemon=True)
         self._lfb_thread.start()
 
     def stop_lfb_monitor(self):
-        """Stop background LFB polling thread."""
+        """Stop the background status-sweep thread."""
         self._stop_event.set()
         if self._lfb_thread:
             self._lfb_thread.join(timeout=10)
 
-    def _lfb_poll_loop(self):
+    def _sweep_loop(self):
+        from f1r3fly.pb.DeployServiceCommon_pb2 import (
+            DEPLOY_STATE_EXPIRED,
+            DEPLOY_STATE_FAILED,
+            DEPLOY_STATE_FINALIZED,
+        )
+
         node = self._node_list[0]
+        client = node._external_client()
         while not self._stop_event.is_set():
-            try:
-                lfb = node.last_finalized_block().blockInfo.blockNumber
+            with self._lock:
+                pending = [
+                    did
+                    for did in self._records
+                    if did not in self._finalization and did not in self._terminal
+                ]
+            for deploy_id in pending:
+                if self._stop_event.is_set():
+                    return
+                try:
+                    status = client.deploy_finalization_status(deploy_id)
+                except Exception:
+                    continue
                 now = time.time()
-                with self._lock:
-                    for deploy_id, (bn, _) in self._inclusion.items():
-                        if bn > 0 and bn <= lfb and deploy_id not in self._finalization:
-                            self._finalization[deploy_id] = now
-            except Exception:
-                pass
+                included = bool(status.latestBlockHash)
+                if included and deploy_id not in self._inclusion:
+                    block_number = 0
+                    try:
+                        block_number = node.get_block(
+                            status.latestBlockHash.hex()
+                        ).blockInfo.blockNumber
+                    except Exception:
+                        pass
+                    with self._lock:
+                        self._inclusion[deploy_id] = (block_number, now)
+                        self._max_block = max(self._max_block, block_number)
+                if status.state == DEPLOY_STATE_FINALIZED:
+                    with self._lock:
+                        self._finalization[deploy_id] = now
+                elif status.state in (DEPLOY_STATE_FAILED, DEPLOY_STATE_EXPIRED):
+                    with self._lock:
+                        self._terminal[deploy_id] = str(status.state)
             self._stop_event.wait(timeout=1)
 
     def track_deploy(self, record: DeployRecord):
-        """Submit a deploy record for background inclusion tracking."""
+        """Register a deploy; the sweep thread picks it up on its next pass."""
         with self._lock:
             self._records[record.deploy_id] = record
-        self._executor.submit(self._poll_inclusion, record)
-
-    def _poll_inclusion(self, record: DeployRecord):
-        node = self._node_list[0]
-        deadline = time.time() + self._inclusion_timeout
-        while time.time() < deadline:
-            try:
-                light_block = node.find_deploy(record.deploy_id)
-                find_time = time.time()
-                with self._lock:
-                    self._inclusion[record.deploy_id] = (light_block.blockNumber, find_time)
-                    self._max_block = max(self._max_block, light_block.blockNumber)
-                return
-            except Exception:
-                time.sleep(1)
 
     def wait_for_finalization(self, timeout: float):
-        """Block until all tracked deploys are finalized or timeout."""
+        """Block until every tracked deploy is settled, or timeout.
+
+        Settled means finalized OR terminal (FAILED/EXPIRED). Terminal
+        deploys still surface as unfinalized in ``get_results`` — this
+        just avoids burning the full timeout waiting on a deploy the
+        node has already declared dead.
+        """
         deadline = time.time() + timeout
         while time.time() < deadline:
             with self._lock:
-                all_included = all(did in self._inclusion for did in self._records)
-                if all_included:
-                    all_finalized = all(did in self._finalization for did in self._records)
-                    if all_finalized:
-                        return
+                settled = all(
+                    did in self._finalization or did in self._terminal for did in self._records
+                )
+            if settled:
+                return
             time.sleep(1)
 
     def get_results(self) -> List[DeployResult]:
@@ -650,9 +692,9 @@ class LifecycleTracker:
             self._records.clear()
             self._inclusion.clear()
             self._finalization.clear()
+            self._terminal.clear()
             self._max_block = 0
 
     def shutdown(self):
-        """Stop all background threads and executor."""
+        """Stop the background sweep thread."""
         self.stop_lfb_monitor()
-        self._executor.shutdown(wait=False)

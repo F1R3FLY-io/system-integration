@@ -261,9 +261,29 @@ def _pos_call_result(actor, all_nodes, deploy_id: str, timeouts):
 
 
 def _validators_on(ro) -> Dict[str, int]:
-    """{publicKey_hex: stake} from the readonly node's /api/validators."""
+    """{publicKey_hex: stake} from the readonly node's /api/validators.
+
+    NOTE: this endpoint returns ALL BONDED validators, including
+    bonded-but-inactive ones on a shard whose active-validator cap is
+    below its bonded count (soak preflight 31919610258 proved this live:
+    it returned 5 on a cap-3 shard). Use it for bonded-set membership
+    only; for the ACTIVE consensus set use ``_active_set``.
+    """
     resp = ro.api_get("/validators")
     return {v["publicKey"]: v["stake"] for v in resp["validators"]}
+
+
+def _active_set(node) -> Dict[str, int]:
+    """{publicKey_hex: stake} of the ACTIVE consensus set.
+
+    Reads the finalized tip's bonds map (``last_finalized_block().
+    blockInfo.bonds``) — the weights consensus actually runs on, which
+    is what the active-validator cap constrains. Distinct from both
+    ``/api/validators`` (all bonds, see ``_validators_on``) and
+    ``pos.get_bonds()`` (PoS allBonds ledger state).
+    """
+    info = node.last_finalized_block().blockInfo
+    return {b.validator: b.stake for b in info.bonds}
 
 
 _GENESIS_BY_NAME = {

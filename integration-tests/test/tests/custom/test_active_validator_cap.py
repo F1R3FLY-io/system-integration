@@ -43,9 +43,9 @@ from .test_validator_lifecycle import (
     _GENESIS_STAKE,
     _JOINER_STAKE,
     _WALLET_BALANCE,
+    _active_set,
     _advance_lfb,
     _attach_prebond,
-    _validators_on,
     _vault_addr,
 )
 
@@ -82,17 +82,20 @@ def cap_shard(provider, timeouts):
 
 def test_active_validator_cap(cap_shard, timeouts) -> None:
     """``pickActiveValidators`` take(numberOfActiveValidators): with the cap == 3 and 5
-    validators bonded, exactly 3 are ACTIVE (``/validators``) while all 5 are BONDED
-    (``getBonds``) — the 2 over-cap joiners are bonded-but-inactive. Count-based (which 3
-    are active depends on pubkey sort order); the cap (== 3) and the full bonded set
-    (== 5) are the invariants, and the capped shard must keep finalizing on all nodes."""
+    validators bonded, exactly 3 are ACTIVE (the finalized tip's bonds map, via
+    ``_active_set``) while all 5 are BONDED (``getBonds``) — the 2 over-cap joiners are
+    bonded-but-inactive. Count-based (which 3 are active depends on pubkey sort order);
+    the cap (== 3) and the full bonded set (== 5) are the invariants, and the capped
+    shard must keep finalizing on all nodes."""
     shard = cap_shard
     v1, v2, v3 = (shard.node("validator1"), shard.node("validator2"), shard.node("validator3"))
     ro = shard.readonly
 
-    # Genesis fills the cap exactly at boot.
+    # Genesis fills the cap exactly at boot. Active set == the finalized
+    # tip's bonds map (_active_set); /api/validators cannot observe the
+    # cap because it returns ALL bonds (soak preflight 31919610258).
     poll_until(
-        predicate=lambda: True if len(_validators_on(ro)) == _ACTIVE_CAP else None,
+        predicate=lambda: True if len(_active_set(ro)) == _ACTIVE_CAP else None,
         timeout=timeouts.epoch_transition,
         interval=timeouts.poll_interval,
         description=f"genesis active set == cap ({_ACTIVE_CAP})",
@@ -120,7 +123,7 @@ def test_active_validator_cap(cap_shard, timeouts) -> None:
     _advance_lfb(v1, _EPOCH_LENGTH + 1, timeouts)
 
     bonded = ro.pos.get_bonds()
-    active = _validators_on(ro)
+    active = _active_set(ro)
     assert len(bonded) == 5, f"expected 5 bonded, got {len(bonded)}: {bonded}"
     assert len(active) == _ACTIVE_CAP, (
         f"active set must cap at {_ACTIVE_CAP} despite 5 bonded, got {len(active)}: {active}"

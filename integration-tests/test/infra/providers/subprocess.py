@@ -759,6 +759,7 @@ class SubprocessProvider:
             finally:
                 if h in self._active_handles:
                     self._active_handles.remove(h)
+                self._ports.release(h.ports)
 
     # ── Standalone ──────────────────────────────────────────────────
 
@@ -1040,6 +1041,7 @@ class SubprocessProvider:
             return
         archive_handles([handle], self._archive_dir)
         handle.remove()
+        self._ports.release(handle.ports)
 
     # ── Joiner / observer lifecycle ─────────────────────────────────
 
@@ -1127,6 +1129,7 @@ class SubprocessProvider:
             return
         archive_handles([handle], self._archive_dir)
         handle.remove()
+        self._ports.release(handle.ports)
 
     # ── Cleanup ─────────────────────────────────────────────────────
 

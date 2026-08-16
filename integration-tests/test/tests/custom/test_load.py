@@ -76,7 +76,13 @@ PHASES = [
     {"name": "sustained", "rate": 4, "duration": 300, "workers": 3},
 ]
 
-VABN_REFRESH_INTERVAL = 30
+# How often the rated loop refreshes validAfterBlockNumber. Deploys are
+# rejected once the DAG advances more than the 50-block deploy lifespan
+# past their vabn, and a loaded 3-validator shard can clear 50 blocks in
+# well under 30 seconds — the soak preflight (31919610258) expired 17
+# sustained-phase deploys exactly this way. 5s keeps worst-case staleness
+# far inside the lifespan at any observed block rate.
+VABN_REFRESH_INTERVAL = 5
 
 VALIDATORS_AND_KEYS = [
     (VALIDATOR1_ID, "validator1"),
@@ -210,8 +216,18 @@ def _run_phase(nodes, tracker, phase, start_index, monitor=None):
                 rec = _submit_deploy(node, key, idx, vabn, phase_name)
                 tracker.track_deploy(rec)
                 deploy_count += 1
-            except Exception as e:
-                errors.append(f"deploy {idx}: {e}")
+            except Exception:
+                # One retry with a freshly-read vabn: covers the race
+                # where the DAG crossed the deploy-lifespan horizon
+                # between refreshes despite the short interval.
+                try:
+                    vabn = max(0, _current_block_number(node_list[0][0], monitor) - 1)
+                    vabn_refreshed_at = time.time()
+                    rec = _submit_deploy(node, key, idx, vabn, phase_name)
+                    tracker.track_deploy(rec)
+                    deploy_count += 1
+                except Exception as e:
+                    errors.append(f"deploy {idx}: {e}")
             target_time = phase_start + (i + 1) * interval
             sleep_time = target_time - time.time()
             if sleep_time > 0:

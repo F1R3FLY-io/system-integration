@@ -961,6 +961,11 @@ class DockerProvider:
             for handle in handles:
                 handle.remove()
 
+        # Containers are gone; hand the port blocks back so a long
+        # session of sequential shards cannot exhaust the worker range.
+        for handle in handles:
+            self._ports.release(handle.ports)
+
         logger.info("Shard destroyed")
 
     # ── Standalone lifecycle ────────────────────────────────────────
@@ -1219,6 +1224,7 @@ class DockerProvider:
         vol = f"test-{self._session_id}-standalone{suffix}-data"
         _docker("volume", "rm", "-f", vol)
         _docker("network", "rm", handle.network_name)
+        self._ports.release(handle.ports)
 
     # ── Joiner / observer lifecycle ─────────────────────────────────
 
@@ -1370,6 +1376,7 @@ class DockerProvider:
         handle.remove()
         if handle.volume_name:
             _docker("volume", "rm", "-f", handle.volume_name)
+        self._ports.release(handle.ports)
 
     # ── Global cleanup ──────────────────────────────────────────────
 
