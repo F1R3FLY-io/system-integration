@@ -309,16 +309,30 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
             f"  post-set: {sorted(bonds_4)}"
         )
         assert_bonds_map_consistent_across_nodes(all_nodes, b4, b4_bonds)
-        # Activation is verified in a finalized DESCENDANT: block #5 is past
-        # the boundary, so its bonds map must unconditionally include V4.
+        # Block #5 gets the SAME either-side treatment as the boundary
+        # block: the 43e9f844 preflight showed every node UNIFORMLY still
+        # carrying the pre-activation map at #5 — activation surfaces in
+        # headers at a later epoch transition, not necessarily the next
+        # block. What must hold at #5 is cross-node agreement on
+        # whichever side it shows; the behavioral proof of activation is
+        # V4's own successful self-propose in the phases below.
         b5 = _propose_with_filler(v1, VALIDATOR1_ID, "post-boundary")
         for n in (v2, v3, joiner, ro):
             wait_for_block_visible(n, b5, t)
-        assert_bonds_map_consistent_across_nodes(all_nodes, b5, bonds_4)
+        b5_bonds = {b.validator: b.stake for b in _expect(v1, b5).bonds}
+        assert b5_bonds in (bonds_3, bonds_4), (
+            f"Block #5 bonds map matches neither transition side:\n"
+            f"  got:      {sorted(b5_bonds)}\n"
+            f"  pre-set:  {sorted(bonds_3)}\n"
+            f"  post-set: {sorted(bonds_4)}"
+        )
+        assert_bonds_map_consistent_across_nodes(all_nodes, b5, b5_bonds)
         logging.info(
-            "Bond block #4 (%s): bonds=%s — V4 bonded (activation proven at #5)",
+            "Bond block #4 (%s): bonds=%s; #5 shows %s-activation side — "
+            "behavioral activation proof follows via V4 self-propose",
             b4[:16],
             sorted(_bonds_set(b4_info)),
+            "post" if b5_bonds == bonds_4 else "pre",
         )
 
         # ── Blocks #6+: continuous bg proposers create chaotic chain advance ──

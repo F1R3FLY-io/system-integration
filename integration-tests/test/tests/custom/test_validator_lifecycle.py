@@ -58,6 +58,7 @@ from ...infra.polling import (
     poll_until,
     wait_for_block_visible,
     wait_for_block_visible_on_all_nodes,
+    wait_for_deploy_finalized,
     wait_for_deploy_included,
     wait_for_finalized,
 )
@@ -768,16 +769,22 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # finalizes on every node, and the map agrees across nodes. Budgets match
     # retired Phase 4 (finalization * 3).
     for r in results:
-        proposer, identity, stake, bond_block = (
+        proposer, identity, stake = (
             r["proposer"],
             r["identity"],
             r["stake"],
-            r["bond_block"],
         )
         pk = identity.public_hex
-        wait_for_finalized(proposer, bond_block.blockNumber, timeouts.finalization * 3)
+        # Canonical-inclusion anchor: the deploy's finalization status
+        # names the block that actually carried it into canonical state.
+        # Pinning the find_deploy inclusion block (r["bond_block"]) is
+        # the orphan race the PR #118 bonding fix removed — that block
+        # can lose fork choice and never finalize even though the bond
+        # does (ft -1.0 on all 7 nodes in the 43e9f844 preflight).
+        status = wait_for_deploy_finalized(proposer, r["deploy_id"], timeouts.finalization * 3)
+        bond_block_hash = status.latestBlockHash.hex()
         assert_block_finalized_on_all_nodes(
-            shard.all_nodes, bond_block.blockHash, timeout=timeouts.finalization * 3
+            shard.all_nodes, bond_block_hash, timeout=timeouts.finalization * 3
         )
         # The bond is in the FS-backed bonded set (/validators) immediately, but a
         # block's `bonds` field is the ACTIVE consensus set, which includes the joiner
@@ -785,10 +792,10 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         # ledger predicate (/validators), and assert the block's active-bonds field is
         # node-identical across nodes (the consensus-state agreement the seal guards).
         bonds_now = {
-            b.validator: b.stake for b in proposer.get_block(bond_block.blockHash).blockInfo.bonds
+            b.validator: b.stake for b in proposer.get_block(bond_block_hash).blockInfo.bonds
         }
         assert_bonds_map_consistent_across_nodes(
-            shard.all_nodes, bond_block.blockHash, bonds_now, timeout=timeouts.finalization * 3
+            shard.all_nodes, bond_block_hash, bonds_now, timeout=timeouts.finalization * 3
         )
         _wait_for_active(ro, pk, True, timeouts, f"{identity.name} in /validators")
         bonded_now = _validators_on(ro)

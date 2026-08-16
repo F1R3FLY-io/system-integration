@@ -31,6 +31,7 @@ from ...infra.keys import (
 )
 from ...infra.polling import (
     poll_until,
+    wait_for_deploy_finalized,
     wait_for_deploy_included,
     wait_for_finalized,
 )
@@ -143,11 +144,14 @@ def test_active_validator_cap(cap_shard, timeouts) -> None:
         phlo_limit=_BOND_PHLO_LIMIT,
         phlo_price=_BOND_PHLO_PRICE,
     )
-    lb = wait_for_deploy_included(live_node, lid, timeouts.deploy_inclusion * 5)
-    wait_for_finalized(live_node, lb.blockNumber, timeouts.finalization * 5)
-    assert_block_finalized_on_all_nodes(
-        shard.all_nodes, lb.blockHash, timeout=timeouts.finalization * 5
-    )
+    # Canonical-inclusion anchor: resolve the block through the deploy's
+    # own finalization status, never a pinned find_deploy hash — the
+    # first inclusion can lose fork choice and re-home, and the pinned
+    # hash then never finalizes (ft -1.0 on every node in the 43e9f844
+    # preflight; same orphan race as the PR #118 bonding fix).
+    status = wait_for_deploy_finalized(live_node, lid, timeouts.finalization * 5)
+    lb_hash = status.latestBlockHash.hex()
+    assert_block_finalized_on_all_nodes(shard.all_nodes, lb_hash, timeout=timeouts.finalization * 5)
     logging.info(
         "active-validator cap: 5 bonded, exactly %d active, shard still finalizes", _ACTIVE_CAP
     )
