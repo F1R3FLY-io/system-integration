@@ -239,6 +239,22 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
     # DAG storage missing a referenced hash. Opt-outs:
     #   tests/shared/test_convergence.py::test_network_recovers_from_validator_pause
     "DAGStorageMissingHash": re.compile(r"DAG storage is missing hash"),
+    # ── Finalized-read fork ──
+    # derive_floor refused to advance because two finalized candidates hold
+    # mutually non-contained state: the node's finalized read surface has
+    # forked from its peers'. The guard is working (nothing is erased), but
+    # the shard is split and every propose from the frozen base is refused.
+    "IncompatibleFinalizedFork": re.compile(r"incompatible finalized fork"),
+    # A floor advanced to a block that is not on the adopted LFB lineage, or
+    # two floors certified incompatible chains.
+    "FinalizedFloorSafetyViolation": re.compile(r"finalized-floor safety violation"),
+    # ── Merge base / applied-diff incoherence ──
+    # state_change_merger.rs `make_trie_action`: a retained chain removes a
+    # datum the base does not hold, i.e. the applied diffs were computed
+    # against a different base than the one being extended. Deterministic —
+    # every propose over the same scope re-hits it and the shard wedges with
+    # a frozen LFB.
+    "MergeBaseIncoherent": re.compile(r"applied diffs are incoherent with the base state"),
 }
 
 
@@ -247,15 +263,28 @@ def classify_deploy_losses(nodes, sig_prefixes: Iterable[str]) -> Dict[str, str]
 
     A deploy can be lost several structurally different ways that all surface
     as the same ``DeployError``: the phlo-refund quarantine removing it from
-    the rejected-deploy buffer, the retry gate deferring it until its validity
-    window closes, or losing every merge it reaches. Reporting only the
+    the rejected-deploy buffer, losing every merge it reaches, or the validity
+    window closing before it was ever (re-)included. Reporting only the
     exception type forces a hand log-dive to tell them apart.
 
+    Evidence lines matched, all keyed by the first 16 hex chars of the sig:
+
+    - ``deploy lifecycle terminal verdict written`` (INFO,
+      ``f1r3fly.casper.lifecycle``): flattened-JSON fields ``sig`` (exactly
+      16 hex chars), ``state`` (Finalized/Expired/Failed), ``rejection_count``.
+    - ``DagMerger rejected N user deploys: <sigs>`` (INFO): comma-joined
+      16-hex-char sigs, one line per losing merge.
+    - ``quarantined_toxic_rejected_buffer=true`` (WARN): the full sig hex is
+      embedded in the ``error=`` message the quarantine parsed it from.
+
+    Retry-gate deferrals are count-only INFO lines with no sigs, so per-sig
+    gate counts are NOT log-recoverable; the per-decision basis needs
+    ``f1r3fly.casper.recovery=debug`` and a hand-read.
+
     Takes ALL nodes and merges their evidence, because the evidence is split
-    across them: only a deploy's OWNER runs retry selection, so the gate
-    deferrals appear in one node's log while every other node sees just the
-    merge rejections. Classifying per node reports the same deploy as
-    "gated-out" on its owner and "merge-starved" everywhere else.
+    across them: quarantine fires only on the deploy's OWNER, merge rejections
+    on whichever node performed the merge, and each node's lifecycle register
+    writes its own terminal verdict.
 
     One streaming pass per node, on the failure path only.
     """
@@ -263,7 +292,7 @@ def classify_deploy_losses(nodes, sig_prefixes: Iterable[str]) -> Dict[str, str]
     if not prefixes:
         return {}
     facts: Dict[str, dict] = {
-        p: {"quarantined": False, "gated": 0, "merge_rejected": 0, "state": None, "events": None}
+        p: {"quarantined": False, "merge_rejected": 0, "state": None, "rejection_count": None}
         for p in prefixes
     }
     for node in nodes:
@@ -278,26 +307,23 @@ def classify_deploy_losses(nodes, sig_prefixes: Iterable[str]) -> Dict[str, str]
                 fact = facts[prefix]
                 if "quarantined_toxic_rejected_buffer=true" in line:
                     fact["quarantined"] = True
-                if "Retry selection gated for block #" in line:
-                    fact["gated"] += 1
                 if "DagMerger rejected" in line:
                     fact["merge_rejected"] += 1
-                if "terminal verdict basis" in line:
+                if "terminal verdict written" in line:
                     try:
                         record = json.loads(line)
                     except (ValueError, TypeError):
                         continue
                     fact["state"] = record.get("state")
-                    fact["events"] = record.get("events")
+                    fact["rejection_count"] = record.get("rejection_count")
     return {prefix: _describe_deploy_loss(fact) for prefix, fact in facts.items()}
 
 
 def _describe_deploy_loss(fact: dict) -> str:
     """Turn one deploy's log evidence into a cause description."""
     state = fact.get("state") or "unknown"
-    events = str(fact.get("events") or "")
-    inclusions = events.count("incl@")
-    rejections = events.count("rej@")
+    rejection_count = fact.get("rejection_count")
+    rej = str(rejection_count) if rejection_count is not None else "?"
 
     if fact["quarantined"]:
         return (
@@ -307,34 +333,42 @@ def _describe_deploy_loss(fact: dict) -> str:
     # Ordering matters: a deploy that RECOVERED, or that has not yet reached a
     # terminal verdict, must never be described as lost. Reporting a slow
     # recovery as destroyed work is the most misleading direction this
-    # diagnostic can fail in, and both cases still carry gate deferrals, so
-    # they have to be checked BEFORE the gated-out branch.
+    # diagnostic can fail in.
     if state == "Finalized":
         return (
-            f"recovered, not lost: finalized after {rejections} rejection(s) and "
-            f"{fact['gated']} gate deferral(s) — the test's timeout expired before "
-            "recovery completed, so this is a test-patience failure"
+            f"recovered, not lost: finalized after {rej} rejection(s) — the test's "
+            "timeout expired before recovery completed, so this is a test-patience "
+            "failure"
         )
     if state == "unknown":
+        if fact["merge_rejected"]:
+            return (
+                f"still pending: lost {fact['merge_rejected']} merge(s), no terminal "
+                "verdict written — the test's timeout expired while the deploy was "
+                "still contestable, which is NOT proof it was lost (per-sig gate "
+                "decisions are visible only at f1r3fly.casper.recovery=debug)"
+            )
         return (
-            f"still pending: deferred by the retry gate {fact['gated']}x, no terminal "
-            "verdict written — the test's timeout expired while recovery was still "
-            "in progress, which is NOT proof the deploy was lost"
+            "no per-sig log evidence and no terminal verdict — either genuinely "
+            "pending untouched by any merge, or the scanned logs don't cover the "
+            "run (the terminal-verdict line is INFO; check the logging filter)"
         )
-    if fact["gated"] and inclusions <= 1:
+    if state == "Expired":
+        if fact["merge_rejected"] or (rejection_count or 0) > 0:
+            return (
+                f"merge-starved (state=Expired): rejected {rej}x "
+                f"({fact['merge_rejected']} losing merge(s) in this shard's logs) and "
+                "never re-landed before the validity window closed"
+            )
         return (
-            f"gated-out (state={state}): rejected {rejections}x, deferred by the retry "
-            f"gate {fact['gated']}x, never re-included — the validity window closed "
-            "while the gate was still shut"
+            "expired without a recorded rejection: never included, or every inclusion "
+            "was voided by finalization elsewhere — the validity window closed first; "
+            "the count-only 'deferred by the retry gate' INFO lines say whether the "
+            "gate was shut"
         )
-    if fact["merge_rejected"] > 1:
-        return (
-            f"merge-starved (state={state}): reached a merge {fact['merge_rejected']}x "
-            f"and lost every time across {inclusions} inclusion(s)"
-        )
-    if state != "unknown":
-        return f"terminal verdict {state}: {inclusions} inclusion(s), {rejections} rejection(s)"
-    return "no log evidence (raise the f1r3fly.casper.lifecycle / recovery log level)"
+    if state == "Failed":
+        return f"terminal Failed: the deploy executed and failed ({rej} rejection(s))"
+    return f"terminal verdict {state}: {rej} rejection(s)"
 
 
 def scan_for_forbidden(

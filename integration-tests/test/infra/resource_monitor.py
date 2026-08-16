@@ -143,6 +143,32 @@ def _host_memory() -> Dict[str, float]:
     return out
 
 
+def _host_total_memory_mb() -> Optional[float]:
+    """Best-effort host TOTAL RAM in MB, or None if unreadable.
+
+    Linux / WSL reads ``MemTotal`` from ``/proc/meminfo`` (kB); macOS reads
+    ``sysctl -n hw.memsize`` (bytes). Consumed by the RSS-ceiling default
+    derivation — the ceiling must scale with the host it protects.
+    """
+    meminfo = Path("/proc/meminfo")
+    if meminfo.exists():
+        try:
+            for line in meminfo.read_text().splitlines():
+                key, _, rest = line.partition(":")
+                if key == "MemTotal":
+                    return int(rest.strip().split()[0]) / 1024.0
+        except Exception:  # noqa: BLE001 — monitoring is best-effort
+            return None
+        return None
+    try:
+        out = subprocess.run(
+            ["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=5
+        ).stdout.strip()
+        return int(out) / 1e6
+    except Exception:  # noqa: BLE001 — monitoring is best-effort
+        return None
+
+
 def _loadavg() -> Optional[float]:
     """1-minute host load average, or None if unavailable."""
     try:
