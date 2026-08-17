@@ -32,7 +32,7 @@ quarantine polls.
 import logging
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import pytest
 from eth_hash.auto import keccak
@@ -233,7 +233,14 @@ def _assert_bond_rejected(
     finalization * 3) since this runs under always-on bg_load.
     """
     bonds_before = ro.pos.get_bonds()
-    deploy_id = proposer.pos.bond(key, amount)
+    # A deploy that expires never reaches the contract at all, so there is no
+    # rejection to assert; resubmit until one of them is judged.
+    deploy_id = _submit_pos_until_effective(
+        all_nodes,
+        {"bond": lambda: proposer.pos.bond(key, amount)},
+        timeouts,
+        f"bond-rejected[{expected_reason}]",
+    )["bond"]
     # Canonical-inclusion anchor (runs under bg_load, where the first
     # inclusion block can be orphaned and the deploy re-homed).
     block_hash = assert_deploy_block_finalized_on_all_nodes(
@@ -253,7 +260,12 @@ def _assert_bond_rejected(
 
 def _assert_withdraw_rejected(actor, all_nodes, ro, key, expected_reason: str, timeouts) -> None:
     bonds_before = ro.pos.get_bonds()
-    deploy_id = actor.pos.withdraw(key)
+    deploy_id = _submit_pos_until_effective(
+        all_nodes,
+        {"withdraw": lambda: actor.pos.withdraw(key)},
+        timeouts,
+        f"withdraw-rejected[{expected_reason}]",
+    )["withdraw"]
     # Canonical-inclusion anchor (same orphan-race rationale as above).
     block_hash = assert_deploy_block_finalized_on_all_nodes(
         actor, deploy_id, all_nodes, timeouts.finalization * 3
@@ -664,6 +676,70 @@ def _assert_bg_load_robust(
     )
 
 
+def _submit_pos_until_effective(
+    all_nodes,
+    submits: Dict[str, Callable[[], str]],
+    timeouts,
+    label: str,
+    max_attempts: int = 3,
+) -> Dict[str, str]:
+    """Submit PoS mutations and return only once each one has TAKEN EFFECT.
+
+    Inclusion is not effect. A deploy can be included in block after block and
+    kept out of every merge it lands in, until its validity window closes: V5's
+    withdraw was rejected 17 times and then expired, and the run carried on as
+    though the validator had withdrawn. A deploy every node judges Expired moved
+    nothing — legitimate shard behaviour under contention, and a client's cue to
+    resubmit — so resubmit it rather than fail a shard that behaved correctly or,
+    worse, continue on a mutation that never happened.
+
+    ``submits`` maps a label to a zero-arg callable returning a deploy id. It has
+    to build a NEW deploy per call: the same signature resubmitted is a duplicate,
+    which validation rejects as a repeat deploy.
+
+    The whole round is submitted before any verdict is awaited, so callers that
+    contend deliberately keep their overlapping window; only the losers are
+    resubmitted. ``resolve_deploy_verdicts`` still hard-fails on the outcomes that
+    are never acceptable — no verdict inside the budget (the frozen-chain and
+    propose-wedge signature), a terminal Failed, or a verdict that differs between
+    nodes — so anything that survives to be counted here is Finalized or Expired.
+    Exhausting ``max_attempts`` fails: one expiry under load is the shard working,
+    a consensus-bearing deploy starving every round is not.
+    """
+    pending = dict(submits)
+    settled: Dict[str, str] = {}
+    history: List[str] = []
+
+    for attempt in range(1, max_attempts + 1):
+        ids = {name: submit() for name, submit in pending.items()}
+        verdicts = resolve_deploy_verdicts(
+            all_nodes,
+            list(ids.values()),
+            timeouts.finalization * 3,
+            label=f"{label} attempt {attempt}",
+        )
+        finalized = verdicts.finalized_set()
+        settled.update({name: did for name, did in ids.items() if did in finalized})
+        starved = {name: did for name, did in ids.items() if did not in finalized}
+        if not starved:
+            return settled
+
+        history.append(f"attempt {attempt}: {sorted(starved)} expired ({verdicts.summary()})")
+        logging.warning(
+            "STARVATION-RECORD %s attempt %d: %s expired under contention, resubmitting (%s)",
+            label,
+            attempt,
+            sorted(starved),
+            verdicts.summary(),
+        )
+        pending = {name: submits[name] for name in starved}
+
+    raise AssertionError(
+        f"{label}: {sorted(pending)} never took effect in {max_attempts} attempts — "
+        "a consensus-bearing deploy starved out of every merge; " + "; ".join(history)
+    )
+
+
 def _submit_withdraw(actor, identity, timeouts):
     """Submit a withdraw, await inclusion + contract success. Returns the block."""
     deploy_id = actor.pos.withdraw(identity.private_key())
@@ -675,22 +751,58 @@ def _submit_withdraw(actor, identity, timeouts):
     return block
 
 
-def _await_pending(ro, pk: str, present: bool, timeouts, label: str) -> None:
-    """Poll FS get_pending_withdrawer until pk is present (or absent)."""
+def _await_withdrawal_started(ro, pk: str, timeouts, label: str) -> None:
+    """Wait until pk's withdrawal is under way — the pending entry is visible, OR
+    pk has already left allBonds.
+
+    pendingWithdrawers is transient: movePendingWithdrawer consumes it at the next
+    epoch boundary, at most epoch-length blocks after the withdraw lands, which is
+    seconds at this suite's epoch of 4. Polling for the entry alone is a race the
+    test loses precisely when the shard is healthy and quick, and it then reports
+    the miss as "the withdraw never landed". Leaving allBonds is proof the move
+    already ran, so either observation settles it.
+
+    Caller must have established that the withdraw itself took effect; on a
+    validator that was never bonded the second disjunct is vacuously true.
+    """
     poll_until(
-        predicate=lambda: True if (pk in ro.pos.get_pending_withdrawer()) == present else None,
+        predicate=lambda: (
+            True
+            if (pk in ro.pos.get_pending_withdrawer() or pk not in ro.pos.get_bonds())
+            else None
+        ),
         timeout=timeouts.epoch_transition * 3,
         interval=timeouts.poll_interval,
         description=label,
     )
 
 
-def _await_withdrawer(
-    ro, pk: str, present: bool, timeout: float, label: str, interval: float = 2.0
+def _await_withdrawer_or_past(
+    ro, pk: str, timeout: float, label: str, interval: float = 2.0
 ) -> None:
-    """Poll FS get_withdrawers until pk is present (or absent)."""
+    """Wait until pk is quarantined in withdrawers, or has already been paid out.
+
+    The same transience one stage later: removeQuarantinedWithdrawers pays the
+    validator and deletes the entry, so on a quick shard the withdrawers stage can
+    open and close between two polls. Out of allBonds and out of pendingWithdrawers
+    is proof the move ran, whether or not the payout has already followed.
+    """
+
+    def _reached():
+        if pk in ro.pos.get_withdrawers():
+            return True
+        moved_and_paid = pk not in ro.pos.get_bonds() and pk not in ro.pos.get_pending_withdrawer()
+        return True if moved_and_paid else None
+
+    poll_until(predicate=_reached, timeout=timeout, interval=interval, description=label)
+
+
+def _await_withdrawer_absent(
+    ro, pk: str, timeout: float, label: str, interval: float = 2.0
+) -> None:
+    """Poll FS get_withdrawers until pk is gone (quarantine elapsed and paid)."""
     poll_until(
-        predicate=lambda: True if (pk in ro.pos.get_withdrawers()) == present else None,
+        predicate=lambda: True if pk not in ro.pos.get_withdrawers() else None,
         timeout=timeout,
         interval=interval,
         description=label,
@@ -1022,43 +1134,84 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # allBonds grows (V6) while pendingWithdrawers grows (V4,V5) across overlapping
     # blocks. The headline concurrent grow+shrink merge stress (now viable post-fix).
     j6 = _attach_prebond(shard, VALIDATOR6_ID, timeouts)
-    lfb0 = lowest_lfb_number(shard.all_nodes)
-    bond_v6_id = v3.pos.bond(VALIDATOR6_ID.private_key(), _JOINER_STAKE["validator6"])
-    wd_v4_id = v1.pos.withdraw(VALIDATOR4_ID.private_key())
-    wd_v5_id = v2.pos.withdraw(VALIDATOR5_ID.private_key())
-    wd_v4_block = wait_for_deploy_included(v1, wd_v4_id, timeouts.deploy_inclusion * 3)
-    wait_for_deploy_included(v2, wd_v5_id, timeouts.deploy_inclusion * 3)
-    wait_for_deploy_included(v3, bond_v6_id, timeouts.deploy_inclusion * 3)
-    # Simultaneous grow and shrink is the heaviest committee change in the suite
-    # and the likeliest place for the floor to stall; name a freeze here rather
-    # than letting it surface as a pendingWithdrawers poll timeout.
-    assert_chain_advances(
-        shard.all_nodes, lfb0, timeouts.finalization * 2, label="phase4-grow-and-shrink"
+    # All three go out before any verdict is awaited: the overlapping window IS the
+    # merge stress this phase exists to create. They contend on the same PoS state,
+    # so a merge keeps one and rejects the rest, and a loser that keeps losing until
+    # its window closes expires having moved nothing. Resubmit those; do not proceed
+    # on a committee change that did not happen.
+    settled = _submit_pos_until_effective(
+        shard.all_nodes,
+        {
+            "bond-V6": lambda: v3.pos.bond(
+                VALIDATOR6_ID.private_key(), _JOINER_STAKE["validator6"]
+            ),
+            "withdraw-V4": lambda: v1.pos.withdraw(VALIDATOR4_ID.private_key()),
+            "withdraw-V5": lambda: v2.pos.withdraw(VALIDATOR5_ID.private_key()),
+        },
+        timeouts,
+        "phase4-grow-and-shrink",
     )
-    assert v1.pos.read_result(wd_v4_id, wd_v4_block.blockHash).success, "V4 withdraw failed"
-    _await_pending(ro, v4_pk, True, timeouts, "V4 in pendingWithdrawers")
-    _await_pending(ro, v5_pk, True, timeouts, "V5 in pendingWithdrawers")
+    # Simultaneous grow and shrink is the heaviest committee change in the suite and
+    # the likeliest place for the floor to stall. That freeze is now named by the
+    # verdict resolver above, which fails on "no verdict inside the budget" — an
+    # assert_chain_advances here could no longer fail, since three deploys cannot
+    # reach a terminal verdict on a chain that is not advancing.
+    wd_v4_hash = assert_deploy_block_finalized_on_all_nodes(
+        v1, settled["withdraw-V4"], shard.all_nodes, timeouts.finalization * 3
+    )
+    assert v1.pos.read_result(settled["withdraw-V4"], wd_v4_hash).success, "V4 withdraw failed"
+    _await_withdrawal_started(ro, v4_pk, timeouts, "V4 withdrawal started")
+    _await_withdrawal_started(ro, v5_pk, timeouts, "V5 withdrawal started")
     _wait_for_active(ro, v6_pk, True, timeouts, "V6 bonded in /validators")
-    # Double-withdraw edge: a 2nd withdraw of V4 is contract-clean either way — if V4
-    # is still in allBonds it SUCCEEDS (idempotent overwrite of its pending entry); if
-    # the epoch move already ran it REJECTS "not bonded". Assert no corruption.
+    # Double-withdraw edge: a 2nd withdraw of V4 is contract-clean whatever stage the
+    # withdrawal has reached, and which stage that is depends on how much chain elapsed
+    # while the deploy was included and finalized. V4 walks allBonds+pending -> (epoch
+    # move) withdrawers -> (quarantine) paid out and gone, so asserting membership of
+    # one particular map asserts a race. Assert instead what holds at every stage: V4
+    # never occupies two positions at once, and its withdrawing stake is what it bonded.
     dw_id = v1.pos.withdraw(VALIDATOR4_ID.private_key())
     dw_block = wait_for_deploy_included(v1, dw_id, timeouts.deploy_inclusion * 3)
     wait_for_finalized(v1, dw_block.blockNumber, timeouts.finalization * 3)
     dw_res = v1.pos.read_result(dw_id, dw_block.blockHash)
+    bonds_now = ro.pos.get_bonds()
     pend, wdr_now = ro.pos.get_pending_withdrawer(), ro.pos.get_withdrawers()
-    if dw_res.success:
-        assert v4_pk in pend and v4_pk not in wdr_now, (
-            f"idempotent double-withdraw: V4 should be a single pending entry; "
-            f"pending={sorted(pend)} withdrawers={sorted(wdr_now)}"
+    v4_stake = _JOINER_STAKE[VALIDATOR4_ID.name]
+    where = (
+        f"bonds={v4_pk in bonds_now} pending={v4_pk in pend} withdrawers={v4_pk in wdr_now} "
+        f"verdict={(dw_res.success, dw_res.reason)!r}"
+    )
+    # movePendingWithdrawer inserts into withdrawers and deletes from allBonds and
+    # pendingWithdrawers in ONE state update, so no read can ever straddle it.
+    assert not (v4_pk in pend and v4_pk in wdr_now), (
+        f"the epoch move is atomic: V4 cannot be pending and withdrawing at once; {where}"
+    )
+    assert not (v4_pk in bonds_now and v4_pk in wdr_now), (
+        f"the epoch move is atomic: V4 cannot be bonded and withdrawing at once; {where}"
+    )
+    # V4 withdrew, so while it is still bonded its pending entry is what records that.
+    assert v4_pk not in bonds_now or v4_pk in pend, (
+        f"a bonded validator that has withdrawn must hold a pending entry; {where}"
+    )
+    if not dw_res.success:
+        # The verdict is about execution time, but allBonds only ever LOSES V4 from
+        # here (nothing re-bonds it), so a not-bonded rejection still constrains the
+        # later read. An accepted retry constrains nothing beyond the invariants
+        # above: the move may legitimately have run between execution and this read.
+        assert "not bonded" in dw_res.reason, (
+            f"the only legitimate rejection here is not-bonded; {where}"
         )
-    else:
-        assert "not bonded" in dw_res.reason and v4_pk in wdr_now, (
-            f"post-move double-withdraw should reject not-bonded; got {dw_res.reason!r}"
+        assert v4_pk not in bonds_now, (
+            f"V4 rejected as not-bonded must not be back in allBonds; {where}"
+        )
+    if v4_pk in wdr_now:
+        assert wdr_now[v4_pk][0] == v4_stake, (
+            f"V4's withdrawing stake must be what it bonded ({v4_stake}); got {wdr_now[v4_pk]}"
         )
     logging.info(
         "Phase 4: V6 bonded concurrently while V4,V5 withdrew; double-withdraw clean (%s)",
-        "overwrite" if dw_res.success else "post-move reject",
+        "accepted retry"
+        if dw_res.success
+        else ("post-move, quarantined" if v4_pk in wdr_now else "post-move, paid out"),
     )
 
     # ── Phase 5: epoch-move shrink ({V4,V5} out) + grow (V6 active) ───────────
@@ -1074,8 +1227,8 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     )
     _wait_for_active(ro, v4_pk, False, timeouts, "V4 left /validators (moved to withdrawers)")
     _wait_for_active(ro, v5_pk, False, timeouts, "V5 left /validators")
-    _await_withdrawer(ro, v4_pk, True, timeouts.epoch_transition * 3, "V4 in withdrawers")
-    _await_withdrawer(ro, v5_pk, True, timeouts.epoch_transition * 3, "V5 in withdrawers")
+    _await_withdrawer_or_past(ro, v4_pk, timeouts.epoch_transition * 3, "V4 withdrawing or paid")
+    _await_withdrawer_or_past(ro, v5_pk, timeouts.epoch_transition * 3, "V5 withdrawing or paid")
     expected_post_shrink = {
         VALIDATOR1_ID.public_hex: _GENESIS_STAKE,
         VALIDATOR2_ID.public_hex: _GENESIS_STAKE,
@@ -1163,8 +1316,8 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     assert_chain_advances(
         shard.all_nodes, lfb0, timeouts.epoch_transition * 2, label="phase8-quarantine"
     )
-    _await_withdrawer(ro, v4_pk, False, quarantine_budget, "V4 quarantine elapsed + paid")
-    _await_withdrawer(ro, v5_pk, False, quarantine_budget, "V5 quarantine elapsed + paid")
+    _await_withdrawer_absent(ro, v4_pk, quarantine_budget, "V4 quarantine elapsed + paid")
+    _await_withdrawer_absent(ro, v5_pk, quarantine_budget, "V5 quarantine elapsed + paid")
     poll_until(
         predicate=lambda: True if _balance(ro, v4_addr) >= v4_bal0 + v4_owed else None,
         timeout=timeouts.finalization * 3,
@@ -1187,12 +1340,20 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # ── Phase 9: re-bond after payout (everBonded -> net-0 rewards) ───────────
     # V4 completed quarantine + payout, so its committedRewards row was deleted; a
     # re-bond succeeds and starts at net-0 rewards (not re-initialized to a stale value).
-    lfb0 = lowest_lfb_number(shard.all_nodes)
-    rebond_id = v1.pos.bond(VALIDATOR4_ID.private_key(), _JOINER_STAKE["validator4"])
-    rb_block = wait_for_deploy_included(v1, rebond_id, timeouts.deploy_inclusion * 3)
-    wait_for_finalized(v1, rb_block.blockNumber, timeouts.finalization * 3)
-    assert_chain_advances(shard.all_nodes, lfb0, timeouts.finalization * 2, label="phase9-rebond")
-    assert v1.pos.read_result(rebond_id, rb_block.blockHash).success, "V4 re-bond failed"
+    rebond_id = _submit_pos_until_effective(
+        shard.all_nodes,
+        {
+            "rebond-V4": lambda: v1.pos.bond(
+                VALIDATOR4_ID.private_key(), _JOINER_STAKE["validator4"]
+            )
+        },
+        timeouts,
+        "phase9-rebond",
+    )["rebond-V4"]
+    rb_hash = assert_deploy_block_finalized_on_all_nodes(
+        v1, rebond_id, shard.all_nodes, timeouts.finalization * 3
+    )
+    assert v1.pos.read_result(rebond_id, rb_hash).success, "V4 re-bond failed"
     _wait_for_active(ro, v4_pk, True, timeouts, "V4 re-bonded into /validators")
     assert _rewards(ro).get(v4_pk, 0) == 0, (
         f"re-bond net-0: V4 rewards should be 0 after payout+rebond, got {_rewards(ro).get(v4_pk)}"
