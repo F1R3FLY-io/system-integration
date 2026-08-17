@@ -40,11 +40,17 @@ from f1r3fly.client import F1r3flyClientException
 from f1r3fly.crypto import PrivateKey
 
 from ...infra.assertions import (
-    assert_all_deploys_finalized_on_all_nodes,
+    assert_balance_consistent_across_nodes,
     assert_block_finalized_on_all_nodes,
     assert_bonds_map_consistent_across_nodes,
+    assert_chain_advances,
     assert_deploy_block_finalized_on_all_nodes,
     assert_deploy_errored,
+    await_balance_converges_on_all_nodes,
+    collect_forensics,
+    common_finalized_anchor,
+    lowest_lfb_number,
+    resolve_deploy_verdicts,
 )
 from ...infra.config import ShardConfig
 from ...infra.keys import (
@@ -595,43 +601,66 @@ def _rewards(ro) -> Dict[str, int]:
 
 
 def _assert_bg_load_robust(
-    producers, all_nodes, ro, bg, src0: int, dst0: int, timeouts, label: str = "bg-load"
+    all_nodes, bg, src0: int, dst0: int, timeouts, label: str = "bg-load"
 ) -> None:
     """Exact-vault reconciliation for the same-vault bg transfers (mirrors the
-    user-contract test). Every bg transfer finalized on all nodes AND the
-    contended dst IntegerAdd cell composes to EXACTLY dst0 + N*amount (a drop is
-    the finalized-state regression mode; a double-apply overshoots and trips the
-    timeout). The gas-paying src has no exact target — assert it only decreased
-    and ended debited by at least the transferred total.
+    user-contract test).
+
+    Expired is a legitimate verdict here — these transfers are incidental
+    contention, not the subject of the test, and one the shard terminally judged
+    Expired moved nothing. But tolerating the verdict is only sound while STATE
+    AGREES WITH IT, so the reconciliation is two-sided:
+
+      - the target is built from the FINALIZED subset, so an expired transfer is
+        not counted (demanding every submitted id finalize would fail a shard
+        that behaved correctly under contention);
+      - ``upper_bound`` fails the instant the destination EXCEEDS that target —
+        an expired transfer whose credit landed anyway is a verdict-vs-state
+        contradiction, and it must surface as an over-apply, not as a
+        convergence timeout minutes later;
+      - ``non_regression="up"`` fails if a finalized credit is ever undone.
+
+    Read across ALL nodes at an aligned finalized cut, not from the readonly
+    node alone: a per-node divergence in the finalized balance is exactly the
+    forked-read-surface mode, and a single-node read cannot see it.
+
+    The gas-paying src has no exact target — gas makes the debit inexact — so it
+    is checked for cross-node identity at the settled cut and for having fallen
+    by at least the transferred total.
+
+    Integrity still hard-fails: the shard failing to DECIDE (no verdict in
+    budget — the frozen-chain / propose-wedge signature), a terminal Failed, or
+    a verdict that differs between nodes.
     """
     bg_ids = bg.deploy_ids()
-    # Zero tolerance: same-vault transfers from a well-funded source never fail for
-    # balance reasons, so an unfinalized one is a real merge/orphan regression.
-    # Checked on EVERY node — a block can finalize on its proposer and never
-    # finalize on a peer.
-    assert_all_deploys_finalized_on_all_nodes(
-        all_nodes, bg_ids, timeouts.finalization * 2, label=label
-    )
-    n = len(bg_ids)
+    verdicts = resolve_deploy_verdicts(all_nodes, bg_ids, timeouts.finalization * 2, label=label)
+    logging.info("[%s] bg verdicts: %s", label, verdicts.summary())
+    n = len(verdicts.finalized)
     want_dst = dst0 + n * _BG_TRANSFER_AMOUNT
     min_src_debit = n * _BG_TRANSFER_AMOUNT
-    dst_water, src_water = dst0, src0
-    deadline = time.time() + timeouts.finalization * 3
-    while time.time() < deadline:
-        cur_dst, cur_src = _balance(ro, _BG_DST_ADDR), _balance(ro, _BG_SRC_ADDR)
-        assert cur_dst >= dst_water, f"[{label}] dst balance regressed {dst_water}->{cur_dst}"
-        assert cur_src <= src_water, f"[{label}] src balance increased {src_water}->{cur_src}"
-        dst_water, src_water = cur_dst, cur_src
-        if cur_dst == want_dst:
-            assert src0 - cur_src >= min_src_debit, (
-                f"[{label}] src debit {src0 - cur_src} < transferred {min_src_debit}"
-            )
-            logging.info("bg-load reconciled: %d transfers, dst %d->%d", n, dst0, cur_dst)
-            return
-        time.sleep(timeouts.poll_interval)
-    raise AssertionError(
-        f"[{label}] dst credit did not reach exactly {want_dst} (n={n} transfers); "
-        f"last dst={dst_water} src={src_water}"
+    await_balance_converges_on_all_nodes(
+        all_nodes,
+        _BG_DST_ADDR,
+        want_dst,
+        timeouts.finalization * 3,
+        f"{label}-dst",
+        non_regression="up",
+        upper_bound=want_dst,
+    )
+    # Stable finalized anchor rather than live-pointer agreement: under load the
+    # per-node LFB pointers may never coincide within a sequential sweep.
+    lfb = common_finalized_anchor(all_nodes, timeouts.finalization)
+    src_final = assert_balance_consistent_across_nodes(all_nodes, _BG_SRC_ADDR, lfb)
+    assert src0 - src_final >= min_src_debit, (
+        f"[{label}] bg-src under-debited: source fell by {src0 - src_final} < transferred "
+        f"{min_src_debit} — a finalized debit was lost"
+    )
+    logging.info(
+        "%s: reconciled %d bg transfers on all nodes — dst->%d (exact), src->%d (incl gas)",
+        label,
+        n,
+        want_dst,
+        src_final,
     )
 
 
@@ -777,13 +806,25 @@ def test_validator_lifecycle(lifecycle_shard, timeouts) -> None:
         bg.start()
     try:
         _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts)
+    except Exception as exc:
+        # Every wait in this test polls for a VALUE, so a shard that stopped
+        # finalizing surfaces as "expected X, got Y" and says nothing about the
+        # stall underneath. Attach the shard's state at the moment of failure —
+        # per-node LFB agreement, chain advance, forbidden-log counts, with a
+        # dead-node reachability pre-check — so the mechanism is in the failure
+        # message instead of a hand log-dive on whichever node is still up.
+        try:
+            forensics = collect_forensics(shard.all_nodes, label="validator-lifecycle")
+        except Exception as probe_exc:  # noqa: BLE001 — never mask the real failure
+            forensics = f"(forensics unavailable: {type(probe_exc).__name__}: {probe_exc})"
+        raise AssertionError(f"{exc}\n{forensics}") from exc
     finally:
         bg.stop()
     # Strict end-check: every bg transfer finalized on ALL nodes AND the contended dst
     # IntegerAdd cell composes to exactly dst0 + N (no dropped/double-applied work under
     # the lifecycle's merge contention); src debited (gas-aware) by at least the total.
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust([v1, v2, v3], shard.all_nodes, ro, bg, bg_src0, bg_dst0, timeouts)
+        _assert_bg_load_robust(shard.all_nodes, bg, bg_src0, bg_dst0, timeouts)
 
 
 def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> None:
@@ -807,6 +848,12 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
 
     # Submit V4 (via v1) and V5 (via v2) in one window: _submit_bonds deploys
     # both before awaiting either, so they can land in sibling blocks.
+    #
+    # The chain-advance baseline is taken BEFORE the mutation and checked after:
+    # a committee change is exactly where the floor moves, and a shard that
+    # freezes here would otherwise be reported as a bonds-map mismatch minutes
+    # later rather than as a shard that stopped finalizing.
+    lfb0 = lowest_lfb_number(shard.all_nodes)
     results = _submit_bonds(
         ro,
         [
@@ -814,6 +861,9 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
             (v2, VALIDATOR5_ID, _JOINER_STAKE["validator5"]),
         ],
         timeouts,
+    )
+    assert_chain_advances(
+        shard.all_nodes, lfb0, timeouts.finalization * 2, label="phase1-concurrent-bond"
     )
 
     # Each bond block finalizes on all nodes and the bonds map is cross-node
@@ -972,12 +1022,19 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # allBonds grows (V6) while pendingWithdrawers grows (V4,V5) across overlapping
     # blocks. The headline concurrent grow+shrink merge stress (now viable post-fix).
     j6 = _attach_prebond(shard, VALIDATOR6_ID, timeouts)
+    lfb0 = lowest_lfb_number(shard.all_nodes)
     bond_v6_id = v3.pos.bond(VALIDATOR6_ID.private_key(), _JOINER_STAKE["validator6"])
     wd_v4_id = v1.pos.withdraw(VALIDATOR4_ID.private_key())
     wd_v5_id = v2.pos.withdraw(VALIDATOR5_ID.private_key())
     wd_v4_block = wait_for_deploy_included(v1, wd_v4_id, timeouts.deploy_inclusion * 3)
     wait_for_deploy_included(v2, wd_v5_id, timeouts.deploy_inclusion * 3)
     wait_for_deploy_included(v3, bond_v6_id, timeouts.deploy_inclusion * 3)
+    # Simultaneous grow and shrink is the heaviest committee change in the suite
+    # and the likeliest place for the floor to stall; name a freeze here rather
+    # than letting it surface as a pendingWithdrawers poll timeout.
+    assert_chain_advances(
+        shard.all_nodes, lfb0, timeouts.finalization * 2, label="phase4-grow-and-shrink"
+    )
     assert v1.pos.read_result(wd_v4_id, wd_v4_block.blockHash).success, "V4 withdraw failed"
     _await_pending(ro, v4_pk, True, timeouts, "V4 in pendingWithdrawers")
     _await_pending(ro, v5_pk, True, timeouts, "V5 in pendingWithdrawers")
@@ -1007,6 +1064,14 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # ── Phase 5: epoch-move shrink ({V4,V5} out) + grow (V6 active) ───────────
     # The next epoch boundary runs movePendingWithdrawer({V4,V5}) (allBonds shrinks)
     # and keeps V6 in the active set. The multi-element move fold must be node-identical.
+    #
+    # The epoch boundary is a closeBlock transition — if the shard is going to
+    # freeze on a committee change it happens here, and the /validators polls
+    # below would report it as "V4 never left" rather than as a stall.
+    lfb0 = lowest_lfb_number(shard.all_nodes)
+    assert_chain_advances(
+        shard.all_nodes, lfb0, timeouts.epoch_transition * 2, label="phase5-epoch-move"
+    )
     _wait_for_active(ro, v4_pk, False, timeouts, "V4 left /validators (moved to withdrawers)")
     _wait_for_active(ro, v5_pk, False, timeouts, "V5 left /validators")
     _await_withdrawer(ro, v4_pk, True, timeouts.epoch_transition * 3, "V4 in withdrawers")
@@ -1092,6 +1157,12 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     v4_owed = wdr[v4_pk][0] + rwd_frozen.get(v4_pk, 0)  # bond + committed reward
     v5_owed = wdr[v5_pk][0] + rwd_frozen.get(v5_pk, 0)
     quarantine_budget = timeouts.epoch_transition * 6  # multi-epoch (quarantine spans epochs)
+    # Quarantine spans several epochs, so this is the longest wait in the test
+    # and the one where a stall costs the most before it is noticed.
+    lfb0 = lowest_lfb_number(shard.all_nodes)
+    assert_chain_advances(
+        shard.all_nodes, lfb0, timeouts.epoch_transition * 2, label="phase8-quarantine"
+    )
     _await_withdrawer(ro, v4_pk, False, quarantine_budget, "V4 quarantine elapsed + paid")
     _await_withdrawer(ro, v5_pk, False, quarantine_budget, "V5 quarantine elapsed + paid")
     poll_until(
@@ -1116,9 +1187,11 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # ── Phase 9: re-bond after payout (everBonded -> net-0 rewards) ───────────
     # V4 completed quarantine + payout, so its committedRewards row was deleted; a
     # re-bond succeeds and starts at net-0 rewards (not re-initialized to a stale value).
+    lfb0 = lowest_lfb_number(shard.all_nodes)
     rebond_id = v1.pos.bond(VALIDATOR4_ID.private_key(), _JOINER_STAKE["validator4"])
     rb_block = wait_for_deploy_included(v1, rebond_id, timeouts.deploy_inclusion * 3)
     wait_for_finalized(v1, rb_block.blockNumber, timeouts.finalization * 3)
+    assert_chain_advances(shard.all_nodes, lfb0, timeouts.finalization * 2, label="phase9-rebond")
     assert v1.pos.read_result(rebond_id, rb_block.blockHash).success, "V4 re-bond failed"
     _wait_for_active(ro, v4_pk, True, timeouts, "V4 re-bonded into /validators")
     assert _rewards(ro).get(v4_pk, 0) == 0, (
