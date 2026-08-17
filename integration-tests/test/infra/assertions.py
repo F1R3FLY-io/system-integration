@@ -491,28 +491,47 @@ def collect_forensics(nodes, *, channel: Optional[str] = None, label: str = "") 
 
 
 def assert_chain_advances(nodes, since_number: int, timeout: int, *, label: str) -> int:
-    """Assert the finalized chain moved past ``since_number`` and all nodes
-    agree on where it is. Returns the new LFB number.
+    """Assert the finalized chain moved past ``since_number`` on a quorum of
+    nodes. Returns the lowest advanced LFB number.
+
+    This checks LIVENESS only. It used to also poll
+    ``assert_all_nodes_agree_on_lfb``, which is the pointer-agreement
+    anti-pattern ``common_finalized_anchor`` documents: under continuous
+    proposals healthy finalizers a few heights apart may never coincide within
+    a sweep, so that poll burned its budget against a working shard. Cross-node
+    agreement belongs at a settled cut — ``common_finalized_anchor`` or
+    ``assert_bonds_map_consistent_across_nodes`` — not here.
 
     A shard that stops finalizing looks identical, from a deploy's point of
     view, to a shard that is merely slow — both leave deploys Pending. This
     separates them: a frozen LFB is a shard-liveness failure regardless of
     what any individual deploy did, and it names the freeze directly instead
     of surfacing minutes later as a deploy-status timeout.
+
+    Liveness is a QUORUM property, not a unanimous one. Taking the minimum
+    across every node lets a single sick node — a joiner whose DAG is
+    incomplete, a node mid-restart — hold the reported height down forever
+    and report a working shard as halted, which is the misdiagnosis this
+    function exists to prevent. A strict majority advancing is the shard
+    advancing; the laggards are named in the message either way.
     """
     deadline = time.monotonic() + timeout
+    quorum = len(nodes) // 2 + 1
     while True:
         numbers = {}
         for node in nodes:
-            lfb = node.last_finalized_block().blockInfo
-            numbers[node.name] = lfb.blockNumber
-        current = min(numbers.values())
-        if current > since_number:
-            assert_all_nodes_agree_on_lfb(nodes, timeout=timeout)
-            return current
+            try:
+                numbers[node.name] = node.last_finalized_block().blockInfo.blockNumber
+            except Exception as exc:  # noqa: BLE001 — an unreachable node is a laggard, not a halt
+                numbers[node.name] = f"unreachable ({type(exc).__name__})"
+        heights = sorted(n for n in numbers.values() if isinstance(n, int))
+        advanced = [h for h in heights if h > since_number]
+        if len(advanced) >= quorum:
+            return min(advanced)
         if time.monotonic() >= deadline:
             raise AssertionError(
-                f"[{label}] finalized chain did not advance past #{since_number} in "
+                f"[{label}] finalized chain did not advance past #{since_number} on a "
+                f"quorum ({len(advanced)}/{len(nodes)} advanced, {quorum} needed) in "
                 f"{timeout}s — the shard stopped finalizing. per-node LFB={numbers}"
             )
         time.sleep(2.0)
