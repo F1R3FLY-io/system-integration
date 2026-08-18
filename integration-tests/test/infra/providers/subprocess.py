@@ -493,14 +493,17 @@ class SubprocessProvider:
         identity: Optional[ValidatorIdentity] = None,
         extra_env: Optional[dict] = None,
         config_file: Optional[Path] = None,
+        data_subdir: Optional[Path] = None,
+        node_name_key: Optional[str] = None,
     ) -> SubprocessNodeHandle:
         """Spawn a node process. ``cli_args`` is the list of arguments AFTER
         ``run`` (i.e. flags like ``--data-dir``, ``--bootstrap``, etc.).
         ``cert_subdir``, if set, points the node at the pre-generated TLS
         keypair under ``paths.certs_dir/<cert_subdir>/``."""
-        data_dir = self._session_root / role_key
+        instance_path = data_subdir or Path(role_key)
+        data_dir = self._session_root / instance_path
         data_dir.mkdir(parents=True, exist_ok=True)
-        log_path = self._session_root / f"{role_key}.log"
+        log_path = self._session_root / instance_path.parent / f"{instance_path.name}.log"
 
         cmd: List[str] = [
             str(self._binary),
@@ -551,7 +554,7 @@ class SubprocessProvider:
         )
 
         return SubprocessNodeHandle(
-            name=self._node_name(role_key),
+            name=self._node_name(node_name_key or role_key),
             ports=ports,
             role=role,
             data_dir=data_dir,
@@ -577,11 +580,10 @@ class SubprocessProvider:
         True (default), waits for each node to reach ``isReady`` via
         ``/api/status``.
         """
-        # Per-shard discriminator. session_id is worker-scoped so multiple
-        # shards on the same worker share node names (boot, validator1, ...);
-        # incrementing here gives each shard a unique slot in the log archive
-        # so destroy_shard's archival doesn't overwrite earlier shards' logs.
+        # Per-shard discriminator. session_id is worker-scoped, so every shard
+        # needs its own node, data, and log namespace within the worker session.
         self._shard_counter += 1
+        shard_key = f"shard{self._shard_counter}"
         # Genesis files (bonds.txt + wallets.txt) — written to a temp dir
         # under the session root so cleanup catches them.
         tmp_genesis_dir = self._session_root / f"genesis-{self._shard_counter}"
@@ -628,6 +630,8 @@ class SubprocessProvider:
             cli_args=boot_cli,
             cert_subdir="bootstrap",
             config_file=genesis_dir / "rnode.conf",
+            data_subdir=Path(shard_key) / "boot",
+            node_name_key=f"{shard_key}.boot",
         )
         handles.append(boot_handle)
 
@@ -669,6 +673,8 @@ class SubprocessProvider:
                     cert_subdir=cert_subdir,
                     identity=identity,
                     config_file=genesis_dir / "rnode.conf",
+                    data_subdir=Path(shard_key) / role_key,
+                    node_name_key=f"{shard_key}.{role_key}",
                 )
             )
 
@@ -691,6 +697,8 @@ class SubprocessProvider:
                     cli_args=ro_cli,
                     cert_subdir=None,  # readonly auto-generates its own cert
                     config_file=genesis_dir / "rnode.conf",
+                    data_subdir=Path(shard_key) / "readonly",
+                    node_name_key=f"{shard_key}.readonly",
                 )
             )
 
@@ -742,6 +750,9 @@ class SubprocessProvider:
         *,
         force: bool = False,
     ) -> None:
+        if not handles:
+            return
+
         # Snapshot logs into the retired bucket before the handles are
         # removed; the autouse forbidden-pattern scanner reads from this
         # bucket plus `active_handles`, and the test's own `finally:
@@ -776,7 +787,8 @@ class SubprocessProvider:
             self._retired_log_snapshots.append(
                 RetiredLogSnapshot(name=h.name, log_text=snapshot_text)
             )
-        archive_handles(handles, self._archive_dir / f"shard{self._shard_counter}")
+        archive_subdir = handles[0].data_dir.parent.name
+        archive_handles(handles, self._archive_dir / archive_subdir)
         for h in handles:
             try:
                 h.remove()
@@ -1357,9 +1369,32 @@ class SubprocessProvider:
                 f"No subprocess session data at {session_dir} for session_id={session_id!r}"
             )
 
+        shard_roots = sorted(
+            [
+                d
+                for d in session_dir.iterdir()
+                if d.is_dir() and re.fullmatch(r"shard\d+", d.name) and (d / "boot").is_dir()
+            ],
+            key=lambda d: d.name,
+        )
+        live_shard_roots = [
+            root for root in shard_roots if _find_pid_for_data_dir(root / "boot") is not None
+        ]
+        if len(live_shard_roots) > 1:
+            names = ", ".join(root.name for root in live_shard_roots)
+            raise ValueError(
+                f"adopt_session: session {session_id!r} contains multiple live shards: {names}"
+            )
+        role_root = live_shard_roots[0] if live_shard_roots else session_dir
+
         # Each subdir corresponds to a role (boot, validator1, …, readonly).
         role_dirs = sorted(
-            [d for d in session_dir.iterdir() if d.is_dir() and d.name != "genesis"],
+            [
+                d
+                for d in role_root.iterdir()
+                if d.is_dir()
+                and (d.name == "boot" or d.name == "readonly" or d.name.startswith("validator"))
+            ],
             key=lambda d: _role_sort_key(d.name),
         )
 
@@ -1385,9 +1420,10 @@ class SubprocessProvider:
                     pid,
                 )
                 continue
-            log_path = session_dir / f"{role_key}.log"
+            log_path = role_root / f"{role_key}.log"
+            name_key = role_key if role_root == session_dir else f"{role_root.name}.{role_key}"
             handle = _AdoptedHandle(
-                name=self._node_name(role_key),
+                name=f"rnode.test.{session_id}.{name_key}",
                 ports=ports,
                 role=_role_from_role_key(role_key),
                 data_dir=role_dir,

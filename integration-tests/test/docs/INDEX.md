@@ -14,6 +14,7 @@ The `shared_shard` fixture brings up bootstrap + 3 validators + readonly once pe
 |---|---|---|
 | 1 | [test_bonding_validators](test_bonding_validators.md) | V4 first bond + V5 second-bond succession + Phase C observer LFS-sync, with background load throughout |
 | 2 | [test_bridge_admin](test_bridge_admin.md) | Bridge contract deploy, URI registration, query API |
+| 1 | [test_cost_accounting](test_cost_accounting.md) | Wallet-funded lollipop slot, conserving Exchange, and bounded capability-registry workflows across finalized deployments |
 | 7 | [test_contract_lifecycle](test_contract_lifecycle.md) | Multi-contract parallel deploy + cross-node state agreement + contract-to-contract interaction + multi-block state evolution under merge |
 | 2 | [test_convergence](test_convergence.md) | Network recovery from DAG tip divergence; FT convergence across nodes |
 | 1 | [test_dag_correctness](test_dag_correctness.md) | Multi-parent DAG structural correctness; determinism + FT caching regression |
@@ -27,7 +28,7 @@ The `shared_shard` fixture brings up bootstrap + 3 validators + readonly once pe
 | 5 | [test_wallets](test_wallets.md) | PoS vault transfers, authorization failures, insufficient funds, Block API transfers |
 | 23 | [test_web_api](test_web_api.md) | HTTP API: strict assertions, cross-node consistency, views, status, bond-status |
 
-**Total: 67 tests across 14 files.**
+**Total: 68 tests across 15 files.**
 
 ---
 
@@ -70,7 +71,7 @@ Each test spins up a single node with no peers. Used for heartbeat timing, stand
 
 | Directory | Files | Tests |
 |---|---|---|
-| `tests/shared/` | 14 | 67 |
+| `tests/shared/` | 15 | 68 |
 | `tests/custom/` | 11 | 25 |
 | `tests/standalone/` | 2 | 9 |
-| **Total** | **27** | **101** |
+| **Total** | **28** | **102** |

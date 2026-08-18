@@ -181,6 +181,67 @@ def test_subprocess_shards_keep_distinct_genesis_directories(tmp_path):
         tmp_path / "genesis-1" / "rnode.conf",
         tmp_path / "genesis-2" / "rnode.conf",
     ]
+    assert [call["data_subdir"] for call in spawn_calls] == [
+        Path("shard1") / "boot",
+        Path("shard2") / "boot",
+    ]
+    assert [call["node_name_key"] for call in spawn_calls] == [
+        "shard1.boot",
+        "shard2.boot",
+    ]
+
+
+def test_subprocess_adopts_a_namespaced_shard(monkeypatch, tmp_path):
+    provider = object.__new__(SubprocessProvider)
+    provider._session_id = "replacement"
+    provider._paths = SimpleNamespace(integration_tests=str(tmp_path))
+
+    session_dir = tmp_path / ".subprocess-data" / "kept"
+    shard_root = session_dir / "shard1"
+    for role in ("boot", "validator1", "readonly"):
+        (shard_root / role).mkdir(parents=True)
+
+    monkeypatch.setattr(
+        "test.infra.providers.subprocess._find_pid_for_data_dir",
+        lambda path: {"boot": 101, "validator1": 102, "readonly": 103}.get(path.name),
+    )
+    monkeypatch.setattr(
+        "test.infra.providers.subprocess._ports_from_cmdline",
+        lambda pid: PortMapping.from_base(12000 + (pid - 101) * 6),
+    )
+
+    handles = provider.adopt_session("kept")
+
+    assert [handle.data_dir for handle in handles] == [
+        shard_root / "boot",
+        shard_root / "validator1",
+        shard_root / "readonly",
+    ]
+    assert [handle.name for handle in handles] == [
+        "rnode.test.kept.shard1.boot",
+        "rnode.test.kept.shard1.validator1",
+        "rnode.test.kept.shard1.readonly",
+    ]
+    assert provider._session_id == "kept"
+    assert provider._session_root == session_dir
+
+
+def test_subprocess_rejects_ambiguous_multi_shard_adoption(monkeypatch, tmp_path):
+    provider = object.__new__(SubprocessProvider)
+    provider._session_id = "replacement"
+    provider._paths = SimpleNamespace(integration_tests=str(tmp_path))
+
+    session_dir = tmp_path / ".subprocess-data" / "kept"
+    for shard in ("shard1", "shard2"):
+        (session_dir / shard / "boot").mkdir(parents=True)
+
+    monkeypatch.setattr(
+        "test.infra.providers.subprocess._find_pid_for_data_dir",
+        lambda _path: 101,
+    )
+
+    with pytest.raises(ValueError, match="multiple live shards: shard1, shard2"):
+        provider.adopt_session("kept")
 
 
 class _RemovableHandle:
