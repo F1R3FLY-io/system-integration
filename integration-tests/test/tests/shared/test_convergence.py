@@ -78,6 +78,45 @@ def convergence_shard(provider, timeouts):
         shard.destroy()
 
 
+def _wait_for_lfb_ft_at_or_above_ftt(nodes, ftt, timeout):
+    """Wait until every node's LFB reports FT >= FTT, and report the values.
+
+    FT on a freshly adopted LFB is a convergent witness cache, not an
+    at-adoption guarantee: finality can arrive by floor inheritance while the
+    local live view is still re-converging, and later finalization rounds only
+    raise the cached value. Both recovery tests must poll rather than assert
+    instantly — the same contract ``test_ft_convergence`` relies on — so the
+    wait lives here once instead of being written out at each call site.
+    """
+
+    def _all_lfbs_clear_ftt():
+        ft_values = {}
+        for node in nodes:
+            lfb = node.last_finalized_block()
+            ft_values[node.name] = (
+                lfb.blockInfo.blockNumber,
+                float(lfb.blockInfo.faultTolerance),
+            )
+        if all(ft >= ftt for _, ft in ft_values.values()):
+            return ft_values
+        logging.info(
+            "FT still below FTT=%.2f on some nodes: %s",
+            ftt,
+            {k: f"#{n} FT={ft:.2f}" for k, (n, ft) in ft_values.items()},
+        )
+        return None
+
+    final_fts = poll_until(
+        predicate=_all_lfbs_clear_ftt,
+        timeout=timeout,
+        interval=5.0,
+        description=f"post-recovery LFB FT >= FTT={ftt:.2f} on all nodes",
+    )
+    for name, (number, ft) in final_fts.items():
+        logging.info("%s: LFB #%d, FT=%.2f", name, number, ft)
+    return final_fts
+
+
 def _poll_lfb_all_nodes(nodes, target, timeout):
     """Poll until LFB reaches target on all nodes.
 
@@ -154,37 +193,7 @@ def test_network_recovers_from_validator_pause(convergence_shard, node_conf, tim
         timeout=timeouts.finalization * 3,
     )
 
-    # FT on a freshly adopted LFB is a convergent witness cache, not an
-    # at-adoption guarantee: finality can arrive by floor inheritance while
-    # the local live view is still re-converging after the pause, and later
-    # finalization rounds only raise the cached value. Poll for FT >= FTT
-    # instead of asserting instantly — the same contract test_ft_convergence
-    # relies on.
-    def _all_lfbs_clear_ftt():
-        ft_values = {}
-        for node in all_nodes:
-            lfb = node.last_finalized_block()
-            ft_values[node.name] = (
-                lfb.blockInfo.blockNumber,
-                float(lfb.blockInfo.faultTolerance),
-            )
-        if all(ft >= node_conf.ftt for _, ft in ft_values.values()):
-            return ft_values
-        logging.info(
-            "FT still below FTT=%.2f on some nodes: %s",
-            node_conf.ftt,
-            {k: f"#{n} FT={ft:.2f}" for k, (n, ft) in ft_values.items()},
-        )
-        return None
-
-    final_fts = poll_until(
-        predicate=_all_lfbs_clear_ftt,
-        timeout=timeouts.finalization,
-        interval=5.0,
-        description=f"post-recovery LFB FT >= FTT={node_conf.ftt:.2f} on all nodes",
-    )
-    for name, (number, ft) in final_fts.items():
-        logging.info("%s: LFB #%d, FT=%.2f", name, number, ft)
+    _wait_for_lfb_ft_at_or_above_ftt(all_nodes, node_conf.ftt, timeouts.finalization)
 
     logging.info("Network converged after validator pause (FT >= FTT=%.2f)", node_conf.ftt)
 
@@ -379,14 +388,7 @@ def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeo
     spread = max(final_lfbs.values()) - min(final_lfbs.values())
     logging.info("Final LFBs after slow deploy: %s (spread: %d)", final_lfbs, spread)
 
-    # Verify FT >= FTT on post-recovery LFB
-    for node in all_nodes:
-        lfb = node.last_finalized_block()
-        ft = float(lfb.blockInfo.faultTolerance)
-        assert ft >= node_conf.ftt, (
-            f"{node.name}: post-recovery LFB #{lfb.blockInfo.blockNumber} "
-            f"has FT={ft}, expected >= FTT={node_conf.ftt}"
-        )
+    _wait_for_lfb_ft_at_or_above_ftt(all_nodes, node_conf.ftt, timeouts.finalization)
 
     logging.info(
         "Network recovered after slow deploy (LFB spread: %d, FT >= FTT=%.2f)",
