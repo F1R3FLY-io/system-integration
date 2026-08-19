@@ -47,6 +47,18 @@ _NODE_PORT_RESERVATION_ARGS: List[str] = [
     "net.ipv4.ip_local_reserved_ports=40400-40405",
 ]
 
+# The daemon's json-file driver is unbounded by default, so a debug-level run
+# (gigabytes per minute across a shard) fills the host disk and takes the run
+# with it. Cap the stdout copy: the node's own rotating file sink is the
+# authoritative log that scans read, and this buffer only has to cover the
+# startup-crash case where the file sink never opened.
+_NODE_LOG_OPTS: List[str] = [
+    "--log-opt",
+    "max-size=100m",
+    "--log-opt",
+    "max-file=3",
+]
+
 
 # Probe for per-core CPU accounting, run inside the container. cgroup v1
 # exposes cumulative per-core nanoseconds directly (cpuacct.usage_percpu);
@@ -422,22 +434,46 @@ class DockerNodeHandle:
     def identity(self) -> Optional[ValidatorIdentity]:
         return self._identity
 
-    # Path inside every container where the node writes its structured log.
-    _LOG_FILE_PATH = "/var/lib/rnode/logs/node.log"
+    # Directory inside every container where the node writes its structured
+    # log. The appender uses filename_prefix "node.log" with rotation, so the
+    # files on disk are "node.log.<date>" (plus gzipped predecessors) — the
+    # unsuffixed name NEVER exists. Reading a fixed "node.log" therefore always
+    # missed and fell through to `docker logs`, whose json buffer is capped by
+    # the daemon: log scans silently saw a truncated tail instead of the run.
+    _LOG_DIR = "/var/lib/rnode/logs"
+    _LOG_GLOB = "node.log*"
+
+    def _log_files_newest_first(self) -> list:
+        """Uncompressed log files in the container, newest first ([] if none)."""
+        listing = _docker(
+            "exec", self._name, "sh", "-c", f"ls -1t {self._LOG_DIR}/{self._LOG_GLOB} 2>/dev/null"
+        )
+        if listing.returncode != 0:
+            return []
+        return [
+            line.strip()
+            for line in (listing.stdout or "").splitlines()
+            # .gz predecessors are not readable by `cat`; the live file and its
+            # uncompressed siblings carry the window diagnostics need.
+            if line.strip() and not line.strip().endswith(".gz")
+        ]
 
     def logs(self, tail: Optional[int] = None) -> str:
         """Return the node's log content.
 
-        Reads from the structured log file written by the node's file
-        sink (``--log-sink=both``). Falls back to ``docker logs``
-        (stdout/stderr buffer) when the file does not exist or is not
-        yet accessible — this covers the startup-failure case where the
-        node crashes before the file sink opens.
+        Reads the rotated files written by the node's file sink
+        (``--log-sink=both``), oldest-first so the result is chronological.
+        Falls back to ``docker logs`` (stdout/stderr buffer) only when no log
+        file exists — the startup-failure case where the node crashed before
+        the file sink opened.
         """
-        result = _docker("exec", self._name, "cat", self._LOG_FILE_PATH)
-        if result.returncode == 0:
-            text = result.stdout or ""
-        else:
+        files = self._log_files_newest_first()
+        text = ""
+        if files:
+            result = _docker("exec", self._name, "cat", *reversed(files))
+            if result.returncode == 0:
+                text = result.stdout or ""
+        if not text:
             fallback = _docker("logs", self._name)
             text = (fallback.stdout or "") + (fallback.stderr or "")
         if tail:
@@ -457,13 +493,22 @@ class DockerNodeHandle:
         """
         try:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
-            cp_result = subprocess.run(
-                ["docker", "cp", f"{self._name}:{self._LOG_FILE_PATH}", str(dest_path)],
-                capture_output=True,
-                check=False,
-                timeout=30,
-            )
-            if cp_result.returncode != 0:
+            # Rotation means there is no single file to copy; concatenate the
+            # uncompressed set oldest-first so the archive is chronological and
+            # complete rather than one rotation slice.
+            files = self._log_files_newest_first()
+            copied = False
+            if files:
+                with dest_path.open("w") as f:
+                    cat_result = subprocess.run(
+                        ["docker", "exec", self._name, "cat", *reversed(files)],
+                        stdout=f,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                        timeout=120,
+                    )
+                copied = cat_result.returncode == 0 and dest_path.stat().st_size > 0
+            if not copied:
                 with dest_path.open("w") as f:
                     subprocess.run(
                         ["docker", "logs", self._name],
@@ -1036,6 +1081,7 @@ class DockerProvider:
             "--user",
             "root",
             *_NODE_PORT_RESERVATION_ARGS,
+            *_NODE_LOG_OPTS,
             "--name",
             container_name,
             "--network",
@@ -1158,6 +1204,7 @@ class DockerProvider:
             "--user",
             "root",
             *_NODE_PORT_RESERVATION_ARGS,
+            *_NODE_LOG_OPTS,
             "--name",
             container_name,
             "--network",
@@ -1303,6 +1350,7 @@ class DockerProvider:
             "--user",
             "root",
             *_NODE_PORT_RESERVATION_ARGS,
+            *_NODE_LOG_OPTS,
             "--name",
             node_name,
             "--network",

@@ -99,11 +99,14 @@ def pytest_addoption(parser):
         "--rss-ceiling-mb",
         action="store",
         type=int,
-        default=5000,
+        default=None,
         help="Kill nodes + fail the run if total node RSS exceeds this (MB) "
         "for 2 consecutive samples, protecting the host from swap-thrash/"
         "freeze. Always active; --monitor only adds the CSV + /metrics "
-        "output. 0 disables. Default 5000. (subprocess provider: enforced by an "
+        "output. 0 disables. Default: half the host's total RAM, floor 5000 "
+        "(5000 if total RAM is unreadable). Guards THIS session's nodes only; "
+        "the aggregate of concurrent sessions on one host is guarded by "
+        "--host-free-floor-mb. (subprocess provider: enforced by an "
         "out-of-process guardian that survives a freeze.)",
     )
     group.addoption(
@@ -295,7 +298,13 @@ def timeouts(timeout_config) -> TimeoutHierarchy:
 
 @pytest.fixture(scope="session")
 def port_allocator(request) -> PortAllocator:
-    worker_id = getattr(request.config, "workerinput", {}).get("workerid", "")
+    # Without xdist, concurrent standalone pytest processes on one host would
+    # all allocate from the same base and race between the bind probe and the
+    # node's actual bind. F1R3FLY_PORT_WORKER=gwN gives such a process the same
+    # disjoint 500-port range an xdist worker gwN would get.
+    worker_id = getattr(request.config, "workerinput", {}).get("workerid", "") or os.environ.get(
+        "F1R3FLY_PORT_WORKER", ""
+    )
     return PortAllocator(worker_id=worker_id)
 
 
@@ -412,6 +421,12 @@ def shared_shard(request, provider, timeouts) -> Iterator[Shard]:
         heartbeat=True,
         include_readonly=True,
         extra_wallets=extra_wallets,
+        # Bonding tests on this shard wait for a joiner to activate at an epoch
+        # boundary, so the shard needs a short epoch. conf/rust.conf carries a
+        # longer one for the suites that never bond, where a PoS closeBlock
+        # every few blocks is pure overhead — set it explicitly here rather
+        # than inheriting, so the two cannot drift.
+        global_cli_options={"--epoch-length": "4", "--quarantine-length": "10"},
     )
 
     if request.config.getoption("--skip-setup"):
@@ -850,6 +865,15 @@ def resource_monitor(request):
     guardian_token = getattr(provider, "host_process_guardian_token", lambda: None)()
 
     ceiling = request.config.getoption("--rss-ceiling-mb")
+    if ceiling is None:
+        # Host-aware default: the ceiling must scale with the host it
+        # protects — a fixed number is simultaneously too small for a big
+        # dedicated VM and too generous for a small laptop.
+        from .infra.resource_monitor import _host_total_memory_mb
+
+        total_mb = _host_total_memory_mb()
+        ceiling = max(5000, int(total_mb // 2)) if total_mb else 5000
+        logging.info("rss-ceiling derived from host RAM: %d MB", ceiling)
     free_floor = request.config.getoption("--host-free-floor-mb")
     load_factor = request.config.getoption("--host-load-factor")
     monitor = ResourceMonitor(

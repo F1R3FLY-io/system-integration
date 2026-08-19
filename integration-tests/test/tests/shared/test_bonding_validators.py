@@ -84,7 +84,9 @@ pytestmark = [
 
 _BOND_AMOUNT = 100
 
-# Matches conf/rust.conf:genesis-block-data.epoch-length
+# Matches the epoch `bonding_shard` boots with (the fixture passes
+# --epoch-length explicitly; conf/rust.conf carries a longer one for suites
+# that never bond).
 _EPOCH_LENGTH = 4
 
 # Background-load knobs. Interval is per-producer; with 3 producers
@@ -136,6 +138,11 @@ def bonding_shard(provider, timeouts):
         heartbeat=True,
         include_readonly=True,
         extra_wallets=extra_wallets,
+        # This suite waits for a joiner to activate at an epoch boundary, so
+        # the shard needs a short epoch. Set explicitly rather than inherited
+        # from conf/rust.conf (which carries a long epoch for suites that
+        # never bond), so the two cannot drift — matches `_EPOCH_LENGTH`.
+        global_cli_options={"--epoch-length": "4", "--quarantine-length": "10"},
     )
     shard = Shard.create(provider, config, timeouts)
     try:

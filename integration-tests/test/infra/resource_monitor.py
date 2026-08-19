@@ -96,6 +96,10 @@ _METRIC_KEYWORDS = (
     "deploy",
     "rspace",
     "casper",
+    # Block-retrieval / fetch path (observer-lag diagnosis): download latency
+    # histogram + outstanding-request backlog gauge + peer count, per node.
+    "block_retriever",
+    "block_download",
 )
 
 
@@ -133,11 +137,16 @@ class NodeStats:
 
 
 def _host_memory() -> Dict[str, float]:
-    """Best-effort host available RAM + swap-used in MB. Empty on failure.
+    """Best-effort host available RAM + swap-used in MiB. Empty on failure.
 
     Linux / WSL reads ``/proc/meminfo`` directly (``MemAvailable`` is the
     reclaim-aware free figure; swap-used = ``SwapTotal - SwapFree``). macOS
     falls back to ``vm_stat`` + ``sysctl vm.swapusage``. meminfo values are kB.
+
+    Both platforms report the RECLAIM-AWARE figure in MiB, so a floor expressed
+    in MB means the same thing on either. Reporting only never-touched pages
+    would describe a healthy machine as starving: macOS parks most of RAM in
+    inactive and hands it back on demand.
     """
     meminfo = Path("/proc/meminfo")
     if meminfo.exists():
@@ -158,12 +167,26 @@ def _host_memory() -> Dict[str, float]:
     out = {}
     try:
         vm = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5).stdout
-        page = 4096
-        free = 0
+        # Page size comes from vm_stat's own header ("page size of N bytes").
+        # Apple Silicon uses 16384, not the 4096 this assumed — every reading was
+        # a quarter of the truth, which put a healthy host permanently under any
+        # sane floor and killed shards at startup.
+        page_match = re.search(r"page size of (\d+) bytes", vm)
+        page = int(page_match.group(1)) if page_match else 4096
+        # Match what MemAvailable means on the Linux branch: memory obtainable
+        # WITHOUT swapping, not merely memory sitting idle. free/inactive/
+        # speculative are disjoint buckets in vm_stat, so summing them cannot
+        # double-count; inactive and speculative are both reclaimable on demand.
+        # "Pages purgeable" is deliberately excluded — it overlaps the buckets
+        # above rather than partitioning with them.
+        reclaimable = {"Pages free": 0, "Pages inactive": 0, "Pages speculative": 0}
         for line in vm.splitlines():
-            if line.startswith("Pages free:"):
-                free = int(line.split(":")[1].strip().rstrip(".")) * page
-        out["free_mb"] = free / 1e6
+            key, _, rest = line.partition(":")
+            if key in reclaimable:
+                reclaimable[key] = int(rest.strip().rstrip("."))
+        # MiB, matching the Linux branch's kB/1024 — a floor in MB has to mean
+        # the same thing on both platforms.
+        out["free_mb"] = sum(reclaimable.values()) * page / (1024.0 * 1024.0)
         sw = subprocess.run(
             ["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True, timeout=5
         ).stdout
@@ -174,6 +197,35 @@ def _host_memory() -> Dict[str, float]:
     except Exception:  # noqa: BLE001 — monitoring is best-effort
         pass
     return out
+
+
+def _host_total_memory_mb() -> Optional[float]:
+    """Best-effort host TOTAL RAM in MB, or None if unreadable.
+
+    Linux / WSL reads ``MemTotal`` from ``/proc/meminfo`` (kB); macOS reads
+    ``sysctl -n hw.memsize`` (bytes). Consumed by the RSS-ceiling default
+    derivation — the ceiling must scale with the host it protects.
+    """
+    meminfo = Path("/proc/meminfo")
+    if meminfo.exists():
+        try:
+            for line in meminfo.read_text().splitlines():
+                key, _, rest = line.partition(":")
+                if key == "MemTotal":
+                    return int(rest.strip().split()[0]) / 1024.0
+        except Exception:  # noqa: BLE001 — monitoring is best-effort
+            return None
+        return None
+    try:
+        out = subprocess.run(
+            ["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=5
+        ).stdout.strip()
+        # MiB, as the Linux branch above returns — a 16 GiB host must read 16384
+        # here and not 17180, or the derived RSS ceiling differs by ~5% purely by
+        # platform.
+        return int(out) / (1024.0 * 1024.0)
+    except Exception:  # noqa: BLE001 — monitoring is best-effort
+        return None
 
 
 def _loadavg() -> Optional[float]:

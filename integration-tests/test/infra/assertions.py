@@ -6,8 +6,11 @@ Shard assertions: test-specific helpers for multi-node agreement checks.
 
 from __future__ import annotations
 
+import logging
+import re
 import time
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
 # Re-export deploy checking from pyf1r3fly
 from f1r3fly.deploy import (
@@ -377,11 +380,332 @@ def assert_all_deploys_finalized_on_all_nodes(
                 # the f1r3fly.deploy class re-exported at module scope.
                 not_finalized.append((sig[:16], node.name, type(exc).__name__))
                 break  # one un-finalizing node is enough; move to the next deploy
+
+    # Classify HOW each deploy was lost. Refund-quarantine, retry-gate
+    # starvation and merge starvation are structurally different failures that
+    # all arrive here as DeployError; without this the cause is only
+    # recoverable by hand-scanning shard logs. One streaming pass per affected
+    # node, on the failure path only.
+    causes: dict = {}
+    if not_finalized:
+        from .log_events import classify_deploy_losses
+
+        try:
+            causes = classify_deploy_losses(nodes, {sig16 for sig16, _, _ in not_finalized})
+        except Exception:  # noqa: BLE001 - diagnostics must never mask the failure
+            causes = {}
+    detail = "; ".join(
+        f"{sig16}@{node_name} {exc_name} -> {causes.get(sig16, 'unclassified')}"
+        for sig16, node_name, exc_name in not_finalized[:3]
+    )
     assert not not_finalized, (
         f"[{label}] {len(not_finalized)} of {len(deploy_ids)} deploys did not "
         f"finalize on all nodes (deploy-status, re-homing-aware). "
-        f"first(3)={not_finalized[:3]}"
+        f"first(3)={detail}"
     )
+
+
+def collect_forensics(nodes, *, channel: Optional[str] = None, label: str = "") -> str:
+    """Failure-time facts that are cheap over the node API, gathered in one
+    place so a red test explains itself instead of sending someone to the
+    shard logs.
+
+    Answers, without any node-side debug stream:
+
+    - is the finalized chain forked or merely lagging (per-node LFB number and
+      hash, and whether the hashes agree);
+    - is it advancing at all (two samples a second apart);
+    - what does each node actually hold on the channel under test, read at
+      that node's own finalized state;
+    - did any node emit a forbidden-log signature (fork, merge incoherence,
+      propose BugError) during the run.
+
+    Diagnostics must never mask the failure that triggered them: every probe
+    is individually guarded and reports its own error inline.
+    """
+    lines: list[str] = [f"--- forensics [{label}] ---"]
+
+    def probe(what: str, fn):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - a failed probe is data, not a crash
+            lines.append(f"  {what}: UNAVAILABLE ({type(exc).__name__}: {exc})")
+            return None
+
+    first: dict = {}
+    for node in nodes:
+        info = probe(f"lfb({node.name})", lambda n=node: n.last_finalized_block().blockInfo)
+        if info is not None:
+            first[node.name] = (info.blockNumber, info.blockHash[:10])
+    unreachable = [n.name for n in nodes if n.name not in first]
+    if unreachable:
+        # A node that cannot answer is an INFRASTRUCTURE failure, not a
+        # consensus one, and it silently poisons every all-node assertion:
+        # a dead container reads as "this deploy has no verdict" forever.
+        # Name it first and loudly.
+        lines.append(f"  *** NODE(S) NOT ANSWERING: {unreachable} — treat as infra, not consensus")
+    if first:
+        hashes = {h for _, h in first.values()}
+        lines.append(
+            f"  LFB per node ({len(first)}/{len(nodes)} answering): {first}"
+            f"  -> {'AGREED' if len(hashes) == 1 else 'FORKED/LAGGING'}"
+        )
+
+    # Sample over several block intervals. The heartbeat proposes on a
+    # multi-second cadence, so a sub-interval window shows zero movement on a
+    # perfectly healthy chain — a false FROZEN verdict sends the next reader
+    # hunting a wedge that does not exist.
+    time.sleep(_ADVANCE_SAMPLE_SECONDS)
+    second: dict = {}
+    for node in nodes:
+        info = probe(f"lfb2({node.name})", lambda n=node: n.last_finalized_block().blockInfo)
+        if info is not None:
+            second[node.name] = info.blockNumber
+    if first and second:
+        advanced = {n for n, num in second.items() if num > first.get(n, (-1, ""))[0]}
+        lines.append(
+            f"  chain advancing on {len(advanced)}/{len(second)} nodes"
+            f" over {_ADVANCE_SAMPLE_SECONDS:.0f}s" + ("" if advanced else "  <-- FROZEN")
+        )
+
+    if channel:
+        values: dict = {}
+        for node in nodes:
+            values[node.name] = probe(
+                f"read_channel({node.name})", lambda n=node: n.read_channel(channel)
+            )
+        lines.append(f'  finalized @"{channel}" per node: {values}')
+
+    from .log_events import FORBIDDEN_PATTERNS
+
+    hits: dict = {}
+    for node in nodes:
+        text = probe(f"logs({node.name})", lambda n=node: n.logs(tail=20000)) or ""
+        node_hits = {key: len(pat.findall(text)) for key, pat in FORBIDDEN_PATTERNS.items()}
+        node_hits = {k: v for k, v in node_hits.items() if v}
+        if node_hits:
+            hits[node.name] = node_hits
+    lines.append(f"  forbidden-log signatures: {hits or 'none in scanned tail'}")
+
+    return "\n".join(lines)
+
+
+def assert_chain_advances(nodes, since_number: int, timeout: int, *, label: str) -> int:
+    """Assert the finalized chain moved past ``since_number`` on a quorum of
+    nodes. Returns the lowest advanced LFB number.
+
+    This checks LIVENESS only. It used to also poll
+    ``assert_all_nodes_agree_on_lfb``, which is the pointer-agreement
+    anti-pattern ``common_finalized_anchor`` documents: under continuous
+    proposals healthy finalizers a few heights apart may never coincide within
+    a sweep, so that poll burned its budget against a working shard. Cross-node
+    agreement belongs at a settled cut — ``common_finalized_anchor`` or
+    ``assert_bonds_map_consistent_across_nodes`` — not here.
+
+    A shard that stops finalizing looks identical, from a deploy's point of
+    view, to a shard that is merely slow — both leave deploys Pending. This
+    separates them: a frozen LFB is a shard-liveness failure regardless of
+    what any individual deploy did, and it names the freeze directly instead
+    of surfacing minutes later as a deploy-status timeout.
+
+    Liveness is a QUORUM property, not a unanimous one. Taking the minimum
+    across every node lets a single sick node — a joiner whose DAG is
+    incomplete, a node mid-restart — hold the reported height down forever
+    and report a working shard as halted, which is the misdiagnosis this
+    function exists to prevent. A strict majority advancing is the shard
+    advancing; the laggards are named in the message either way.
+    """
+    deadline = time.monotonic() + timeout
+    quorum = len(nodes) // 2 + 1
+    while True:
+        numbers = {}
+        for node in nodes:
+            try:
+                numbers[node.name] = node.last_finalized_block().blockInfo.blockNumber
+            except Exception as exc:  # noqa: BLE001 — an unreachable node is a laggard, not a halt
+                numbers[node.name] = f"unreachable ({type(exc).__name__})"
+        heights = sorted(n for n in numbers.values() if isinstance(n, int))
+        advanced = [h for h in heights if h > since_number]
+        if len(advanced) >= quorum:
+            return min(advanced)
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"[{label}] finalized chain did not advance past #{since_number} on a "
+                f"quorum ({len(advanced)}/{len(nodes)} advanced, {quorum} needed) in "
+                f"{timeout}s — the shard stopped finalizing. per-node LFB={numbers}"
+            )
+        time.sleep(2.0)
+
+
+def lowest_lfb_number(nodes) -> int:
+    """The slowest node's LFB number — the baseline for ``assert_chain_advances``."""
+    return min(node.last_finalized_block().blockInfo.blockNumber for node in nodes)
+
+
+# ── Verdict-aware deploy resolution ────────────────────────────────────
+#
+# Separates shard INTEGRITY from per-deploy FAIRNESS. A deploy the shard
+# terminally judged Expired is a decision the shard made and reported: the
+# window closed and the effect never landed. That is recorded, not failed.
+# A deploy with NO verdict inside the budget, a Failed one, or one whose
+# verdict disagrees across nodes means the shard did not decide or decided
+# inconsistently — those stay hard failures.
+
+_TERMINAL_STATE_RE = re.compile(r"terminal state (Finalized|Failed|Expired)")
+
+# Window for the chain-advance probe. Must exceed the heartbeat's block cadence
+# (casper.heartbeat.check-interval) or a healthy chain reads as frozen.
+_ADVANCE_SAMPLE_SECONDS = 12.0
+
+
+@dataclass
+class DeployVerdicts:
+    """Per-deploy terminal verdicts across all nodes.
+
+    ``finalized`` is the subset callers must use to build expected state:
+    an expired deploy's effect must NOT appear, and asserting the full
+    submitted set as the expectation would fail for a shard that behaved
+    correctly under contention.
+    """
+
+    finalized: List[str] = field(default_factory=list)
+    expired: Dict[str, str] = field(default_factory=dict)  # sig16 -> detail
+    per_sig_states: Dict[str, Dict[str, str]] = field(default_factory=dict)
+
+    def finalized_set(self) -> set:
+        return set(self.finalized)
+
+    def summary(self) -> str:
+        return f"{len(self.finalized)} finalized, {len(self.expired)} expired" + (
+            f" ({', '.join(sorted(self.expired))})" if self.expired else ""
+        )
+
+
+def _terminal_state_from_error(exc: Exception) -> Optional[str]:
+    """Extract the terminal state named in a pyf1r3fly ``DeployError``.
+
+    The message is built by ``f1r3fly.polling.wait_for_deploy_finalized`` as
+    "... reached terminal state <State> (rejection_count=N)". An
+    unrecognised message yields None, which the caller treats as an
+    integrity failure rather than guessing.
+    """
+    match = _TERMINAL_STATE_RE.search(str(exc))
+    return match.group(1) if match else None
+
+
+def resolve_deploy_verdicts(
+    nodes,
+    deploy_ids: list[str],
+    timeout: int,
+    *,
+    label: str = "deploys",
+) -> DeployVerdicts:
+    """Resolve every deploy to a terminal verdict on EVERY node.
+
+    Hard-fails (AssertionError) when the shard failed to decide or decided
+    inconsistently:
+
+    - no verdict within ``timeout`` (still Pending) — the shard never
+      concluded; this is the frozen-chain / propose-wedge signature;
+    - terminal ``Failed``;
+    - a verdict that differs across nodes (e.g. Finalized on one node,
+      Expired on another) — a forked read surface;
+    - an unparseable terminal state.
+
+    Records, without failing, deploys that every node judged ``Expired``.
+    """
+    from .polling import wait_for_deploy_finalized
+
+    verdicts = DeployVerdicts()
+    if not deploy_ids:
+        return verdicts
+
+    # Establish which nodes can answer BEFORE polling deploys. A dead container
+    # cannot report a verdict, so polling it spends the full per-sig budget and
+    # then reports "no terminal verdict" — indistinguishable from a shard that
+    # failed to decide. That misread a node the kernel OOM-killed as a
+    # consensus failure and cost ~29 minutes per occurrence. Fail immediately
+    # and name the node instead.
+    dead = []
+    for node in nodes:
+        try:
+            node.last_finalized_block()
+        except Exception as exc:  # noqa: BLE001
+            dead.append(f"{node.name} ({type(exc).__name__})")
+    if dead:
+        raise AssertionError(
+            f"[{label}] INFRASTRUCTURE: {len(dead)} of {len(nodes)} nodes are not answering "
+            f"({', '.join(dead)}) — deploy verdicts cannot be resolved on a shard with a dead "
+            f"node; this is not a consensus failure.\n" + collect_forensics(nodes, label=label)
+        )
+
+    integrity: list[tuple[str, str, str]] = []  # (sig16, node, reason)
+    for sig in deploy_ids:
+        sig16 = sig[:16]
+        states: Dict[str, str] = {}
+        for node in nodes:
+            try:
+                wait_for_deploy_finalized(node, sig, timeout)
+                states[node.name] = "Finalized"
+            except Exception as exc:  # noqa: BLE001 - DeployError is not re-exported here
+                if isinstance(exc, TimeoutError):
+                    states[node.name] = "NoVerdict"
+                    continue
+                state = _terminal_state_from_error(exc)
+                states[node.name] = state or f"Unknown({type(exc).__name__})"
+        verdicts.per_sig_states[sig16] = states
+
+        distinct = set(states.values())
+        if distinct == {"Finalized"}:
+            verdicts.finalized.append(sig)
+        elif distinct == {"Expired"}:
+            verdicts.expired[sig16] = "Expired on all nodes"
+        elif "NoVerdict" in distinct:
+            integrity.append((sig16, _nodes_in_state(states, "NoVerdict"), "no terminal verdict"))
+        elif "Failed" in distinct:
+            integrity.append((sig16, _nodes_in_state(states, "Failed"), "terminal Failed"))
+        else:
+            integrity.append((sig16, "all", f"verdict differs across nodes: {sorted(distinct)}"))
+
+    if integrity:
+        causes = _classify(nodes, {sig16 for sig16, _, _ in integrity})
+        detail = "; ".join(
+            f"{sig16}@{where} {reason} -> {causes.get(sig16, 'unclassified')}"
+            for sig16, where, reason in integrity[:3]
+        )
+        raise AssertionError(
+            f"[{label}] {len(integrity)} of {len(deploy_ids)} deploys have no coherent "
+            f"terminal verdict (deploy-status, re-homing-aware). first(3)={detail}\n"
+            + collect_forensics(nodes, label=label)
+        )
+
+    if verdicts.expired:
+        causes = _classify(nodes, set(verdicts.expired))
+        for sig16 in sorted(verdicts.expired):
+            verdicts.expired[sig16] = causes.get(sig16, "unclassified")
+        logging.warning(
+            "STARVATION-RECORD [%s]: %d of %d deploys expired without landing — %s",
+            label,
+            len(verdicts.expired),
+            len(deploy_ids),
+            "; ".join(f"{s}: {c}" for s, c in sorted(verdicts.expired.items())),
+        )
+    logging.info("[%s] deploy verdicts: %s", label, verdicts.summary())
+    return verdicts
+
+
+def _nodes_in_state(states: Dict[str, str], state: str) -> str:
+    return ",".join(sorted(name for name, value in states.items() if value == state)) or "?"
+
+
+def _classify(nodes, sig16s: set) -> dict:
+    """Attach the loss mechanism to each sig; diagnostics never mask a failure."""
+    from .log_events import classify_deploy_losses
+
+    try:
+        return classify_deploy_losses(nodes, sig16s)
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 # ── Cross-node channel-value agreement (FS node-identity) ──────────────
@@ -567,9 +891,26 @@ def await_value_converges_on_all_nodes(
             return cur
         time.sleep(interval)
 
+    # Where each node thinks finality is, collected once on the way out. A
+    # convergence timeout is usually a disagreement about that, and the answer
+    # is not recoverable from the message otherwise. Best-effort: a node that
+    # cannot answer reports why rather than masking the real failure. Read here
+    # rather than in the poll loop so a single flaky node cannot stall every
+    # iteration.
+    last_lfb_view = {}
+    for n in nodes:
+        try:
+            info = n.last_finalized_block().blockInfo
+            last_lfb_view[n.name] = f"#{info.blockNumber}:{info.blockHash[:10]}"
+        except Exception as exc:  # noqa: BLE001 — diagnostics never mask the failure
+            last_lfb_view[n.name] = f"unreachable ({type(exc).__name__})"
+
+    channel_name = what[2:-1] if what.startswith('@"') and what.endswith('"') else None
     raise AssertionError(
         f"[{label}] finalized {what} did not converge to {expected} on all nodes "
-        f"within {timeout:.0f}s; last={last}, water={water}"
+        f"within {timeout:.0f}s; last={last}, water={water}, "
+        f"final per-node LFBs={last_lfb_view}\n"
+        + collect_forensics(nodes, channel=channel_name, label=label)
     )
 
 

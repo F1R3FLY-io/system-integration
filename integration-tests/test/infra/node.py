@@ -394,6 +394,19 @@ class Node:
     def logs(self, tail: Optional[int] = None) -> str:
         return self._handle.logs(tail)
 
+    def iter_log_lines(self):
+        """Yield the node's log line-by-line without materializing it whole.
+
+        Diagnostic scans run against multi-hundred-MB debug logs; ``logs()``
+        reads the file into one string. Providers that expose a streaming
+        iterator use it; the rest fall back to the string API.
+        """
+        streaming = getattr(self._handle, "iter_log_lines", None)
+        if streaming is None:
+            yield from self._handle.logs().splitlines()
+            return
+        yield from streaming()
+
     def is_running(self) -> bool:
         return self._handle.is_running()
 
