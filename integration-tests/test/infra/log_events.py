@@ -84,6 +84,15 @@ SYNC_MARKERS: Dict[str, str] = {
     # Requested blocks went unanswered within the requester's window and are
     # being re-requested. The retry path, not an error.
     "BlockRequestResend": "No responses for",
+    # The floor-cache request loop re-asked after a response arrived for a
+    # request it had already moved past — evidence the loop kept asking
+    # through peer silence rather than wedging.
+    "FloorCacheReAsked": "floor-cache channel full or closed",
+    # The floor-cache request went unanswered through its retry budget and
+    # the restore degraded to local derivation — loud, never a wedge.
+    "FloorCacheDegraded": "Proceeding without the shipped floor cache",
+    # Engine transitioned to Running — the restore pipeline completed.
+    "TransitionedToRunning": "Making a transition to Running",
     # Heartbeat proposer created a block. Fires for every heartbeat-created
     # block, whether or not it carried user deploys.
     "HeartbeatBlockCreated": "Heartbeat: Successfully created block",
