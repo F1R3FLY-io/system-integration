@@ -154,20 +154,37 @@ def test_network_recovers_from_validator_pause(convergence_shard, node_conf, tim
         timeout=timeouts.finalization * 3,
     )
 
-    # Report final LFB values and verify FT >= FTT on post-recovery LFB
-    for node in all_nodes:
-        lfb = node.last_finalized_block()
-        ft = float(lfb.blockInfo.faultTolerance)
+    # FT on a freshly adopted LFB is a convergent witness cache, not an
+    # at-adoption guarantee: finality can arrive by floor inheritance while
+    # the local live view is still re-converging after the pause, and later
+    # finalization rounds only raise the cached value. Poll for FT >= FTT
+    # instead of asserting instantly — the same contract test_ft_convergence
+    # relies on.
+    def _all_lfbs_clear_ftt():
+        ft_values = {}
+        for node in all_nodes:
+            lfb = node.last_finalized_block()
+            ft_values[node.name] = (
+                lfb.blockInfo.blockNumber,
+                float(lfb.blockInfo.faultTolerance),
+            )
+        if all(ft >= node_conf.ftt for _, ft in ft_values.values()):
+            return ft_values
         logging.info(
-            "%s: LFB #%d, FT=%.2f",
-            node.name,
-            lfb.blockInfo.blockNumber,
-            ft,
+            "FT still below FTT=%.2f on some nodes: %s",
+            node_conf.ftt,
+            {k: f"#{n} FT={ft:.2f}" for k, (n, ft) in ft_values.items()},
         )
-        assert ft >= node_conf.ftt, (
-            f"{node.name}: post-recovery LFB #{lfb.blockInfo.blockNumber} "
-            f"has FT={ft}, expected >= FTT={node_conf.ftt}"
-        )
+        return None
+
+    final_fts = poll_until(
+        predicate=_all_lfbs_clear_ftt,
+        timeout=timeouts.finalization,
+        interval=5.0,
+        description=f"post-recovery LFB FT >= FTT={node_conf.ftt:.2f} on all nodes",
+    )
+    for name, (number, ft) in final_fts.items():
+        logging.info("%s: LFB #%d, FT=%.2f", name, number, ft)
 
     logging.info("Network converged after validator pause (FT >= FTT=%.2f)", node_conf.ftt)
 
