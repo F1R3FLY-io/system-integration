@@ -258,7 +258,9 @@ def _assert_bond_rejected(
     logging.info("Bond correctly rejected (%s): %s", expected_reason, result.reason)
 
 
-def _assert_withdraw_rejected(actor, all_nodes, ro, key, expected_reason: str, timeouts) -> None:
+def _assert_withdraw_rejected(actor, all_nodes, ro, key, expected_reason: str, timeouts) -> int:
+    """Returns the deploy's phlo cost: a rejected withdraw still executes and
+    charges the signer's vault, and balance bounds must account for it."""
     bonds_before = ro.pos.get_bonds()
     deploy_id = _submit_pos_until_effective(
         all_nodes,
@@ -277,6 +279,18 @@ def _assert_withdraw_rejected(actor, all_nodes, ro, key, expected_reason: str, t
     )
     assert ro.pos.get_bonds() == bonds_before, "rejected withdraw changed bonds map"
     logging.info("Withdraw correctly rejected (%s): %s", expected_reason, result.reason)
+    return _finalized_deploy_cost(actor, deploy_id, block_hash)
+
+
+def _finalized_deploy_cost(node, deploy_id: str, block_hash: str) -> int:
+    """The phlo cost a finalized deploy charged its signer's vault."""
+    info = node.get_block(block_hash)
+    for d in info.deploys:
+        if d.sig == deploy_id:
+            return d.cost
+    raise AssertionError(
+        f"deploy {deploy_id[:16]} not found in its inclusion block {block_hash[:16]}"
+    )
 
 
 def _pos_call_result(actor, all_nodes, deploy_id: str, timeouts):
@@ -1133,6 +1147,23 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # Bond a third joiner while two active validators withdraw, in one window —
     # allBonds grows (V6) while pendingWithdrawers grows (V4,V5) across overlapping
     # blocks. The headline concurrent grow+shrink merge stress (now viable post-fix).
+    # Quarantine payout can complete before ANY later sampling point on a
+    # fast shard (run 16: paid out before phase 4's own membership checks),
+    # so the payout assertion's baselines must be captured strictly before
+    # the withdraws are submitted. Rewards keep accruing until the withdraw
+    # freezes them, so these are lower bounds — phase 8 asserts >=.
+    prewd_v4_bal = _balance(ro, _vault_addr(VALIDATOR4_ID))
+    prewd_v5_bal = _balance(ro, _vault_addr(VALIDATOR5_ID))
+    prewd_rewards = ro.pos.get_rewards()
+    prewd_v4_reward = prewd_rewards.get(v4_pk, 0)
+    prewd_v5_reward = prewd_rewards.get(v5_pk, 0)
+    # Every V4/V5-signed deploy finalized AFTER these baselines debits the
+    # same vault the phase-8 bound polls (a withdraw costs ~43k phlo, and a
+    # rejected one still executes and charges), so the fees are tracked and
+    # subtracted from the bound — run 20 failed exactly because the epoch
+    # move froze accrual before it could cover them.
+    v4_fees = 0
+    v5_fees = 0
     j6 = _attach_prebond(shard, VALIDATOR6_ID, timeouts)
     # All three go out before any verdict is awaited: the overlapping window IS the
     # merge stress this phase exists to create. They contend on the same PoS state,
@@ -1160,6 +1191,10 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         v1, settled["withdraw-V4"], shard.all_nodes, timeouts.finalization * 3
     )
     assert v1.pos.read_result(settled["withdraw-V4"], wd_v4_hash).success, "V4 withdraw failed"
+    v4_fees += _finalized_deploy_cost(v1, settled["withdraw-V4"], wd_v4_hash)
+    v5_fees += _finalized_deploy_cost(
+        v2, settled["withdraw-V5"], v2.find_deploy(settled["withdraw-V5"]).blockHash
+    )
     _await_withdrawal_started(ro, v4_pk, timeouts, "V4 withdrawal started")
     _await_withdrawal_started(ro, v5_pk, timeouts, "V5 withdrawal started")
     _wait_for_active(ro, v6_pk, True, timeouts, "V6 bonded in /validators")
@@ -1173,6 +1208,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     dw_block = wait_for_deploy_included(v1, dw_id, timeouts.deploy_inclusion * 3)
     wait_for_finalized(v1, dw_block.blockNumber, timeouts.finalization * 3)
     dw_res = v1.pos.read_result(dw_id, dw_block.blockHash)
+    v4_fees += _finalized_deploy_cost(v1, dw_id, dw_block.blockHash)
     bonds_now = ro.pos.get_bonds()
     pend, wdr_now = ro.pos.get_pending_withdrawer(), ro.pos.get_withdrawers()
     v4_stake = _JOINER_STAKE[VALIDATOR4_ID.name]
@@ -1269,12 +1305,17 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         interval=timeouts.poll_interval,
         description="reward case 3: active V6 accrues",
     )
-    assert r2_1.get(v4_pk, 0) == r2_0.get(v4_pk, 0), (
-        f"reward case 3: withdrawn V4 accrued {r2_0.get(v4_pk)}->{r2_1.get(v4_pk)}"
-    )
-    assert r2_1.get(v5_pk, 0) == r2_0.get(v5_pk, 0), (
-        f"reward case 3: withdrawn V5 accrued {r2_0.get(v5_pk)}->{r2_1.get(v5_pk)}"
-    )
+    # A withdrawn validator's rewards entry is consumed by the quarantine
+    # payout, which can land at any point in this window on a fast shard;
+    # "gone" means paid (phase 8's balance bound verifies the amount), never
+    # accrual. A present entry must not have moved, and a vanished entry must
+    # never reappear — r2_1 is sampled after r2_0, so absent-then-present is
+    # re-accrual.
+    for label, pk in (("V4", v4_pk), ("V5", v5_pk)):
+        if pk in r2_1:
+            assert pk in r2_0 and r2_1[pk] == r2_0[pk], (
+                f"reward case 3: withdrawn {label} accrued {r2_0.get(pk)}->{r2_1.get(pk)}"
+            )
     logging.info("Phase 6: V4,V5 rewards frozen (withdrawn); V6,genesis accrue (case 3)")
 
     # ── Phase 7: post-unbond can't-propose ───────────────────────────────────
@@ -1300,15 +1341,18 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # ── Phase 8: multi-element quarantine payout (case 4) ─────────────────────
     # withdraw-during-quarantine negative: V4 is in withdrawers (not allBonds) ->
     # a fresh withdraw rejects "not bonded".
-    _assert_withdraw_rejected(
+    v4_fees += _assert_withdraw_rejected(
         v1, shard.all_nodes, ro, VALIDATOR4_ID.private_key(), "not bonded", timeouts
     )
     v4_addr, v5_addr = _vault_addr(VALIDATOR4_ID), _vault_addr(VALIDATOR5_ID)
-    v4_bal0, v5_bal0 = _balance(ro, v4_addr), _balance(ro, v5_addr)
-    wdr = ro.pos.get_withdrawers()
-    rwd_frozen = ro.pos.get_rewards()
-    v4_owed = wdr[v4_pk][0] + rwd_frozen.get(v4_pk, 0)  # bond + committed reward
-    v5_owed = wdr[v5_pk][0] + rwd_frozen.get(v5_pk, 0)
+    # The withdrawers entry is a transient this test may never observe: on a
+    # fast shard the quarantine payout completes before any post-withdraw
+    # sampling point. Owed is therefore a pre-withdraw lower bound — the bond
+    # stake (static) plus the rewards accrued before the withdraw went out,
+    # net of the fees the validator's own post-baseline deploys charged that
+    # same vault; the frozen amount the payout carries can only be >= that.
+    v4_owed = _JOINER_STAKE["validator4"] + prewd_v4_reward - v4_fees
+    v5_owed = _JOINER_STAKE["validator5"] + prewd_v5_reward - v5_fees
     quarantine_budget = timeouts.epoch_transition * 6  # multi-epoch (quarantine spans epochs)
     # Quarantine spans several epochs, so this is the longest wait in the test
     # and the one where a stall costs the most before it is noticed.
@@ -1319,13 +1363,13 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     _await_withdrawer_absent(ro, v4_pk, quarantine_budget, "V4 quarantine elapsed + paid")
     _await_withdrawer_absent(ro, v5_pk, quarantine_budget, "V5 quarantine elapsed + paid")
     poll_until(
-        predicate=lambda: True if _balance(ro, v4_addr) >= v4_bal0 + v4_owed else None,
+        predicate=lambda: True if _balance(ro, v4_addr) >= prewd_v4_bal + v4_owed else None,
         timeout=timeouts.finalization * 3,
         interval=timeouts.poll_interval,
         description="V4 vault credited bond+reward",
     )
     poll_until(
-        predicate=lambda: True if _balance(ro, v5_addr) >= v5_bal0 + v5_owed else None,
+        predicate=lambda: True if _balance(ro, v5_addr) >= prewd_v5_bal + v5_owed else None,
         timeout=timeouts.finalization * 3,
         interval=timeouts.poll_interval,
         description="V5 vault credited bond+reward",
@@ -1355,8 +1399,14 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     )
     assert v1.pos.read_result(rebond_id, rb_hash).success, "V4 re-bond failed"
     _wait_for_active(ro, v4_pk, True, timeouts, "V4 re-bonded into /validators")
-    assert _rewards(ro).get(v4_pk, 0) == 0, (
-        f"re-bond net-0: V4 rewards should be 0 after payout+rebond, got {_rewards(ro).get(v4_pk)}"
+    # Net-0 means the payout left no residue: a carried-over reward would be
+    # >= the pre-withdraw accrual (it only grew until the freeze), while fresh
+    # accrual in the one-epoch window between the re-bond finalizing and this
+    # read cannot reach it. Exact zero would race that window.
+    rebond_reward = _rewards(ro).get(v4_pk, 0)
+    assert rebond_reward < max(prewd_v4_reward, 1), (
+        f"re-bond net-0: V4 rewards should restart near 0 after payout+rebond "
+        f"(pre-withdraw accrual was {prewd_v4_reward}), got {rebond_reward}"
     )
     logging.info("Phase 9: V4 re-bonded post-payout at net-0 rewards")
     # NOTE: the re-bond-BEFORE-payout double-credit (the contract does not reconcile a
