@@ -303,6 +303,17 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
     # A floor advanced to a block that is not on the adopted LFB lineage, or
     # two floors certified incompatible chains.
     "FinalizedFloorSafetyViolation": re.compile(r"finalized-floor safety violation"),
+    # The DivergenceMonitor escalated: the shard kept finalizing floors (>= 10
+    # refusals, rising derived numbers) whose state is missing effects settled
+    # under this node's LFB — the node's finalized read surface has diverged
+    # from the shard's. One ERROR per incident; transient single refusals are
+    # the containment guard working and never fire this.
+    "FinalityDivergence": re.compile(r"FINALITY DIVERGENCE"),
+    # A finalizer run errored. A healthy finalizer never fails — its 15s
+    # timeout backstop is a separate WARN — so any error here is a
+    # finalization-pipeline bug (e.g. the sweep walking pruned ancestry),
+    # named directly instead of via whatever storage error it happens to wrap.
+    "FinalizerRunFailed": re.compile(r"finalizer-run failed"),
     # ── Merge base / applied-diff incoherence ──
     # state_change_merger.rs `make_trie_action`: a retained chain removes a
     # datum the base does not hold, i.e. the applied diffs were computed
