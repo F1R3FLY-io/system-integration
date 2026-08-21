@@ -11,6 +11,7 @@ import logging
 
 import pytest
 from f1r3fly.client import F1r3flyClientException
+from f1r3fly.cost_accounting import CostAuthorityEvidence
 
 from ...infra.assertions import assert_deploy_succeeded
 from ...infra.keys import VALIDATOR1_ID
@@ -35,9 +36,6 @@ def test_deploy_invalid_syntax_rejected(shared_shard, timeouts) -> None:
             private_key=v1_key,
         )
 
-    # An unmatched send is a successful zero-COMM deploy. This distinguishes
-    # semantic success from the separate question of whether a reduction
-    # consumed cost.
     deploy_id = v1.deploy_string(
         '@"valid-after-invalid"!(42)',
         v1_key,
@@ -49,7 +47,10 @@ def test_deploy_invalid_syntax_rejected(shared_shard, timeouts) -> None:
     full_block = v1.get_block(block_hash)
     assert_deploy_succeeded(full_block, deploy_id)
     deploy = next(d for d in full_block.deploys if d.sig == deploy_id)
-    assert deploy.cost == 0, f"unmatched send should have zero COMM cost, got {deploy.cost}"
+    evidence = CostAuthorityEvidence.from_processed_deploy(deploy)
+    assert evidence.witness.events == ()
+    assert evidence.byte_cost > 0
+    assert deploy.cost == evidence.byte_cost
 
     logging.info("Invalid syntax rejected, valid deploy succeeded in block %s", block_hash[:16])
 

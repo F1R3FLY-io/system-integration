@@ -207,14 +207,16 @@ def test_estimate_cost(shared_shard) -> None:
     logging.info("Estimate cost: %d phlo for one COMM reduction", result["cost"])
 
 
-def test_estimate_cost_zero_reduction(shared_shard) -> None:
-    """POST /api/estimate-cost preserves zero cost for an unmatched send."""
+def test_estimate_cost_storage_only(shared_shard) -> None:
+    """POST /api/estimate-cost charges storage bytes without a COMM."""
     ro = shared_shard.readonly
 
     resp = ro.api_post("/estimate-cost", {"term": "new ret in { ret!(42) }"})
     result = resp.json()
 
-    assert result["cost"] == 0, f"unmatched send should cost zero, got {result.get('cost')}"
+    assert isinstance(result["cost"], int) and result["cost"] > 0, (
+        f"unmatched send should pay its storage-byte tariff, got {result.get('cost')}"
+    )
     _assert_estimate_context(result)
 
 
