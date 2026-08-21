@@ -7,7 +7,6 @@ Shard assertions: test-specific helpers for multi-node agreement checks.
 from __future__ import annotations
 
 import logging
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -551,8 +550,6 @@ def lowest_lfb_number(nodes) -> int:
 # verdict disagrees across nodes means the shard did not decide or decided
 # inconsistently — those stay hard failures.
 
-_TERMINAL_STATE_RE = re.compile(r"terminal state (Finalized|Failed|Expired)")
-
 # Window for the chain-advance probe. Must exceed the heartbeat's block cadence
 # (casper.heartbeat.check-interval) or a healthy chain reads as frozen.
 _ADVANCE_SAMPLE_SECONDS = 12.0
@@ -581,16 +578,57 @@ class DeployVerdicts:
         )
 
 
-def _terminal_state_from_error(exc: Exception) -> Optional[str]:
-    """Extract the terminal state named in a pyf1r3fly ``DeployError``.
+_VERDICT_STATE_NAMES = {
+    "DEPLOY_STATE_FINALIZED": "Finalized",
+    "DEPLOY_STATE_EXPIRED": "Expired",
+    "DEPLOY_STATE_FAILED": "Failed",
+}
 
-    The message is built by ``f1r3fly.polling.wait_for_deploy_finalized`` as
-    "... reached terminal state <State> (rejection_count=N)". An
-    unrecognised message yields None, which the caller treats as an
-    integrity failure rather than guessing.
+_VERDICT_SWEEP_INTERVAL = 3.0
+
+
+def _resolve_sig_across_nodes(nodes, sig: str, timeout: float) -> Dict[str, str]:
+    """Sample every node's verdict for ``sig`` against ONE shared deadline.
+
+    Sweeps the not-yet-terminal nodes repeatedly until every node holds a
+    terminal state or the deadline passes; whatever is still Pending then is
+    ``NoVerdict``. Sound because terminal records are write-once on the node
+    (Finalized / Expired / Failed never flip), so a node already terminal
+    needs no re-sampling and a Pending node can only move TOWARD a verdict —
+    a sweep can observe a verdict that exists, never manufacture one.
+
+    Replaces polling each node in turn with its own full ``timeout``. That
+    shape gave the node sampled FIRST the earliest-closing window, so a
+    verdict landing moments after that window was reported as "no terminal
+    verdict" — the shard-never-decided signature — for a shard that in fact
+    decided unanimously within the same second. It also made the worst case
+    ``len(nodes) * timeout`` rather than ``timeout``.
     """
-    match = _TERMINAL_STATE_RE.search(str(exc))
-    return match.group(1) if match else None
+    from f1r3fly.pb.DeployServiceCommon_pb2 import DeployFinalizationStateProto
+
+    deadline = time.time() + timeout
+    states: Dict[str, str] = {}
+    pending = list(nodes)
+    while True:
+        still_pending = []
+        for node in pending:
+            try:
+                status = node.deploy_status(sig)
+            except Exception:  # noqa: BLE001 - transport blip; re-sample next sweep
+                still_pending.append(node)
+                continue
+            resolved = _VERDICT_STATE_NAMES.get(DeployFinalizationStateProto.Name(status.state))
+            if resolved is None:
+                still_pending.append(node)
+            else:
+                states[node.name] = resolved
+        pending = still_pending
+        if not pending or time.time() >= deadline:
+            break
+        time.sleep(_VERDICT_SWEEP_INTERVAL)
+    for node in pending:
+        states[node.name] = "NoVerdict"
+    return states
 
 
 def resolve_deploy_verdicts(
@@ -614,8 +652,6 @@ def resolve_deploy_verdicts(
 
     Records, without failing, deploys that every node judged ``Expired``.
     """
-    from .polling import wait_for_deploy_finalized
-
     verdicts = DeployVerdicts()
     if not deploy_ids:
         return verdicts
@@ -642,17 +678,7 @@ def resolve_deploy_verdicts(
     integrity: list[tuple[str, str, str]] = []  # (sig16, node, reason)
     for sig in deploy_ids:
         sig16 = sig[:16]
-        states: Dict[str, str] = {}
-        for node in nodes:
-            try:
-                wait_for_deploy_finalized(node, sig, timeout)
-                states[node.name] = "Finalized"
-            except Exception as exc:  # noqa: BLE001 - DeployError is not re-exported here
-                if isinstance(exc, TimeoutError):
-                    states[node.name] = "NoVerdict"
-                    continue
-                state = _terminal_state_from_error(exc)
-                states[node.name] = state or f"Unknown({type(exc).__name__})"
+        states: Dict[str, str] = _resolve_sig_across_nodes(nodes, sig, timeout)
         verdicts.per_sig_states[sig16] = states
 
         distinct = set(states.values())
