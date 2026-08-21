@@ -96,6 +96,11 @@ SYNC_MARKERS: Dict[str, str] = {
     # Heartbeat proposer created a block. Fires for every heartbeat-created
     # block, whether or not it carried user deploys.
     "HeartbeatBlockCreated": "Heartbeat: Successfully created block",
+    # The empty-frontier width cap engaged: a heartbeat check found the
+    # unfinalized-block count over the cap while the validator was inside its
+    # post-mint throttle window. Positive evidence the cap bounds empty-block
+    # churn during a finality stall.
+    "HeartbeatBackpressureActive": "Heartbeat: Empty frontier backpressure active",
     # A peer was dropped from the connections table, after its heartbeat failure
     # streak reached the configured threshold.
     "PeerRemoved": "Removing peer",
