@@ -13,7 +13,6 @@ import math
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -537,11 +536,28 @@ class DeployResult:
 
 
 class LifecycleTracker:
-    """Tracks deploy inclusion and finalization in background threads.
+    """Tracks deploy inclusion and finalization with one batch-poll thread.
 
-    For each deploy, a background thread polls find_deploy until the deploy
-    appears in a block. A separate background thread polls last_finalized_block
-    continuously and marks deploys as finalized when LFB passes their block.
+    A single background thread sweeps every pending deploy through
+    ``deploy_finalization_status`` — the node's authoritative canonical-state
+    answer. Inclusion is observed when the status first reports a containing
+    block; finalization when the state reaches ``DEPLOY_STATE_FINALIZED``.
+
+    This replaces two unreliable mechanisms that produced the 640 bogus
+    "unfinalized" results in soak preflight 31919610258:
+
+    - a 6-worker pool running one ``find_deploy`` poll loop PER DEPLOY
+      (each occupying a worker for up to ``inclusion_timeout``) — at
+      sustained-phase volume (1200 deploys) the pool starved and most
+      deploys were never polled at all, and
+    - finalization inferred from ``included_block_number <= LFB_number``,
+      which is orphan-unsafe: the recorded inclusion block can lose fork
+      choice and the deploy re-home to a later block (the same
+      ``find_deploy`` race fixed in PR #118's bonding anchor).
+
+    A batch sweep visits EVERY pending deploy each cycle regardless of
+    backlog, and the status API already accounts for merge rejection and
+    re-homing, so no block-number inference is involved.
 
     Usage::
 
@@ -556,72 +572,291 @@ class LifecycleTracker:
     def __init__(self, nodes: dict, inclusion_timeout: int = 90):
         self._nodes = nodes
         self._node_list = list(nodes.values())
+        # Kept for API compatibility; the sweep is continuous and the
+        # overall bound is wait_for_finalization's timeout.
         self._inclusion_timeout = inclusion_timeout
         self._lock = threading.Lock()
         self._records: Dict[str, DeployRecord] = {}
         self._inclusion: Dict[str, Tuple[int, float]] = {}
         self._finalization: Dict[str, float] = {}
+        # Terminal FAILED/EXPIRED deploys: excluded from further sweeps but
+        # deliberately left un-finalized so they count against the load
+        # test's unfinalized assertion instead of hiding.
+        self._terminal: Dict[str, str] = {}
+        # Block-hash → block-number cache for inclusion enrichment. Many
+        # deploys share a containing block, so this collapses the
+        # get_block volume from per-deploy to per-unique-block.
+        # Deliberately clear()-exempt within a sweep (a hash→number
+        # mapping is immutable truth, so a stale write cannot corrupt
+        # the next phase); clear() empties it between phases, which
+        # bounds its growth to one entry per unique block per phase.
+        self._block_numbers: Dict[str, int] = {}
         self._max_block = 0
-        self._executor = ThreadPoolExecutor(max_workers=6)
         self._lfb_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
     def start_lfb_monitor(self):
-        """Start background LFB polling thread."""
+        """Start the background status-sweep thread."""
         self._stop_event.clear()
-        self._lfb_thread = threading.Thread(target=self._lfb_poll_loop, daemon=True)
+        self._lfb_thread = threading.Thread(target=self._sweep_loop, daemon=True)
         self._lfb_thread.start()
 
     def stop_lfb_monitor(self):
-        """Stop background LFB polling thread."""
+        """Stop the background status-sweep thread."""
         self._stop_event.set()
         if self._lfb_thread:
             self._lfb_thread.join(timeout=10)
 
-    def _lfb_poll_loop(self):
+    # Bounded concurrency for the per-cycle status probes. Small enough
+    # to be gentle on a loaded node, large enough that one slow RPC
+    # (e.g. a call riding out its whole gRPC deadline) delays a cycle by
+    # deadline/8 rather than blocking every deploy queued behind it.
+    _SWEEP_WORKERS = 8
+    # Consecutive all-fail cycles before warning: distinguishes a dead
+    # channel / crashed node from ordinary not-yet-included polling.
+    _SWEEP_FAIL_STREAK_WARN = 5
+
+    def _sweep_loop(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from f1r3fly.pb.DeployServiceCommon_pb2 import (
+            DEPLOY_STATE_EXPIRED,
+            DEPLOY_STATE_FAILED,
+            DEPLOY_STATE_FINALIZED,
+        )
+
+        # Human-readable names for terminal diagnostics (get_results /
+        # logs) instead of opaque stringified enum ints.
+        terminal_states = {DEPLOY_STATE_FAILED: "FAILED", DEPLOY_STATE_EXPIRED: "EXPIRED"}
         node = self._node_list[0]
-        while not self._stop_event.is_set():
+        client = node._external_client()
+        fail_streak = 0
+        pool = ThreadPoolExecutor(max_workers=self._SWEEP_WORKERS)
+        try:
+            while not self._stop_event.is_set():
+                cycle_start = time.time()
+                pending, errors = self._sweep_cycle(
+                    pool, node, client, DEPLOY_STATE_FINALIZED, terminal_states
+                )
+
+                if pending and errors == pending:
+                    fail_streak += 1
+                    if fail_streak == self._SWEEP_FAIL_STREAK_WARN:
+                        logger.warning(
+                            "LifecycleTracker: every status probe has failed for %d "
+                            "consecutive cycles (%d pending) — node unreachable or "
+                            "channel dead; dropping the cached client to force a "
+                            "fresh channel",
+                            fail_streak,
+                            pending,
+                        )
+                    if fail_streak >= self._SWEEP_FAIL_STREAK_WARN:
+                        # Real recovery attempt: gRPC channels self-heal
+                        # from transient failures, but a permanently dead
+                        # channel object never will. Build a DEDICATED
+                        # replacement client for this sweep only — the
+                        # node's cached client is shared with concurrent
+                        # deploy-submitter threads, and nulling it from
+                        # here could race a submitter mid-_external_client
+                        # (leaked duplicate channels / half-built client).
+                        client = self._fresh_client(node) or client
+                else:
+                    fail_streak = 0
+
+                # Don't compound a long sweep with the full inter-cycle
+                # pause — target ~1s between cycle STARTS.
+                elapsed = time.time() - cycle_start
+                self._stop_event.wait(timeout=max(0.0, 1.0 - elapsed))
+        finally:
+            # Don't block thread exit on probes still riding out their
+            # gRPC deadlines — stop_lfb_monitor joins with a 10s budget.
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    @staticmethod
+    def _fresh_client(node):
+        """A NEW gRPC client to the node's external port, or None.
+
+        Mirrors ``Node._external_client``'s construction without touching
+        its shared cache (cross-thread safety — see the fail-streak site).
+        Returns None when construction fails (node down), leaving the
+        sweep on its current client to keep retrying.
+        """
+        try:
+            from f1r3fly.client import F1r3flyClient
+
+            from .node import _GRPC_OPTIONS
+
+            return F1r3flyClient(
+                node.grpc_host, node.external_grpc_port, grpc_options=_GRPC_OPTIONS
+            )
+        except Exception as exc:
+            logger.debug("fresh sweep client construction failed: %s", exc)
+            return None
+
+    def _sweep_cycle(self, pool, node, client, finalized_state, terminal_states):
+        """One sweep pass over every pending deploy.
+
+        Two phases, strictly ordered: phase 1 folds EVERY probe result's
+        finalized/terminal state into the bookkeeping; phase 2 runs
+        block-number enrichment. A slow (not just failing) ``get_block``
+        therefore cannot delay any deploy's finalization write in the
+        same sweep — the verdict ``wait_for_finalization`` reads is fully
+        recorded before the first enrichment RPC is issued.
+
+        Returns ``(pending_count, probe_error_count)``. Factored out of
+        the loop so lifecycle unit tests can drive a cycle synchronously
+        (no thread, no inter-cycle wait).
+        """
+        with self._lock:
+            pending = [
+                did
+                for did in self._records
+                if did not in self._finalization and did not in self._terminal
+            ]
+
+        def _probe(deploy_id):
             try:
-                lfb = node.last_finalized_block().blockInfo.blockNumber
-                now = time.time()
+                return deploy_id, client.deploy_finalization_status(deploy_id), None
+            except Exception as exc:
+                return deploy_id, None, exc
+
+        errors = 0
+        succeeded = []
+        for deploy_id, status, exc in pool.map(_probe, pending):
+            if self._stop_event.is_set():
+                return len(pending), errors
+            if exc is not None:
+                errors += 1
+                logger.debug("status probe failed for %s: %s", deploy_id[:16], exc)
+                continue
+            self._apply_state(deploy_id, status, finalized_state, terminal_states)
+            succeeded.append((deploy_id, status))
+
+        # Pre-resolve block numbers for every UNIQUE uncached containing
+        # block through the worker pool: a first cycle over a large
+        # backlog can span hundreds of distinct blocks, and resolving
+        # them serially would stall the cycle for the sum of the lookup
+        # latencies. After this, _enrich_inclusion is cache-hits only.
+        with self._lock:
+            unresolved = list(
+                {status.latestBlockHash.hex() for _, status in succeeded if status.latestBlockHash}
+                - {h for h, n in self._block_numbers.items() if n}
+            )
+
+        def _resolve(block_hash):
+            try:
+                return block_hash, node.get_block(block_hash).blockInfo.blockNumber
+            except Exception as exc:
+                logger.debug("block-number lookup failed for %s: %s", block_hash[:16], exc)
+                return block_hash, 0
+
+        # Every hash counts as attempted this cycle, FAILURES INCLUDED:
+        # per-deploy enrichment must not re-issue the RPC for a hash the
+        # pool already tried and lost — one unavailable block shared by
+        # hundreds of deploys would otherwise serialize hundreds of
+        # deadline-length lookups (round-4 review). Failed hashes stay
+        # uncached, so the pooled path retries them next cycle.
+        attempted = set(unresolved)
+        for block_hash, number in pool.map(_resolve, unresolved):
+            if self._stop_event.is_set():
+                return len(pending), errors
+            if number:
                 with self._lock:
-                    for deploy_id, (bn, _) in self._inclusion.items():
-                        if bn > 0 and bn <= lfb and deploy_id not in self._finalization:
-                            self._finalization[deploy_id] = now
-            except Exception:
-                pass
-            self._stop_event.wait(timeout=1)
+                    self._block_numbers[block_hash] = number
+
+        for deploy_id, status in succeeded:
+            if self._stop_event.is_set():
+                break
+            self._enrich_inclusion(node, deploy_id, status, attempted)
+        return len(pending), errors
+
+    def _apply_state(self, deploy_id, status, finalized_state, terminal_states):
+        """Fold one status response's STATE into the bookkeeping maps.
+
+        Pure dictionary writes — no RPCs, nothing here can be slow.
+        Every write is gated on ``deploy_id in self._records`` under the
+        lock: ``clear()`` runs between load phases while the sweep
+        thread is alive, and a stale write after the clear would corrupt
+        the next phase's counts.
+        """
+        now = time.time()
+        if status.state == finalized_state:
+            with self._lock:
+                if deploy_id in self._records:
+                    self._finalization[deploy_id] = now
+        elif status.state in terminal_states:
+            with self._lock:
+                if deploy_id in self._records:
+                    self._terminal[deploy_id] = terminal_states[status.state]
+
+    def _enrich_inclusion(self, node, deploy_id, status, attempted=None):
+        """Resolve inclusion telemetry (block number) for one deploy.
+
+        Telemetry only — runs strictly AFTER every state write of the
+        sweep, so a slow or broken ``get_block`` can never delay a
+        finalization the verdict depends on. Same ``clear()`` gating as
+        ``_apply_state``. ``attempted``: hashes the pooled pre-resolution
+        already tried this cycle (failures included) — for those, a
+        cache miss records 0 WITHOUT another RPC, so one unavailable
+        block shared by many deploys costs one lookup per cycle, not one
+        per deploy. Timestamps are sweep-granular: the inclusion time is
+        when a sweep first observed a containing block (~cycle cadence
+        after actual inclusion), which slightly skews latency
+        percentiles derived from it.
+        """
+        now = time.time()
+        attempted = attempted if attempted is not None else frozenset()
+        if not status.latestBlockHash:
+            return
+        with self._lock:
+            tracked = deploy_id in self._records
+            existing = self._inclusion.get(deploy_id)
+        # (Re-)resolve the block number when unknown — including a
+        # previous cycle's failed lookup, stored as 0. The original
+        # inclusion timestamp is preserved on re-resolution.
+        if not tracked or (existing is not None and existing[0] != 0):
+            return
+        block_hash = status.latestBlockHash.hex()
+        with self._lock:
+            block_number = self._block_numbers.get(block_hash, 0)
+        if block_number == 0 and block_hash not in attempted:
+            try:
+                block_number = node.get_block(block_hash).blockInfo.blockNumber
+            except Exception as exc:
+                logger.debug("block-number lookup failed for %s: %s", deploy_id[:16], exc)
+        with self._lock:
+            if block_number:
+                self._block_numbers[block_hash] = block_number
+            if deploy_id in self._records:
+                included_at = existing[1] if existing else now
+                self._inclusion[deploy_id] = (block_number, included_at)
+                self._max_block = max(self._max_block, block_number)
 
     def track_deploy(self, record: DeployRecord):
-        """Submit a deploy record for background inclusion tracking."""
+        """Register a deploy; the sweep thread picks it up on its next pass."""
         with self._lock:
             self._records[record.deploy_id] = record
-        self._executor.submit(self._poll_inclusion, record)
 
-    def _poll_inclusion(self, record: DeployRecord):
-        node = self._node_list[0]
-        deadline = time.time() + self._inclusion_timeout
-        while time.time() < deadline:
-            try:
-                light_block = node.find_deploy(record.deploy_id)
-                find_time = time.time()
-                with self._lock:
-                    self._inclusion[record.deploy_id] = (light_block.blockNumber, find_time)
-                    self._max_block = max(self._max_block, light_block.blockNumber)
-                return
-            except Exception:
-                time.sleep(1)
+    def wait_for_finalization(self, timeout: float) -> bool:
+        """Block until every tracked deploy is settled, or timeout.
 
-    def wait_for_finalization(self, timeout: float):
-        """Block until all tracked deploys are finalized or timeout."""
+        Settled means finalized OR terminal (FAILED/EXPIRED). Terminal
+        deploys still surface as unfinalized in ``get_results`` — this
+        just avoids burning the full timeout waiting on a deploy the
+        node has already declared dead. Returns True when everything
+        settled, False on timeout (a final check runs AT the deadline so
+        a deploy settling in the last polling gap is not misreported).
+        """
         deadline = time.time() + timeout
-        while time.time() < deadline:
+        while True:
             with self._lock:
-                all_included = all(did in self._inclusion for did in self._records)
-                if all_included:
-                    all_finalized = all(did in self._finalization for did in self._records)
-                    if all_finalized:
-                        return
+                settled = all(
+                    did in self._finalization or did in self._terminal for did in self._records
+                )
+            if settled:
+                return True
+            if time.time() >= deadline:
+                return False
             time.sleep(1)
 
     def get_results(self) -> List[DeployResult]:
@@ -650,9 +885,10 @@ class LifecycleTracker:
             self._records.clear()
             self._inclusion.clear()
             self._finalization.clear()
+            self._terminal.clear()
+            self._block_numbers.clear()
             self._max_block = 0
 
     def shutdown(self):
-        """Stop all background threads and executor."""
+        """Stop the background sweep thread."""
         self.stop_lfb_monitor()
-        self._executor.shutdown(wait=False)
