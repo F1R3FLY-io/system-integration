@@ -18,7 +18,9 @@ HTTP endpoints tested:
   /api/deploy (POST)
 """
 
+import itertools
 import logging
+import os
 import re
 import time
 
@@ -38,6 +40,20 @@ pytestmark = pytest.mark.xdist_group("shared")
 
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 _HEX_130 = re.compile(r"^[0-9a-f]{130}$")
+
+# SI-TASK-016-2: every _deploy_and_wait call must produce onto a channel no
+# other shared-shard test writes. The node's single-value-cell guard
+# (`numeric_cell_would_overfill`) rejects the *second* integer write to a
+# channel whose base holds exactly one datum, and whether that second write
+# lands depends on proposer rotation — which made the shared suite fail about
+# one run in two. A quoted string name sidesteps the integer-cell classifier;
+# pid + counter is unique across xdist workers (one process each) without
+# threading a worker id through every caller.
+_CHANNEL_SEQ = itertools.count()
+
+
+def _fresh_channel() -> str:
+    return f'"web-api-{os.getpid()}-{next(_CHANNEL_SEQ)}"'
 
 
 def _shard_expectations(shard, node_conf):
@@ -77,7 +93,7 @@ def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
     deploy_ids = []
     for i in range(count):
         did = node.deploy_string(
-            f"@{2000 + i}!({i})",
+            f"@{_fresh_channel()}!({i})",
             VALIDATOR1_ID.private_key(),
             phlo_limit=100_000,
             phlo_price=1,
