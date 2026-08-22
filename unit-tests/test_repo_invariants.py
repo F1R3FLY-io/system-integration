@@ -153,3 +153,128 @@ def test_workflow_has_no_scala_jobs():
     scala_jobs = [k for k in jobs if "scala" in k.lower()]
 
     assert scala_jobs == [], f"Scala jobs reappeared in smoke-test.yml: {scala_jobs}"
+
+
+# ── Shard ports are reserved from the ephemeral range in CI ──────────────
+#
+# Compose publishes 40400-40455 and the test framework allocates 41000-49000,
+# both inside Linux's ephemeral range. A fresh runner's outbound connections
+# can land on one of them and make `docker compose up` fail with "address
+# already in use" (observed: run 32571212745, "Error: Port conflict").
+# Every job that brings up a shard must reserve the span first.
+
+RESERVE_SCRIPT = REPO_ROOT / "scripts" / "ci" / "reserve-shard-ports.sh"
+_SHARD_START = re.compile(r"shardctl (up|test)\b(?!-)")
+
+
+def _starts_a_shard(step):
+    run = str(step.get("run", ""))
+    return bool(_SHARD_START.search(run)) and "--collect-only" not in run
+
+
+def test_every_shard_job_reserves_ports_before_starting_one():
+    offenders = []
+    for name, job in yaml.safe_load(WORKFLOW.read_text())["jobs"].items():
+        steps = job.get("steps", [])
+        first_shard = next((i for i, s in enumerate(steps) if _starts_a_shard(s)), None)
+        if first_shard is None:
+            continue
+        reserve = [i for i, s in enumerate(steps) if RESERVE_SCRIPT.name in str(s.get("run", ""))]
+        if not reserve or reserve[0] > first_shard:
+            offenders.append(name)
+    assert not offenders, f"jobs start a shard without reserving its ports first: {offenders}"
+
+
+def _published_host_ports(compose_text):
+    """Host ports from every `ports:` mapping form compose accepts.
+
+    Short syntax, quoted or not, with or without a bind address (IPv4 or
+    bracketed IPv6), single port or range, optional protocol suffix:
+      - "40400:40400"  - 40400:40400  - "127.0.0.1:40400:40400"
+      - "[::1]:40400:40400"  - "40400-40410:40400-40410"  - "40400:40400/udp"
+    Long syntax: `published: 40400` or `published: "40400-40410"`.
+    """
+    short = re.compile(
+        r"^\s*-\s*['\"]?"
+        r"(?:(?:\[[0-9a-fA-F:.]+\]|[\d.]+):)?"  # optional bind address
+        r"(\d+)(?:-(\d+))?"  # host port or host range
+        r":\d+(?:-\d+)?(?:/\w+)?['\"]?\s*$",
+        re.M,
+    )
+    published = re.compile(r"^\s*published:\s*['\"]?(\d+)(?:-(\d+))?", re.M)
+    ports = set()
+    for m in (*short.finditer(compose_text), *published.finditer(compose_text)):
+        lo, hi = int(m.group(1)), int(m.group(2) or m.group(1))
+        ports.update(range(lo, hi + 1))
+    return ports
+
+
+def _required_int(pattern, text, what):
+    m = re.search(pattern, text, re.M)
+    assert m, f"could not find {what} with {pattern!r}; update this invariant if it moved"
+    return int(m.group(1))
+
+
+def test_compose_port_parser_handles_every_mapping_form():
+    sample = """
+    ports:
+      - "40400:40400"
+      - 40401:40401
+      - "127.0.0.1:40402:40402"
+      - "40403:40403/udp"
+      - "[::1]:40406:40406"
+      - "40410-40412:40410-40412"
+      - target: 40404
+        published: 40405
+      - target: 40420
+        published: "40420-40421"
+    """
+    expected = {40400, 40401, 40402, 40403, 40405, 40406, 40410, 40411, 40412, 40420, 40421}
+    assert _published_host_ports(sample) == expected
+
+
+def test_reserved_span_covers_compose_and_test_framework_ports():
+    script = RESERVE_SCRIPT.read_text()
+    default = r'RESERVED="\$\{SHARD_RESERVED_PORTS:-'
+    lo = _required_int(default + r"(\d+)-\d+\}", script, "reserved span start")
+    hi = _required_int(default + r"\d+-(\d+)\}", script, "reserved span end")
+
+    host_ports = set()
+    for compose in (REPO_ROOT / "compose").glob("f1r3node-rust*.yml"):
+        host_ports |= _published_host_ports(compose.read_text())
+    assert host_ports, "no published host ports found in compose/f1r3node-rust*.yml"
+
+    ports_py = (REPO_ROOT / "integration-tests" / "test" / "infra" / "ports.py").read_text()
+    const = r"(?:\s*:\s*int)?\s*=\s*(\d+)"
+    base = _required_int(r"^_BASE" + const, ports_py, "PortAllocator _BASE")
+    ceiling = _required_int(r"^_CEILING" + const, ports_py, "PortAllocator _CEILING")
+
+    assert lo <= min(host_ports) and max(host_ports) <= hi, (lo, hi, sorted(host_ports))
+    assert lo <= base and ceiling <= hi, (lo, hi, base, ceiling)
+
+
+# ── Monitoring checks wait for readiness, not a fixed sleep ───────────────
+#
+# Grafana accepts connections before it can answer them; a fixed sleep after
+# `shardctl up monitoring` let "Verify monitoring stack" hit that window
+# (run 32572443142, curl exit 56). Every job that verifies monitoring must
+# wait on the readiness script between bring-up and the first check.
+
+WAIT_SCRIPT = REPO_ROOT / "scripts" / "ci" / "wait-for-monitoring.sh"
+
+
+def test_every_monitoring_verification_waits_for_readiness():
+    offenders = []
+    for name, job in yaml.safe_load(WORKFLOW.read_text())["jobs"].items():
+        steps = job.get("steps", [])
+        runs = [str(s.get("run", "")) for s in steps]
+        up = next((i for i, r in enumerate(runs) if "shardctl up monitoring" in r), None)
+        if up is None:
+            continue
+        verify = next((i for i, r in enumerate(runs) if "localhost:3000" in r), None)
+        waited = [i for i, r in enumerate(runs) if WAIT_SCRIPT.name in r]
+        if verify is None or not waited or not (up <= waited[0] <= verify):
+            offenders.append(name)
+        if re.search(r"shardctl up monitoring\s*\n\s*sleep \d+", runs[up]):
+            offenders.append(f"{name} (fixed sleep)")
+    assert not offenders, f"monitoring verified without waiting for readiness: {offenders}"
