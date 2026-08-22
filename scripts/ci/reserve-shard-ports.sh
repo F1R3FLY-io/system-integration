@@ -37,7 +37,32 @@ if [ "$(id -u)" -ne 0 ]; then
     SUDO="sudo"
 fi
 
+# covers LIST WANTED: true when every port in WANTED is inside LIST. The
+# kernel normalises the value on read (merges overlaps), so a literal
+# substring match is not reliable.
+covers() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+
+def ports(spec):
+    out = set()
+    for part in filter(None, spec.split(",")):
+        lo, _, hi = part.partition("-")
+        out.update(range(int(lo), int(hi or lo) + 1))
+    return out
+
+sys.exit(0 if ports(sys.argv[2]) <= ports(sys.argv[1]) else 1)
+PY
+}
+
 existing="$($SUDO sysctl -n "$SYSCTL_KEY" 2>/dev/null || true)"
+
+# Idempotent: a second run on a persistent runner must not append again.
+if covers "$existing" "$RESERVED"; then
+    echo "reserve-shard-ports: ${SYSCTL_KEY} already covers '${RESERVED}' ('${existing}')"
+    exit 0
+fi
+
 if [ -n "$existing" ]; then
     merged="${existing},${RESERVED}"
 else
@@ -46,11 +71,12 @@ fi
 
 $SUDO sysctl -q -w "${SYSCTL_KEY}=${merged}"
 
-# Read back: the kernel normalises the list, and a runner that silently
-# ignored the write would otherwise look reserved in the log.
+# Read back and require the span itself, not merely a non-empty value: on a
+# runner that already had reservations, an ignored write would leave the
+# old value in place and a non-empty check would pass anyway.
 actual="$($SUDO sysctl -n "$SYSCTL_KEY")"
 echo "reserve-shard-ports: ${SYSCTL_KEY} was '${existing:-<empty>}', now '${actual}'"
-if [ -z "$actual" ]; then
-    echo "reserve-shard-ports: write did not take effect" >&2
+if ! covers "$actual" "$RESERVED"; then
+    echo "reserve-shard-ports: value read back does not cover '${RESERVED}'; write did not take effect" >&2
     exit 1
 fi

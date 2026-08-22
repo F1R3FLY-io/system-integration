@@ -188,15 +188,25 @@ def test_every_shard_job_reserves_ports_before_starting_one():
 def _published_host_ports(compose_text):
     """Host ports from every `ports:` mapping form compose accepts.
 
-    Short syntax, quoted or not, with or without a bind address:
+    Short syntax, quoted or not, with or without a bind address (IPv4 or
+    bracketed IPv6), single port or range, optional protocol suffix:
       - "40400:40400"  - 40400:40400  - "127.0.0.1:40400:40400"
-    Long syntax: `published: 40400`.
+      - "[::1]:40400:40400"  - "40400-40410:40400-40410"  - "40400:40400/udp"
+    Long syntax: `published: 40400` or `published: "40400-40410"`.
     """
-    short = re.compile(r"^\s*-\s*['\"]?(?:[\d.]+:)?(\d+):\d+(?:/\w+)?['\"]?\s*$", re.M)
-    long = re.compile(r"^\s*published:\s*['\"]?(\d+)", re.M)
-    return {int(m.group(1)) for m in short.finditer(compose_text)} | {
-        int(m.group(1)) for m in long.finditer(compose_text)
-    }
+    short = re.compile(
+        r"^\s*-\s*['\"]?"
+        r"(?:(?:\[[0-9a-fA-F:.]+\]|[\d.]+):)?"  # optional bind address
+        r"(\d+)(?:-(\d+))?"  # host port or host range
+        r":\d+(?:-\d+)?(?:/\w+)?['\"]?\s*$",
+        re.M,
+    )
+    published = re.compile(r"^\s*published:\s*['\"]?(\d+)(?:-(\d+))?", re.M)
+    ports = set()
+    for m in (*short.finditer(compose_text), *published.finditer(compose_text)):
+        lo, hi = int(m.group(1)), int(m.group(2) or m.group(1))
+        ports.update(range(lo, hi + 1))
+    return ports
 
 
 def _required_int(pattern, text, what):
@@ -212,10 +222,15 @@ def test_compose_port_parser_handles_every_mapping_form():
       - 40401:40401
       - "127.0.0.1:40402:40402"
       - "40403:40403/udp"
+      - "[::1]:40406:40406"
+      - "40410-40412:40410-40412"
       - target: 40404
         published: 40405
+      - target: 40420
+        published: "40420-40421"
     """
-    assert _published_host_ports(sample) == {40400, 40401, 40402, 40403, 40405}
+    expected = {40400, 40401, 40402, 40403, 40405, 40406, 40410, 40411, 40412, 40420, 40421}
+    assert _published_host_ports(sample) == expected
 
 
 def test_reserved_span_covers_compose_and_test_framework_ports():
