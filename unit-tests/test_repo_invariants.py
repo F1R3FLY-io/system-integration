@@ -236,3 +236,30 @@ def test_reserved_span_covers_compose_and_test_framework_ports():
 
     assert lo <= min(host_ports) and max(host_ports) <= hi, (lo, hi, sorted(host_ports))
     assert lo <= base and ceiling <= hi, (lo, hi, base, ceiling)
+
+
+# ── Monitoring checks wait for readiness, not a fixed sleep ───────────────
+#
+# Grafana accepts connections before it can answer them; a fixed sleep after
+# `shardctl up monitoring` let "Verify monitoring stack" hit that window
+# (run 32572443142, curl exit 56). Every job that verifies monitoring must
+# wait on the readiness script between bring-up and the first check.
+
+WAIT_SCRIPT = REPO_ROOT / "scripts" / "ci" / "wait-for-monitoring.sh"
+
+
+def test_every_monitoring_verification_waits_for_readiness():
+    offenders = []
+    for name, job in yaml.safe_load(WORKFLOW.read_text())["jobs"].items():
+        steps = job.get("steps", [])
+        runs = [str(s.get("run", "")) for s in steps]
+        up = next((i for i, r in enumerate(runs) if "shardctl up monitoring" in r), None)
+        if up is None:
+            continue
+        verify = next((i for i, r in enumerate(runs) if "localhost:3000" in r), None)
+        waited = [i for i, r in enumerate(runs) if WAIT_SCRIPT.name in r]
+        if verify is None or not waited or not (up <= waited[0] <= verify):
+            offenders.append(name)
+        if re.search(r"shardctl up monitoring\s*\n\s*sleep \d+", runs[up]):
+            offenders.append(f"{name} (fixed sleep)")
+    assert not offenders, f"monitoring verified without waiting for readiness: {offenders}"

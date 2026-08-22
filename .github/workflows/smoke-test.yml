@@ -225,7 +225,7 @@ jobs:
       - name: Start monitoring
         run: |
           poetry run shardctl up monitoring
-          sleep 20
+          ./scripts/ci/wait-for-monitoring.sh
       - name: Verify monitoring stack
         run: |
           echo "--- Prometheus targets ---"
@@ -350,7 +350,7 @@ jobs:
       - name: Start monitoring
         run: |
           poetry run shardctl up monitoring
-          sleep 20
+          ./scripts/ci/wait-for-monitoring.sh
       - name: Verify monitoring stack (standalone - no false DOWN)
         run: |
           echo "--- Prometheus targets ---"
