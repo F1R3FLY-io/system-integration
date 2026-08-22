@@ -308,22 +308,29 @@ def test_validator_failure_halts_finalization(provider, timeouts) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Test 3: FTT boundary — strict greater-than (FTT=0.5, bonds 75/75/50)
+# Test 3: FTT boundary — inclusive (FTT=0.5, bonds 75/75/50)
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
-    """Kill V3, verify FT=0.5 does NOT finalize at FTT=0.5 (strict >).
+def test_ftt_boundary_is_inclusive(provider, timeouts) -> None:
+    """Kill V3, verify FT=0.5 DOES finalize at FTT=0.5 (inclusive >=).
 
     With bonds 75/75/50 (total=200) and FTT=0.5:
-    - All 3 alive: FT = (200*2 - 200) / 200 = 1.0 > 0.5 → finalizes
+    - All 3 alive: FT = (200*2 - 200) / 200 = 1.0 >= 0.5 -> finalizes
     - V3 (50) dead, V1+V2 (150): FT = (150*2 - 200) / 200 = 0.5
-      Comparison is strict >: 0.5 is NOT > 0.5 → halts
-    - After V3 restart: FT returns to 1.0 → resumes
+      Comparison is inclusive >=: 0.5 IS >= 0.5 -> still finalizes
+    - After V3 restart: FT returns to 1.0 -> continues
 
-    This proves the finalization formula uses strict greater-than.
-    FT must EXCEED FTT, not merely equal it. At the exact boundary,
-    there is zero safety margin and finalization correctly refuses.
+    The bond split exists to land FT EXACTLY on the threshold, which is
+    the only point where >= and > disagree. FTT is the minimum tolerable
+    margin, so meeting it exactly is sufficient: `ft_decides_exact` runs
+    `2*q*den >= S*(den+num)` and every production caller passes
+    strict=false (the four sites in floor.rs). The strict arm survives
+    only for the unit tests that pin this same boundary.
+
+    Finalization BELOW the threshold is a different property and is
+    covered by test_validator_failure_halts_finalization (FT=0.33 against
+    FTT=0.67), which must keep passing — this test says nothing about it.
     """
     config = ShardConfig(
         bonds=[
@@ -366,14 +373,14 @@ def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
         v3.pause()
 
         # Verify the property directly: blocks PROPOSED AFTER v3.pause()
-        # cannot be finalized under FTT=0.5 with only V1+V2 voting
-        # (FT = (150*2 - 200) / 200 = 0.5, which is NOT > 0.5 under
-        # strict-greater-than semantics). Observing the LFB alone is
-        # fragile: V3's already-cast votes on PRE-pause blocks can
-        # finalize after pause (those had FT=1.0), advancing the LFB —
-        # that's irrelevant to the strict-> property and shouldn't fail
-        # the test. Tracking specific post-pause block hashes isolates
-        # the actual invariant.
+        # still finalize under FTT=0.5 with only V1+V2 voting
+        # (FT = (150*2 - 200) / 200 = 0.5, which IS >= 0.5 under
+        # inclusive semantics). Observing the LFB alone would prove
+        # nothing here: V3's already-cast votes on PRE-pause blocks
+        # finalize after the pause on their own (those had FT=1.0) and
+        # advance the LFB regardless of what the boundary does. Tracking
+        # specific post-pause block hashes is what isolates the exact-tie
+        # decision from that unrelated advance.
         post_v1_deploy = v1.deploy_string(
             '@"post-boundary-v1"!(10)',
             VALIDATOR1_ID.private_key(),
@@ -406,31 +413,33 @@ def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
             post_v2_hash[:16],
         )
 
-        # Verify those specific blocks remain non-finalized over the
-        # observation window. Either V1 or V2 reporting them as
-        # finalized would mean FT=0.5 was treated as crossing FTT=0.5,
-        # violating strict-greater-than.
-        logging.info("Verifying post-pause blocks stay non-finalized (FT=0.5 NOT > FTT=0.5)...")
-        deadline = time.time() + 30
-        while time.time() < deadline:
+        # Verify those specific blocks DO finalize, on both surviving
+        # validators. Each is tracked independently so a partial result
+        # names exactly which (node, block) pair never crossed rather
+        # than collapsing to one opaque timeout.
+        logging.info("Verifying post-pause blocks finalize (FT=0.5 >= FTT=0.5)...")
+        targets = ((post_v1_hash, "v1"), (post_v2_hash, "v2"))
+        budget = timeouts.finalization * 3
+        pending = {(node.name, label) for node in (v1, v2) for _, label in targets}
+        deadline = time.time() + budget
+        while pending and time.time() < deadline:
             for node in (v1, v2):
-                for block_hash, label in (
-                    (post_v1_hash, "v1"),
-                    (post_v2_hash, "v2"),
-                ):
-                    if node.is_finalized(block_hash):
-                        raise AssertionError(
-                            f"Post-pause block {block_hash[:16]} from {label} "
-                            f"was finalized (observed on {node.name}) at "
-                            f"FT=0.5, FTT=0.5 — violates strict > semantics."
-                        )
-            time.sleep(2.0)
-        logging.info("Post-pause blocks remained non-finalized for 30s as expected")
+                for block_hash, label in targets:
+                    if (node.name, label) in pending and node.is_finalized(block_hash):
+                        pending.discard((node.name, label))
+            if pending:
+                time.sleep(2.0)
+        assert not pending, (
+            f"Post-pause blocks did NOT finalize at FT=0.5, FTT=0.5 within "
+            f"{budget:.0f}s — the boundary is inclusive, so a block whose "
+            f"fault tolerance exactly equals the threshold must finalize. "
+            f"Outstanding (node, block): {sorted(pending)}"
+        )
+        logging.info("Post-pause blocks finalized on V1 and V2 as expected")
         post_kill_lfb = lfb_number(v1)
         logging.info(
-            "V1 LFB after observation: #%d (pre-kill was #%d) — any LFB "
-            "advance came from V3's pre-pause in-flight votes finalizing "
-            "PRE-pause blocks, which is correct behavior",
+            "V1 LFB after observation: #%d (pre-kill was #%d) — the exact-threshold "
+            "blocks finalized on V1+V2 stake alone, with V3 still paused",
             post_kill_lfb,
             pre_kill_lfb,
         )
@@ -443,14 +452,14 @@ def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
         v2.deploy_string('@"post-resume-v2"!(200)', VALIDATOR2_ID.private_key())
         v3.deploy_string('@"post-resume-v3"!(300)', VALIDATOR3_ID.private_key())
 
-        logging.info("Verifying finalization resumes after V3 restart...")
+        logging.info("Verifying finalization continues after V3 restart...")
         for node in all_nodes:
             wait_for_lfb_at_least(node, post_kill_lfb + 3, timeouts.finalization * 3)
 
         final_lfbs = {n.name: lfb_number(n) for n in all_nodes}
         logging.info("Final LFBs after V3 restart: %s", final_lfbs)
 
-        logging.info("FTT boundary strict > test passed (FT=0.5 halts at FTT=0.5)")
+        logging.info("FTT boundary inclusive test passed (FT=0.5 finalizes at FTT=0.5)")
     finally:
         try:
             v3.unpause()

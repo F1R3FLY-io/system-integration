@@ -99,11 +99,14 @@ def pytest_addoption(parser):
         "--rss-ceiling-mb",
         action="store",
         type=int,
-        default=5000,
+        default=None,
         help="Kill nodes + fail the run if total node RSS exceeds this (MB) "
         "for 2 consecutive samples, protecting the host from swap-thrash/"
         "freeze. Always active; --monitor only adds the CSV + /metrics "
-        "output. 0 disables. Default 5000. (subprocess provider: enforced by an "
+        "output. 0 disables. Default: half the host's total RAM, floor 5000 "
+        "(5000 if total RAM is unreadable). Guards THIS session's nodes only; "
+        "the aggregate of concurrent sessions on one host is guarded by "
+        "--host-free-floor-mb. (subprocess provider: enforced by an "
         "out-of-process guardian that survives a freeze.)",
     )
     group.addoption(
@@ -186,10 +189,27 @@ def pytest_configure(config):
         "when the test legitimately produces the pattern as part of its "
         "verification. See infra/log_events.py for the pattern set.",
     )
+    config.addinivalue_line(
+        "markers",
+        "isolated_shard: order this test before tests that use the "
+        "session-scoped shared shard so both shards are not up at once. "
+        "Best-effort resource ordering only — correctness never depends "
+        "on it (isolated suites own dedicated shards).",
+    )
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(config, items):
-    """Skip regressions whose node capabilities are not available."""
+    """Order isolated shards first and gate node-capability regressions.
+
+    ``trylast`` so this runs after other plugins' collection hooks and
+    the isolated-first ordering is not silently undone by them.
+    """
+    isolated = [item for item in items if tuple(item.iter_markers("isolated_shard"))]
+    if isolated:
+        isolated_set = set(isolated)
+        items[:] = isolated + [item for item in items if item not in isolated_set]
+
     available = config.stash[_NODE_CAPABILITIES]
     run_all = config.getoption("--run-all-node-capability-tests")
     for item in items:
@@ -278,7 +298,13 @@ def timeouts(timeout_config) -> TimeoutHierarchy:
 
 @pytest.fixture(scope="session")
 def port_allocator(request) -> PortAllocator:
-    worker_id = getattr(request.config, "workerinput", {}).get("workerid", "")
+    # Without xdist, concurrent standalone pytest processes on one host would
+    # all allocate from the same base and race between the bind probe and the
+    # node's actual bind. F1R3FLY_PORT_WORKER=gwN gives such a process the same
+    # disjoint 500-port range an xdist worker gwN would get.
+    worker_id = getattr(request.config, "workerinput", {}).get("workerid", "") or os.environ.get(
+        "F1R3FLY_PORT_WORKER", ""
+    )
     return PortAllocator(worker_id=worker_id)
 
 
@@ -395,6 +421,12 @@ def shared_shard(request, provider, timeouts) -> Iterator[Shard]:
         heartbeat=True,
         include_readonly=True,
         extra_wallets=extra_wallets,
+        # Bonding tests on this shard wait for a joiner to activate at an epoch
+        # boundary, so the shard needs a short epoch. conf/rust.conf carries a
+        # longer one for the suites that never bond, where a PoS closeBlock
+        # every few blocks is pure overhead — set it explicitly here rather
+        # than inheriting, so the two cannot drift.
+        global_cli_options={"--epoch-length": "4", "--quarantine-length": "10"},
     )
 
     if request.config.getoption("--skip-setup"):
@@ -645,14 +677,31 @@ def _custom_shard_cascade_guard(request):
 # ── Log scanning ────────────────────────────────────────────────────
 
 
+# Cross-test log-scan bookkeeping (per pytest process; each xdist worker
+# owns its provider, so plain module globals are correct). Keyed by node
+# name: how many log lines earlier per-test scans have already judged,
+# and the allowance set of the last test that judged them. Consumed (and
+# removed) by the retired-snapshot scan so a reused node name after a
+# shard teardown starts fresh.
+_scanned_log_offsets: dict = {}
+_last_scan_allowances: dict = {}
+
+
+def _count_lines(lines, counter):
+    """Yield ``lines`` unchanged while tallying them into ``counter[0]``."""
+    for line in lines:
+        counter[0] += 1
+        yield line
+
+
 @pytest.fixture(autouse=True)
 def check_node_logs_after_test(request, provider):
     """Post-test log scan for forbidden patterns on all active nodes.
 
     Runs after every test (shared, custom, standalone). Queries the
-    provider for all active node handles and runs ``scan_for_forbidden``
-    on each node's logs (via the provider-agnostic ``handle.logs()``
-    method).
+    provider for all active node handles and runs
+    ``scan_lines_for_forbidden`` on each node's logs (via the
+    provider-agnostic ``handle.logs()`` / ``iter_log_lines`` methods).
 
     Patterns are defined in ``infra/log_events.py`` as a single
     ``FORBIDDEN_PATTERNS`` dict — covers panics, KvStore failures,
@@ -690,7 +739,12 @@ def check_node_logs_after_test(request, provider):
 
     yield
 
-    from .infra.log_events import format_errors, scan_for_forbidden, scan_lines_for_forbidden
+    from .infra.log_events import (
+        format_errors,
+        record_scanned,
+        scan_lines_for_forbidden,
+        scan_retired_snapshot,
+    )
 
     # Collect opt-out keys from this test's markers.
     allowed = frozenset()
@@ -698,6 +752,37 @@ def check_node_logs_after_test(request, provider):
         allowed = allowed | frozenset(marker.args)
 
     forbidden: list = []
+
+    # Scan logs from retired nodes FIRST — transient nodes detached during
+    # this test (e.g., observers attached via the ``add_observer`` context
+    # manager) AND shards destroyed by module-fixture teardown, whose
+    # snapshots surface here during the NEXT test's scan. Ownership and
+    # windowing semantics live in ``scan_retired_snapshot``: the
+    # already-judged prefix is skipped (re-judging it mis-attributed the
+    # previous test's allowed ComputationOutOfPhlogistons lines to
+    # test_bridge_api_exploratory), and the teardown-window tail is judged
+    # under the OWNING test's allowances only — this test's allowances
+    # never apply to another test's lines.
+    #
+    # Ordering is load-bearing: a NEW shard can reuse a retired node's
+    # name (dedicated shard torn down, session shard created — container
+    # names are identical). The retired entries must be popped before the
+    # active-handle loop below writes fresh bookkeeping for the same
+    # names, or the retired snapshot would be scanned with the new
+    # node's offset.
+    for snapshot in getattr(provider, "retired_log_snapshots", []):
+        forbidden.extend(
+            scan_retired_snapshot(
+                snapshot.name,
+                snapshot.log_text,
+                _scanned_log_offsets,
+                _last_scan_allowances,
+                allowed,
+            )
+        )
+    if hasattr(provider, "clear_retired_log_snapshots"):
+        provider.clear_retired_log_snapshots()
+
     for handle in provider.active_handles:
         try:
             # Scan only the lines THIS test produced: skip the prefix that
@@ -710,24 +795,26 @@ def check_node_logs_after_test(request, provider):
             # into memory during the post-test scan. Fall back to the string
             # API for providers without a streaming iterator.
             iter_lines = getattr(handle, "iter_log_lines", None)
+            scanned = 0
             if iter_lines is not None:
                 new_lines = itertools.islice(iter_lines(), offset, None)
-                forbidden.extend(scan_lines_for_forbidden(new_lines, handle.name, allowed))
+                counted = _count_lines(new_lines, counter := [0])
+                forbidden.extend(scan_lines_for_forbidden(counted, handle.name, allowed))
+                scanned = counter[0]
             else:
                 tail = handle.logs().splitlines()[offset:]
                 forbidden.extend(scan_lines_for_forbidden(tail, handle.name, allowed))
+                scanned = len(tail)
+            record_scanned(
+                handle.name, offset, scanned, _scanned_log_offsets, _last_scan_allowances, allowed
+            )
         except Exception:
+            # Fail closed: a failed scan records nothing. The judged-through
+            # offset must not advance (the window was not judged), and this
+            # test's allowances must not be attached to lines it never
+            # judged — accumulating allowances across failed scans could
+            # hide a forbidden event produced under a stricter test.
             continue
-
-    # Also scan logs from transient nodes that were attached and
-    # detached during this test (e.g., observers attached via the
-    # ``add_observer`` context manager). The provider snapshots each
-    # node's log content before its handle is removed; without this
-    # path, panics on transient nodes silently escape the scanner.
-    for snapshot in getattr(provider, "retired_log_snapshots", []):
-        forbidden.extend(scan_for_forbidden(snapshot.log_text, snapshot.name, allowed))
-    if hasattr(provider, "clear_retired_log_snapshots"):
-        provider.clear_retired_log_snapshots()
 
     if forbidden:
         pytest.fail(format_errors(forbidden), pytrace=False)
@@ -778,6 +865,15 @@ def resource_monitor(request):
     guardian_token = getattr(provider, "host_process_guardian_token", lambda: None)()
 
     ceiling = request.config.getoption("--rss-ceiling-mb")
+    if ceiling is None:
+        # Host-aware default: the ceiling must scale with the host it
+        # protects — a fixed number is simultaneously too small for a big
+        # dedicated VM and too generous for a small laptop.
+        from .infra.resource_monitor import _host_total_memory_mb
+
+        total_mb = _host_total_memory_mb()
+        ceiling = max(5000, int(total_mb // 2)) if total_mb else 5000
+        logging.info("rss-ceiling derived from host RAM: %d MB", ceiling)
     free_floor = request.config.getoption("--host-free-floor-mb")
     load_factor = request.config.getoption("--host-load-factor")
     monitor = ResourceMonitor(

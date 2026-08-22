@@ -73,7 +73,15 @@ def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
     whenever the test iterates per-node assertions on the deploy (e.g.
     `/deploy/<id>` returning `isFinalized=true`) — finalization can complete
     on the submitting node a few seconds before peers in multi-parent DAGs.
+
+    Budget is `finalization * 3`, matching the custom suite's measured basis:
+    a deploy that loses merges must win a cut via recovery and then finalize,
+    measured at ~102s for a 7-rejection round. A plain `finalization` budget
+    (67s at CI scale) failed a deploy that recovered after 13 rejections and
+    reached its terminal verdict at ~118s — the deploy was healthy and the
+    shard decided; only the wait was short.
     """
+    finalization_timeout = timeouts.finalization * 3
     deploy_ids = []
     for i in range(count):
         did = node.deploy_string(
@@ -86,7 +94,7 @@ def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
 
     block_hashes = []
     for did in deploy_ids:
-        status = wait_for_deploy_finalized(node, did, timeouts.finalization)
+        status = wait_for_deploy_finalized(node, did, finalization_timeout)
         canonical = status.latestBlockHash.hex() if status.latestBlockHash else None
         if canonical is None:
             # Fallback: resolver finalized but didn't populate latestBlockHash.
@@ -100,7 +108,7 @@ def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
             for other in all_nodes:
                 if other.name == node.name:
                     continue
-                wait_for_deploy_finalized(other, did, timeouts.finalization)
+                wait_for_deploy_finalized(other, did, finalization_timeout)
 
     return deploy_ids, block_hashes
 

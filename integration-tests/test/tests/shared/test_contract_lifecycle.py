@@ -31,8 +31,8 @@ from f1r3fly.par import par_as_int, par_as_string, par_as_uri
 
 from ...infra.assertions import (
     assert_all_nodes_agree_on_block,
-    assert_all_nodes_agree_on_lfb,
     assert_contracts_consistent_across_nodes,
+    common_finalized_anchor,
 )
 from ...infra.bridge import extract_bridge_uris, make_query_rho
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
@@ -665,15 +665,14 @@ def test_final_cross_node_state_agreement(shared_shard, deployed_contracts, time
     """All nodes agree on final LFB and all contract state."""
     ro = shared_shard.readonly
 
-    # All nodes agree on LFB. Opt into polling — normal propagation can
-    # leave one validator's finalizer a beat ahead of the others at the
-    # moment of the snapshot; timeouts.finalization gives the rest a
-    # window to catch up before the assertion fires.
-    lfb_hash = assert_all_nodes_agree_on_lfb(
-        shared_shard.all_nodes,
-        timeout=timeouts.finalization,
-    )
-    logging.info("All nodes agree on LFB: %s...", lfb_hash[:16])
+    # Stable finalized anchor, not live-pointer agreement: under
+    # heartbeat the LFB pointers may never coincide within one
+    # sequential sweep even with every finalizer healthy. The anchor —
+    # one hash verified FINALIZED on every node — is the achievable
+    # cross-node cut, and state agreement at that cut is the invariant
+    # this phase actually needs.
+    lfb_hash = common_finalized_anchor(shared_shard.all_nodes, timeouts.finalization)
+    logging.info("All nodes finalized the anchor cut: %s...", lfb_hash[:16])
 
     # Verify all nodes agree on LFB post-state
     assert_all_nodes_agree_on_block(shared_shard.all_nodes, lfb_hash)

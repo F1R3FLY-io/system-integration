@@ -22,7 +22,7 @@ from ...infra.bridge import (
 )
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import deploy_and_read, wait_for_block_visible
+from ...infra.polling import deploy_and_read, poll_until, wait_for_block_visible
 from ...infra.shard import Shard
 
 pytestmark = [
@@ -123,11 +123,46 @@ def test_concurrent_bridge_locks_exact_accounting(bridge_shard, timeouts) -> Non
     # Every read below is pinned to one block. Sampling the counters at an LFB and
     # the balances at "latest" would reconcile two different states, and the drift
     # is unbounded while heartbeat blocks keep landing.
-    lfb_hash = readonly.last_finalized_block().blockInfo.blockHash
-    nonce = par_as_int(query_one(readonly, query_uri, "getNonce", lfb_hash))
-    total_locked = par_as_int(query_one(readonly, query_uri, "getTotalLocked", lfb_hash))
-    bridge_after = readonly.vault.get_balance(bridge_addr, lfb_hash)
-    source_after = readonly.vault.get_balance(from_addr, lfb_hash)
+    #
+    # Each read gets a bounded retry: right after digesting twelve concurrent
+    # lock finalizations the readonly can transiently exceed a single gRPC
+    # deadline (soak preflight 31919610258 died on exactly one such
+    # DEADLINE_EXCEEDED from last_finalized_block). poll_until retries on
+    # exception, so a transient deadline is absorbed while a persistent one
+    # still fails the test with the underlying error.
+    def _read(description, fn):
+        # 1-tuple wrap: poll_until retries on falsy, but a read that
+        # legitimately returns 0 (a balance) is still a success.
+        return poll_until(
+            predicate=lambda: (fn(),),
+            timeout=timeouts.command * 3,
+            interval=2.0,
+            description=description,
+        )[0]
+
+    lfb_hash = _read(
+        "readonly LFB for pinned reconciliation reads",
+        lambda: readonly.last_finalized_block().blockInfo.blockHash,
+    )
+    nonce = par_as_int(
+        _read(
+            "getNonce at pinned LFB", lambda: query_one(readonly, query_uri, "getNonce", lfb_hash)
+        )
+    )
+    total_locked = par_as_int(
+        _read(
+            "getTotalLocked at pinned LFB",
+            lambda: query_one(readonly, query_uri, "getTotalLocked", lfb_hash),
+        )
+    )
+    bridge_after = _read(
+        "bridge vault balance at pinned LFB",
+        lambda: readonly.vault.get_balance(bridge_addr, lfb_hash),
+    )
+    source_after = _read(
+        "source vault balance at pinned LFB",
+        lambda: readonly.vault.get_balance(from_addr, lfb_hash),
+    )
 
     assert nonce == _LOCK_COUNT, f"expected nonce {_LOCK_COUNT}, got {nonce}"
     assert total_locked == _LOCK_COUNT, f"expected total locked {_LOCK_COUNT}, got {total_locked}"

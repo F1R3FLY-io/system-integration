@@ -759,6 +759,7 @@ class SubprocessProvider:
             finally:
                 if h in self._active_handles:
                     self._active_handles.remove(h)
+                self._ports.release(h.ports)
 
     # ── Standalone ──────────────────────────────────────────────────
 
@@ -1039,7 +1040,10 @@ class SubprocessProvider:
             logger.info("Standalone %s kept running (--keep-running)", handle.name)
             return
         archive_handles([handle], self._archive_dir)
-        handle.remove()
+        try:
+            handle.remove()
+        finally:
+            self._ports.release(handle.ports)
 
     # ── Joiner / observer lifecycle ─────────────────────────────────
 
@@ -1126,7 +1130,10 @@ class SubprocessProvider:
             logger.info("Joiner %s kept running (--keep-running)", handle.name)
             return
         archive_handles([handle], self._archive_dir)
-        handle.remove()
+        try:
+            handle.remove()
+        finally:
+            self._ports.release(handle.ports)
 
     # ── Cleanup ─────────────────────────────────────────────────────
 
@@ -1374,7 +1381,7 @@ class SubprocessProvider:
             "Adopted subprocess shard for session %s: %d nodes (%s)",
             session_id,
             len(handles),
-            ", ".join(h.role_key for h in handles),
+            ", ".join(h.name.rsplit(".", 1)[-1] for h in handles),
         )
         return handles
 

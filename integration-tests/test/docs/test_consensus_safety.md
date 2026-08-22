@@ -30,13 +30,15 @@ The assertion tracks SPECIFIC post-pause block hashes (returned from `try_find_d
 
 **What it proves:** FTT=0.67 (production default) requires all 3 equal-stake validators. Once V3 is dead, new V1+V2-only blocks cannot finalize — the safety margin is enforced.
 
-### test_ftt_boundary_strict_greater_than
+### test_ftt_boundary_is_inclusive
 
 **Config:** FTT=0.5, bonds 75/75/50, heartbeat, readonly
 
-Kill V3 (50 stake). V1+V2 (150 stake) have FT = (150\*2 - 200) / 200 = 0.5. Since the comparison is strict > (not >=), 0.5 is NOT > 0.5 — finalization halts. Observe 30 seconds of stall. Restart V3, verify finalization resumes.
+Kill V3 (50 stake). V1+V2 (150 stake) have FT = (150\*2 - 200) / 200 = 0.5. The comparison is inclusive >=, so 0.5 IS >= 0.5 and the post-pause blocks finalize on V1+V2 stake alone. Each (node, block) pair is polled independently so a partial result names which one never crossed. Restart V3, verify finalization continues.
 
-**What it proves:** The finalization formula uses strict greater-than. FT must EXCEED FTT, not merely equal it. At the exact boundary there is zero safety margin and finalization correctly refuses.
+The bond split exists to land FT EXACTLY on the threshold — the only point where >= and > disagree. `ft_decides_exact` evaluates `2*q*den >= S*(den+num)` and every production caller passes `strict=false` (four sites in `floor.rs`); the strict arm is reachable only from unit tests.
+
+**What it proves:** FTT is the minimum tolerable margin, so meeting it exactly is sufficient to finalize. Finalization BELOW the threshold is a separate property, covered by `test_validator_failure_halts_finalization`.
 
 ### test_epoch_transition_under_heartbeat
 
