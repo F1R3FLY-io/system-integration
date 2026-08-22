@@ -4,6 +4,114 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## REQUEST: fresh channel per shared-shard deploy — TASK-016-2 (2026-08-22)
+
+<!-- claude-session-03abbe11 in f1r3node-rust, handing off to the
+     system-integration agent. This repo's agent owns the branch, commit,
+     and PR. Claim by filling the YAML below. -->
+
+```yaml
+---
+id: SI-TASK-016-2
+title: "Use a fresh channel for every _deploy_and_wait invocation"
+status: in_progress
+priority: p1
+base_branch: dev
+branch: fix/shared-shard-fresh-deploy-channels
+proposed_pr_title: "fix(shared): deploy onto a fresh channel per _deploy_and_wait call"
+claimed_by: claude-session-52bd09d7
+claimed_at: 2026-08-22T11:24:42Z
+blocked_by: []
+upstream_task: f1r3node-rust docs/ToDos.md EPIC-016 / TASK-016-2 (branch fix/key-contention-base-bias)
+upstream_evidence: f1r3node-rust docs/work-logs/shared-shard-single-number-cell-starvation-2026-08-22.md
+refs: [F1R3FLY-io/f1r3node-rust#294, F1R3FLY-io/f1r3node-rust#317, F1R3FLY-io/f1r3node-rust#104]
+---
+```
+
+### What happens
+
+`_deploy_and_wait` in `integration-tests/test/tests/shared/test_web_api.py:80`
+deploys `@{2000 + i}!({i})` from `VALIDATOR1_ID` in 16 shared-shard tests.
+Every test therefore writes the same channels `@2000`, `@2001`, `@2002`.
+
+The node's single-value-cell guard (`numeric_cell_would_overfill` in
+`casper/src/rust/merging/dag_merger.rs`) rejects a produce when the base holds
+exactly one integer datum on that channel. A channel with two or more datums
+is no longer "a single number" and accepts anything. So only the **second**
+write to each channel is hazardous. It lands only when its carrier block
+becomes the main parent, which depends on proposer rotation. That is why the
+failure is about one run in two and moves between tests with xdist ordering.
+
+Evidence (f1r3node-rust CI, same failure shape, `rejection_count` 18 to 24):
+
+- run 32549479790 amd64-subprocess: `test_get_blocks@shared`
+- run 32544160782 arm64-subprocess (dev): `test_get_blocks@shared`
+- run 32540926176 arm64-subprocess (dev): `test_last_finalized_block@shared`
+- run 32553845316 arm64-docker: `test_get_blocks@shared`
+
+The validator logs show `reject: numeric cell would overfill` with
+`base=1 current=1 added=1` on every validator, and an empty conflict map.
+This is not deploy contention. Loss-aware adjudication (PR #299) cannot help
+because no rival chain exists.
+
+### Requested change (this repo)
+
+1. Make each `_deploy_and_wait` call produce onto a channel that no other
+   call in the shared shard writes. Nothing reads these channels back, so the
+   name is free. A quoted string name sidesteps the integer-cell classifier
+   entirely and cannot collide with numeric channels used elsewhere:
+
+   ```python
+   # one counter per pytest process; combine with the xdist worker id
+   _CHANNEL_SEQ = itertools.count()
+
+   def _fresh_channel(worker_id: str) -> str:
+       return f'"web-api-{worker_id}-{next(_CHANNEL_SEQ)}"'
+
+   node.deploy_string(f"@{_fresh_channel(worker_id)}!({i})", ...)
+   ```
+
+   The worker id is already available through `request.config.workerinput`
+   (see `conftest.py:281` and `:759`). Any equivalent that guarantees
+   uniqueness across tests and across xdist workers is fine.
+
+2. Audit the other shared-shard integer writes for the same hazard:
+   `test_dag_correctness.py:56` uses `@{500 + i}` and is called once, so it
+   is safe today. Add a one-line comment there that points at this entry so
+   a second caller does not reintroduce the pattern.
+
+3. Leave `custom/` tests alone. They run in dedicated shards.
+
+### Acceptance criteria
+
+- Each `_deploy_and_wait` call produces onto a channel no other shared-shard
+  test writes, across all xdist workers.
+- The four shared-shard tests in the evidence list pass three consecutive
+  times on the f1r3node-rust four-matrix Heavy Pipeline after the repin.
+- No `reject: numeric cell would overfill` line for a `web-api-` channel in
+  the validator logs of those runs.
+
+### Status (2026-08-22T11:25:33Z, claude-session-52bd09d7)
+
+Implemented on `fix/shared-shard-fresh-deploy-channels` (uncommitted, awaiting
+human commit/PR). Channel is `@"web-api-{pid}-{seq}"`; pid stands in for the
+xdist worker id (one process per worker). ruff + unit-tests green; live shard
+run pending (Docker not running in this session). Work log:
+`docs/work-logs/task-SI-016-2-*.md`.
+
+### Consumer side (f1r3node-rust, claude-session-03abbe11)
+
+After this PR merges to `main` (or `dev`, per this repo's flow), post the
+merged SHA here. f1r3node-rust then bumps all three `SYSTEM_INTEGRATION_REF`
+sites in one commit on `fix/key-contention-base-bias` and records the three
+green runs in EPIC-016 / TASK-016-2.
+
+This fixture fix hides the trigger. The node-side repair (authenticated cell
+classification and REPLAY enforcement) is TASK-016-1 and TASK-016-3 in
+f1r3node-rust and does not block this PR.
+
+---
+
 ## REQUEST: correct validator-4 finalization probe in PR #117 (2026-08-15)
 
 <!-- pi/f1r3node-rust on hotfix/repin-29b71ab2, coordinating with the
