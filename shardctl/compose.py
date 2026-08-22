@@ -186,6 +186,10 @@ class ComposeManager:
                     "Try running: [bold]poetry run shardctl down[/bold] first, "
                     "or check for other services using the same ports."
                 )
+                # Keep docker's own line: it names the port, which the
+                # summary above does not. Without it a CI log cannot tell
+                # a stale container from an ephemeral-port collision.
+                console.print(f"[dim]{error_output.strip()}[/dim]")
             elif "no such service" in error_output:
                 console.print("\n[red]Error: Unknown service[/red]")
                 console.print(

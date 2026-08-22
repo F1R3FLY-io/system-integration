@@ -153,3 +153,51 @@ def test_workflow_has_no_scala_jobs():
     scala_jobs = [k for k in jobs if "scala" in k.lower()]
 
     assert scala_jobs == [], f"Scala jobs reappeared in smoke-test.yml: {scala_jobs}"
+
+
+# ── Shard ports are reserved from the ephemeral range in CI ──────────────
+#
+# Compose publishes 40400-40455 and the test framework allocates 41000-49000,
+# both inside Linux's ephemeral range. A fresh runner's outbound connections
+# can land on one of them and make `docker compose up` fail with "address
+# already in use" (observed: run 32571212745, "Error: Port conflict").
+# Every job that brings up a shard must reserve the span first.
+
+RESERVE_SCRIPT = REPO_ROOT / "scripts" / "ci" / "reserve-shard-ports.sh"
+_SHARD_START = re.compile(r"shardctl (up|test)\b(?!-)")
+
+
+def _starts_a_shard(step):
+    run = str(step.get("run", ""))
+    return bool(_SHARD_START.search(run)) and "--collect-only" not in run
+
+
+def test_every_shard_job_reserves_ports_before_starting_one():
+    offenders = []
+    for name, job in yaml.safe_load(WORKFLOW.read_text())["jobs"].items():
+        steps = job.get("steps", [])
+        first_shard = next((i for i, s in enumerate(steps) if _starts_a_shard(s)), None)
+        if first_shard is None:
+            continue
+        reserve = [i for i, s in enumerate(steps) if RESERVE_SCRIPT.name in str(s.get("run", ""))]
+        if not reserve or reserve[0] > first_shard:
+            offenders.append(name)
+    assert not offenders, f"jobs start a shard without reserving its ports first: {offenders}"
+
+
+def test_reserved_span_covers_compose_and_test_framework_ports():
+    m = re.search(r'RESERVED="\$\{SHARD_RESERVED_PORTS:-(\d+)-(\d+)\}"', RESERVE_SCRIPT.read_text())
+    assert m, "reserve-shard-ports.sh must define a default RESERVED span"
+    lo, hi = int(m.group(1)), int(m.group(2))
+
+    host_ports = set()
+    for compose in (REPO_ROOT / "compose").glob("f1r3node-rust*.yml"):
+        host_ports.update(int(p) for p in re.findall(r'"(\d+):\d+"', compose.read_text()))
+    assert host_ports, "no published host ports found in compose/f1r3node-rust*.yml"
+
+    ports_py = (REPO_ROOT / "integration-tests" / "test" / "infra" / "ports.py").read_text()
+    base = int(re.search(r"^_BASE = (\d+)", ports_py, re.M).group(1))
+    ceiling = int(re.search(r"^_CEILING = (\d+)", ports_py, re.M).group(1))
+
+    assert lo <= min(host_ports) and max(host_ports) <= hi, (lo, hi, sorted(host_ports))
+    assert lo <= base and ceiling <= hi, (lo, hi, base, ceiling)
