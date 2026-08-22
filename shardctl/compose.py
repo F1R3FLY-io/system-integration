@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from rich.console import Console
+from rich.markup import escape
 
 from .config import Config
 from .utils import get_docker_compose_command
@@ -189,7 +190,7 @@ class ComposeManager:
                 # Keep docker's own line: it names the port, which the
                 # summary above does not. Without it a CI log cannot tell
                 # a stale container from an ephemeral-port collision.
-                console.print(f"[dim]{error_output.strip()}[/dim]")
+                console.print(f"[dim]{escape(error_output.strip())}[/dim]")
             elif "no such service" in error_output:
                 console.print("\n[red]Error: Unknown service[/red]")
                 console.print(

@@ -185,19 +185,54 @@ def test_every_shard_job_reserves_ports_before_starting_one():
     assert not offenders, f"jobs start a shard without reserving its ports first: {offenders}"
 
 
+def _published_host_ports(compose_text):
+    """Host ports from every `ports:` mapping form compose accepts.
+
+    Short syntax, quoted or not, with or without a bind address:
+      - "40400:40400"  - 40400:40400  - "127.0.0.1:40400:40400"
+    Long syntax: `published: 40400`.
+    """
+    short = re.compile(r"^\s*-\s*['\"]?(?:[\d.]+:)?(\d+):\d+(?:/\w+)?['\"]?\s*$", re.M)
+    long = re.compile(r"^\s*published:\s*['\"]?(\d+)", re.M)
+    return {int(m.group(1)) for m in short.finditer(compose_text)} | {
+        int(m.group(1)) for m in long.finditer(compose_text)
+    }
+
+
+def _required_int(pattern, text, what):
+    m = re.search(pattern, text, re.M)
+    assert m, f"could not find {what} with {pattern!r}; update this invariant if it moved"
+    return int(m.group(1))
+
+
+def test_compose_port_parser_handles_every_mapping_form():
+    sample = """
+    ports:
+      - "40400:40400"
+      - 40401:40401
+      - "127.0.0.1:40402:40402"
+      - "40403:40403/udp"
+      - target: 40404
+        published: 40405
+    """
+    assert _published_host_ports(sample) == {40400, 40401, 40402, 40403, 40405}
+
+
 def test_reserved_span_covers_compose_and_test_framework_ports():
-    m = re.search(r'RESERVED="\$\{SHARD_RESERVED_PORTS:-(\d+)-(\d+)\}"', RESERVE_SCRIPT.read_text())
-    assert m, "reserve-shard-ports.sh must define a default RESERVED span"
-    lo, hi = int(m.group(1)), int(m.group(2))
+    script = RESERVE_SCRIPT.read_text()
+    default = r'RESERVED="\$\{SHARD_RESERVED_PORTS:-'
+    lo = _required_int(default + r"(\d+)-\d+\}", script, "reserved span start")
+    hi = _required_int(default + r"\d+-(\d+)\}", script, "reserved span end")
 
     host_ports = set()
     for compose in (REPO_ROOT / "compose").glob("f1r3node-rust*.yml"):
-        host_ports.update(int(p) for p in re.findall(r'"(\d+):\d+"', compose.read_text()))
+        host_ports |= _published_host_ports(compose.read_text())
     assert host_ports, "no published host ports found in compose/f1r3node-rust*.yml"
 
     ports_py = (REPO_ROOT / "integration-tests" / "test" / "infra" / "ports.py").read_text()
-    base = int(re.search(r"^_BASE = (\d+)", ports_py, re.M).group(1))
-    ceiling = int(re.search(r"^_CEILING = (\d+)", ports_py, re.M).group(1))
+    const = r"(?:\s*:\s*int)?\s*=\s*(\d+)"
+    base = _required_int(r"^_BASE" + const, ports_py, "PortAllocator _BASE")
+    ceiling = _required_int(r"^_CEILING" + const, ports_py, "PortAllocator _CEILING")
 
     assert lo <= min(host_ports) and max(host_ports) <= hi, (lo, hi, sorted(host_ports))
     assert lo <= base and ceiling <= hi, (lo, hi, base, ceiling)
