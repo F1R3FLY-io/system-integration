@@ -295,8 +295,9 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
         # timing race that continuous heartbeat-driven proposing creates.
         # Inject this by running 3 daemon threads on V1/V2/V3 that
         # continuously deploy + propose at high rate, advancing the chain
-        # while V4 stays idle. Wait until height reaches 7 (ready for
-        # epoch boundary at 8), stop bg, then V4 manual propose.
+        # while V4 stays idle. Wait until the LFB crosses the epoch
+        # boundary at 8 (so V4's bond is surfaced in headers), stop bg,
+        # then V4 manual propose.
         bg = _BgProposers(
             producers=[v1, v2, v3],
             identities=[VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID],
@@ -308,10 +309,15 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
             # stop bg and let V4 propose. Some slop is OK — V4 might
             # land at 8, 9, 10... if it lands on an epoch boundary we
             # have our trigger.
+            # ≥ 8, not 7: V4's bond (made during epoch 1) surfaces in
+            # block headers at the next epoch boundary, #8. Stopping the
+            # proposers with the LFB still at #7 leaves nothing to advance
+            # it, and the bonds guard below would read the pre-boundary
+            # header forever.
             deadline = time.time() + 60
             while time.time() < deadline:
                 lfb_n = v1.last_finalized_block().blockInfo.blockNumber
-                if lfb_n >= 7:
+                if lfb_n >= 8:
                     logging.info(
                         "Bg proposers advanced LFB to #%d; stopping",
                         lfb_n,
@@ -319,7 +325,7 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
                     break
                 time.sleep(0.5)
             else:
-                pytest.fail("Bg proposers failed to advance LFB to ≥7 within 60s")
+                pytest.fail("Bg proposers failed to advance LFB to ≥8 within 60s")
         finally:
             bg.stop()
 
@@ -328,15 +334,25 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
         # current.
         v1_lfb_hash = v1.last_finalized_block().blockInfo.blockHash
         wait_for_block_visible(joiner, v1_lfb_hash, t)
-        v1_lfb_n = v1.last_finalized_block().blockInfo.blockNumber
 
-        # V4 must remain in bonds at the latest block before its propose.
-        v1_lfb_info = _expect(v1, v1_lfb_hash)
-        assert v4_pub in _bonds_set(v1_lfb_info), (
-            f"V4 unexpectedly dropped from bonds before V4's propose "
-            f"(latest LFB #{v1_lfb_n}). "
-            f"Bonds: {sorted(_bonds_set(v1_lfb_info))}"
-        )
+        # Guard: V4 must be visible in the LFB's bonds before its propose.
+        # Polled, not asserted at a single instant: a bond made during
+        # epoch 1 only surfaces in block headers at the NEXT epoch
+        # boundary (#8), so an LFB caught at exactly #7 shows the bond as
+        # absent — the documented header-lag window, not a drop.
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            v1_lfb_info = v1.last_finalized_block().blockInfo
+            if v4_pub in _bonds_set(_expect(v1, v1_lfb_info.blockHash)):
+                break
+            time.sleep(0.5)
+        else:
+            v1_lfb_info = v1.last_finalized_block().blockInfo
+            pytest.fail(
+                f"V4 never surfaced in the LFB's bonds before V4's propose "
+                f"(latest LFB #{v1_lfb_info.blockNumber}). "
+                f"Bonds: {sorted(_bonds_set(_expect(v1, v1_lfb_info.blockHash)))}"
+            )
 
         # ── V4 proposes multiple times — at least one will land on an epoch boundary ──
         # After bg proposers, the chain is at some non-deterministic

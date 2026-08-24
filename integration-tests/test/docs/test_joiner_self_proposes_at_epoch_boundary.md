@@ -61,12 +61,19 @@ doesn't provide).
    behavioral proof of activation is V4's own successful self-propose
    below.
 3. **Chaos phase** — three daemon threads (`_BgProposers`) continuously
-   deploy+propose on V1/V2/V3 at 0.4s cadence until the LFB reaches ≥ #7,
-   approximating production propose churn so V4's boundary blocks land on
-   a chain advanced under contention. V4 stays idle (receiving gossip).
-4. **Pre-propose guard** — V4 must appear in the bonds map of the current
-   LFB before it proposes (this is the assert that catches an activation
-   failure first — it fired when the epoch pin drifted).
+   deploy+propose on V1/V2/V3 at 0.4s cadence until the LFB crosses the
+   epoch boundary at #8 (a bond made during epoch 1 only surfaces in
+   headers from the next boundary, so stopping at #7 would freeze the
+   chain inside the header-lag window), approximating production propose
+   churn so V4's boundary blocks land on a chain advanced under
+   contention. V4 stays idle (receiving gossip).
+4. **Pre-propose guard** — V4 must surface in the bonds map of the
+   current LFB before it proposes, polled with a 60s deadline rather
+   than asserted at a single instant (an LFB read inside the header-lag
+   window shows the bond as absent — that is lag, not a drop; CI run
+   32588262605 caught the old single-shot assert at exactly LFB #7).
+   This is the check that catches an activation failure first — it
+   fired when the epoch pin drifted.
 5. **V4 boundary scan** — V4 deploys + proposes 12 sequential blocks
    (sole producer now, so heights advance +1 each). At least one — in
    practice three (e.g. #12/#16/#20) — lands on an epoch boundary. At
