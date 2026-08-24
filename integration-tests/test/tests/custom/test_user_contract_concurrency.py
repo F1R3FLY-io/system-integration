@@ -1169,9 +1169,16 @@ def test_scalar_value_conflict_resolves_deterministically(user_shard, timeouts):
     Int, List, Tuple — the generalized non_foldable_fork. For each type, three proposers
     concurrently write DIFFERENT values of that type into one cell (wrapped ``{"v": <value>}``
     so the decode is a stable map). These are non-mergeable, so the merge keep-ones one
-    write and recovery re-lands the losers; the cell must settle to a SINGLE value that is
+    write and recovery re-lands the losers; each cell must settle to a SINGLE value that is
     one of the written candidates, node-identical, never multi-valued or stale-consumed.
-    Exercises the deterministic_pick scalar leaf for every value type."""
+    Exercises the deterministic_pick scalar leaf for every value type.
+
+    The types run BATCHED per round, not as per-type sequences: the cells are
+    independent, so one producer x type deploy fan-out and ONE finalization
+    wait cover every type's conflict for that round. The per-type sequences
+    paid ~15 sequential finalization cycles and blew the per-test budget on
+    CI hardware (run 32588262605, both ucc legs at >1200s); three batched
+    rounds pay four."""
     shard = user_shard
     all_nodes = shard.all_nodes
     ro = shard.node("readonly")
@@ -1190,43 +1197,80 @@ def test_scalar_value_conflict_resolves_deterministically(user_shard, timeouts):
         ("list", [("[1, 2]", [1, 2]), ("[3, 4]", [3, 4]), ("[5, 6]", [5, 6])]),
         ("tuple", [("(1, 2)", (1, 2)), ("(3, 4)", (3, 4)), ("(5, 6)", (5, 6))]),
     ]
+    labels = [label for label, _ in type_cases]
+    lits_by_type = {
+        label: {name: cands[i][0] for i, name in enumerate(_PRODUCER_KEYS)}
+        for label, cands in type_cases
+    }
+    decoded_by_type = {
+        label: {name: _norm(cands[i][1]) for i, name in enumerate(_PRODUCER_KEYS)}
+        for label, cands in type_cases
+    }
     try:
-        for type_label, cands in type_cases:
-            cell = f"ucc_scalar_{type_label}"
-            # Sentinel seed distinct from every candidate of every type (and not equal under
-            # Python's True==1/False==0 coercion, which a numeric seed would trip for Bool).
-            _finalize_setup(shard, f'@"{cell}"!({{"v" : "INIT"}})', timeouts)
-            lits = {name: cands[i][0] for i, name in enumerate(_PRODUCER_KEYS)}
-            decoded_by_name = {name: _norm(cands[i][1]) for i, name in enumerate(_PRODUCER_KEYS)}
-            last_v = _norm("INIT")  # value the cell holds if a whole round expires
-            for rnd in range(3):
-                ids = _deploy_on_each(
-                    shard,
-                    lambda name, c=cell, lts=lits: (
-                        f'for (@m <- @"{c}") {{ @"{c}"!(m.set("v", {lts[name]})) }}'
-                    ),
-                    timeouts,
+        # Seed every cell in one deploy batch, then one finalization wait per
+        # seed — sequential uncontended deploys from one node land in the same
+        # few blocks, so after the first wait the rest return immediately.
+        # Sentinel seed distinct from every candidate of every type (and not
+        # equal under Python's True==1/False==0 coercion, which a numeric seed
+        # would trip for Bool).
+        v1 = shard.node("validator1")
+        seed_ids = []
+        for label in labels:
+            seed_ids.append(
+                v1.deploy_string(
+                    f'@"ucc_scalar_{label}"!({{"v" : "INIT"}})',
+                    _PRODUCER_KEYS["validator1"],
+                    phlo_limit=_PHLO_LIMIT,
+                    phlo_price=_PHLO_PRICE,
                 )
-                verdicts = _assert_all_finalized(
-                    producers, all_nodes, ids, timeouts, f"scalar-{type_label}-{rnd}"
-                )
-                # Settle to {"v": <one FINALIZED candidate>}, single-keyed, node-identical.
-                # An expired writer's value must not be the one that settled; if every
-                # writer expired the cell keeps what it already held.
-                fin_vals = [decoded_by_name[n] for n in _finalized_names(ids, verdicts)]
-                accepted = fin_vals or [last_v]
+            )
+        for did in seed_ids:
+            assert_deploy_block_finalized_on_all_nodes(
+                v1, did, all_nodes, timeouts.finalization * 3
+            )
+
+        # Value each cell holds if a whole round's writers expire.
+        last_v = {label: _norm("INIT") for label in labels}
+        for rnd in range(3):
+            ids = _deploy_k_on_each(
+                shard,
+                lambda name, i, lb=labels, lits=lits_by_type: (
+                    f'for (@m <- @"ucc_scalar_{lb[i]}") '
+                    f'{{ @"ucc_scalar_{lb[i]}"!(m.set("v", {lits[lb[i]][name]})) }}'
+                ),
+                len(labels),
+                timeouts,
+            )
+            verdicts = _assert_all_finalized(
+                producers, all_nodes, ids, timeouts, f"scalar-batch-{rnd}"
+            )
+            finalized = verdicts.finalized_set()
+            # Per type: settle to {"v": <one FINALIZED candidate>}, single-keyed,
+            # node-identical. An expired writer's value must not be the one that
+            # settled; if every writer of a cell expired, the cell keeps what it
+            # already held. ``_deploy_k_on_each`` submits type-major
+            # (for i in range(k): for name in producers), so the id for
+            # (type ti, producer pi) sits at ti * len(producers) + pi.
+            for ti, label in enumerate(labels):
+                cell = f"ucc_scalar_{label}"
+                fin_vals = [
+                    decoded_by_type[label][name]
+                    for pi, name in enumerate(_PRODUCER_KEYS)
+                    if ids[ti * len(_PRODUCER_KEYS) + pi] in finalized
+                ]
+                accepted = fin_vals or [last_v[label]]
                 settled = _await_map_settles(
                     all_nodes,
                     cell,
                     accept=lambda m, d=accepted: m.get("v") is not None and _norm(m.get("v")) in d,
                     allowed_keys={"v"},
                     timeout=timeouts.finalization * 3,
-                    label=f"scalar-{type_label}-{rnd}",
+                    label=f"scalar-{label}-{rnd}",
                 )
-                last_v = _norm(settled.get("v"))
+                last_v[label] = _norm(settled.get("v"))
                 logging.info(
                     "scalar-%s round %d: settled to v=%r on all nodes",
-                    type_label,
+                    label,
                     rnd,
                     settled.get("v"),
                 )

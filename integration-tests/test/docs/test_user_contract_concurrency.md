@@ -86,7 +86,9 @@ Single Set cell, concurrent DISTINCT-element adds (the Set analog of nested-map 
 
 Same-cell conflict across the full range of NON-foldable value types — String, Bool, Int, List, Tuple (the generalized non_foldable_fork). For each type, three proposers concurrently write DIFFERENT values of that type into one cell.
 
-**What it proves:** each cell settles to a SINGLE written candidate, node-identical, never multi-valued or stale-consumed — exercising the deterministic_pick scalar leaf for every value type.
+The types run BATCHED per round: the five cells are independent, so each of the three rounds submits one producer x type deploy fan-out (15 conflicting writes as overlapping siblings) and pays ONE finalization wait covering every type, then asserts settlement per cell. The earlier per-type sequences paid ~15 sequential finalization cycles and exceeded the per-test budget on CI hardware (run 32588262605, both ucc legs >1200s); the batched form pays four cycles (~245s locally) and contends the merge harder per round.
+
+**What it proves:** each cell settles to a SINGLE written candidate, node-identical, never multi-valued or stale-consumed — exercising the deterministic_pick scalar leaf for every value type. An expired writer's value must not be the settled one; a cell whose writers all expired keeps its prior value.
 
 ## Background load + robust reconciliation
 
