@@ -1,8 +1,10 @@
 """Docker provider — creates nodes via docker compose / docker run.
 
 Implements the ``Provider`` protocol for Docker-based test environments.
-All container/volume/network names are prefixed with the session ID to
-prevent collisions across parallel runs and with v1 tests.
+Shard containers, volumes, and networks are scoped per shard
+(``{session_id}-s{n}``) so neither parallel sessions nor sequential
+shards within one session can collide; standalone nodes carry their own
+per-instance scope.
 """
 
 from __future__ import annotations
@@ -753,8 +755,9 @@ def _parse_mem(s: str) -> float:
 class DockerProvider:
     """Creates and destroys Docker-based test infrastructure.
 
-    All resources use session-prefixed names to prevent collisions
-    across parallel sessions.
+    Shard resources use per-shard scopes (``{session_id}-s{n}``) so
+    sequential shards in one session share no names and no network;
+    session-level prefixes still separate parallel sessions.
     """
 
     def __init__(
@@ -853,11 +856,22 @@ class DockerProvider:
         for role in roles:
             port_map[role] = self._ports.allocate()
 
+        # Per-shard scope: container names AND the network carry the shard
+        # ordinal, so sequential shards in one session can never touch each
+        # other — a container that outlives its test keeps its own DNS name
+        # on its own network, and a fresh boot resolves nobody's ghosts.
+        # Session-scoped names let a leaked joiner feed a later shard's
+        # boot foreign blocks through a reused name on the shared network
+        # (CI run 32588262605: six prior shards' readonly identities at one
+        # name; the lifecycle shard adopted foreign history and wedged).
+        self._shard_counter += 1
+        shard_scope = f"{self._session_id}-s{self._shard_counter}"
+
         compose_path = generate_compose(
             config=config,
             genesis_dir=genesis_dir,
             port_assignments=port_map,
-            session_id=self._session_id,
+            scope=shard_scope,
             paths=self._paths,
             registry=self._registry,
         )
@@ -868,8 +882,7 @@ class DockerProvider:
         # ID that one test's teardown removed but another test's compose
         # still references — surfaces as "Container ... Recreate" /
         # "No such container" on the next compose up).
-        self._shard_counter += 1
-        project_name = f"test-{self._session_id}-{self._shard_counter}"
+        project_name = f"test-{shard_scope}"
 
         # Start all services. Retry on Docker-on-Mac transient network race
         # (network just created but daemon reports "not found" when attaching
@@ -908,9 +921,9 @@ class DockerProvider:
         # Build handles
         handles: List[DockerNodeHandle] = []
         boot_handle = DockerNodeHandle(
-            name=f"rnode.test.{self._session_id}.boot",
+            name=f"rnode.test.{shard_scope}.boot",
             ports=port_map["boot"],
-            network=f"f1r3fly-test-{self._session_id}",
+            network=f"f1r3fly-test-{shard_scope}",
             role=NodeRole.BOOTSTRAP,
         )
         handles.append(boot_handle)
@@ -919,9 +932,9 @@ class DockerProvider:
             role_name = f"validator{idx + 1}"
             handles.append(
                 DockerNodeHandle(
-                    name=f"rnode.test.{self._session_id}.{role_name}",
+                    name=f"rnode.test.{shard_scope}.{role_name}",
                     ports=port_map[role_name],
-                    network=f"f1r3fly-test-{self._session_id}",
+                    network=f"f1r3fly-test-{shard_scope}",
                     role=NodeRole.VALIDATOR,
                     identity=identity,
                 )
@@ -930,9 +943,9 @@ class DockerProvider:
         if config.include_readonly:
             handles.append(
                 DockerNodeHandle(
-                    name=f"rnode.test.{self._session_id}.readonly",
+                    name=f"rnode.test.{shard_scope}.readonly",
                     ports=port_map["readonly"],
-                    network=f"f1r3fly-test-{self._session_id}",
+                    network=f"f1r3fly-test-{shard_scope}",
                     role=NodeRole.READONLY,
                 )
             )
@@ -945,10 +958,11 @@ class DockerProvider:
                 self._timeouts.node_startup,
             )
 
-        # Store compose path for teardown
+        # Store compose path for teardown, keyed per shard: keying by
+        # session let a second live shard overwrite the first's record,
+        # orphaning its compose project at teardown.
         self._compose_files = getattr(self, "_compose_files", {})
-        shard_key = f"shard-{self._session_id}"
-        self._compose_files[shard_key] = (compose_path, project_name, genesis_dir)
+        self._compose_files[project_name] = (compose_path, project_name, genesis_dir)
 
         self._active_handles.extend(handles)
         logger.info(
@@ -989,9 +1003,17 @@ class DockerProvider:
             )
             return
 
-        archive_handles(handles, self._archive_dir / f"shard{self._shard_counter}")
+        # Derive this shard's scope from its own handles — the provider
+        # counter has moved on if another shard was created since.
+        scope = (
+            handles[0].network_name.removeprefix("f1r3fly-test-")
+            if handles
+            else f"{self._session_id}-s{self._shard_counter}"
+        )
+        ordinal = scope.rsplit("-s", 1)[-1]
+        archive_handles(handles, self._archive_dir / f"shard{ordinal}")
 
-        shard_key = f"shard-{self._session_id}"
+        shard_key = f"test-{scope}"
         compose_files = getattr(self, "_compose_files", {})
         try:
             if shard_key in compose_files:
@@ -1006,6 +1028,13 @@ class DockerProvider:
             else:
                 for handle in handles:
                     handle.remove()
+            # Verified teardown: compose down covers the project's own
+            # containers, but joiners and observers were docker-run'd
+            # outside the project — force-remove every handle by name and
+            # wait until the daemon agrees, so a leak is impossible to
+            # miss. Idempotent for containers compose already removed.
+            for handle in handles:
+                _ensure_no_container(handle.name)
         finally:
             # Hand the port blocks back even when teardown raises midway
             # — a block whose container survived stays bind-probe busy,
@@ -1311,8 +1340,12 @@ class DockerProvider:
 
         ports = self._ports.allocate()
         identity = node_config.identity
-        node_name = f"rnode.test.{self._session_id}.{role_key}"
-        volume_name = f"test-{self._session_id}-{role_key}-data"
+        # Join the shard's own namespace: the scope embedded in its network
+        # name, so a joiner's DNS name and volume can never collide with a
+        # later shard's roster.
+        scope = shard_network.removeprefix("f1r3fly-test-")
+        node_name = f"rnode.test.{scope}.{role_key}"
+        volume_name = f"test-{scope}-{role_key}-data"
 
         bootstrap_url = (
             f"rnode://{BOOTSTRAP_NODE_ID}@{bootstrap_handle.name}?protocol=40400&discovery=40404"
