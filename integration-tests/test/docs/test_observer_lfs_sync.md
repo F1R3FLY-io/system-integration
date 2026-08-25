@@ -23,13 +23,13 @@ Single comprehensive test that:
 1. Starts a `_BackgroundLoad` thread on V1/V2/V3 (round-robin deploys, ~2.5 s per producer) so the fresh shard's chain advances — and merges — from the start.
 2. Polls v1 until the DAG has at least `_MIN_PRE_ATTACH_DEPTH` (12) blocks. Without depth, the forward-horizon collapses to ~genesis and the new code paths emit early — the test would silently turn into a thinner check.
 3. Polls v1's recent window (`_MULTI_PARENT_SCAN_DEPTH` = 24) until a **finalized** multi-parent merge block exists, and records it (most recent finalized merge wins, keeping it near the forward horizon). Finalized-only is load-bearing: a finalized pre-attach block is inside the observer's genesis→LFB bulk-sync range, so the later visibility check proves LFS coverage — an unfinalized tip could instead arrive via post-attach gossip, or be orphaned and never arrive at all.
-4. Immediately attaches a transient observer via `with observer_shard.add_observer() as observer:` — attaching right after the precondition keeps the recorded merge block within the forward-horizon depth of the LFB. (Context-managed: removed and volume cleaned up on exit, but its post-attach errors are still captured by the autouse log scanner before cleanup.)
+4. Immediately attaches a transient observer via `with observer_shard.add_observer() as observer:` — attaching right after the precondition keeps the recorded merge block within the forward-horizon depth of the LFB. (Context-managed: removed and its volume cleaned up on exit; the provider snapshots the retiring observer's full log at that moment, so its errors still reach the log scanner.)
 5. Polls until observer's LFB is within `_LFB_DRIFT_TOLERANCE` (10 blocks) of v1's LFB.
 6. Holds load for `_OBSERVER_LOAD_WINDOW_SEC` (20 s) post-attach so the observer ingests via gossip after the bulk sync — confirms the gossip path works post-LFS, not just the bulk LFS path.
 7. Stops load and re-polls drift convergence — catches "synced then stalled" regressions where bulk sync succeeded but ongoing ingest is broken.
 8. Runs cross-node consistency assertions, including that the observer holds the recorded multi-parent block (see Key assertions below).
 
-The autouse fixture `check_node_logs_after_test` in `conftest.py` runs after the test body but before observer cleanup, so observer logs are scanned for forbidden patterns. A `DAGStorageMissingHash` / `RootRepositoryDivergence` / `KvStoreError` / `UnknownRootError` in the observer's logs fails the test even if every explicit assertion passes.
+The autouse fixture `check_node_logs_after_test` in `conftest.py` runs at test teardown and judges retired-node log snapshots first — the observer's cleanup at `with`-exit captures its full log as a snapshot, which the scan attributes to this test. A `DAGStorageMissingHash` / `RootRepositoryDivergence` / `KvStoreError` / `UnknownRootError` in the observer's logs fails the test even if every explicit assertion passes.
 
 ## Setup
 
@@ -62,7 +62,7 @@ The autouse fixture `check_node_logs_after_test` in `conftest.py` runs after the
 | E | `assert_all_nodes_agree_on_block` for ≥ 5 of observer's last finalized ancestor blocks | Deep cross-node post-state agreement, not just LFB-tip — catches latent storage/replay divergence |
 | F | `wait_for_block_visible(observer, multi_parent.blockHash)` for the **finalized** merge block recorded pre-attach | Observer's genesis→LFB bulk sync provably covered a multi-parent merge — gossip cannot satisfy it by accident and the block cannot be orphaned. Deterministic, unlike the earlier post-hoc sample of v1's recent window, which falsely failed when the sampled tail was single-parent (soak preflight, f1r3node-rust PR #273) |
 | G | Drift remains within `_LFB_DRIFT_TOLERANCE` after settle (Step 7 poll) | Catches "synced then stalled" regressions |
-| H | (Implicit, autouse) Observer logs free of `DAGStorageMissingHash` / `RootRepositoryDivergence` / `KvStoreError` / `UnknownRootError` | The whole reason this PR exists |
+| H | (Implicit, autouse) Observer logs free of `DAGStorageMissingHash` / `RootRepositoryDivergence` / `KvStoreError` / `UnknownRootError` | The storage/history-gap classes this test exists to catch |
 
 ## Infrastructure used
 

@@ -21,6 +21,7 @@ from ...infra.polling import (
     poll_until,
     try_find_deploy,
     wait_for_block_visible,
+    wait_for_deploy_included,
     wait_for_lfb_at_least,
     wait_for_lfb_converged,
     wait_for_node_quiet,
@@ -527,19 +528,22 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
             baseline_lfb = lfb_number(v1)
         logging.info("Baseline LFB: #%d", baseline_lfb)
 
-        # Bond the joiner via PoS contract (deploy on V1)
+        # Bond the joiner via PoS contract (deploy on V1). The dominant
+        # stake is load-bearing: after activation V4 holds ~99.998% of
+        # total weight, so finalization past the boundary is impossible
+        # unless the bond applied, activation fired, AND the fresh
+        # joiner's heartbeat participates — the LFB target below proves
+        # the whole chain, not just non-stall.
+        joiner_bond = 10_000_000
         logging.info("Bonding joiner via PoS contract...")
         bond_deploy_id = v1.deploy_rho_file(
             rho_file_path="resources/wallets/bond.rho",
             private_key=VALIDATOR4_ID.private_key(),
-            substitutions={"%AMOUNT": "10000000"},
+            substitutions={"%AMOUNT": str(joiner_bond)},
             phlo_limit=100_000_000,
             phlo_price=1,
         )
         logging.info("Bond deploy submitted: %s", bond_deploy_id[:24])
-
-        # Wait for bond to be included
-        from ...infra.polling import wait_for_deploy_included
 
         bond_block = wait_for_deploy_included(v1, bond_deploy_id, timeouts.deploy_inclusion)
         logging.info("Bond included in block #%d", bond_block.blockNumber)
@@ -587,19 +591,35 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
                     f"{node.name} LFB #{node_lfb} too far behind target #{target_lfb}"
                 )
 
-            # Check if joiner produced any blocks (appeared in justifications)
-            latest_blocks = v1.get_blocks(20)
-            joiner_produced = False
-            for b in latest_blocks:
-                if b.sender == VALIDATOR4_ID.public_hex:
-                    joiner_produced = True
-                    logging.info("Joiner produced block #%d", b.blockNumber)
-                    break
+            # The bond must actually be in the active map: without this,
+            # a silently failed bond (e.g. a tightened bond-maximum
+            # default) leaves a plain 2-validator shard that reaches the
+            # LFB target on its own and the test passes vacuously. Poll
+            # rather than snapshot to ride out header-side activation lag.
+            def _joiner_active():
+                bonds = {b.validator: b.stake for b in v1.last_finalized_block().blockInfo.bonds}
+                return bonds if bonds.get(VALIDATOR4_ID.public_hex) == joiner_bond else None
 
-            if joiner_produced:
-                logging.info("Joiner activated and producing blocks")
-            else:
-                logging.warning("Joiner did not produce blocks in latest 20 — may need more epochs")
+            active_bonds = poll_until(
+                predicate=_joiner_active,
+                timeout=timeouts.finalization,
+                interval=3.0,
+                description="joiner in the active bonds map at the finalized tip",
+            )
+            logging.info("Joiner active with stake %d", active_bonds[VALIDATOR4_ID.public_hex])
+
+            # With V4 holding ~99.998% of stake, the LFB target above is
+            # unreachable unless V4 voted — so a produced block must exist.
+            latest_blocks = v1.get_blocks(20)
+            joiner_blocks = [
+                b.blockNumber for b in latest_blocks if b.sender == VALIDATOR4_ID.public_hex
+            ]
+            assert joiner_blocks, (
+                f"Joiner produced no blocks in the latest {len(latest_blocks)} despite "
+                f"finalization past the activation boundary — activation without "
+                f"participation should be impossible at this stake weight"
+            )
+            logging.info("Joiner activated and produced blocks: %s", joiner_blocks)
 
             logging.info("Epoch transition under heartbeat test passed")
     finally:

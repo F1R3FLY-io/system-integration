@@ -45,7 +45,6 @@ pytestmark = pytest.mark.xdist_group("shared")
 
 BRIDGE_CONTRACT = "resources/bridge-v2.rho"
 STORE_DATA_CONTRACT = "resources/storage/store-data.rho"
-READ_DATA_CONTRACT = "resources/storage/read-data.rho"
 DATA_PROVIDER_CONTRACT = "resources/lifecycle/data-provider.rho"
 DATA_CONSUMER_CONTRACT = "resources/lifecycle/data-consumer.rho"
 
@@ -612,11 +611,16 @@ def test_multi_block_state_evolution(
     )
     logging.info("Lock 1 result: %s", str(lock1_pars[0])[:120] if lock1_pars else "empty")
 
-    # Verify after lock 1
+    # Verify after lock 1. The nonce increments only on the lock's success
+    # path (the four-cell join), so this assert is also proof the lock
+    # itself succeeded — a (status: error) return leaves the nonce flat.
     wait_for_finalized(ro, lock1_num + 1, lfb_timeout)
     lfb_hash = ro.last_finalized_block().blockInfo.blockHash
     nonce_after_1 = par_as_int(ro.registry_query(query_uri, "getNonce", block_hash=lfb_hash)[0])
-    logging.info("Nonce after lock 1: %d (expected %d)", nonce_after_1, initial_nonce + 1)
+    assert nonce_after_1 == initial_nonce + 1, (
+        f"Nonce after lock 1: got {nonce_after_1}, expected {initial_nonce + 1} — "
+        f"the lock did not apply (result: {str(lock1_pars[0])[:120] if lock1_pars else 'empty'})"
+    )
 
     # Verify all nodes agree
     assert_all_nodes_agree_on_block(shared_shard.all_nodes, lock1_hash)
@@ -637,11 +641,14 @@ def test_multi_block_state_evolution(
     )
     logging.info("Lock 2 result: %s", str(lock2_pars[0])[:120] if lock2_pars else "empty")
 
-    # Verify after lock 2
+    # Verify after lock 2 — same success-proof semantics as lock 1.
     wait_for_finalized(ro, lock2_num + 1, lfb_timeout)
     lfb_hash = ro.last_finalized_block().blockInfo.blockHash
     nonce_after_2 = par_as_int(ro.registry_query(query_uri, "getNonce", block_hash=lfb_hash)[0])
-    logging.info("Nonce after lock 2: %d (expected %d)", nonce_after_2, initial_nonce + 2)
+    assert nonce_after_2 == initial_nonce + 2, (
+        f"Nonce after lock 2: got {nonce_after_2}, expected {initial_nonce + 2} — "
+        f"the lock did not apply (result: {str(lock2_pars[0])[:120] if lock2_pars else 'empty'})"
+    )
 
     assert_all_nodes_agree_on_block(shared_shard.all_nodes, lock2_hash)
 

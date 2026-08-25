@@ -44,9 +44,9 @@ The bond split exists to land FT EXACTLY on the threshold — the only point whe
 
 **Config:** FTT=0.1, bonds 100/100, epoch-length=4, heartbeat, readonly, joiner wallet seeded
 
-Bond VALIDATOR4 via `bond.rho` during active heartbeat (not manual propose). Wait for chain to advance past at least one epoch boundary automatically. Verify finalization continues throughout (no stall during epoch transition). Check if joiner produced blocks after activation.
+Bond VALIDATOR4 via `bond.rho` (stake 10,000,000 — dominant on purpose) during active heartbeat (not manual propose). Wait for the LFB to advance well past an epoch boundary. Because V4 then holds ~99.998% of stake, finalization past the boundary is impossible unless the bond applied, activation fired, and the fresh joiner's heartbeat participates — the LFB target proves the whole chain. Then assert V4 is in the active bonds map at the finalized tip (polled, riding out header-side activation lag) and that V4 produced at least one block.
 
-**What it proves:** Epoch-based validator activation works under production conditions (heartbeat, real FTT). The epoch transition doesn't stall finalization.
+**What it proves:** Epoch-based validator activation works under production conditions (heartbeat, real FTT). The epoch transition doesn't stall finalization, and the activated joiner actually participates.
 
 ### test_merge_determinism_asymmetric_divergence
 
