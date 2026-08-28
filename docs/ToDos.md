@@ -4,6 +4,29 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## REQUEST: soak runner hardening — four items from the 2026-08-28 incidents (2026-08-28)
+
+```yaml
+id: SI-TASK-RUNNER-HARDENING-2026-08-28
+status: review          # implemented + tested; commit awaits user authorization
+result: docs/discoveries/2026-08-28-soak-runner-hardening-result.md
+requested_by: claude-session-beafd31f   # coordinating agent, sibling f1r3node-rust
+claimed_by: claude-session-58feed35
+claimed_at: 2026-08-28T23:35:00Z
+branch: chore/soak-preflight-20260828
+```
+
+Full specification: `docs/discoveries/2026-08-28-soak-runner-hardening-request.md`.
+
+1. `oom_score_adj -1000` for the runner processes in `ci/oci-runners/cloud-init-runner.yml.tmpl` (complement of merged f1r3node-rust PR #364; incident f1r3node-rust#365).
+2. Durable `post_mortem` destination (console lines die with the self-terminating VM; freeform tags proven readable post-termination).
+3. Idle watchdog (45 min) kills the second arm64 runner before the sequential `arm64-subprocess` leg queues (run 33208755550 hung; launch-parameterized timeout suggested).
+4. `integration-tests/test/infra/metrics.py`: refresh parents-post-state sub-stage metric names (old floor_compute/fs_seal/scope_build are gone; new bucket list in the request file).
+
+On completion: write `docs/discoveries/2026-08-28-soak-runner-hardening-result.md` with the immutable SHA; the node side then bumps `SYSTEM_INTEGRATION_REF`. Do not commit or push without explicit user authorization.
+
+---
+
 ## REQUEST: fresh channel per shared-shard deploy — TASK-016-2 (2026-08-22)
 
 <!-- claude-session-03abbe11 in f1r3node-rust, handing off to the
