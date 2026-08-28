@@ -37,7 +37,12 @@ def test_something(validator1_node, readonly_node, timeouts):
         "@1!(42)",
         VALIDATOR1_ID.private_key(),
     )
-    wait_for_deploy_finalized(validator1_node, deploy_id, timeouts.finalization)
+    wait_for_deploy_finalized(
+        validator1_node,
+        deploy_id,
+        timeouts.finalization,
+        absolute_timeout=timeouts.deploy_finalization_absolute,
+    )
 
     # Now read from the readonly observer
     ...
@@ -142,7 +147,12 @@ For deploy tracking, prefer `wait_for_deploy_finalized` over `wait_for_finalized
 from ...infra.polling import wait_for_deploy_finalized
 
 deploy_id = node.deploy_string("@1!(42)", key.private_key())
-status = wait_for_deploy_finalized(node, deploy_id, timeouts.finalization)
+status = wait_for_deploy_finalized(
+    node,
+    deploy_id,
+    timeouts.finalization,
+    absolute_timeout=timeouts.deploy_finalization_absolute,
+)
 # status.latestBlockHash points at the canonical-state block
 ```
 
@@ -156,7 +166,11 @@ To check that a batch of deploys (e.g. a background-load run) all finalized on e
 from ...infra.assertions import assert_all_deploys_finalized_on_all_nodes
 
 assert_all_deploys_finalized_on_all_nodes(
-    shard.all_nodes, deploy_ids, timeouts.finalization * 2, label="bg-load"
+    shard.all_nodes,
+    deploy_ids,
+    timeouts.finalization * 2,
+    absolute_timeout=timeouts.deploy_finalization_absolute,
+    label="bg-load",
 )
 ```
 
@@ -169,7 +183,14 @@ from ...infra.polling import deploy_and_read
 # Returns (par_list, canonical_block_hash, canonical_block_number) — block_hash and number
 # refer to the canonical-state block, which may differ from the first-inclusion block if
 # the deploy was merge-rejected and re-included in a later block.
-result = deploy_and_read(node, term, channel_name, timeouts)
+result = deploy_and_read(
+    node,
+    term,
+    private_key,
+    timeouts.deploy_inclusion,
+    timeouts.finalization,
+    finalization_absolute_timeout=timeouts.deploy_finalization_absolute,
+)
 ```
 
 ### Poll with a deadline

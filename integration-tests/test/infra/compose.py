@@ -201,6 +201,7 @@ def generate_compose(
             "--no-upnp",
             "--allow-private-addresses",
             "--heartbeat-disabled",  # readonly never proposes regardless of shard config
+            f"--required-signatures={config.effective_required_signatures}",
         ] + _extra_cli(ro_key)
 
         services[ro_key] = {

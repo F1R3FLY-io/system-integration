@@ -138,6 +138,7 @@ def _deploy_bridge(shared_shard, timeouts):
     all_nodes = shared_shard.all_nodes
     find_timeout = timeouts.deploy_inclusion
     lfb_timeout = timeouts.finalization
+    deploy_absolute_timeout = timeouts.deploy_finalization_absolute
 
     logging.info("Deploying bridge-v2.rho on V1...")
     deploy_pars, _, block_number = deploy_and_read(
@@ -146,6 +147,7 @@ def _deploy_bridge(shared_shard, timeouts):
         VALIDATOR1_ID.private_key(),
         find_timeout,
         lfb_timeout,
+        finalization_absolute_timeout=deploy_absolute_timeout,
         rho_file=BRIDGE_CONTRACT,
     )
 
@@ -197,7 +199,15 @@ def test_bridge_api_exploratory(shared_shard, timeouts) -> None:
     logging.info("  getAddress: %s", address)
 
 
-def _query_bridge(node, query_uri: str, method: str, private_key, find_timeout, lfb_timeout):
+def _query_bridge(
+    node,
+    query_uri: str,
+    method: str,
+    private_key,
+    find_timeout,
+    lfb_timeout,
+    deploy_absolute_timeout,
+):
     """``deploy_and_read`` of a bridge query, retrying once on an empty read.
 
     ``_make_query_rho`` fails silently on a registry lookup miss (the ``for``
@@ -210,7 +220,14 @@ def _query_bridge(node, query_uri: str, method: str, private_key, find_timeout, 
     """
     term = _make_query_rho(query_uri, method)
     try:
-        return deploy_and_read(node, term, private_key, find_timeout, lfb_timeout)
+        return deploy_and_read(
+            node,
+            term,
+            private_key,
+            find_timeout,
+            lfb_timeout,
+            finalization_absolute_timeout=deploy_absolute_timeout,
+        )
     except EmptyParListError as err:
         logging.warning(
             "%s query on %s read an empty deployId channel (%s); retrying once on a fresh tip",
@@ -218,7 +235,14 @@ def _query_bridge(node, query_uri: str, method: str, private_key, find_timeout, 
             node.name,
             err,
         )
-        return deploy_and_read(node, term, private_key, find_timeout, lfb_timeout)
+        return deploy_and_read(
+            node,
+            term,
+            private_key,
+            find_timeout,
+            lfb_timeout,
+            finalization_absolute_timeout=deploy_absolute_timeout,
+        )
 
 
 def test_bridge_api_real_deploy(shared_shard, timeouts) -> None:
@@ -230,6 +254,7 @@ def test_bridge_api_real_deploy(shared_shard, timeouts) -> None:
     validators = shared_shard.validators
     find_timeout = timeouts.deploy_inclusion
     lfb_timeout = timeouts.finalization
+    deploy_absolute_timeout = timeouts.deploy_finalization_absolute
     query_uri, _, _ = _deploy_bridge(shared_shard, timeouts)
 
     logging.info("Querying getNonce on V1 (real deploy)...")
@@ -240,6 +265,7 @@ def test_bridge_api_real_deploy(shared_shard, timeouts) -> None:
         VALIDATOR1_ID.private_key(),
         find_timeout,
         lfb_timeout,
+        deploy_absolute_timeout,
     )
     nonce = par_as_int(nonce_pars[0])
     assert nonce == 0, f"Initial bridge nonce should be 0, got {nonce}"
@@ -253,6 +279,7 @@ def test_bridge_api_real_deploy(shared_shard, timeouts) -> None:
         VALIDATOR2_ID.private_key(),
         find_timeout,
         lfb_timeout,
+        deploy_absolute_timeout,
     )
     total_locked = par_as_int(locked_pars[0])
     assert total_locked == 0, f"Initial totalLocked should be 0, got {total_locked}"
@@ -266,6 +293,7 @@ def test_bridge_api_real_deploy(shared_shard, timeouts) -> None:
         VALIDATOR3_ID.private_key(),
         find_timeout,
         lfb_timeout,
+        deploy_absolute_timeout,
     )
     address = par_as_string(addr_pars[0])
     assert len(address) > 0, "Bridge vault address should be non-empty"

@@ -685,6 +685,7 @@ class SubprocessProvider:
                 "--no-upnp",
                 "--allow-private-addresses",
                 "--heartbeat-disabled",  # readonly never proposes
+                f"--required-signatures={config.effective_required_signatures}",
                 f"--bonds-file={genesis_dir}/bonds.txt",
                 f"--wallets-file={genesis_dir}/wallets.txt",
             ]

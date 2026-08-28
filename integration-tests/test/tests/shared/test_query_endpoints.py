@@ -323,7 +323,12 @@ def test_registry_endpoint(shared_shard, timeouts) -> None:
         rholang,
         VALIDATOR1_ID.private_key(),
     )
-    wait_for_deploy_finalized(v1, deploy_id, timeouts.finalization)
+    wait_for_deploy_finalized(
+        v1,
+        deploy_id,
+        timeouts.finalization,
+        absolute_timeout=timeouts.deploy_finalization_absolute,
+    )
 
     # Use the existing registry lookup via gRPC to get a known URI
     # (system contract URIs are always available)
@@ -352,7 +357,12 @@ def test_query_with_block_hash(shared_shard, timeouts) -> None:
         "@9999!(0)",
         VALIDATOR1_ID.private_key(),
     )
-    status = wait_for_deploy_finalized(v1, deploy_id, timeouts.finalization)
+    status = wait_for_deploy_finalized(
+        v1,
+        deploy_id,
+        timeouts.finalization,
+        absolute_timeout=timeouts.deploy_finalization_absolute,
+    )
     block_hash = status.latestBlockHash.hex()
 
     # Validators endpoint with explicit block hash

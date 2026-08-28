@@ -61,9 +61,9 @@ def test_manual_propose_during_heartbeat_shard(shared_shard, timeouts) -> None:
     """Manual propose during active heartbeat does not crash the node.
 
     With heartbeat active, a manual propose can have three outcomes:
-      - Success (propose won the lock race, included the deploy in a block)
+      - Success (propose won admission, included the deploy in a block)
       - "NoNewDeploys" (deploy already included by auto-proposer)
-      - "another propose is in progress" (heartbeat holds the propose lock)
+      - "another propose is in progress" (another request owns the proposal gate)
 
     All three are valid. We deploy and propose on each validator via the
     internal gRPC port (ProposeService), then verify all nodes advance
@@ -87,7 +87,7 @@ def test_manual_propose_during_heartbeat_shard(shared_shard, timeouts) -> None:
 
         try:
             node.propose()
-            logging.info("%s: propose succeeded (won lock race)", node.name)
+            logging.info("%s: propose succeeded (won proposal admission)", node.name)
         except F1r3flyClientException as e:
             message = str(e)
             is_no_new_deploys = "NoNewDeploys" in message
@@ -99,7 +99,9 @@ def test_manual_propose_during_heartbeat_shard(shared_shard, timeouts) -> None:
                     "NoNewDeploys" if is_no_new_deploys else "contention",
                 )
             else:
-                logging.warning("%s: unexpected propose error: %s", node.name, message)
+                raise AssertionError(
+                    f"{node.name}: unexpected manual propose error: {message}"
+                ) from e
 
     # Verify all nodes advance LFB by 3+ blocks — proves no crash or stall
     target_lfbs = {name: lfb + 3 for name, lfb in baseline_lfbs.items()}

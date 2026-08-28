@@ -220,7 +220,11 @@ def _assert_bg_load_deploys_finalized(
     # block-hash check falsely flagged it as dropped work. Checks all producers
     # (stronger than the previous producers[0]-only check).
     assert_all_deploys_finalized_on_all_nodes(
-        producers, deploy_ids, timeouts.finalization * 2, label=label
+        producers,
+        deploy_ids,
+        timeouts.finalization * 2,
+        absolute_timeout=timeouts.deploy_finalization_absolute,
+        label=label,
     )
 
 

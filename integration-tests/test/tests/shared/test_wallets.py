@@ -16,8 +16,17 @@ submitted via validators since they are state-changing operations.
 import logging
 
 import pytest
+from f1r3fly.cost_accounting import CostAuthorityEvidence
+from f1r3fly.deploy import find_deploy_in_block
+from f1r3fly.vault import MAX_VAULT_AMOUNT
 
-from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.keys import (
+    BOOTSTRAP_ID,
+    VALIDATOR1_ID,
+    VALIDATOR2_ID,
+    VALIDATOR3_ID,
+    VALIDATOR6_ID,
+)
 from ...infra.polling import poll_until, wait_for_deploy_finalized
 
 pytestmark = pytest.mark.xdist_group("shared")
@@ -45,14 +54,24 @@ def _transfer_and_read_result(node, from_addr, to_addr, amount, key, timeouts, a
     """
     deploy_id = node.vault.transfer_ensure(from_addr, to_addr, amount, key)
 
-    status = wait_for_deploy_finalized(node, deploy_id, timeouts.finalization)
+    status = wait_for_deploy_finalized(
+        node,
+        deploy_id,
+        timeouts.finalization,
+        absolute_timeout=timeouts.deploy_finalization_absolute,
+    )
     canonical_block_hash = status.latestBlockHash.hex() if status.latestBlockHash else None
 
     if all_nodes is not None:
         for other in all_nodes:
             if other.name == node.name:
                 continue
-            wait_for_deploy_finalized(other, deploy_id, timeouts.finalization)
+            wait_for_deploy_finalized(
+                other,
+                deploy_id,
+                timeouts.finalization,
+                absolute_timeout=timeouts.deploy_finalization_absolute,
+            )
 
     result = node.vault.read_transfer_result(deploy_id, block_hash=canonical_block_hash)
     return result, canonical_block_hash
@@ -198,32 +217,68 @@ def test_transfer_failed_with_invalid_key(shared_shard, timeouts) -> None:
 
 
 def test_transfer_failed_with_insufficient_funds(shared_shard, timeouts) -> None:
-    """Transferring more than sender balance fails with Insufficient funds.
-
-    Submitted via V2's node. Balance queried via exploratory deploy on readonly.
-    """
+    """A canonical maximum transfer from a funded unbonded purse is rejected."""
     v2 = shared_shard.node("validator2")
     ro = shared_shard.readonly
-    v1_key = VALIDATOR1_ID.private_key()
-    v1_vault = v1_key.get_public_key().get_vault_address()
-    v2_vault = VALIDATOR2_ID.private_key().get_public_key().get_vault_address()
+    source_key = VALIDATOR6_ID.private_key()
+    source_vault = source_key.get_public_key().get_vault_address()
+    destination_vault = BOOTSTRAP_ID.private_key().get_public_key().get_vault_address()
 
-    v1_balance = ro.vault.get_balance(v1_vault)
-    assert v1_balance > 0
-    overdraw_amount = v1_balance + 1
-
-    result, _ = _transfer_and_read_result(
+    result, canonical_block_hash = _transfer_and_read_result(
         v2,
-        v1_vault,
-        v2_vault,
-        overdraw_amount,
-        v1_key,
+        source_vault,
+        destination_vault,
+        MAX_VAULT_AMOUNT,
+        source_key,
         timeouts,
         all_nodes=shared_shard.all_nodes,
     )
     assert not result.success, "Transfer should have failed with Insufficient funds"
     assert result.reason == "Insufficient funds", (
         f"Expected 'Insufficient funds', got '{result.reason}'"
+    )
+
+    canonical_block = ro.get_block(canonical_block_hash)
+    canonical_bonds = {bond.validator for bond in canonical_block.blockInfo.bonds}
+    assert VALIDATOR6_ID.public_hex not in canonical_bonds
+
+    parent_balances = {
+        parent_hash: (
+            ro.vault.get_balance(source_vault, block_hash=parent_hash),
+            ro.vault.get_balance(destination_vault, block_hash=parent_hash),
+        )
+        for parent_hash in canonical_block.blockInfo.parentsHashList
+    }
+    assert parent_balances, "Canonical transfer block must have at least one parent"
+    assert len(set(parent_balances.values())) == 1, (
+        f"Transfer parents disagree on isolated purse balances: {parent_balances}"
+    )
+    source_before, destination_before = next(iter(parent_balances.values()))
+    assert 0 < source_before < MAX_VAULT_AMOUNT
+
+    source_after = ro.vault.get_balance(source_vault, block_hash=canonical_block_hash)
+    destination_after = ro.vault.get_balance(
+        destination_vault,
+        block_hash=canonical_block_hash,
+    )
+    deploy = find_deploy_in_block(canonical_block, result.deploy_id)
+    evidence = CostAuthorityEvidence.from_processed_deploy(deploy)
+    assert len(evidence.fee_allocation) == 1
+    payer_lane = next(iter(evidence.fee_allocation))
+    authorized_debit = (
+        evidence.settlement.get(payer_lane, 0)
+        + evidence.byte_settlement.get(payer_lane, 0)
+        + evidence.fee_allocation[payer_lane]
+    )
+
+    assert authorized_debit > 0
+    assert source_after == source_before - authorized_debit, (
+        "Rejected transfer changed the source by more than its certified "
+        f"resource settlement: {source_before} -> {source_after}, debit={authorized_debit}"
+    )
+    assert destination_after == destination_before, (
+        "Rejected transfer changed the destination balance: "
+        f"{destination_before} -> {destination_after}"
     )
 
 

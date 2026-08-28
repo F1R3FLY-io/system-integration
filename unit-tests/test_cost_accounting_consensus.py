@@ -17,14 +17,17 @@ class _Node:
         self.state_hash = state_hash
 
     def last_finalized_block(self):
-        return SimpleNamespace(blockInfo=SimpleNamespace(blockHash=self.state_hash.hex()))
+        return SimpleNamespace(
+            blockInfo=SimpleNamespace(blockHash=self.state_hash.hex(), blockNumber=7)
+        )
 
 
 def _shard(*nodes):
     return SimpleNamespace(all_nodes=nodes, readonly=nodes[-1])
 
 
-def _status(node, deploy_id, timeout):
+def _status(node, deploy_id, timeout, *, absolute_timeout):
+    assert absolute_timeout == 135
     return SimpleNamespace(latestBlockHash=node.occurrence_hash)
 
 
@@ -38,6 +41,7 @@ def test_finalized_deploy_requires_one_canonical_block_on_every_node(monkeypatch
             _shard(boot, readonly),
             "deploy-id",
             45,
+            135,
         )
 
     assert "boot" in str(error.value)
@@ -62,6 +66,7 @@ def test_finalized_deploy_checks_canonical_and_query_states_on_every_node(monkey
         _shard(boot, readonly),
         "deploy-id",
         45,
+        135,
     )
 
     assert state_hash == b"state".hex()

@@ -22,10 +22,15 @@ from ...infra.polling import wait_for_deploy_finalized
 pytestmark = pytest.mark.xdist_group("shared")
 
 
-def _finalized_on_every_node(shard, deploy_id, timeout):
+def _finalized_on_every_node(shard, deploy_id, timeout, absolute_timeout):
     occurrence_hashes = {}
     for node in shard.all_nodes:
-        status = wait_for_deploy_finalized(node, deploy_id, timeout)
+        status = wait_for_deploy_finalized(
+            node,
+            deploy_id,
+            timeout,
+            absolute_timeout=absolute_timeout,
+        )
         assert status.latestBlockHash
         occurrence_hashes[node.name] = status.latestBlockHash.hex()
     unique_occurrence_hashes = set(occurrence_hashes.values())
@@ -68,6 +73,7 @@ def test_native_application_cost_accounting_workflows(shared_shard, timeouts) ->
         shared_shard,
         install_id,
         timeouts.finalization,
+        timeouts.deploy_finalization_absolute,
     )
     outer_address, slot_address = readonly.funding_slots.addresses(
         grant,
@@ -89,6 +95,7 @@ def test_native_application_cost_accounting_workflows(shared_shard, timeouts) ->
         shared_shard,
         funding_id,
         timeouts.finalization,
+        timeouts.deploy_finalization_absolute,
     )
     funding_result = v2.vault.read_transfer_result(
         funding_id,
@@ -103,6 +110,7 @@ def test_native_application_cost_accounting_workflows(shared_shard, timeouts) ->
         shared_shard,
         unauthorized_id,
         timeouts.finalization,
+        timeouts.deploy_finalization_absolute,
     )
     assert readonly.vault.get_balance(outer_address, unauthorized_hash) == initial_outer_funding
     assert readonly.vault.get_balance(slot_address, unauthorized_hash) == initial_slot_funding
@@ -119,6 +127,7 @@ def test_native_application_cost_accounting_workflows(shared_shard, timeouts) ->
         shared_shard,
         top_up_id,
         timeouts.finalization,
+        timeouts.deploy_finalization_absolute,
     )
     top_up_result = v2.vault.read_transfer_result(
         top_up_id,
@@ -135,6 +144,7 @@ def test_native_application_cost_accounting_workflows(shared_shard, timeouts) ->
         shared_shard,
         trigger_id,
         timeouts.finalization,
+        timeouts.deploy_finalization_absolute,
     )
     remaining_outer_balance = readonly.vault.get_balance(outer_address, trigger_hash)
     remaining_slot_balance = readonly.vault.get_balance(slot_address, trigger_hash)
@@ -190,6 +200,7 @@ def test_native_application_cost_accounting_workflows(shared_shard, timeouts) ->
         shared_shard,
         registration_id,
         timeouts.finalization,
+        timeouts.deploy_finalization_absolute,
     )
     registration_data = v1.capabilities.client.get_data_at_deploy_id(
         registration_id,
@@ -209,6 +220,7 @@ def test_native_application_cost_accounting_workflows(shared_shard, timeouts) ->
         shared_shard,
         invocation_id,
         timeouts.finalization,
+        timeouts.deploy_finalization_absolute,
     )
     invocation_data = v3.capabilities.client.get_data_at_deploy_id(
         invocation_id,

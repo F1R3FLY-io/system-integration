@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from ...infra.assertions import assert_all_nodes_agree_on_block
+from ...infra.assertions import assert_all_nodes_agree_on_block, assert_all_nodes_agree_on_lfb
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID, VALIDATOR4_ID
 from ...infra.polling import (
@@ -21,13 +21,158 @@ from ...infra.polling import (
     poll_until,
     try_find_deploy,
     wait_for_block_visible,
+    wait_for_deploy_finalized,
     wait_for_lfb_at_least,
     wait_for_lfb_converged,
+    wait_for_lfb_with_ft,
     wait_for_node_quiet,
 )
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
+
+_HEARTBEAT_CHECK_INTERVAL_SECONDS = 5
+_HEARTBEAT_MAX_LFB_AGE_SECONDS = 15
+
+
+def test_rotating_heartbeat_recovers_from_offline_round_leader(provider, timeouts) -> None:
+    """An offline round-zero leader cannot prevent certified heartbeat recovery."""
+    identities = [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID]
+    config = ShardConfig(
+        bonds=[(identity, 100) for identity in identities],
+        ftt=0.1,
+        heartbeat=True,
+        include_readonly=True,
+    )
+    shard = Shard.create(provider, config, timeouts)
+    paused = None
+    try:
+        validators = shard.validators
+        all_nodes = shard.all_nodes
+        cadence_marker = (
+            f"check interval: {_HEARTBEAT_CHECK_INTERVAL_SECONDS}s, "
+            f"max LFB age: {_HEARTBEAT_MAX_LFB_AGE_SECONDS}s"
+        )
+        for validator in validators:
+            assert cadence_marker in validator.logs(), (
+                f"{validator.name}: heartbeat did not start with shipped cadence {cadence_marker!r}"
+            )
+
+        deploy_ids = [
+            shard.node(identity.name).deploy_string(
+                f'@"heartbeat-recovery-{identity.name}"!(1)',
+                identity.private_key(),
+            )
+            for identity in identities
+        ]
+        for deploy_id in deploy_ids:
+            for node in all_nodes:
+                try:
+                    wait_for_deploy_finalized(
+                        node,
+                        deploy_id,
+                        timeouts.finalization,
+                        absolute_timeout=timeouts.deploy_finalization_absolute,
+                    )
+                except TimeoutError as error:
+                    raise TimeoutError(f"{node.name}: {error}") from error
+
+        baseline_hash = assert_all_nodes_agree_on_lfb(
+            all_nodes,
+            timeout=timeouts.finalization,
+        )
+        baseline_block = shard.boot.get_block(baseline_hash).blockInfo
+        baseline_height = baseline_block.blockNumber
+        assert float(baseline_block.faultTolerance) > config.ftt
+
+        ordered_identities = sorted(
+            identities,
+            key=lambda identity: bytes.fromhex(identity.public_hex),
+        )
+        round_zero_identity = ordered_identities[baseline_height % len(ordered_identities)]
+        round_one_identity = ordered_identities[(baseline_height + 1) % len(ordered_identities)]
+        paused = shard.node(round_zero_identity.name)
+        paused.pause()
+        wait_for_node_quiet(paused, timeout=timeouts.finalization)
+
+        online = [node for node in validators if node.name != paused.name]
+        online_by_identity = {
+            node.identity.name: node for node in online if node.identity is not None
+        }
+        assert round_one_identity.name != round_zero_identity.name
+        assert round_one_identity.name in online_by_identity
+        recovery_log_offsets = {
+            identity_name: len(node.logs()) for identity_name, node in online_by_identity.items()
+        }
+        online_lfbs = {
+            node.name: node.last_finalized_block().blockInfo.blockHash for node in online
+        }
+        assert set(online_lfbs.values()) == {baseline_hash}, (
+            "LFB advanced before the selected round-zero leader was confirmed offline: "
+            f"baseline={baseline_hash}, observed={online_lfbs}"
+        )
+
+        rotation_window = _HEARTBEAT_MAX_LFB_AGE_SECONDS + (
+            len(identities) * _HEARTBEAT_CHECK_INTERVAL_SECONDS
+        )
+        recovery_timeout = timeouts.custom(2 * rotation_window)
+        recovered_floor = baseline_height + 1
+        for node in online:
+            wait_for_lfb_with_ft(
+                node,
+                target_number=recovered_floor,
+                ftt=config.ftt,
+                timeout=recovery_timeout,
+            )
+
+        round_zero_marker = "recovery round 0 selected this validator"
+        round_one_marker = "recovery round 1 selected this validator"
+        recovery_logs = {}
+        for identity_name, node in online_by_identity.items():
+            logs = node.logs()
+            offset = recovery_log_offsets[identity_name]
+            assert len(logs) >= offset, f"{node.name}: logs truncated during heartbeat recovery"
+            recovery_logs[identity_name] = logs[offset:]
+
+        round_zero_selected = {
+            name for name, logs in recovery_logs.items() if round_zero_marker in logs
+        }
+        assert not round_zero_selected, (
+            "an online validator usurped the paused round-zero leader: "
+            f"selected={sorted(round_zero_selected)}"
+        )
+        round_one_selected = {
+            name for name, logs in recovery_logs.items() if round_one_marker in logs
+        }
+        assert round_one_selected == {round_one_identity.name}, (
+            "recovery round 1 leader mismatch: "
+            f"expected={round_one_identity.name}, selected={sorted(round_one_selected)}"
+        )
+
+        paused.unpause()
+        paused = None
+        common_lfb_hash = assert_all_nodes_agree_on_lfb(
+            all_nodes,
+            timeout=recovery_timeout,
+        )
+        assert_all_nodes_agree_on_block(
+            all_nodes,
+            common_lfb_hash,
+            timeout=recovery_timeout,
+        )
+        for node in all_nodes:
+            lfb = node.last_finalized_block().blockInfo
+            assert lfb.blockHash == common_lfb_hash
+            assert lfb.blockNumber >= recovered_floor
+            assert float(lfb.faultTolerance) > config.ftt
+            assert node.is_finalized(common_lfb_hash)
+    finally:
+        if paused is not None:
+            try:
+                paused.unpause()
+            except Exception:
+                pass
+        shard.destroy()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -533,7 +678,8 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
         bond_status = wait_for_deploy_finalized(
             v1,
             bond_deploy_id,
-            timeouts.finalization * 3,
+            timeouts.finalization,
+            absolute_timeout=timeouts.deploy_finalization_absolute,
         )
         assert bond_status.latestBlockHash
         canonical_bond_hash = bond_status.latestBlockHash.hex()

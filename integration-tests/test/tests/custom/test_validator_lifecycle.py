@@ -534,7 +534,11 @@ def _assert_bg_load_deploys_finalized(
     """
     del producers  # deploy-status is queried per node directly; no block lookup
     assert_all_deploys_finalized_on_all_nodes(
-        all_nodes, deploy_ids, timeouts.finalization * 2, label=label
+        all_nodes,
+        deploy_ids,
+        timeouts.finalization * 2,
+        absolute_timeout=timeouts.deploy_finalization_absolute,
+        label=label,
     )
 
 

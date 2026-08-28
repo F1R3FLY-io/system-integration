@@ -354,6 +354,8 @@ def wait_for_deploy_finalized(
     deploy_id: str,
     timeout: int,
     interval: float = 3.0,
+    *,
+    absolute_timeout: Optional[int] = None,
 ):
     """Poll ``deploy_finalization_status`` until the deploy reaches Finalized.
 
@@ -364,10 +366,17 @@ def wait_for_deploy_finalized(
     were rejected by merge and later re-included.
 
     Returns the ``DeployFinalizationStatusInfo`` on success.
-    Raises ``DeployError`` on terminal Failed/Expired, ``TimeoutError``
-    if Pending past ``timeout``.
+    Raises ``DeployError`` on terminal Failed/Expired,
+    ``FinalizedHistoryError`` on finalized-history revision/regression, and
+    ``TimeoutError`` if Pending exhausts either bounded budget.
     """
-    return _client_wait_for_deploy_finalized(node._external_client(), deploy_id, timeout, interval)
+    return _client_wait_for_deploy_finalized(
+        node._external_client(),
+        deploy_id,
+        timeout,
+        interval,
+        absolute_timeout=absolute_timeout,
+    )
 
 
 def wait_for_lfb_with_ft(
@@ -411,6 +420,7 @@ def deploy_and_read(
     inclusion_timeout: int,
     finalization_timeout: int,
     *,
+    finalization_absolute_timeout: Optional[int] = None,
     rho_file: str = None,
     substitutions: Optional[Dict[str, str]] = None,
     shard_id: str = "root",
@@ -426,6 +436,9 @@ def deploy_and_read(
         private_key: PrivateKey for signing.
         inclusion_timeout: Seconds to wait for block inclusion.
         finalization_timeout: Seconds to wait for finalization.
+        finalization_absolute_timeout: Optional non-renewable total timeout;
+            when set, ``finalization_timeout`` becomes the strict-LFB-progress
+            stall budget.
         rho_file: If set, read code from this .rho file path.
         substitutions: String replacements to apply to the code.
         shard_id: Target shard identifier.
@@ -463,6 +476,7 @@ def deploy_and_read(
             private_key=private_key,
             inclusion_timeout=inclusion_timeout,
             finalization_timeout=finalization_timeout,
+            finalization_absolute_timeout=finalization_absolute_timeout,
             shard_id=shard_id,
         )
     except EmptyParListError:

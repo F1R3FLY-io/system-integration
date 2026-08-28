@@ -282,6 +282,7 @@ def assert_all_deploys_finalized_on_all_nodes(
     deploy_ids: list[str],
     timeout: int,
     *,
+    absolute_timeout: int,
     label: str = "deploys",
 ) -> None:
     """Assert every deploy in ``deploy_ids`` reaches Finalized on EVERY node.
@@ -312,7 +313,12 @@ def assert_all_deploys_finalized_on_all_nodes(
     for sig in deploy_ids:
         for node in nodes:
             try:
-                wait_for_deploy_finalized(node, sig, timeout)
+                wait_for_deploy_finalized(
+                    node,
+                    sig,
+                    timeout,
+                    absolute_timeout=absolute_timeout,
+                )
             except Exception as exc:  # noqa: BLE001
                 # TimeoutError (Pending past timeout) and DeployError (terminal
                 # Failed/Expired) both mean "did not finalize here". Caught broad

@@ -85,7 +85,12 @@ def test_data_is_stored_and_served_by_node(shared_shard, timeouts) -> None:
     # (handles merge-rejection recovery), then assert the canonical block is
     # finalized on every node — catches a peer that rejected the block at
     # validation time (e.g. Invalid(InvalidBondsCache)).
-    status = wait_for_deploy_finalized(ro, store_deploy_id, timeouts.finalization)
+    status = wait_for_deploy_finalized(
+        ro,
+        store_deploy_id,
+        timeouts.finalization,
+        absolute_timeout=timeouts.deploy_finalization_absolute,
+    )
     # Poll every node's per-block isFinalized — readonly seeing canonical-state
     # finalization doesn't guarantee validator peers have updated their per-block
     # isFinalized field yet (a few seconds of lag in multi-validator scenarios;
@@ -128,7 +133,12 @@ def test_data_stored_on_one_validator_readable_on_readonly(shared_shard, timeout
             "Stored '%s' at %s on %s (block #%d)", random_data, uri, node.name, store_block_number
         )
 
-        status = wait_for_deploy_finalized(ro, store_deploy_id, timeouts.finalization)
+        status = wait_for_deploy_finalized(
+            ro,
+            store_deploy_id,
+            timeouts.finalization,
+            absolute_timeout=timeouts.deploy_finalization_absolute,
+        )
         assert_block_finalized_on_all_nodes(
             shared_shard.all_nodes,
             status.latestBlockHash.hex(),

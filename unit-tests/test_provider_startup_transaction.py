@@ -12,7 +12,8 @@ from test.infra.keys import BOOTSTRAP_NODE_ID  # noqa: E402
 from test.infra.providers.base import activate_handles_then_wait  # noqa: E402
 from test.infra.providers.docker import DockerProvider  # noqa: E402
 from test.infra.providers.subprocess import SubprocessProvider  # noqa: E402
-from test.infra.types import PortMapping, ValidatorIdentity  # noqa: E402
+from test.infra.shard import Shard  # noqa: E402
+from test.infra.types import NodeRole, PortMapping, ValidatorIdentity  # noqa: E402
 
 
 class FakeHandle:
@@ -142,6 +143,100 @@ def test_subprocess_shard_bootstrap_is_scoped_to_its_allocated_ports(tmp_path):
     assert validator_bootstrap_args == [expected]
     assert "protocol=40400" not in expected
     assert provider._active_handles == handles
+
+
+def test_subprocess_shard_propagates_ceremony_threshold_to_readonly(tmp_path):
+    provider = object.__new__(SubprocessProvider)
+    provider._session_id = "threshold"
+    provider._session_root = tmp_path
+    provider._active_handles = []
+    provider._shard_counter = 0
+    provider._timeouts = SimpleNamespace(node_startup=1)
+    provider._paths = SimpleNamespace(
+        certs_dir=str(tmp_path / "certs"),
+        integration_tests=str(tmp_path),
+    )
+    allocated = iter(PortMapping.from_base(41800 + offset) for offset in (0, 6, 12, 18))
+    provider._ports = SimpleNamespace(allocate=lambda: next(allocated))
+    provider._write_genesis = lambda _config, target: target
+    spawn_calls = []
+
+    def spawn(**kwargs):
+        spawn_calls.append(kwargs)
+        return SimpleNamespace(ports=kwargs["ports"], name=kwargs["role_key"])
+
+    provider._spawn = spawn
+    identities = [
+        ValidatorIdentity(
+            name=f"validator{index}",
+            private_hex=f"{index + 1:02x}" * 32,
+            public_hex="04" + f"{index + 2:02x}" * 64,
+        )
+        for index in range(2)
+    ]
+
+    provider.create_shard(
+        ShardConfig(
+            bonds=[(identity, 1) for identity in identities],
+            required_signatures=1,
+            heartbeat=False,
+            include_readonly=True,
+        ),
+        wait_running=False,
+    )
+
+    assert [
+        "--required-signatures=1" in call["cli_args"] for call in spawn_calls
+    ] == [True, True, True, True]
+
+
+@pytest.mark.parametrize("method_name", ["add_joiner", "add_observer"])
+def test_attached_nodes_inherit_the_shard_ceremony_threshold(method_name):
+    captured = []
+    bootstrap = SimpleNamespace(
+        role=NodeRole.BOOTSTRAP,
+        name="rnode.test.threshold.boot",
+        network_name="threshold-network",
+        identity=None,
+    )
+
+    class Provider:
+        def add_node(self, **kwargs):
+            captured.append(kwargs["node_config"])
+            return SimpleNamespace(
+                role=kwargs["node_config"].role,
+                name=f"rnode.test.threshold.{method_name}",
+                network_name="threshold-network",
+                identity=kwargs["node_config"].identity,
+            )
+
+        def remove_node(self, _handle):
+            return None
+
+    identity = ValidatorIdentity(
+        name="joiner",
+        private_hex="11" * 32,
+        public_hex="04" + "22" * 64,
+    )
+    shard = Shard(
+        provider=Provider(),
+        handles=[bootstrap],
+        config=ShardConfig(
+            bonds=[(identity, 1), (identity, 1)],
+            required_signatures=1,
+        ),
+        timeouts=SimpleNamespace(),
+    )
+    context = (
+        shard.add_joiner(identity, wait_running=False)
+        if method_name == "add_joiner"
+        else shard.add_observer(wait_running=False)
+    )
+
+    with context:
+        pass
+
+    assert captured[0].cli_options["--required-signatures"] == "1"
 
 
 def test_subprocess_shards_keep_distinct_genesis_directories(tmp_path):

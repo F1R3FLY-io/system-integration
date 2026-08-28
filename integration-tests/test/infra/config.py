@@ -115,6 +115,7 @@ class TimeoutConfig:
     # in line with port_release/finalization/command.
     deploy_inclusion: int = 30
     finalization: int = 45
+    deploy_finalization_absolute: int = 135
     command: int = 60
     port_release: int = 30
     # Budget for an inherently multi-block consensus transition to complete:
