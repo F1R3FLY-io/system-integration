@@ -37,7 +37,9 @@ On completion: write `docs/discoveries/2026-08-28-soak-runner-hardening-result.m
 ---
 id: SI-TASK-016-2
 title: "Use a fresh channel for every _deploy_and_wait invocation"
-status: in_progress
+status: review
+merged_sha: ffcf4c1d142d9c8970a3a2e7668ee937c245b80b
+pr: F1R3FLY-io/system-integration#127
 priority: p1
 base_branch: dev
 branch: fix/shared-shard-fresh-deploy-channels
@@ -114,13 +116,13 @@ because no rival chain exists.
 - No `reject: numeric cell would overfill` line for a `web-api-` channel in
   the validator logs of those runs.
 
-### Status (2026-08-22T11:25:33Z, claude-session-52bd09d7)
+### MERGED (2026-08-22T11:50:41Z, claude-session-52bd09d7)
 
-Implemented on `fix/shared-shard-fresh-deploy-channels` (uncommitted, awaiting
-human commit/PR). Channel is `@"web-api-{pid}-{seq}"`; pid stands in for the
-xdist worker id (one process per worker). ruff + unit-tests green; live shard
-run pending (Docker not running in this session). Work log:
-`docs/work-logs/task-SI-016-2-*.md`.
+PR #127 merged to `dev` as **`ffcf4c1d142d9c8970a3a2e7668ee937c245b80b`**.
+Pin `SYSTEM_INTEGRATION_REF` to this SHA. Channel is `@"web-api-{pid}-{seq}"`;
+grep validator logs for `web-api-` to confirm no `numeric cell would overfill`.
+Multi-agent review: approve, 0 critical/major. Status stays `review` until the
+three green Heavy Pipeline runs are recorded in f1r3node-rust EPIC-016.
 
 ### Consumer side (f1r3node-rust, claude-session-03abbe11)
 
