@@ -109,15 +109,6 @@ _EPOCH_LENGTH = 4
 _BG_LOAD_INTERVAL = 2.0
 _BG_LOAD_PHLO_LIMIT = 100_000_000
 
-# Phase C (observer LFS forward-horizon sync) is held out during the
-# bug-d investigation — it exercises a subsystem orthogonal to the
-# bonding/recovery path and timed out on an unrelated LFS stream
-# ProtocolException (attempt 8). The Phase C logic below is preserved
-# verbatim and runs only when this flag is True. With it False, Phases
-# A+B still run and assert fully, and the test reports PASS (not SKIP).
-# Flip to True to re-enable Phase C.
-PHASE_C_ENABLED = False
-
 
 @pytest.fixture(scope="module")
 def bonding_shard(provider, timeouts):
@@ -761,15 +752,6 @@ def test_bonding_validators(bonding_shard, timeouts) -> None:
         # this is the safety net for early-failure paths where Phase A
         # didn't reach sub-phase 5.
         bg_load.stop()
-
-    # Phase C is gated behind PHASE_C_ENABLED (see the flag definition
-    # near the top of this module). When disabled, Phases A+B have
-    # already run and asserted fully, so the test PASSES here rather than
-    # reporting a skip. The Phase C body below is preserved verbatim and
-    # runs only when the flag is True.
-    if not PHASE_C_ENABLED:
-        logging.info("Phase C held out (PHASE_C_ENABLED=False); Phases A+B passed → test PASSES")
-        return
 
     # ── Phase C: fresh observer LFS-syncs against 5-bonded shard ──
     # Attaches a readonly node post-bond and asserts it reaches a

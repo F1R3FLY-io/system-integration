@@ -1,9 +1,11 @@
 """Finality stalls cleanly under quorum loss and resumes when quorum returns.
 
 With two of three equal-stake validators paused nothing can finalize. The
-survivor must hold the LFB still rather than emitting empty recovery blocks
-without bound, must still admit a deploy into a block while stalled, and must
-finalize that deploy once quorum comes back.
+survivor must hold the LFB still while emitting empty recovery blocks only at
+the bounded stale-recovery cadence (one per --heartbeat-stale-recovery-min-
+interval, with the empty-frontier width cap engaged between rounds), must
+still admit a deploy into a block while stalled, and must finalize that
+deploy once quorum comes back.
 """
 
 import time
@@ -27,6 +29,7 @@ pytestmark = [
 ]
 
 _HEARTBEAT_SUCCESS = marker("HeartbeatBlockCreated")
+_BACKPRESSURE_ACTIVE = marker("HeartbeatBackpressureActive")
 
 # Unscaled budget for a paused node to stop answering, via the timeouts fixture.
 _QUIET_BUDGET = 10
@@ -34,6 +37,18 @@ _QUIET_BUDGET = 10
 # Unscaled deadline for the LFB to settle. stable_for and the sampling window
 # below are NOT scaled: they define the measurement, not how long to wait for it.
 _STABLE_LFB_BUDGET = 90
+
+# The stale-recovery cadence pinned on the shard, and the fixed sampling window
+# the emission bound is measured over. Each stale-recovery mint requires the
+# survivor to have been idle for a full interval, so the window admits at most
+# floor(window / interval) + 1 stale-lane blocks; +1 for the once-per-stalled-LFB
+# convergence round (fires only if the LFB-hash-seeded leader is the survivor)
+# and +1 for an async-propose completing after the next check already sampled a
+# stale self-age. Anything above this ceiling means the cadence gate regressed
+# toward per-check minting (which would produce ~window/check-interval blocks).
+_RECOVERY_INTERVAL_S = 5
+_STALL_WINDOW_S = 45
+_MAX_WINDOW_BLOCKS = _STALL_WINDOW_S // _RECOVERY_INTERVAL_S + 3
 
 
 def _wait_for_stable_lfb(node, stable_for: float = 35, timeout: float = 90) -> int:
@@ -61,10 +76,14 @@ def recovery_shard(provider, timeouts):
         ],
         heartbeat=True,
         global_cli_options={
-            "--heartbeat-check-interval": "5seconds",
+            # check-interval strictly below stale-recovery-min-interval, so at
+            # least one heartbeat check always lands inside the survivor's
+            # post-mint throttle window — the backpressure log line below is
+            # structural evidence, not a phase-drift lottery.
+            "--heartbeat-check-interval": "2seconds",
             "--heartbeat-max-lfb-age": "5seconds",
             "--heartbeat-self-propose-cooldown": "5seconds",
-            "--heartbeat-stale-recovery-min-interval": "5seconds",
+            "--heartbeat-stale-recovery-min-interval": f"{_RECOVERY_INTERVAL_S}seconds",
             "--heartbeat-advanced-empty-frontier-max-unfinalized-blocks": "4",
         },
     )
@@ -111,24 +130,29 @@ def test_finality_stall_bounded_recovery(recovery_shard, timeouts) -> None:
             wait_for_node_quiet(node, timeout=timeouts.custom(_QUIET_BUDGET))
 
         baseline_lfb = _wait_for_stable_lfb(v1, timeout=timeouts.custom(_STABLE_LFB_BUDGET))
-        successes_before = v1.logs().count(_HEARTBEAT_SUCCESS)
-        time.sleep(45)
-        empty_recovery_blocks = v1.logs().count(_HEARTBEAT_SUCCESS) - successes_before
-        # TODO: assert on the node's empty-frontier backpressure log line instead of
-        # counting blocks. That line reports unfinalized_blocks and the cap, so it
-        # needs no threshold at all.
-        #
-        # NOTE: 2 is an observed ceiling, NOT derived from the
-        # --heartbeat-advanced-empty-frontier-max-unfinalized-blocks=4 set above. The
-        # two are different quantities: the config caps DAG-wide unfinalized DEPTH
-        # (with a strict >, so backpressure engages at 5), while this counts heartbeat
-        # blocks emitted in a fixed 45s window. How many land before backpressure
-        # latches depends on how deep the frontier already was when the window opened,
-        # which _wait_for_stable_lfb leaves free to vary between 35s and 90s of prior
-        # elapsed time.
-        assert empty_recovery_blocks <= 2, (
-            f"stalled LFB produced {empty_recovery_blocks} empty recovery blocks "
-            "during bounded recovery"
+        logs_before = v1.logs()
+        successes_before = logs_before.count(_HEARTBEAT_SUCCESS)
+        backpressure_before = logs_before.count(_BACKPRESSURE_ACTIVE)
+        time.sleep(_STALL_WINDOW_S)
+        window_logs = v1.logs()
+        empty_recovery_blocks = window_logs.count(_HEARTBEAT_SUCCESS) - successes_before
+        backpressure_firings = window_logs.count(_BACKPRESSURE_ACTIVE) - backpressure_before
+        # The stall must be a bounded heartbeat, not silence and not churn:
+        # at least one recovery block proves the stale-recovery lane is alive
+        # (a dead lane would pass any pure ceiling vacuously), and the derived
+        # ceiling proves each mint waited out the full recovery interval.
+        assert 1 <= empty_recovery_blocks <= _MAX_WINDOW_BLOCKS, (
+            f"stalled LFB produced {empty_recovery_blocks} empty recovery blocks in "
+            f"{_STALL_WINDOW_S}s; expected 1..{_MAX_WINDOW_BLOCKS} at one per "
+            f"{_RECOVERY_INTERVAL_S}s stale-recovery interval"
+        )
+        # The width cap must have engaged between recovery rounds: by the time
+        # the window opens, the stable-LFB wait has already accumulated more
+        # unfinalized blocks than the cap of 4, so every post-mint throttle
+        # window reports backpressure with the unfinalized count and the cap.
+        assert backpressure_firings >= 1, (
+            "empty-frontier backpressure never engaged during the stall window; "
+            "the width cap is not bounding empty-block churn"
         )
         stalled_lfb = v1.last_finalized_block().blockInfo.blockNumber
         assert stalled_lfb == baseline_lfb

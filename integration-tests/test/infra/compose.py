@@ -1,13 +1,14 @@
 """Docker Compose file generator for custom shards.
 
 Generates a compose YAML with a bootstrap node + N validators, using
-session-prefixed container names, volume names, and network names to
-prevent collisions across parallel test runs.
+per-shard-scoped container names, volume names, and network names so
+neither parallel sessions nor sequential shards within one session can
+collide.
 
-Resource naming:
-  - Container names: ``rnode.test.{session_id}.{role}``
-  - Volume names: ``test-{session_id}-{role}-data``
-  - Network: ``f1r3fly-test-{session_id}``
+Resource naming (``scope`` = ``{session_id}-s{shard_ordinal}``):
+  - Container names: ``rnode.test.{scope}.{role}``
+  - Network: ``f1r3fly-test-{scope}``
+  - Volumes: short ``{role}-data`` names, project-prefixed by compose
   - Rust-only (no Scala/JVM support)
   - All resources registered with ``DockerCleanupRegistry``
 """
@@ -46,11 +47,16 @@ def generate_compose(
     config: ShardConfig,
     genesis_dir: str,
     port_assignments: Dict[str, PortMapping],
-    session_id: str,
+    scope: str,
     paths: ResourcePaths,
     registry: DockerCleanupRegistry,
 ) -> str:
     """Generate a docker-compose YAML for a custom shard.
+
+    ``scope`` is the per-shard naming scope (``{session_id}-s{n}``): every
+    container name and the network carry it, so sequential shards in one
+    session share nothing — no reused DNS names, no shared network for a
+    leaked container to relay foreign blocks over.
 
     ``port_assignments`` maps role names (``"boot"``, ``"validator1"``, etc.)
     to their host port mappings. The caller (DockerProvider) handles port
@@ -58,13 +64,13 @@ def generate_compose(
 
     Returns the path to the generated compose YAML file.
     """
-    network_name = f"f1r3fly-test-{session_id}"
+    network_name = f"f1r3fly-test-{scope}"
 
     def container_name(role: str) -> str:
-        return f"rnode.test.{session_id}.{role}"
+        return f"rnode.test.{scope}.{role}"
 
     def volume_name(role: str) -> str:
-        # Short name — Docker Compose prepends the project name (test-{session_id})
+        # Short name — Docker Compose prepends the project name (test-{scope})
         return f"{role}-data"
 
     bootstrap_host = container_name("boot")
@@ -264,7 +270,7 @@ def generate_compose(
         },
     }
 
-    fd, compose_path = tempfile.mkstemp(prefix=f"test-{session_id}-shard-", suffix=".yml")
+    fd, compose_path = tempfile.mkstemp(prefix=f"test-{scope}-shard-", suffix=".yml")
     with os.fdopen(fd, "w") as f:
         yaml.dump(compose, f, default_flow_style=False, sort_keys=False)
 
