@@ -33,11 +33,13 @@ def _extract_shield() -> str:
     return "\n".join(line[6:] if line.startswith("      ") else line for line in body.splitlines())
 
 
-def _run_shield(*, worker_pids=("111", "222"), precreate=True):
+def _run_shield(*, worker_pids=("111", "222"), precreate=True, pid_owner="runner"):
     """Run the real shield with /proc mapped to a tmpdir.
 
     The re-assert loop is unbounded by design; the stubbed `sleep` exits the
     background subshell after its first pass, and `wait` collects it.
+    ``pid_owner`` is what the stubbed `stat -c %U` reports for every pid dir —
+    the shield's write-time ownership re-check compares it to RUNNER_USER.
     """
     with tempfile.TemporaryDirectory() as tmp:
         proc_root = Path(tmp) / "proc"
@@ -49,6 +51,7 @@ def _run_shield(*, worker_pids=("111", "222"), precreate=True):
                 'log() { echo "LOG: $*"; }',
                 "RUNNER_USER=runner",
                 f'pgrep() {{ printf "%s" "$*" > "{pgrep_args}"; {pids_out}; }}',
+                f'stat() {{ echo "{pid_owner}"; }}',
                 "sleep() { exit 0; }",
                 'echo "SELF:$$"',
                 f'mkdir -p "{proc_root}/$$"' if precreate else ":",
@@ -108,6 +111,17 @@ def test_pid_lookup_is_scoped_to_the_runner_user_and_runner_processes():
     assert r"Runner\.(Listener|Worker)" in args, f"pattern too broad: {args!r}"
 
 
+def test_reused_pid_owned_by_another_user_is_not_pinned():
+    """A pid can be reaped and reused between the pgrep and the write; if the
+    reused pid belongs to another user, pinning it would hand OOM immunity to
+    an arbitrary process (multi-review PR #130, bedrock finding)."""
+    code, out, adj, _, _ = _run_shield(worker_pids=("111",), pid_owner="root")
+
+    assert code == 0
+    assert adj("111") is None, "a foreign-owned reused pid was pinned to -1000"
+    assert "SHIELD-DONE" in out
+
+
 def test_shield_is_best_effort():
     """A missing /proc entry (process exited between pgrep and write) must
     not abort anything — the shield can never take down what it protects."""
@@ -135,3 +149,4 @@ def test_extracted_shield_is_the_real_one():
     assert 'echo "-1000"' in body, "the -1000 pin is gone"
     assert "oom_score_adj" in body
     assert "pgrep" in body, "the Listener/Worker re-assert loop is gone"
+    assert "stat -c %U" in body, "the write-time ownership re-check is gone"

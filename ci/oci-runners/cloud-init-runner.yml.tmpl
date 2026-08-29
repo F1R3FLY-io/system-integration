@@ -70,6 +70,12 @@ write_files:
         (
           while :; do
             for pid in $(pgrep -u "$RUNNER_USER" -f 'Runner\.(Listener|Worker)' 2>/dev/null); do
+              # Re-check ownership at write time: a pid can be reaped and
+              # reused between the pgrep and the write, and a reused pid
+              # belonging to another user (root, a workload helper) must not
+              # inherit the shield. A runner-owned reuse is at worst a job
+              # step, which the node-side guardian re-biases to +1000.
+              [ "$(stat -c %U "/proc/$pid" 2>/dev/null)" = "$RUNNER_USER" ] || continue
               echo "-1000" > "/proc/$pid/oom_score_adj" 2>/dev/null || true
             done
             sleep 60
@@ -168,9 +174,13 @@ write_files:
       # from deletion, preserving the evidence outranks preserving tags
       # nobody will read again. Best-effort throughout: a failed tag write
       # must never delay self-termination.
+      # Every network step below is explicitly time-bounded: this function
+      # sits on the self-terminate path, and an unbounded hang here (IMDS
+      # TCP stall, wedged OCI endpoint) would hold the VM alive until the
+      # reaper — the exact leak class the exit path exists to prevent.
       persist_post_mortem() {
         local iid existing content merged
-        iid=$(curl -fsSL -H "Authorization: Bearer Oracle" \
+        iid=$(curl -fsSL --max-time 10 -H "Authorization: Bearer Oracle" \
           http://169.254.169.254/opc/v2/instance/id 2>/dev/null) || return 0
         [ -n "$iid" ] || return 0
         content=$(
@@ -183,7 +193,9 @@ write_files:
           } | tr '\n' '|' | tr -d '"\\'
         ) || true
         [ -n "$content" ] || return 0
-        existing=$(/usr/local/bin/oci --auth instance_principal compute instance get \
+        existing=$(/usr/local/bin/oci --auth instance_principal \
+          --connection-timeout 10 --read-timeout 30 \
+          compute instance get \
           --instance-id "$iid" --query 'data."freeform-tags"' \
           --raw-output 2>/dev/null) || existing='{}'
         merged=$(python3 -c '
@@ -201,7 +213,9 @@ write_files:
       print(json.dumps(tags))
       ' "$existing" "$content" 2>/dev/null) || return 0
         [ -n "$merged" ] || return 0
-        /usr/local/bin/oci --auth instance_principal compute instance update \
+        /usr/local/bin/oci --auth instance_principal \
+          --connection-timeout 10 --read-timeout 30 \
+          compute instance update \
           --instance-id "$iid" --freeform-tags "$merged" \
           --force >/dev/null 2>&1 || return 0
         log "POST-MORTEM persisted to freeform tags (pm0..)"
@@ -353,7 +367,7 @@ write_files:
       persist_post_mortem || true
 
       log "=== Job complete (or idle timeout); self-terminating instance via instance principal ==="
-      INSTANCE_ID=$(curl -fsSL -H "Authorization: Bearer Oracle" \
+      INSTANCE_ID=$(curl -fsSL --max-time 10 -H "Authorization: Bearer Oracle" \
         http://169.254.169.254/opc/v2/instance/id)
       /usr/local/bin/oci --auth instance_principal \
         compute instance terminate \

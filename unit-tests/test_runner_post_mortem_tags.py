@@ -164,6 +164,25 @@ def test_tag_fetch_failure_still_persists_the_evidence():
     assert "pm0" in tags
 
 
+def test_every_network_step_on_the_exit_path_is_time_bounded():
+    """persist_post_mortem sits on the self-terminate path: an unbounded IMDS
+    or OCI hang there holds the VM alive until the reaper — the leak class
+    the exit path exists to prevent (multi-review PR #130, openai/openrouter
+    finding). Both IMDS curls (persist + terminate) must carry --max-time,
+    and both OCI calls explicit connection/read timeouts."""
+    text = TEMPLATE.read_text()
+    body = _extract()
+
+    imds_curls = [ln for ln in text.splitlines() if "169.254.169.254" in ln or "curl -fsSL" in ln]
+    curl_lines = [ln for ln in imds_curls if "curl" in ln]
+    assert curl_lines, "no IMDS curl found"
+    for ln in curl_lines:
+        assert "--max-time" in ln, f"unbounded IMDS curl on the exit path: {ln.strip()!r}"
+
+    assert body.count("--connection-timeout") == 2, "an OCI call lost its connection timeout"
+    assert body.count("--read-timeout") == 2, "an OCI call lost its read timeout"
+
+
 def test_persist_runs_on_the_ephemeral_exit_path():
     """It must follow post_mortem (same evidence window, console first) and
     precede self-termination, for every exit — job done, idle, or wedge."""
