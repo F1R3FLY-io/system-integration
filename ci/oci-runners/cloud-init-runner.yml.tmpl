@@ -8,10 +8,11 @@
 # cloud-init-golden.yml.
 #
 # Template variables substituted by launch-runner.sh before submission:
-#   __REG_TOKEN__       Short-lived runner registration token (`gh api`)
-#   __GH_REPO__         GitHub owner/repo
-#   __RUNNER_NAME__     Unique runner name (matches OCI instance name)
-#   __RUNNER_LABELS__   Comma-separated labels
+#   __REG_TOKEN__                 Short-lived runner registration token (`gh api`)
+#   __GH_REPO__                   GitHub owner/repo
+#   __RUNNER_NAME__               Unique runner name (matches OCI instance name)
+#   __RUNNER_LABELS__             Comma-separated labels
+#   __RUNNER_IDLE_TIMEOUT_SECS__  Idle watchdog cap (default 2700)
 
 write_files:
   - path: /opt/runner-bootstrap.sh
@@ -50,6 +51,39 @@ write_files:
         echo "$line"
         echo "$line" > /dev/console 2>/dev/null || true
       }
+
+      # Kernel-OOM shield (f1r3node-rust#365, run 33136185540): the kernel OOM
+      # killer chose Runner.Worker mid-soak; the wedge watch then read "worker
+      # absent 600s", killed run.sh, and the bootstrap self-terminated the VM
+      # through the normal ephemeral exit — the night's artifact died with it.
+      # The node-side host guardian (f1r3node-rust PR #364) biases the WORKLOAD
+      # to oom_score_adj +1000; this is the other half: pin the runner tree to
+      # -1000 so the kernel can never prefer the runner over the workload.
+      # oom_score_adj is inherited across fork, so pinning the bootstrap early
+      # covers run.sh and every watchdog subshell; the re-assert loop exists
+      # for Runner.Listener/Runner.Worker, whose self-update can re-exec them
+      # outside that inheritance. Writing -1000 needs CAP_SYS_RESOURCE — the
+      # bootstrap runs as root. Best-effort throughout (|| true): the shield
+      # must never abort the bootstrap it exists to protect.
+      protect_runner_from_oom() {
+        echo "-1000" > "/proc/$$/oom_score_adj" 2>/dev/null || true
+        (
+          while :; do
+            for pid in $(pgrep -u "$RUNNER_USER" -f 'Runner\.(Listener|Worker)' 2>/dev/null); do
+              # Re-check ownership at write time: a pid can be reaped and
+              # reused between the pgrep and the write, and a reused pid
+              # belonging to another user (root, a workload helper) must not
+              # inherit the shield. A runner-owned reuse is at worst a job
+              # step, which the node-side guardian re-biases to +1000.
+              [ "$(stat -c %U "/proc/$pid" 2>/dev/null)" = "$RUNNER_USER" ] || continue
+              echo "-1000" > "/proc/$pid/oom_score_adj" 2>/dev/null || true
+            done
+            sleep 60
+          done
+        ) &
+        log "OOM-SHIELD: runner process tree pinned to oom_score_adj -1000"
+      }
+      protect_runner_from_oom
 
       # Heartbeat: one compact console line every 2 minutes for the VM's whole
       # life. Console history only ever held the ~49s of boot output — serial
@@ -124,6 +158,69 @@ write_files:
         log "POST-MORTEM end"
       }
 
+      # Durable post-mortem (run 33136185540): everything post_mortem writes
+      # goes to the serial console of a VM that self-terminates seconds later.
+      # That run's OOM evidence was unrecoverable — the workflow-side capture
+      # job ran 10 minutes after the instance was deleted and got metadata
+      # only. Freeform tags on the instance record ARE readable off the dead
+      # VM (the node-side guardian's soak-health tag proved the channel), and
+      # instance-principal update needs no new IAM. Constraints shaping this:
+      # a tag value caps at 256 chars, OCI allows 10 freeform tags per
+      # instance, and `instance update --freeform-tags` REPLACES the whole
+      # map — so the existing tags (purpose / series / soak-deadline-epoch /
+      # soak-health) are fetched and merged, and the post-mortem spends at
+      # most 4 keys (pm0..pm3), fewer when free slots are short. If the
+      # fetch itself fails the pm tags are written alone: on a VM seconds
+      # from deletion, preserving the evidence outranks preserving tags
+      # nobody will read again. Best-effort throughout: a failed tag write
+      # must never delay self-termination.
+      # Every network step below is explicitly time-bounded: this function
+      # sits on the self-terminate path, and an unbounded hang here (IMDS
+      # TCP stall, wedged OCI endpoint) would hold the VM alive until the
+      # reaper — the exact leak class the exit path exists to prevent.
+      persist_post_mortem() {
+        local iid existing content merged
+        iid=$(curl -fsSL --max-time 10 -H "Authorization: Bearer Oracle" \
+          http://169.254.169.254/opc/v2/instance/id 2>/dev/null) || return 0
+        [ -n "$iid" ] || return 0
+        content=$(
+          {
+            echo "attempt=$attempt exit-path post-mortem"
+            tail -n 1 /var/log/runner-run.log 2>/dev/null
+            dmesg 2>/dev/null | grep -iE 'out of memory|oom|killed process' | tail -n 4
+            grep -iE 'out of memory|oom|killed process' /var/log/kern.log 2>/dev/null | tail -n 4
+            dmesg 2>/dev/null | tail -n 3
+          } | tr '\n' '|' | tr -d '"\\'
+        ) || true
+        [ -n "$content" ] || return 0
+        existing=$(/usr/local/bin/oci --auth instance_principal \
+          --connection-timeout 10 --read-timeout 30 \
+          compute instance get \
+          --instance-id "$iid" --query 'data."freeform-tags"' \
+          --raw-output 2>/dev/null) || existing='{}'
+        merged=$(python3 -c '
+      import json, sys
+      try:
+          tags = json.loads(sys.argv[1]) or {}
+      except Exception:
+          tags = {}
+      content = sys.argv[2]
+      chunks = [content[i : i + 250] for i in range(0, len(content), 250)][:4]
+      taken = len([k for k in tags if not k.startswith("pm")])
+      free = max(0, 10 - taken)
+      for i, chunk in enumerate(chunks[:free]):
+          tags["pm%d" % i] = chunk
+      print(json.dumps(tags))
+      ' "$existing" "$content" 2>/dev/null) || return 0
+        [ -n "$merged" ] || return 0
+        /usr/local/bin/oci --auth instance_principal \
+          --connection-timeout 10 --read-timeout 30 \
+          compute instance update \
+          --instance-id "$iid" --freeform-tags "$merged" \
+          --force >/dev/null 2>&1 || return 0
+        log "POST-MORTEM persisted to freeform tags (pm0..)"
+      }
+
       # Wedge escape. Live-VM evidence from soak c7fd9f (2026-08-01): GitHub
       # deregistered the runner and failed the job, but Runner.Listener never
       # exited — run.sh blocked the bootstrap's `wait` forever, so
@@ -177,7 +274,15 @@ write_files:
       # fleet of idle runners accumulated). Generous cap: once a job is picked up
       # we let it finish; if none arrives within the timeout we kill run.sh and
       # fall through to self-terminate.
-      IDLE_TIMEOUT_SECS=2700   # 45 min with no job
+      # Launch-parameterized (run 33208755550): the Heavy Pipeline launches its
+      # arm64 runner pair up front, but arm64-subprocess queues only after
+      # arm64-docker completes — the second runner idled past the 45-minute
+      # default and self-terminated ~10 minutes before its leg queued, which
+      # hung the pipeline with no runner alive. launch-runner.sh substitutes
+      # the caller's RUNNER_IDLE_TIMEOUT_SECS (default 2700) so a launch that
+      # serves a sequential pipeline can raise this cap without loosening the
+      # leak guardrail for every other runner.
+      IDLE_TIMEOUT_SECS=__RUNNER_IDLE_TIMEOUT_SECS__   # default 2700 = 45 min with no job
       # Forced-update retry. When the baked agent version falls below GitHub's
       # enforced minimum, the service triggers a self-update at job-assignment
       # time ("Runner update in progress"). The update restart can kill run.sh
@@ -259,9 +364,10 @@ write_files:
       done
 
       post_mortem || true
+      persist_post_mortem || true
 
       log "=== Job complete (or idle timeout); self-terminating instance via instance principal ==="
-      INSTANCE_ID=$(curl -fsSL -H "Authorization: Bearer Oracle" \
+      INSTANCE_ID=$(curl -fsSL --max-time 10 -H "Authorization: Bearer Oracle" \
         http://169.254.169.254/opc/v2/instance/id)
       /usr/local/bin/oci --auth instance_principal \
         compute instance terminate \

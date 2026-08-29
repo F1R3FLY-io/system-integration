@@ -273,11 +273,20 @@ def test_log_function_reaches_the_serial_console():
 
 
 def test_watchdog_timeout_is_long_enough_to_be_a_backstop_not_a_limit():
-    """A short timeout would make this a job-duration cap rather than a leak guard."""
-    text = TEMPLATE.read_text()
-    m = re.search(r"IDLE_TIMEOUT_SECS=(\d+)", text)
+    """A short timeout would make this a job-duration cap rather than a leak guard.
 
-    assert m, "IDLE_TIMEOUT_SECS not found"
+    The value is launch-parameterized now (run 33208755550): the template
+    carries a placeholder and the launcher owns the default, so the floor is
+    asserted against the launcher. test_runner_idle_timeout.py covers the
+    knob's validation.
+    """
+    assert "IDLE_TIMEOUT_SECS=__RUNNER_IDLE_TIMEOUT_SECS__" in TEMPLATE.read_text(), (
+        "idle timeout placeholder gone from the template"
+    )
+    launcher = (TEMPLATE.parent / "launch-runner.sh").read_text()
+    m = re.search(r"IDLE_TIMEOUT_SECS_DEFAULT=(\d+)", launcher)
+
+    assert m, "IDLE_TIMEOUT_SECS_DEFAULT not found in launch-runner.sh"
     assert int(m.group(1)) >= 1800, "timeout too short to be a safe idle backstop"
 
 
