@@ -28,13 +28,29 @@ METRICS_TO_SCRAPE = [
     "block_validation_step_bonds_cache_time",
     "block_validation_step_block_summary_time",
     "block_processing_stage_parents_post_state_time",
-    # parents-post-state sub-stages — attribute the multi-parent merge cost
-    # (floor compute / FS seal fold / scope build / mergeable recompute / dag merge).
-    "block_processing_stage_parents_post_state_floor_compute_time",
-    "block_processing_stage_parents_post_state_fs_seal_time",
-    "block_processing_stage_parents_post_state_scope_build_time",
+    # parents-post-state sub-stages — attribute the multi-parent merge cost.
+    # Names track the node's metrics_constants.rs parents-post-state family
+    # (f1r3node-rust PR #362 and follow-ups replaced the old
+    # floor_compute / fs_seal / scope_build / merge buckets): cache lookup,
+    # floor derive, base checks, ancestor collection, mergeable recompute,
+    # prior-rejection walk, the dag_merger::merge call itself, and post-merge.
+    "block_processing_stage_parents_post_state_cache_lookup_time",
+    "block_processing_stage_parents_post_state_floor_derive_time",
+    "block_processing_stage_parents_post_state_base_holds_floor_time",
+    "block_processing_stage_parents_post_state_base_lineage_walk_time",
+    "block_processing_stage_parents_post_state_collect_ancestors_time",
     "block_processing_stage_parents_post_state_ensure_mergeable_time",
-    "block_processing_stage_parents_post_state_merge_time",
+    "block_processing_stage_parents_post_state_prior_rejection_counts_time",
+    "block_processing_stage_parents_post_state_merge_call_time",
+    "block_processing_stage_parents_post_state_post_merge_time",
+    # The batched settled-sig indexes built inside the merge call: build time
+    # plus depth (blocks walked) histograms, base and floor kept separate.
+    "block_processing_stage_parents_post_state_settled_index_build_time",
+    "block_processing_stage_parents_post_state_settled_index_blocks",
+    "block_processing_stage_parents_post_state_settled_floor_index_build_time",
+    "block_processing_stage_parents_post_state_settled_floor_index_blocks",
+    # Histogram of |visible_blocks| per merge — a count, not a time.
+    "compute_parents_post_state_merge_scope_size",
     "block_processing_stage_replay_time",
     "dag_merge_total_time",
     "dag_merge_index_time",
@@ -51,9 +67,6 @@ METRICS_TO_SCRAPE = [
     "dag_merge_combine_changes_time",
     "dag_merge_compute_trie_actions_time",
     "dag_merge_apply_trie_actions_time",
-    # dag_merger::merge rejection-expansion path
-    "dag_merge_rejection_expansion_time",
-    "dag_merge_rejection_expansion_fired",
     "block_replay_phase_reset_time",
     "block_replay_phase_user_deploys_time",
     "block_replay_phase_system_deploys_time",
@@ -110,13 +123,8 @@ METRICS_TO_SCRAPE = [
     "clique_oracle_compute_time",
     # compute_rejected_buffer_admits (called from compute_parents_post_state).
     "compute_rejected_buffer_admits_time",
-    # Counter: compute_parents_post_state falling back to a single parent
-    # because the visible-blocks set or LCA distance exceeded its caps.
-    "compute_parents_post_state_fallback_merge_scope_too_large_fired",
     # DAG insert.
     "dag_insert_time",
-    # Counter: is_mergeable_channel calls (every channel produce/consume).
-    "is_mergeable_channel_calls",
     # Runtime spawn timing
     "runtime_spawn_time",
     "runtime_spawn_replay_time",
@@ -126,6 +134,24 @@ METRICS_TO_SCRAPE = [
     "install_time_seconds",
     "replay_consume_time_seconds",
     "replay_produce_time_seconds",
+]
+
+# Plain counters to scrape. metrics-exporter-prometheus renders `counter!`
+# metrics as bare `name{labels} value` lines — no `_sum`/`_count` pair — so
+# they need their own match; listing a counter in METRICS_TO_SCRAPE silently
+# yields nothing. Deltas surface as `<name>.count` (for `..._time_ns` the
+# delta is accumulated nanoseconds, not a call count).
+COUNTERS_TO_SCRAPE = [
+    # settled-sig probe closures invoked from inside the merge call: total
+    # invocations and accumulated nanoseconds (avg = time_ns / calls).
+    "block_processing_stage_parents_post_state_settled_probe_wrapper_calls",
+    "block_processing_stage_parents_post_state_settled_probe_wrapper_time_ns",
+    # Counter: is_mergeable_channel calls (every channel produce/consume).
+    "is_mergeable_channel_calls",
+    # Counter: the deterministic floor-distance backstop refusing a merge
+    # (successor of the removed fallback_merge_scope_too_large_fired — the
+    # silent single-parent fallback became an Err node-side).
+    "compute_parents_post_state_merge_scope_backstop_error",
 ]
 
 
@@ -173,6 +199,12 @@ def scrape_metrics(node) -> Dict[str, float]:
                         if match:
                             val = float(match.group(1))
                             result[key] = result.get(key, 0) + val
+            for counter in COUNTERS_TO_SCRAPE:
+                if line.startswith(counter + "{") or line.startswith(counter + " "):
+                    match = re.search(r"\s+([\d.eE+-]+)$", line)
+                    if match:
+                        val = float(match.group(1))
+                        result[counter] = result.get(counter, 0) + val
     except Exception:
         pass
     return result
@@ -197,6 +229,9 @@ def compute_metric_deltas(
             if delta_count > 0:
                 result[metric] = delta_sum / delta_count
             result[metric + ".count"] = delta_count
+    for counter in COUNTERS_TO_SCRAPE:
+        if counter in after:
+            result[counter + ".count"] = after.get(counter, 0) - before.get(counter, 0)
     return result
 
 
@@ -272,29 +307,61 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             lines.append(
                 f"    replay_block (execution): {replay_avg * 1000:.0f}ms ({int(replay_count)} blocks)"
             )
-    # parents_post_state sub-stage breakdown — where the multi-parent merge cost goes
-    # (the ~1.8s/multi-parent that used to be lumped under parents_post_state).
+    # parents_post_state sub-stage breakdown — where the multi-parent merge cost
+    # goes. Buckets follow the node's metrics_constants.rs parents-post-state
+    # family (the old floor_compute / fs_seal / scope_build / merge names are
+    # gone from the node). merge_call times the dag_merger::merge call alone;
+    # the settled-sig probe wrapper and the settled index builds are indented
+    # under it, mirroring how the node attributes that cost.
+    _pps = "block_processing_stage_parents_post_state"
     pps_substages = [
-        (
-            "floor_compute (clique floor)",
-            "block_processing_stage_parents_post_state_floor_compute_time",
-        ),
-        ("fs_seal (FS fold)", "block_processing_stage_parents_post_state_fs_seal_time"),
-        ("scope_build (cone walk)", "block_processing_stage_parents_post_state_scope_build_time"),
-        (
-            "ensure_mergeable (recompute)",
-            "block_processing_stage_parents_post_state_ensure_mergeable_time",
-        ),
-        ("dag merge", "block_processing_stage_parents_post_state_merge_time"),
+        ("cache_lookup", f"{_pps}_cache_lookup_time"),
+        ("floor_derive", f"{_pps}_floor_derive_time"),
+        ("base_holds_floor", f"{_pps}_base_holds_floor_time"),
+        ("base_lineage_walk", f"{_pps}_base_lineage_walk_time"),
+        ("collect_ancestors", f"{_pps}_collect_ancestors_time"),
+        ("ensure_mergeable (recompute)", f"{_pps}_ensure_mergeable_time"),
+        ("prior_rejection_counts", f"{_pps}_prior_rejection_counts_time"),
+        ("merge_call (dag merge)", f"{_pps}_merge_call_time"),
+        ("post_merge", f"{_pps}_post_merge_time"),
     ]
-    pps_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in pps_substages)
+    merge_call_children: List[str] = []
+    probe_calls = metrics.get(f"{_pps}_settled_probe_wrapper_calls.count", 0)
+    probe_ns = metrics.get(f"{_pps}_settled_probe_wrapper_time_ns.count", 0)
+    if probe_calls > 0:
+        merge_call_children.append(
+            f"      settled_probe wrapper: {probe_ns / probe_calls / 1e6:.3f}ms avg "
+            f"({int(probe_calls)} probes)"
+        )
+    for child_label, child_base in (
+        ("settled_index", f"{_pps}_settled_index"),
+        ("settled_floor_index", f"{_pps}_settled_floor_index"),
+    ):
+        build_count = metrics.get(child_base + "_build_time.count", 0)
+        if build_count > 0:
+            build_avg = metrics.get(child_base + "_build_time", 0)
+            blocks_avg = metrics.get(child_base + "_blocks", 0)
+            merge_call_children.append(
+                f"      {child_label} build: {build_avg * 1000:.2f}ms "
+                f"({int(build_count)} builds, {blocks_avg:.0f} blocks avg)"
+            )
+    pps_has_data = merge_call_children or any(
+        metrics.get(k + ".count", 0) > 0 for _, k in pps_substages
+    )
     if pps_has_data:
-        lines.append("  parents_post_state sub-stages (avg per multi-parent block):")
+        lines.append("  parents_post_state sub-stages (avg per block):")
         for label, key in pps_substages:
             avg = metrics.get(key, 0)
             count = metrics.get(key + ".count", 0)
             if count > 0:
-                lines.append(f"    {label}: {avg * 1000:.0f}ms ({int(count)} blocks)")
+                lines.append(f"    {label}: {avg * 1000:.2f}ms ({int(count)} blocks)")
+            if key == f"{_pps}_merge_call_time":
+                lines.extend(merge_call_children)
+    # Merge scope size histogram — a count, not a time.
+    scope_count = metrics.get("compute_parents_post_state_merge_scope_size.count", 0)
+    if scope_count > 0:
+        scope_avg = metrics.get("compute_parents_post_state_merge_scope_size", 0)
+        lines.append(f"  merge scope size: {scope_avg:.1f} blocks avg ({int(scope_count)} merges)")
     # DAG merge breakdown
     dag_metrics = [
         ("dag_merge_total", "dag_merge_total_time"),
@@ -319,16 +386,6 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             count = metrics.get(key + ".count", 0)
             if count > 0:
                 lines.append(f"    {label}: {avg * 1000:.0f}ms ({int(count)} merges)")
-    # dag_merger rejection-expansion path: called every merge, fires only
-    # when there are rejected source blocks with descendants in scope.
-    rej_exp_count = metrics.get("dag_merge_rejection_expansion_time.count", 0)
-    rej_exp_fired = metrics.get("dag_merge_rejection_expansion_fired.count", 0)
-    if rej_exp_count > 0:
-        rej_exp_avg = metrics.get("dag_merge_rejection_expansion_time", 0)
-        lines.append(
-            f"    rejection_expansion: {rej_exp_avg * 1000:.2f}ms avg, "
-            f"called {int(rej_exp_count)}× ({int(rej_exp_fired)} fired)"
-        )
     # Replay phases
     replay_phases = [
         ("reset", "block_replay_phase_reset_time"),
@@ -432,12 +489,10 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             f"  compute_rejected_buffer_admits: {admits_avg * 1000:.2f}ms avg, "
             f"{int(admits_count)} calls"
         )
-    # compute_parents_post_state fallback counter
-    fallback_fired = metrics.get(
-        "compute_parents_post_state_fallback_merge_scope_too_large_fired.count", 0
-    )
-    if fallback_fired > 0:
-        lines.append(f"  merge_scope_too_large fallback fired {int(fallback_fired)}×")
+    # compute_parents_post_state merge-scope backstop (deterministic refusal)
+    backstop_errors = metrics.get("compute_parents_post_state_merge_scope_backstop_error.count", 0)
+    if backstop_errors > 0:
+        lines.append(f"  merge_scope_backstop refused {int(backstop_errors)} merges")
     # DAG insert
     dag_insert_count = metrics.get("dag_insert_time.count", 0)
     if dag_insert_count > 0:
