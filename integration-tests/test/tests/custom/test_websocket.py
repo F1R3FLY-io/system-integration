@@ -161,15 +161,15 @@ def ws_shard(provider, timeouts):
         if boot_ws:
             boot_ws.close()
         if boot_ws_thread:
-            boot_ws_thread.join(timeout=5)
+            boot_ws_thread.join(timeout=timeouts.custom(5))
         if v1_ws:
             v1_ws.close()
         if v1_ws_thread:
-            v1_ws_thread.join(timeout=5)
+            v1_ws_thread.join(timeout=timeouts.custom(5))
         if ro_ws:
             ro_ws.close()
         if ro_ws_thread:
-            ro_ws_thread.join(timeout=5)
+            ro_ws_thread.join(timeout=timeouts.custom(5))
         shard.destroy()
 
 
