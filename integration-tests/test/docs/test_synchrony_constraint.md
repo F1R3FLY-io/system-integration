@@ -8,7 +8,10 @@ Verifies that the per-validator synchrony constraint threshold is enforced corre
 
 - **Topology**: Custom 3-validator shard, no observer
 - **Heartbeat**: Disabled (manual block orchestration only)
-- **FTT**: -1 (instant finalization — no finalization delay)
+- **FTT**: production default from `conf/rust.conf` (no override). No phase
+  depends on finalization, and a negative FTT would void the
+  FinalityDivergence-sentinel invariant the suite's forbidden-log check
+  asserts.
 - **Bond configuration**:
 
 | Validator | Stake | Threshold | Needs from others |

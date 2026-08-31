@@ -27,7 +27,13 @@ doesn't provide).
   observer + V4 attached as a joiner mid-test
 - **Heartbeat**: disabled everywhere. Every block comes from an explicit
   `node.propose()`.
-- **FTT**: -1 (instant finalization — no confirmation rounds after propose)
+- **FTT**: production default from `conf/rust.conf` (no override).
+  Finalization therefore needs a 2-of-3 mutual-justification clique — the
+  round-driven advance phase supplies the witnessing rounds. A negative
+  FTT finalizes on bare majority per snapshot, which legally permits
+  divergent floors under this test's sibling contests, and the suite
+  forbids the FinalityDivergence sentinel that reports them (caught live
+  on arm64 CI).
 - **Synchrony constraint threshold**: 0 (any validator can propose any time)
 - **Epoch length 4 / quarantine 10**: pinned explicitly via the shard's
   `global_cli_options` AND V4's attach `cli_options` — never inherited from
@@ -37,8 +43,9 @@ doesn't provide).
 - **V4's attach**: `cli_flags={"--heartbeat-disabled"}` is passed
   explicitly — joiners default to heartbeat-enabled (only readonly
   observers auto-disable), and a heartbeat-proposing V4 would break the
-  manual schedule. V4 also carries the matching synchrony/FTT/epoch/
-  quarantine options, since consensus parameters must agree across nodes.
+  manual schedule. V4 also carries the matching synchrony/epoch/
+  quarantine options (FTT comes from the shared conf on every node),
+  since consensus parameters must agree across nodes.
 - **Genesis wallet**: V4's vault seeded with `50_000_000_000_000_000` via
   `extra_wallets` so bond.rho can pay phlo + stake.
 
@@ -60,20 +67,23 @@ doesn't provide).
    activation can surface in headers at a later transition. The
    behavioral proof of activation is V4's own successful self-propose
    below.
-3. **Chaos phase** — three daemon threads (`_BgProposers`) continuously
-   deploy+propose on V1/V2/V3 at 0.4s cadence until the LFB crosses the
-   epoch boundary at #8 (a bond made during epoch 1 only surfaces in
-   headers from the next boundary, so stopping at #7 would freeze the
-   chain inside the header-lag window), approximating production propose
-   churn so V4's boundary blocks land on a chain advanced under
-   contention. V4 stays idle (receiving gossip).
-4. **Pre-propose guard** — V4 must surface in the bonds map of the
-   current LFB before it proposes, polled with a 60s deadline rather
-   than asserted at a single instant (an LFB read inside the header-lag
-   window shows the bond as absent — that is lag, not a drop; CI run
-   32588262605 caught the old single-shot assert at exactly LFB #7).
-   This is the check that catches an activation failure first — it
-   fired when the epoch pin drifted.
+3. **Advance phase** — round-driven, not clock-driven: each round fires
+   V1/V2/V3's deploy+propose concurrently (`_concurrent_propose_round` —
+   sibling forks at one height merged by the next round preserve the
+   multi-parent contention shape), waits the round's blocks visible on
+   every node, then checks the LFB. The loop runs until the LFB crosses
+   the epoch boundary at #8 (a bond made during epoch 1 only surfaces in
+   headers from the next boundary), bounded by a logical budget of 30
+   rounds — no wall-clock success gate, so host speed affects duration
+   only. V4 stays idle (receiving gossip).
+4. **Pre-propose guard** — V4 must be in the bonds map of the current
+   LFB before it proposes. The advance loop only exits with the LFB at
+   >= 8, so the finalized header is post-boundary and the guard is a
+   deterministic assertion — the header-lag window (an LFB read at
+   exactly #7 showing the bond absent; CI run 32588262605 caught the old
+   single-shot assert there) can no longer occur. This is the check that
+   catches an activation failure first — it fired when the epoch pin
+   drifted.
 5. **V4 boundary scan** — V4 deploys + proposes 12 sequential blocks
    (sole producer now, so heights advance +1 each). At least one — in
    practice three (e.g. #12/#16/#20) — lands on an epoch boundary. At
@@ -104,7 +114,7 @@ clean run is expected to stay clean.
 
 - `Shard.create()` / `shard.destroy()` — fresh per-test shard
 - `shard.attach_joiner(VALIDATOR4_ID, cli_flags={"--heartbeat-disabled"}, cli_options={...})`
-- `_BgProposers` (test-local) — three daemon deploy+propose threads
+- `_concurrent_propose_round` (test-local) — one synchronized parallel deploy+propose round across V1/V2/V3
 - `Node.deploy_string()` / `Node.deploy_rho_file()` / `Node.propose()` / `Node.get_block()`
 - `wait_for_block_visible()` from `infra/polling.py`
 - `assert_bonds_map_consistent_across_nodes()` from `infra/assertions.py`
