@@ -14,7 +14,7 @@ import logging
 from typing import Dict, Optional
 
 from f1r3fly.client import F1r3flyClient
-from f1r3fly.const import DEFAULT_PHLO_LIMIT, DEFAULT_PHLO_PRICE
+from f1r3fly.cost_accounting import CapabilityAPI, ExchangeAPI, FundingSlotAPI
 from f1r3fly.crypto import PrivateKey
 from f1r3fly.pos import PosAPI
 from f1r3fly.vault import VaultAPI
@@ -56,6 +56,9 @@ class Node:
         self._grpc_internal_client: Optional[F1r3flyClient] = None
         self._vault_api: Optional[VaultAPI] = None
         self._pos_api: Optional[PosAPI] = None
+        self._funding_slot_api: Optional[FundingSlotAPI] = None
+        self._exchange_api: Optional[ExchangeAPI] = None
+        self._capability_api: Optional[CapabilityAPI] = None
 
     @property
     def name(self) -> str:
@@ -168,6 +171,9 @@ class Node:
             self._grpc_internal_client = None
         self._vault_api = None
         self._pos_api = None
+        self._funding_slot_api = None
+        self._exchange_api = None
+        self._capability_api = None
 
     def get_vault(self, shard_id: str = "root") -> VaultAPI:
         """Construct a VaultAPI with the given shard ID."""
@@ -200,6 +206,24 @@ class Node:
             self._pos_api = PosAPI(self._external_client())
         return self._pos_api
 
+    @property
+    def funding_slots(self) -> FundingSlotAPI:
+        if self._funding_slot_api is None:
+            self._funding_slot_api = FundingSlotAPI(self._external_client())
+        return self._funding_slot_api
+
+    @property
+    def exchange(self) -> ExchangeAPI:
+        if self._exchange_api is None:
+            self._exchange_api = ExchangeAPI(self._external_client())
+        return self._exchange_api
+
+    @property
+    def capabilities(self) -> CapabilityAPI:
+        if self._capability_api is None:
+            self._capability_api = CapabilityAPI(self._external_client())
+        return self._capability_api
+
     def exit_code(self) -> Optional[int]:
         """Return the container's exit code, or None if still running."""
         return self._handle.exit_code()
@@ -218,8 +242,6 @@ class Node:
         self,
         rholang_code: str,
         private_key: PrivateKey,
-        phlo_limit: int = DEFAULT_PHLO_LIMIT,
-        phlo_price: int = DEFAULT_PHLO_PRICE,
         valid_after_block_no: Optional[int] = None,
         shard_id: str = "root",
     ) -> str:
@@ -232,16 +254,12 @@ class Node:
             return self._external_client().deploy(
                 key=private_key,
                 term=rholang_code,
-                phlo_price=phlo_price,
-                phlo_limit=phlo_limit,
                 valid_after_block_no=valid_after_block_no,
                 shard_id=shard_id,
             )
         return self._external_client().deploy_with_vabn_filled(
             key=private_key,
             term=rholang_code,
-            phlo_price=phlo_price,
-            phlo_limit=phlo_limit,
             shard_id=shard_id,
         )
 
@@ -250,8 +268,6 @@ class Node:
         rho_file_path: str,
         private_key: PrivateKey,
         substitutions: Optional[Dict[str, str]] = None,
-        phlo_limit: int = DEFAULT_PHLO_LIMIT,
-        phlo_price: int = DEFAULT_PHLO_PRICE,
         valid_after_block_no: Optional[int] = None,
         shard_id: str = "root",
     ) -> str:
@@ -280,8 +296,6 @@ class Node:
         return self.deploy_string(
             code,
             private_key,
-            phlo_limit=phlo_limit,
-            phlo_price=phlo_price,
             valid_after_block_no=valid_after_block_no,
             shard_id=shard_id,
         )

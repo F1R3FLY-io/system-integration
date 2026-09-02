@@ -33,6 +33,11 @@ class TimeoutHierarchy:
         return self._scaled(self._config.finalization)
 
     @property
+    def deploy_finalization_absolute(self) -> int:
+        """Non-renewable total bound for exact deploy-terminal observation."""
+        return self._scaled(self._config.deploy_finalization_absolute)
+
+    @property
     def command(self) -> int:
         """Max seconds for a gRPC/HTTP call."""
         return self._scaled(self._config.command)

@@ -1,7 +1,7 @@
 """Port allocation for the test framework.
 
-Allocates non-overlapping 6-port blocks from the reserved range
-(41000-42999). Each block maps to a single node's port layout:
+Allocates non-overlapping 6-port blocks from the reserved host range.
+Each block maps to a single node's port layout:
 protocol, gRPC-ext, gRPC-int, HTTP, discovery, admin-HTTP.
 
 Thread-safe via ``threading.Lock`` for pytest-xdist compatibility.
@@ -38,13 +38,18 @@ class PortAllocator:
 
     def __init__(self, base: int = _BASE, ceiling: int = _CEILING, worker_id: str = "") -> None:
         self._lock = threading.Lock()
+        configured_base = base
+        configured_ceiling = ceiling
         if worker_id and worker_id.startswith("gw"):
             worker_num = int(worker_id[2:])
-            base = _BASE + (worker_num * _WORKER_RANGE)
-            ceiling = base + _WORKER_RANGE
+            base = configured_base + (worker_num * _WORKER_RANGE)
+            ceiling = min(base + _WORKER_RANGE, configured_ceiling)
+        if not (0 < base < ceiling <= 65536):
+            raise RuntimeError(f"invalid test listener port range: {base}-{ceiling - 1}")
+
         self._base = base
         self._next = base
-        self._ceiling = min(ceiling, _CEILING)
+        self._ceiling = ceiling
         # Blocks released by providers when their node is removed. Reused
         # (oldest first, still bind-probed) before consuming fresh range.
         # Without reuse the allocator is strictly monotonic and a long
@@ -95,7 +100,7 @@ class PortAllocator:
                     "Block %d-%d skipped: port %d in use", base, base + _BLOCK_SIZE - 1, busy
                 )
             raise RuntimeError(
-                f"test port range exhausted ({self._base}-{self._ceiling}). "
+                f"test port range exhausted ({self._base}-{self._ceiling - 1}). "
                 f"Too many concurrent nodes or leftover TIME_WAIT sockets."
             )
 

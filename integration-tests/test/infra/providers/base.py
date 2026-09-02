@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
 
 import typing_extensions
 
@@ -328,13 +328,9 @@ def wait_for_handles_or_archive(
 ) -> None:
     """Wait for each handle to reach Running, archiving logs on failure.
 
-    Providers call this from their spawn sites (``create_shard``,
-    ``create_standalone``, ``add_node``) BEFORE the handle is tracked
-    in ``_active_handles``. That ordering matters: if the wait raises,
-    the framework's normal teardown paths can't see the handle to
-    archive it, and the post-mortem rnode log is lost. Archive every
-    handle to ``archive_dir`` here before re-raising so each spawned
-    process's log survives an early startup failure.
+    Providers call this only after the handles are tracked. Archival here
+    preserves the startup logs before the provider removes the failed
+    resources.
     """
     # Local import to avoid circular dependency on infra.polling at
     # module-load time. base.py is a protocol contract that polling
@@ -350,6 +346,29 @@ def wait_for_handles_or_archive(
                 timeout=timeout,
                 status_url=f"http://{h.grpc_host}:{h.ports.http}/api/status",
             )
-    except Exception:
+    except BaseException:
         archive_handles(handles, archive_dir)
+        raise
+
+
+def activate_handles_then_wait(
+    active_handles: List[NodeHandle],
+    handles: Sequence[NodeHandle],
+    archive_dir: Path,
+    timeout: int,
+    wait_running: bool,
+    cleanup_on_failure: Callable[[], None],
+) -> None:
+    """Track spawned resources before readiness polling and clean failed starts."""
+    active_handles.extend(handles)
+    if not wait_running:
+        return
+
+    try:
+        wait_for_handles_or_archive(handles, archive_dir, timeout)
+    except BaseException:
+        try:
+            cleanup_on_failure()
+        except Exception:
+            logger.exception("Failed to clean resources after node startup failure")
         raise

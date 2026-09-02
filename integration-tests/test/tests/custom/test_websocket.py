@@ -330,8 +330,6 @@ def test_deploy_appears_in_block_event(ws_shard: WsShardResult, provider, timeou
     deploy_id = v1.deploy_string(
         '@"ws-deploy-test"!(42)',
         VALIDATOR1_ID.private_key(),
-        phlo_limit=100_000,
-        phlo_price=1,
     )
     logging.info("Deployed for WS test, deploy_id=%s", deploy_id[:24])
 

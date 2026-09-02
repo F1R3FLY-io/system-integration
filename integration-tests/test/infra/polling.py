@@ -387,6 +387,8 @@ def wait_for_deploy_finalized(
     deploy_id: str,
     timeout: float,
     interval: float = 3.0,
+    *,
+    absolute_timeout: Optional[int] = None,
 ):
     """Poll ``deploy_finalization_status`` until the deploy reaches Finalized.
 
@@ -397,10 +399,17 @@ def wait_for_deploy_finalized(
     were rejected by merge and later re-included.
 
     Returns the ``DeployFinalizationStatusInfo`` on success.
-    Raises ``DeployError`` on terminal Failed/Expired, ``TimeoutError``
-    if Pending past ``timeout``.
+    Raises ``DeployError`` on terminal Failed/Expired,
+    ``FinalizedHistoryError`` on finalized-history revision/regression, and
+    ``TimeoutError`` if Pending exhausts either bounded budget.
     """
-    return _client_wait_for_deploy_finalized(node._external_client(), deploy_id, timeout, interval)
+    return _client_wait_for_deploy_finalized(
+        node._external_client(),
+        deploy_id,
+        timeout,
+        interval,
+        absolute_timeout=absolute_timeout,
+    )
 
 
 def wait_for_lfb_with_ft(
@@ -413,23 +422,19 @@ def wait_for_lfb_with_ft(
     """Poll until ``node``'s LFB satisfies BOTH invariants:
 
     - ``blockNumber >= target_number``
-    - ``faultTolerance >= ftt``
+    - ``faultTolerance > ftt``
 
     Single ``last_finalized_block()`` call per iteration — no torn reads
     between the two fields. Returns the final ``BlockInfo`` once both
     hold. Use when a test must verify cross-node propagation of the
-    cached per-block FT field, not just the LFB pointer.
-
-    The Rust node updates the LFB pointer (via local clique oracle) and
-    the per-block ``faultTolerance`` field (via
-    ``propagate_ft_to_finalized_blocks``) on separate paths. They can be
-    out of sync — especially on observer/readonly nodes. Asserting on
-    the cached field is a stronger invariant than ``isFinalized`` alone.
+    finalization certificate, not just the LFB pointer. The comparison is
+    strict because a certificate at the threshold has no safety margin and
+    cannot finalize.
     """
 
     def _check():
         lfb_info = node.last_finalized_block().blockInfo
-        if lfb_info.blockNumber >= target_number and float(lfb_info.faultTolerance) >= ftt:
+        if lfb_info.blockNumber >= target_number and float(lfb_info.faultTolerance) > ftt:
             return lfb_info
         return None
 
@@ -437,7 +442,7 @@ def wait_for_lfb_with_ft(
         predicate=_check,
         timeout=timeout,
         interval=interval,
-        description=f"{node.name} LFB >= #{target_number} AND FT >= {ftt}",
+        description=f"{node.name} LFB >= #{target_number} AND FT > {ftt}",
     )
 
 
@@ -448,10 +453,9 @@ def deploy_and_read(
     inclusion_timeout: float,
     finalization_timeout: float,
     *,
+    finalization_absolute_timeout: Optional[int] = None,
     rho_file: str = None,
     substitutions: Optional[Dict[str, str]] = None,
-    phlo_limit: int = 100_000,
-    phlo_price: int = 1,
     shard_id: str = "root",
 ) -> tuple:
     """Deploy code (or .rho file), wait for finalization, read deployId data.
@@ -465,10 +469,11 @@ def deploy_and_read(
         private_key: PrivateKey for signing.
         inclusion_timeout: Seconds to wait for block inclusion.
         finalization_timeout: Seconds to wait for finalization.
+        finalization_absolute_timeout: Optional non-renewable total timeout;
+            when set, ``finalization_timeout`` becomes the strict-LFB-progress
+            stall budget.
         rho_file: If set, read code from this .rho file path.
         substitutions: String replacements to apply to the code.
-        phlo_limit: Maximum phlo to spend.
-        phlo_price: Phlo price per unit.
         shard_id: Target shard identifier.
 
     Returns:
@@ -504,8 +509,7 @@ def deploy_and_read(
             private_key=private_key,
             inclusion_timeout=inclusion_timeout,
             finalization_timeout=finalization_timeout,
-            phlo_limit=phlo_limit,
-            phlo_price=phlo_price,
+            finalization_absolute_timeout=finalization_absolute_timeout,
             shard_id=shard_id,
         )
     except EmptyParListError:
@@ -521,8 +525,6 @@ def deploy_with_fallback(
     term: str,
     private_key,
     timeout_per_node: int,
-    phlo_limit: int = 100_000,
-    phlo_price: int = 1,
     valid_after_block_no: int = None,
     shard_id: str = "root",
     rho_file: str = None,
@@ -554,8 +556,6 @@ def deploy_with_fallback(
         term=term,
         private_key=private_key,
         timeout_per_client=timeout_per_node,
-        phlo_limit=phlo_limit,
-        phlo_price=phlo_price,
         valid_after_block_no=valid_after_block_no,
         shard_id=shard_id,
     )

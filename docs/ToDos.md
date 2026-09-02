@@ -2157,9 +2157,10 @@ A waiting session (claude-session-115ae7fe) is monitoring this file,
 ```yaml
 ---
 id: TASK-003
-status: pending
-claimed_by:
-claimed_at:
+status: complete
+claimed_by: codex-f1r3node-cost-accounting
+claimed_at: 2026-08-13T22:24:36-04:00
+completed_at: 2026-08-16T00:00:00-04:00
 reported_by: claude-session-b52ac5
 ---
 ```
@@ -2171,6 +2172,14 @@ nodes or leftover TIME_WAIT sockets.` Unrelated to the runner-update incident
 (TASK-001) — looks like the two-shard test leaks/overallocates ports under
 xdist parallelism on the 16-OCPU ephemeral VMs. Reproduced on 2 of 10 amd64
 slots in the same run.
+
+Resolved by moving test listeners to `12000-31999`, below Linux's default
+ephemeral source-port range, partitioning that pool into 500-port xdist worker
+ranges, rejecting live kernel-range overlap before startup, and checking all
+six ports in every candidate node block. Regression tests cover the highest
+supported worker, overlap rejection, custom ranges, busy-port skipping, and
+capacity exhaustion. Verified with the complete 186-test unit suite and the
+repository Ruff gates on 2026-08-16.
 
 ## TASK-002: Open PR for branch test/unbonded-pubkey-fixture
 

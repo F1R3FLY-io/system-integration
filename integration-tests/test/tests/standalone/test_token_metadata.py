@@ -90,6 +90,7 @@ def test_joiner_mismatch_fails_startup(
     baseline_handle, _ = group_b_baseline
 
     joiner_opts = _token_cli_options(BASELINE_NAME, BASELINE_SYMBOL, BASELINE_DECIMALS)
+    joiner_opts["--required-signatures"] = "0"
     joiner_opts.update(override)
 
     joiner_config = NodeConfig(role=NodeRole.JOINER, cli_options=joiner_opts)
@@ -101,7 +102,10 @@ def test_joiner_mismatch_fails_startup(
     )
     joiner_node = Node(handle=joiner_handle, role=NodeRole.JOINER)
     try:
-        joiner_handle.wait_for_exit(timeout=timeouts.command)
+        exit_code = joiner_handle.wait_for_exit(timeout=timeouts.command)
+        assert exit_code is not None and exit_code != 0, (
+            f"Mismatched joiner must abort with non-zero exit, got {exit_code!r}"
+        )
 
         event = find_event(
             joiner_node.logs(),
@@ -120,6 +124,9 @@ def test_joiner_mismatch_fails_startup(
         assert expected_field in mismatched, (
             f"Expected {expected_field!r} in mismatched_fields, got {mismatched!r}"
         )
+        assert find_event(joiner_node.logs(), event="casper_running_state_published") is None, (
+            "Mismatched joiner published Running before rejecting startup"
+        )
         logging.info("Joiner mismatch detected: override=%s, mismatched=%s", override, mismatched)
     finally:
         joiner_node.close()
@@ -132,6 +139,7 @@ def test_joiner_mismatch_all_three_fields(provider, timeouts, group_b_baseline) 
     baseline_handle, _ = group_b_baseline
 
     joiner_opts = _token_cli_options("TOKEN_B", "SYMB", 12)
+    joiner_opts["--required-signatures"] = "0"
     joiner_config = NodeConfig(role=NodeRole.JOINER, cli_options=joiner_opts)
     joiner_handle = provider.add_node(
         shard_network=baseline_handle.network_name,
@@ -141,7 +149,10 @@ def test_joiner_mismatch_all_three_fields(provider, timeouts, group_b_baseline) 
     )
     joiner_node = Node(handle=joiner_handle, role=NodeRole.JOINER)
     try:
-        joiner_handle.wait_for_exit(timeout=timeouts.command)
+        exit_code = joiner_handle.wait_for_exit(timeout=timeouts.command)
+        assert exit_code is not None and exit_code != 0, (
+            f"Mismatched joiner must abort with non-zero exit, got {exit_code!r}"
+        )
         event = find_event(joiner_node.logs(), event="native_token_metadata_mismatch")
         assert event is not None, "Expected native_token_metadata_mismatch event"
         mismatched = set(f for f in (event.get("mismatched_fields") or "").split(",") if f)
@@ -150,6 +161,9 @@ def test_joiner_mismatch_all_three_fields(provider, timeouts, group_b_baseline) 
             "native-token-symbol",
             "native-token-decimals",
         }, f"Expected all three fields mismatched, got {mismatched!r}"
+        assert find_event(joiner_node.logs(), event="casper_running_state_published") is None, (
+            "Mismatched joiner published Running before rejecting startup"
+        )
         logging.info("All three fields mismatched as expected: %s", mismatched)
     finally:
         joiner_node.close()
@@ -168,6 +182,7 @@ def test_joiner_matching_config_succeeds(provider, timeouts, group_b_baseline) -
     baseline_handle, _ = group_b_baseline
 
     joiner_opts = _token_cli_options(BASELINE_NAME, BASELINE_SYMBOL, BASELINE_DECIMALS)
+    joiner_opts["--required-signatures"] = "0"
     joiner_config = NodeConfig(role=NodeRole.JOINER, cli_options=joiner_opts)
     joiner_handle = provider.add_node(
         shard_network=baseline_handle.network_name,
@@ -182,6 +197,9 @@ def test_joiner_matching_config_succeeds(provider, timeouts, group_b_baseline) -
         # An additional API-level sanity check confirms the joiner is
         # actually serving requests.
         api_status = fetch_api_status_token(joiner_node.http_url)
+        assert find_event(joiner_node.logs(), event="casper_running_state_published") is not None, (
+            "Matching joiner reached its API without publishing Running"
+        )
         assert api_status.name == BASELINE_NAME, (
             f"Joiner API reports name={api_status.name!r}, expected {BASELINE_NAME!r}"
         )

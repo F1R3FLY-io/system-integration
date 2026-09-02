@@ -1,14 +1,10 @@
 """
-Deploy Validation Standalone Integration Tests
+Protocol-v6 Deploy Validation Standalone Integration Tests
 
-Tests for deploy validation on a standalone node with custom config.
-Requires a custom --min-phlo-price setting, so cannot run on the shared shard.
+Tests the retained economic margin on a standalone node with custom configuration.
 """
 
 import logging
-
-import pytest
-from f1r3fly.client import F1r3flyClientException
 
 from ...infra.config import NodeConfig
 from ...infra.keys import BOOTSTRAP_ID
@@ -19,13 +15,13 @@ from ...infra.types import NodeRole
 # No xdist_group — each test creates/destroys its own node, safe to parallelize
 
 
-def test_deploy_phlo_price_too_small(provider, timeouts) -> None:
-    """Node rejects deploys below configured min phlo price, accepts at threshold.
+def test_protocol_v6_deploy_has_no_client_price_gate(provider, timeouts) -> None:
+    """A protocol-v6 deploy has no client-selected price or limit.
 
     1. Start standalone node with --min-phlo-price=10
     2. Verify /api/status reports minPhloPrice=10
-    3. Deploy with phlo_price=1 — rejected with error message
-    4. Deploy with phlo_price=10 — accepted and included in block
+    3. Submit a protocol-v6 deploy without retired phlo fields
+    4. Verify the authority-funded deploy enters a block
     """
     config = NodeConfig(
         role=NodeRole.STANDALONE,
@@ -41,29 +37,13 @@ def test_deploy_phlo_price_too_small(provider, timeouts) -> None:
         )
         logging.info("Node reports minPhloPrice=%d", status["minPhloPrice"])
 
-        # Deploy below threshold — must be rejected
-        with pytest.raises(
-            F1r3flyClientException,
-            match=r"Phlo price 1 is less than minimum price 10",
-        ):
-            node.deploy_string(
-                '@"phlo-price-test-reject"!(1)',
-                BOOTSTRAP_ID.private_key(),
-                phlo_limit=100_000_000,
-                phlo_price=1,
-            )
-        logging.info("Deploy with phlo_price=1 correctly rejected")
-
-        # Deploy at threshold — must succeed
         deploy_id = node.deploy_string(
-            '@"phlo-price-test-accept"!(1)',
+            '@"protocol-v6-price-independent"!(1)',
             BOOTSTRAP_ID.private_key(),
-            phlo_limit=100_000_000,
-            phlo_price=10,
         )
         block_info = wait_for_deploy_included(node, deploy_id, timeouts.deploy_inclusion)
         logging.info(
-            "Deploy with phlo_price=10 accepted, included in block #%d",
+            "Authority-funded protocol-v6 deploy entered block #%d",
             block_info.blockNumber,
         )
     finally:

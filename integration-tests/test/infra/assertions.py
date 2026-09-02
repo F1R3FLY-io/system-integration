@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 from f1r3fly.deploy import (
     DeployError,
     check_deploy_errored,
-    check_deploy_succeeded,
+    check_deploy_not_errored,
 )
 
 from .types import NodeRole
@@ -29,9 +29,9 @@ from .types import NodeRole
 
 
 def assert_deploy_succeeded(block_info, deploy_id: str) -> None:
-    """Assert the deploy is in the block, not errored, and has cost > 0."""
+    """Assert the deploy is in the block and completed without an error."""
     try:
-        check_deploy_succeeded(block_info, deploy_id)
+        check_deploy_not_errored(block_info, deploy_id)
     except DeployError as e:
         raise AssertionError(str(e)) from None
 
@@ -341,6 +341,7 @@ def assert_all_deploys_finalized_on_all_nodes(
     deploy_ids: list[str],
     timeout: float,
     *,
+    absolute_timeout: int,
     label: str = "deploys",
 ) -> None:
     """Assert every deploy in ``deploy_ids`` reaches Finalized on EVERY node.
@@ -371,7 +372,12 @@ def assert_all_deploys_finalized_on_all_nodes(
     for sig in deploy_ids:
         for node in nodes:
             try:
-                wait_for_deploy_finalized(node, sig, timeout)
+                wait_for_deploy_finalized(
+                    node,
+                    sig,
+                    timeout,
+                    absolute_timeout=absolute_timeout,
+                )
             except Exception as exc:  # noqa: BLE001
                 # TimeoutError (Pending past timeout) and DeployError (terminal
                 # Failed/Expired) both mean "did not finalize here". Caught broad

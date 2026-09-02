@@ -186,20 +186,38 @@ def test_epoch_rewards(shared_shard) -> None:
 # ===========================================================================
 
 
+def _assert_estimate_context(result) -> None:
+    assert isinstance(result["blockNumber"], int) and result["blockNumber"] >= 0
+    assert isinstance(result["blockHash"], str) and len(result["blockHash"]) > 0
+
+
 def test_estimate_cost(shared_shard) -> None:
-    """POST /api/estimate-cost returns cost for valid Rholang on readonly."""
+    """POST /api/estimate-cost charges a valid COMM reduction on readonly."""
+    ro = shared_shard.readonly
+
+    term = "new ret in { ret!(42) | for (_ <- ret) { Nil } }"
+    resp = ro.api_post("/estimate-cost", {"term": term})
+    result = resp.json()
+
+    assert isinstance(result["cost"], int) and result["cost"] > 0, (
+        f"cost should be positive int, got {result.get('cost')}"
+    )
+    _assert_estimate_context(result)
+
+    logging.info("Estimate cost: %d phlo for one COMM reduction", result["cost"])
+
+
+def test_estimate_cost_storage_only(shared_shard) -> None:
+    """POST /api/estimate-cost charges storage bytes without a COMM."""
     ro = shared_shard.readonly
 
     resp = ro.api_post("/estimate-cost", {"term": "new ret in { ret!(42) }"})
     result = resp.json()
 
     assert isinstance(result["cost"], int) and result["cost"] > 0, (
-        f"cost should be positive int, got {result.get('cost')}"
+        f"unmatched send should pay its storage-byte tariff, got {result.get('cost')}"
     )
-    assert isinstance(result["blockNumber"], int) and result["blockNumber"] >= 0
-    assert isinstance(result["blockHash"], str) and len(result["blockHash"]) > 0
-
-    logging.info("Estimate cost: %d phlo for ret!(42)", result["cost"])
+    _assert_estimate_context(result)
 
 
 def test_estimate_cost_invalid_syntax(shared_shard, timeouts) -> None:
@@ -304,9 +322,13 @@ def test_registry_endpoint(shared_shard, timeouts) -> None:
     deploy_id = v1.deploy_string(
         rholang,
         VALIDATOR1_ID.private_key(),
-        phlo_limit=100_000,
     )
-    wait_for_deploy_finalized(v1, deploy_id, timeouts.finalization)
+    wait_for_deploy_finalized(
+        v1,
+        deploy_id,
+        timeouts.finalization,
+        absolute_timeout=timeouts.deploy_finalization_absolute,
+    )
 
     # Use the existing registry lookup via gRPC to get a known URI
     # (system contract URIs are always available)
@@ -334,9 +356,13 @@ def test_query_with_block_hash(shared_shard, timeouts) -> None:
     deploy_id = v1.deploy_string(
         "@9999!(0)",
         VALIDATOR1_ID.private_key(),
-        phlo_limit=100_000,
     )
-    status = wait_for_deploy_finalized(v1, deploy_id, timeouts.finalization)
+    status = wait_for_deploy_finalized(
+        v1,
+        deploy_id,
+        timeouts.finalization,
+        absolute_timeout=timeouts.deploy_finalization_absolute,
+    )
     block_hash = status.latestBlockHash.hex()
 
     # Validators endpoint with explicit block hash

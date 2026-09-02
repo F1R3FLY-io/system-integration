@@ -50,17 +50,17 @@ Verifies the genesis block has the correct shard_id (from `node_conf`) and that 
 Deploys on all 3 validators, waits for 10+ blocks on all nodes (including readonly) via heartbeat, then verifies:
 
 1. **Multi-parent blocks exist** — at least one block references multiple parents. This proves the multi-parent merge path is exercised (not just a linear chain where V1 dominates due to higher stake).
-2. **FT monotonicity along the main-parent chain on ALL validators** — fault tolerance is non-increasing as you walk the main-parent chain (`parentsHashList[0]`) from the tip toward genesis: every block's main-parent ancestor has FT >= the block's own. Older blocks on the finality spine have more agreement built on top of them. This is checked along the main-parent chain, **NOT per block height** — finality flows along `main_parent`, not by height. In a multi-parent DAG a height-N sibling that sits off the spine (only ever a merged-in secondary parent) is witnessed by fewer validators than a height-(N+1) spine block, so per-height FT is legitimately non-monotone (DAG topology, not a bug — the earlier per-height check flaked on exactly this, e.g. `height 2 FT=0.684 < height 3 FT=1.0`). The main-parent walk is **deterministic**: any validator agreeing on a block agrees on all of its main-parent ancestors (they are DAG-ancestors of the same latest message), so agreeing weight — and thus FT — is monotone along the spine. A violation would indicate a clique oracle bug under asymmetric weights.
+2. **FT provenance is explicit on ALL validators** — every finalized non-genesis block carries a frozen certificate with `FT > FTT`; every finalized block's main parent is also finalized. Live, unfinalized FT estimates are ancestor-monotone within the single DAG snapshot returned by `get_blocks`. The test deliberately does not compare a frozen certificate with a live estimate or require two historical certificates to be monotone: those values answer different questions at different certification frontiers.
 
 ### test_finalization_asymmetric_bonds
 
-Deploys on all 3 validators, then polls each node until **both** invariants hold simultaneously: LFB number reaches the target AND its cached `faultTolerance >= FTT`. Polling on the combined predicate avoids sampling mid-propagation — under asymmetric bonds the LFB number can advance ahead of FT (V1 alone finalizes a block at FT = 60/95 = 0.263 before V2's signature lifts the clique to FT = 80/95 = 0.368).
+Deploys on all 3 validators, then polls each node until **both** invariants hold in one response: LFB number reaches the target and its frozen finalization certificate has `faultTolerance > FTT`. Equality is insufficient because the protocol threshold is strict.
 
 Verifies:
 
 1. **LFB advances within timeout** — finalization works despite unequal stakes. With heartbeat producing blocks, V1's high weight ensures V1+V2 or V1+V3 agreements happen naturally.
-2. **All nodes agree on finalization** — every node (including readonly) sees finalization advance with FT >= FTT, confirming consensus isn't split by weight asymmetry.
-3. **FT >= FTT** is asserted as part of the same poll, not in a separate post-poll check.
+2. **All nodes agree on finalization** — every node (including readonly) sees finalization advance with a valid certificate, confirming consensus isn't split by weight asymmetry.
+3. **FT > FTT** is asserted as part of the same poll, not in a separate post-poll check.
 
 ### test_cross_validator_state_agreement_asymmetric
 
@@ -74,7 +74,7 @@ Uses `assert_all_nodes_agree_on_block()` from the assertions module.
 - The safety oracle correctly weights validator stakes (not just counts)
 - Multi-parent merging works under weight asymmetry
 - Finalization requires sufficient weighted agreement (V1 alone can't finalize)
-- Finalized blocks have FT >= FTT on all nodes including readonly
+- Finalized blocks have FT > FTT on all nodes including readonly
 - State determinism is preserved regardless of the proposing validator's weight, including on readonly observers
 - The heartbeat proposer creates blocks across all validators despite weight differences
 

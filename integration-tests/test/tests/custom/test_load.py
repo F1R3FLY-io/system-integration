@@ -105,8 +105,6 @@ def _submit_deploy(node, key, index, vabn, phase):
     deploy_id = node.deploy_string(
         f"@{index}!({index})",
         key,
-        phlo_limit=100_000,
-        phlo_price=1,
         valid_after_block_no=vabn,
     )
     return DeployRecord(

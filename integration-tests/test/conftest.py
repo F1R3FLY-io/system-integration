@@ -393,7 +393,7 @@ def shared_shard(request, provider, timeouts) -> Iterator[Shard]:
     the shard (crash nodes, deplete wallets) should create their own
     via ``provider.create_shard()`` instead.
 
-    Seeds vaults for VALIDATOR4_ID and VALIDATOR5_ID at genesis. Existing
+    Seeds vaults for VALIDATOR4_ID, VALIDATOR5_ID, and VALIDATOR6_ID at genesis. Existing
     tests do not depend on these wallets being absent; bonding tests
     (`tests/shared/test_bonding_validators.py`) add the joiners mid-session
     and the bond deploys are signed by V4 / V5 keys, which require their
@@ -402,7 +402,7 @@ def shared_shard(request, provider, timeouts) -> Iterator[Shard]:
     With ``--skip-setup --session-id <id>``, adopts an existing shard
     from a previous ``--keep-running`` run instead of creating a fresh one.
     """
-    from .infra.keys import VALIDATOR4_ID, VALIDATOR5_ID
+    from .infra.keys import VALIDATOR4_ID, VALIDATOR5_ID, VALIDATOR6_ID
 
     joiner_balance = 50_000_000_000_000_000
     extra_wallets = [
@@ -410,7 +410,7 @@ def shared_shard(request, provider, timeouts) -> Iterator[Shard]:
             ident.private_key().get_public_key().get_vault_address(),
             joiner_balance,
         )
-        for ident in (VALIDATOR4_ID, VALIDATOR5_ID)
+        for ident in (VALIDATOR4_ID, VALIDATOR5_ID, VALIDATOR6_ID)
     ]
     config = ShardConfig(
         bonds=[

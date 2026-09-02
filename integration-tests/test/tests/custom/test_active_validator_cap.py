@@ -35,8 +35,6 @@ from ...infra.polling import (
 )
 from ...infra.shard import Shard
 from .test_validator_lifecycle import (
-    _BOND_PHLO_LIMIT,
-    _BOND_PHLO_PRICE,
     _EPOCH_LENGTH,
     _GENESIS_CLI,
     _GENESIS_STAKE,
@@ -142,8 +140,6 @@ def test_active_validator_cap(cap_shard, timeouts) -> None:
     lid = live_node.deploy_string(
         '@"cap-liveness"!(1)',
         live_id.private_key(),
-        phlo_limit=_BOND_PHLO_LIMIT,
-        phlo_price=_BOND_PHLO_PRICE,
     )
     # Canonical-inclusion anchor: resolve the block through the deploy's
     # own finalization status, never a pinned find_deploy hash — the

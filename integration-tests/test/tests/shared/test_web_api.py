@@ -80,7 +80,7 @@ def _shard_expectations(shard, node_conf):
 
 def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
     """Deploy `count` contracts and wait for each deploy to reach canonical
-    state via sig-based finalization tracking. Returns (deploy_ids, block_hashes)
+    state via deploy-ID finalization tracking. Returns (deploy_ids, block_hashes)
     where each block_hash is the resolver's `latestBlockHash` — the canonical
     block containing the deploy after multi-parent merge / re-inclusion.
 
@@ -101,16 +101,19 @@ def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
     deploy_ids = []
     for i in range(count):
         did = node.deploy_string(
-            f"@{_fresh_channel()}!({i})",
+            f"new ret in {{ ret!({i}) | for (_ <- ret) {{ Nil }} }}",
             VALIDATOR1_ID.private_key(),
-            phlo_limit=100_000,
-            phlo_price=1,
         )
         deploy_ids.append(did)
 
     block_hashes = []
     for did in deploy_ids:
-        status = wait_for_deploy_finalized(node, did, finalization_timeout)
+        status = wait_for_deploy_finalized(
+            node,
+            did,
+            finalization_timeout,
+            absolute_timeout=timeouts.deploy_finalization_absolute,
+        )
         canonical = status.latestBlockHash.hex() if status.latestBlockHash else None
         if canonical is None:
             # Fallback: resolver finalized but didn't populate latestBlockHash.
@@ -124,7 +127,12 @@ def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
             for other in all_nodes:
                 if other.name == node.name:
                     continue
-                wait_for_deploy_finalized(other, did, finalization_timeout)
+                wait_for_deploy_finalized(
+                    other,
+                    did,
+                    finalization_timeout,
+                    absolute_timeout=timeouts.deploy_finalization_absolute,
+                )
 
     return deploy_ids, block_hashes
 
@@ -135,7 +143,18 @@ def _assert_valid_block_hash(value, context=""):
     )
 
 
-def _assert_light_block_info(block, expect, context=""):
+def _unanimous_protocol_version(blocks, context=""):
+    versions = {name: block["version"] for name, block in blocks.items()}
+    assert all(isinstance(version, int) and version > 0 for version in versions.values()), (
+        f"{context}: protocol versions must be positive integers: {versions}"
+    )
+    assert len(set(versions.values())) == 1, (
+        f"{context}: nodes disagree on protocol version for the canonical block: {versions}"
+    )
+    return next(iter(versions.values()))
+
+
+def _assert_light_block_info(block, expect, protocol_version, context=""):
     """Assert all fields of a LightBlockInfoSerde against shard expectations."""
     _assert_valid_block_hash(block["blockHash"], f"{context} blockHash")
     assert block["shardId"] == expect["shard_id"], (
@@ -153,7 +172,9 @@ def _assert_light_block_info(block, expect, context=""):
     assert isinstance(block["seqNum"], int) and block["seqNum"] >= 0, (
         f"{context}: seqNum should be non-negative, got {block['seqNum']}"
     )
-    assert block["version"] == 1, f"{context}: version should be 1, got {block['version']}"
+    assert block["version"] == protocol_version, (
+        f"{context}: version should be {protocol_version}, got {block['version']}"
+    )
     _assert_valid_block_hash(block["preStateHash"], f"{context} preStateHash")
     _assert_valid_block_hash(block["postStateHash"], f"{context} postStateHash")
 
@@ -387,6 +408,10 @@ def test_last_finalized_block(shared_shard, node_conf, timeouts) -> None:
         interval=2.0,
         description="HTTP /last-finalized-block hash agreement across all nodes",
     )
+    protocol_version = _unanimous_protocol_version(
+        {name: response["blockInfo"] for name, response in lfb_data_full.items()},
+        context="last finalized block",
+    )
 
     # Per-node validations on the agreed snapshot.
     lfb_data = {}
@@ -396,7 +421,12 @@ def test_last_finalized_block(shared_shard, node_conf, timeouts) -> None:
         assert "deploys" in lfb, f"{node.name}: missing deploys"
 
         info = lfb["blockInfo"]
-        _assert_light_block_info(info, expect, context=f"{node.name} LFB")
+        _assert_light_block_info(
+            info,
+            expect,
+            protocol_version,
+            context=f"{node.name} LFB",
+        )
 
         assert info["blockNumber"] > 0, (
             f"{node.name}: LFB blockNumber should be > 0, got {info['blockNumber']}"
@@ -442,14 +472,27 @@ def test_get_block(shared_shard, node_conf, timeouts) -> None:
     block_hash = block_hashes[0]
     deploy_id = deploy_ids[0]
 
+    block_responses = {
+        node.name: node.api_get(f"/block/{block_hash}") for node in shared_shard.all_nodes
+    }
+    protocol_version = _unanimous_protocol_version(
+        {name: response["blockInfo"] for name, response in block_responses.items()},
+        context=f"block {block_hash[:16]}",
+    )
+
     blocks = {}
     for node in shared_shard.all_nodes:
-        block = node.api_get(f"/block/{block_hash}")
+        block = block_responses[node.name]
         assert "blockInfo" in block, f"{node.name}: missing blockInfo"
         assert "deploys" in block, f"{node.name}: missing deploys"
 
         info = block["blockInfo"]
-        _assert_light_block_info(info, expect, context=f"{node.name} block")
+        _assert_light_block_info(
+            info,
+            expect,
+            protocol_version,
+            context=f"{node.name} block",
+        )
 
         assert info["blockHash"] == block_hash, (
             f"{node.name}: returned blockHash doesn't match queried hash"
@@ -545,12 +588,8 @@ def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
         # Full view fields
         assert detail["deployer"] == v1_pubkey, f"{node.name}: deployer mismatch"
         assert detail["systemDeployError"] == "", f"{node.name}: systemDeployError should be empty"
-        assert detail["phloPrice"] == 1, (
-            f"{node.name}: phloPrice should be 1, got {detail['phloPrice']}"
-        )
-        assert detail["phloLimit"] == 100_000, (
-            f"{node.name}: phloLimit should be 100000, got {detail['phloLimit']}"
-        )
+        assert "phloPrice" not in detail, f"{node.name}: phloPrice should be absent"
+        assert "phloLimit" not in detail, f"{node.name}: phloLimit should be absent"
         assert detail["sigAlgorithm"] == expect["sig_algorithm"], (
             f"{node.name}: sigAlgorithm mismatch"
         )
@@ -613,8 +652,6 @@ def test_deploy_summary_view(shared_shard, node_conf, timeouts) -> None:
         for excluded in [
             "deployer",
             "term",
-            "phloPrice",
-            "phloLimit",
             "sigAlgorithm",
             "systemDeployError",
             "validAfterBlockNumber",
@@ -667,7 +704,7 @@ def test_explore_deploy_returns_cost(shared_shard) -> None:
     Exploratory deploy is restricted to read-only nodes on the Rust node.
     """
     ro = shared_shard.readonly
-    term = "new x in { x!(1 + 1) }"
+    term = "new x in { x!(1 + 1) | for (_ <- x) { Nil } }"
 
     resp = ro.api_post("/explore-deploy", {"term": term})
     result = resp.json()
@@ -696,22 +733,21 @@ def test_deploy_via_http(shared_shard) -> None:
     deploy_proto = DeployDataProto(
         term="@2!(1)",
         timestamp=timestamp,
-        phloLimit=100_000,
-        phloPrice=1,
         validAfterBlockNumber=valid_after_block_number,
         shardId="root",
+        language="rholang",
     )
+    signature = sign_deploy_data(key, deploy_proto).hex()
     deploy_req = {
         "data": {
             "term": "@2!(1)",
             "timestamp": timestamp,
-            "phloLimit": 100_000,
-            "phloPrice": 1,
             "validAfterBlockNumber": valid_after_block_number,
             "shardId": "root",
+            "language": "rholang",
         },
         "deployer": key.get_public_key().to_hex(),
-        "signature": sign_deploy_data(key, deploy_proto).hex(),
+        "signature": signature,
         "sigAlgorithm": "secp256k1",
     }
 
@@ -1054,9 +1090,13 @@ def test_get_continuation(shared_shard, timeouts) -> None:
     deploy_id = v1.deploy_string(
         rholang,
         VALIDATOR1_ID.private_key(),
-        phlo_limit=100_000,
     )
-    wait_for_deploy_finalized(v1, deploy_id, timeouts.finalization)
+    wait_for_deploy_finalized(
+        v1,
+        deploy_id,
+        timeouts.finalization * 2,
+        absolute_timeout=timeouts.deploy_finalization_absolute,
+    )
 
     # Query for continuations on a public name (@0)
     par = Par(exprs=[])

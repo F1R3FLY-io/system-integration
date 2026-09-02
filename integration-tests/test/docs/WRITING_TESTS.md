@@ -37,7 +37,12 @@ def test_something(validator1_node, readonly_node, timeouts):
         "@1!(42)",
         VALIDATOR1_ID.private_key(),
     )
-    wait_for_deploy_finalized(validator1_node, deploy_id, timeouts.finalization)
+    wait_for_deploy_finalized(
+        validator1_node,
+        deploy_id,
+        timeouts.finalization,
+        absolute_timeout=timeouts.deploy_finalization_absolute,
+    )
 
     # Now read from the readonly observer
     ...
@@ -142,7 +147,12 @@ For deploy tracking, prefer `wait_for_deploy_finalized` over `wait_for_finalized
 from ...infra.polling import wait_for_deploy_finalized
 
 deploy_id = node.deploy_string("@1!(42)", key.private_key())
-status = wait_for_deploy_finalized(node, deploy_id, timeouts.finalization)
+status = wait_for_deploy_finalized(
+    node,
+    deploy_id,
+    timeouts.finalization,
+    absolute_timeout=timeouts.deploy_finalization_absolute,
+)
 # status.latestBlockHash points at the canonical-state block
 ```
 
@@ -156,7 +166,11 @@ To check that a batch of deploys (e.g. a background-load run) all finalized on e
 from ...infra.assertions import assert_all_deploys_finalized_on_all_nodes
 
 assert_all_deploys_finalized_on_all_nodes(
-    shard.all_nodes, deploy_ids, timeouts.finalization * 2, label="bg-load"
+    shard.all_nodes,
+    deploy_ids,
+    timeouts.finalization * 2,
+    absolute_timeout=timeouts.deploy_finalization_absolute,
+    label="bg-load",
 )
 ```
 
@@ -175,6 +189,7 @@ result = deploy_and_read(
     private_key,
     timeouts.deploy_inclusion,
     timeouts.finalization,
+    finalization_absolute_timeout=timeouts.deploy_finalization_absolute,
 )
 
 # Or read the term from a .rho file, with optional string substitution:
@@ -184,6 +199,7 @@ result = deploy_and_read(
     private_key,
     timeouts.deploy_inclusion,
     timeouts.finalization,
+    finalization_absolute_timeout=timeouts.deploy_finalization_absolute,
     rho_file="resources/bridge-v2.rho",
     substitutions={"__ADDR__": vault_addr},
 )
@@ -405,7 +421,7 @@ Things that are safe:
 
 - **`pytest.skip()` inside a test** — runtime condition, environment-dependent (e.g., "skip on standalone where validator and readonly are the same node")
 - **`@pytest.mark.skip(reason=...)`** — class- or function-level skip. Prefer this over bare `skip()` if the condition is static.
-- **`--deselect path::test` in CLI or CI** — known-broken test you want out of a specific run without touching source. See `tests/shared/test_convergence.py::test_network_converges_after_slow_deploy` as an example (triggers #437 shard stall).
+- **`--deselect path::test` in CLI or CI** — known-broken test you want out of a specific run without touching source.
 - **Delete the test** — feature removed or superseded.
 
 Don't skip silently without a clear reason string. Don't deselect indefinitely — put an issue link + a triage date.

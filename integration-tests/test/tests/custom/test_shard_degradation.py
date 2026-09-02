@@ -52,16 +52,11 @@ TOTAL_DEPLOYS = 150
 BATCH_SIZE = 10
 DEPLOY_PAUSE_SECS = 1
 BATCH_PROPAGATION_SECS = 30
-PHLO_LIMIT = 500_000
-PHLO_PRICE = 1
-
 MIN_RATE_RATIO = 0.50
 MAX_DESYNC_BLOCKS = 5
 MAX_STALL_BATCHES = 1
 MAX_API_LATENCY_SECS = 2
 INCLUSION_CHECK_COUNT = 10
-
-BRIDGE_PHLO = 500_000_000
 
 VALIDATORS_AND_KEYS = [
     (VALIDATOR1_ID, "validator1"),
@@ -325,18 +320,14 @@ def test_shard_degradation(provider, timeouts) -> None:
 
                 if deploy_index % 3 == 0:
                     contract_type = "bridge"
-                    phlo = BRIDGE_PHLO
                 else:
                     contract_type = None
-                    phlo = PHLO_LIMIT
 
                 try:
                     if contract_type == "bridge":
                         deploy_id = node.deploy_rho_file(
                             BRIDGE_CONTRACT,
                             key,
-                            phlo_limit=phlo,
-                            phlo_price=PHLO_PRICE,
                         )
                     else:
                         factory = CONTRACT_FACTORIES[deploy_index % len(CONTRACT_FACTORIES)]
@@ -344,8 +335,6 @@ def test_shard_degradation(provider, timeouts) -> None:
                         deploy_id = node.deploy_string(
                             factory(deploy_index),
                             key,
-                            phlo_limit=phlo,
-                            phlo_price=PHLO_PRICE,
                         )
                     deploy_records.append((deploy_id, time.time(), contract_type, node.name))
                     logging.info(

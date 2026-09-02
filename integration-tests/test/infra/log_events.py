@@ -253,6 +253,12 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
     # SingleValueInvariantViolated so each surface stays attributable
     # even when only one of the two messages reaches the captured tail.
     "ProposeBugError": re.compile(r"BugError \(seqNum -?\d+\)"),
+    # The proposal service wrapped an internal consensus BugError without
+    # preserving its sequence-number rendering.
+    "ProposalFailedBugError": re.compile(r"Proposal failed: BugError"),
+    # A proposer attempted to place a deploy past its protocol validity window
+    # into a new block instead of excluding it during candidate construction.
+    "ContainsExpiredDeploy": re.compile(r"ContainsExpiredDeploy"),
     # ── Bug classes with known opt-outs ──
     # Any block recorded as invalid. Opt-outs:
     #   tests/custom/test_consensus_safety.py::test_validator_failure_recovery

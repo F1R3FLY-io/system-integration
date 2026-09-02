@@ -159,6 +159,7 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
             key.private_key(),
             find_timeout,
             lfb_timeout,
+            finalization_absolute_timeout=timeouts.deploy_finalization_absolute,
             **kwargs,
         )
         logging.info(
@@ -178,7 +179,6 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
                 validators[0],
                 VALIDATOR1_ID,
                 rho_file=BRIDGE_CONTRACT,
-                phlo_limit=500_000_000,
             ): "bridge1",
             executor.submit(
                 _deploy,
@@ -186,7 +186,6 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
                 validators[1],
                 VALIDATOR2_ID,
                 rho_file=BRIDGE_CONTRACT,
-                phlo_limit=500_000_000,
             ): "bridge2",
             executor.submit(
                 _deploy,
@@ -194,7 +193,6 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
                 validators[2],
                 VALIDATOR3_ID,
                 rho_file=STORE_DATA_CONTRACT,
-                phlo_limit=100_000_000,
             ): "storage",
         }
 
@@ -235,8 +233,8 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
         VALIDATOR1_ID.private_key(),
         find_timeout,
         lfb_timeout,
+        finalization_absolute_timeout=timeouts.deploy_finalization_absolute,
         rho_file=DATA_PROVIDER_CONTRACT,
-        phlo_limit=100_000_000,
     )
     provider_uri = par_as_uri(provider_pars[0])
     results["provider"] = {
@@ -328,7 +326,7 @@ def test_cross_validator_queries_real_deploy(
                 key.private_key(),
                 find_timeout,
                 lfb_timeout,
-                phlo_limit=500_000_000,
+                finalization_absolute_timeout=timeouts.deploy_finalization_absolute,
             )
             futures[f] = label
 
@@ -445,9 +443,9 @@ def test_contract_to_contract_interaction(
         VALIDATOR2_ID.private_key(),
         find_timeout,
         lfb_timeout,
+        finalization_absolute_timeout=timeouts.deploy_finalization_absolute,
         rho_file=DATA_CONSUMER_CONTRACT,
         substitutions={"@provider_uri@": provider_uri},
-        phlo_limit=100_000_000,
     )
 
     assert consumer_pars, "Consumer deploy returned no data"
@@ -530,7 +528,7 @@ def test_transfers_interleaved_with_queries(
             v3_key,
             find_timeout,
             lfb_timeout,
-            phlo_limit=500_000_000,
+            finalization_absolute_timeout=timeouts.deploy_finalization_absolute,
         )
 
         for f in as_completed([transfer_future, query_future]):
@@ -549,7 +547,12 @@ def test_transfers_interleaved_with_queries(
     # would return as soon as the initial (possibly-rejected) block
     # finalized, before the canonical inclusion landed.
     transfer_deploy_id = transfer_future.result()[0]
-    wait_for_deploy_finalized(ro, transfer_deploy_id, lfb_timeout)
+    wait_for_deploy_finalized(
+        ro,
+        transfer_deploy_id,
+        lfb_timeout,
+        absolute_timeout=timeouts.deploy_finalization_absolute,
+    )
 
     # Verify balances
     v2_balance_after = ro.vault.get_balance(v2_vault)
@@ -607,7 +610,7 @@ def test_multi_block_state_evolution(
         v1_key,
         find_timeout,
         lfb_timeout,
-        phlo_limit=500_000_000,
+        finalization_absolute_timeout=timeouts.deploy_finalization_absolute,
     )
     logging.info("Lock 1 result: %s", str(lock1_pars[0])[:120] if lock1_pars else "empty")
 
@@ -637,7 +640,7 @@ def test_multi_block_state_evolution(
         v2_key,
         find_timeout,
         lfb_timeout,
-        phlo_limit=500_000_000,
+        finalization_absolute_timeout=timeouts.deploy_finalization_absolute,
     )
     logging.info("Lock 2 result: %s", str(lock2_pars[0])[:120] if lock2_pars else "empty")
 

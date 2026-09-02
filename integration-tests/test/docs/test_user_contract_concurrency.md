@@ -16,7 +16,7 @@ are the integration analogs of named node-side seal/fold unit specs
 
 Strict throughout: every user deploy must finalize on every node, and the final canonical state must reflect EVERY operation. Background load runs the whole time to reproduce the lumpy, contended finalization the merge must survive.
 
-**Config (all tests, shared module shard):** 3 validators 100/100/100, FTT=0.1, heartbeat, readonly observer. Dedicated funded deployer key per producer node (no inter-op phlo contention; each op is a sibling proposal from a distinct node), plus funded background-load source/dest vaults and a shared merge-destination vault.
+**Config (all tests, shared module shard):** 3 validators 100/100/100, FTT=0.1, heartbeat, readonly observer. Dedicated funded deployer key per producer node (each op is a sibling proposal from a distinct node), plus funded background-load source/dest vaults and a shared merge-destination vault.
 
 ## Tests (11)
 
@@ -52,11 +52,11 @@ Concurrent vault transfers from three sources into ONE shared destination. The d
 
 **What it proves:** concurrent credits to a mergeable counter COMPOSE — every credit lands, the final balance is the exact sum, never less (a finalized credit undone) and never more (a double-applied credit), on every node.
 
-### test_overdraft_cost_priority_keeps_higher_cost_transfer
+### test_overdraft_allows_exactly_one_transfer
 
-Cost-priority overdraft (integration analog of `fold_rejection_rejects_lower_cost_branch_on_overdraft`): two concurrent transfers from the SAME source that each fit alone but together overdraw it. The combined IntegerAdd debit goes negative, so fold_rejection rejects the LOWER-cost branch; the loser's recovery re-executes and fails on insufficient balance.
+Two concurrent transfers debit one source. Each transfer fits alone, but their combined debit exceeds the balance. Merge accepts one transfer and rejects the conflict.
 
-**What it proves:** the dest receives EXACTLY the high-cost transfer's amount — not the low amount (cheaper branch winning), not their sum (a double-spend) — and the source never goes negative, on every node.
+**What it proves:** The destination receives exactly one amount. The source stays nonnegative, and all nodes report the same result.
 
 ### test_nested_map_concurrent_distinct_inner_keys
 

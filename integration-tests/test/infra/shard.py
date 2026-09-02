@@ -130,6 +130,17 @@ class Shard:
         """Docker network name for this shard."""
         return self._handles[0].network_name if self._handles else ""
 
+    def _attached_node_cli_options(
+        self,
+        cli_options: Optional[Dict[str, str]],
+    ) -> Dict[str, str]:
+        options = dict(cli_options or {})
+        options.setdefault(
+            "--required-signatures",
+            str(self._config.effective_required_signatures),
+        )
+        return options
+
     # ── Joiner lifecycle ────────────────────────────────────────────
 
     @contextmanager
@@ -163,7 +174,7 @@ class Shard:
             role=NodeRole.JOINER,
             identity=identity,
             cli_flags=frozenset(cli_flags or set()),
-            cli_options=cli_options or {},
+            cli_options=self._attached_node_cli_options(cli_options),
         )
 
         handle = self._provider.add_node(
@@ -213,7 +224,7 @@ class Shard:
             role=NodeRole.JOINER,
             identity=identity,
             cli_flags=frozenset(cli_flags or set()),
-            cli_options=cli_options or {},
+            cli_options=self._attached_node_cli_options(cli_options),
         )
         handle = self._provider.add_node(
             shard_network=self.network_name,
@@ -254,7 +265,7 @@ class Shard:
             role=NodeRole.READONLY,
             identity=None,
             cli_flags=frozenset(cli_flags or set()),
-            cli_options=cli_options or {},
+            cli_options=self._attached_node_cli_options(cli_options),
         )
         handle = self._provider.add_node(
             shard_network=self.network_name,
@@ -292,7 +303,7 @@ class Shard:
             role=NodeRole.READONLY,
             identity=None,
             cli_flags=frozenset(cli_flags or set()),
-            cli_options=cli_options or {},
+            cli_options=self._attached_node_cli_options(cli_options),
         )
         handle = self._provider.add_node(
             shard_network=self.network_name,

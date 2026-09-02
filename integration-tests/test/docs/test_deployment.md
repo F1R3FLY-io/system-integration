@@ -2,80 +2,44 @@
 
 ## Purpose
 
-Verifies the full deploy lifecycle on a shared shard: syntax validation at the API level, error handling for insufficient phlo, and cross-validator deploy lookup consistency. These are regression tests for previously critical bugs where certain deploy failures triggered `NeglectedInvalidBlock` crashes.
+Verifies syntax validation, state-bound funding rejection, lookup consistency, and exploratory-deploy error propagation.
 
-## Background
-
-When a deploy is submitted:
-1. **Syntax check** — the node parses the Rholang source. Invalid syntax is rejected immediately at the gRPC API level (never reaches a block).
-2. **Inclusion** — valid deploys are queued and included in the next proposed block (via heartbeat or manual propose).
-3. **Execution** — the deploy runs with its phlo budget. If phlo is exhausted, the deploy is marked `errored=True` in the block.
-4. **Propagation** — the block propagates to all validators. Every validator should resolve the same deploy ID to the same block hash.
-
-The insufficient-phlo fix involved correcting non-deterministic ordering in `EventLogIndex`, `DeployChainIndex`, and `ConflictSetMerger`, plus adding transient-error recovery in the Proposer.
-
-## Tests (3)
+## Tests
 
 ### test_deploy_invalid_syntax_rejected
 
-1. Deploys `resources/invalid.rho` (contains `out,|` — invalid Rholang syntax) on V1
-2. Expects `F1r3flyClientException` from the gRPC API (parser rejects it)
-3. Immediately deploys a valid contract `@"valid-after-invalid"!(42)` on V1
-4. Waits for the valid deploy to be included in a block via `wait_for_deploy_included`
-5. Fetches the full block and calls `assert_deploy_succeeded(block_info, deploy_id)` to verify the deploy is not errored and has cost > 0
-
-**What it proves:**
-- Invalid syntax is rejected at the API level (never reaches a block)
-- The rejection does not poison the deploy pipeline — subsequent valid deploys succeed normally
-
-### test_deploy_insufficient_phlo_errored
-
-1. Deploys `@1!(1)` with `phlo_limit=10` on V1 (too low — even this minimal contract costs ~97 phlo)
-2. Heartbeat auto-proposes the block
-3. Waits for deploy inclusion via `wait_for_deploy_included`
-4. Fetches the full block and calls `assert_deploy_errored(block_info, deploy_id)` to verify the deploy is marked errored
-5. Polls until **all nodes** (validators + readonly) advance LFB by 3+ blocks past the errored deploy's block
-
-**What it proves:**
-- Deploys with insufficient phlo are accepted but marked as errored (not rejected at API level)
-- The proposer correctly includes errored deploys in blocks without crashing
-- The `NeglectedInvalidBlock` regression is fixed
-- All nodes continue operating after an errored deploy (LFB advances by 3+)
+1. Deploys `resources/invalid.rho` on validator 1.
+2. Expects `F1r3flyClientException` from the parser.
+3. Immediately deploys a valid unmatched send.
+4. Waits for inclusion and verifies the deploy succeeded with zero COMM cost.
 
 ### test_deploy_lookup_consistent_across_validators
 
-1. Deploys `@"deploy-lookup-test"!(1)` on V1
-2. Calls `wait_for_deploy_included` on **every node** (all validators + readonly)
-3. Collects the block hash from each node's response
-4. Asserts all nodes resolved the deploy to the same block hash
+1. Deploys `@"deploy-lookup-test"!(1)` on validator 1.
+2. Resolves the deploy on every validator and the readonly node.
+3. Asserts every node returns the same block hash.
 
-**What it proves:**
-- Block propagation works — all nodes see the same deploy in the same block
-- `find_deploy` returns consistent results across the network
-- Readonly nodes can resolve deploys (not just validators)
+### test_unfunded_deploy_rejected_without_stopping_finalization
+
+1. Submits a deployment from a signer without SystemVault funds.
+2. Verifies every node records the same terminal rejection block.
+3. Verifies the finalized floor advances after the rejection.
+
+### test_exploratory_deploy_invalid_syntax_returns_error
+
+1. Sends malformed Rholang to the readonly node's exploratory endpoint.
+2. Asserts parse errors are returned to the client instead of becoming empty results.
+3. Repeats the check with a reserved keyword used as a variable.
 
 ## Setup
 
-- **Topology**: Session-scoped `shared_shard` (3 validators + readonly)
-- **FTT**: From `conf/rust.conf`
-- **Heartbeat**: Enabled (for automatic block inclusion)
-
-## Key assertions
-
-- Invalid syntax: `F1r3flyClientException` raised, then `assert_deploy_succeeded` on the follow-up deploy
-- Insufficient phlo: `assert_deploy_errored(block_info, deploy_id)` (delegates to `f1r3fly.deploy.check_deploy_errored`)
-- All nodes advance LFB by 3+ blocks after errored deploy
-- Deploy lookup: all nodes return the same block hash (`len(unique_hashes) == 1`)
+- Shared shard with three validators and one readonly node
+- Heartbeat enabled for automatic inclusion
+- D3 deploy schema without client-supplied phlo price or limit
 
 ## Infrastructure used
 
-- Session-scoped `shared_shard` fixture (3 validators + readonly)
-- `assert_deploy_succeeded()`, `assert_deploy_errored()` from `infra/assertions.py` (delegates to `f1r3fly.deploy`)
-- `wait_for_deploy_included()` from `infra/polling.py` (delegates to `f1r3fly.polling`)
-- `poll_until()` for LFB advancement polling
-- `Node.deploy_string()`, `Node.deploy_rho_file()`, `Node.get_block()`
-
-## Related
-
-- [test_propose (standalone)](test_propose.md) -- phlo price validation (rejected at API level, requires custom node config)
-- [resources/invalid.rho](../../resources/invalid.rho) -- syntactically invalid Rholang contract
+- `assert_deploy_succeeded()`
+- `wait_for_deploy_included()`
+- `wait_for_deploy_finalized()`
+- `Node.deploy_string()`, `Node.deploy_rho_file()`, and `Node.get_block()`

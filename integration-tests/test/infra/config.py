@@ -115,6 +115,7 @@ class TimeoutConfig:
     # in line with port_release/finalization/command.
     deploy_inclusion: int = 30
     finalization: int = 45
+    deploy_finalization_absolute: int = 135
     command: int = 60
     port_release: int = 30
     # Budget for an inherently multi-block consensus transition to complete:
@@ -157,6 +158,7 @@ class ShardConfig:
     global_cli_options: Dict[str, str] = dataclasses.field(default_factory=dict)
     per_node_cli_options: Dict[str, Dict[str, str]] = dataclasses.field(default_factory=dict)
     extra_wallets: Optional[List[Tuple[str, int]]] = None
+    client_fuel_allocations: Optional[List[Tuple[str, int]]] = None
     image: Optional[str] = None
 
     @property
