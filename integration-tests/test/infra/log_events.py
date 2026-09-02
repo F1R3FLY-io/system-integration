@@ -354,6 +354,18 @@ def classify_deploy_losses(nodes, sig_prefixes: Iterable[str]) -> Dict[str, str]
 
     One streaming pass per node, on the failure path only.
     """
+    facts = collect_deploy_loss_facts(nodes, sig_prefixes)
+    return {prefix: _describe_deploy_loss(fact) for prefix, fact in facts.items()}
+
+
+def collect_deploy_loss_facts(nodes, sig_prefixes: Iterable[str]) -> Dict[str, dict]:
+    """The structured evidence behind ``classify_deploy_losses``.
+
+    Returns per-sig facts (``quarantined``, ``merge_rejected``, ``state``,
+    ``rejection_count``) so callers that must DISCRIMINATE loss classes —
+    contention (Expired with rejections) vs starvation (Expired at zero
+    rejections) — key on structure instead of parsing the descriptions.
+    """
     prefixes = {p[:16] for p in sig_prefixes if p}
     if not prefixes:
         return {}
@@ -382,7 +394,7 @@ def classify_deploy_losses(nodes, sig_prefixes: Iterable[str]) -> Dict[str, str]
                         continue
                     fact["state"] = record.get("state")
                     fact["rejection_count"] = record.get("rejection_count")
-    return {prefix: _describe_deploy_loss(fact) for prefix, fact in facts.items()}
+    return facts
 
 
 def _describe_deploy_loss(fact: dict) -> str:
