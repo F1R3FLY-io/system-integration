@@ -8,12 +8,12 @@ Tests that the network recovers after DAG tip divergence caused by:
 2. FT convergence -- cached fault tolerance for finalized blocks
    reaches FTT on every node and only grows as later finalization
    rounds update cached values (exact 1.0 is not guaranteed).
-3. Slow deploy -- a phlo-exhausting deploy (#224) blocks one validator
+3. Slow deploy -- an authority-capacity-exhausting deploy (#224) blocks one validator
    while others produce heartbeat blocks, causing divergence (#437).
-   Runs last so its trailing phlo-exhaustion replay lines cannot land
+   Runs last so its trailing capacity-exhaustion replay lines cannot land
    in another test's log-scan window.
 
-The module uses a dedicated shard because pause and phlo-exhaustion
+The module uses a dedicated shard because pause and capacity exhaustion
 change network state. Fixture teardown prevents these effects from
 reaching downstream shared-shard tests.
 """
@@ -22,6 +22,7 @@ import logging
 import time
 
 import pytest
+from f1r3fly.crypto import PrivateKey
 
 from ...infra.assertions import assert_deploy_errored
 from ...infra.config import ShardConfig
@@ -40,10 +41,11 @@ pytestmark = [
 ]
 
 VALIDATOR_KEYS = [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID]
+SLOW_DEPLOY_KEY = PrivateKey.from_seed(99002)
+SLOW_DEPLOY_CAPACITY = 20_000_000
 
-# Phlo-exhausting loop contract. Runs until phlo runs out, blocking the
-# proposing validator long enough for other validators to create independent
-# blocks via heartbeat, causing DAG tip divergence.
+# This loop consumes the dedicated signer's finite authority capacity. It blocks
+# one proposer while other validators create independent heartbeat blocks.
 SLOW_LOOP_CONTRACT = """
 new stdout(`rho:io:stdout`) in {
   new loop in {
@@ -70,6 +72,7 @@ def convergence_shard(provider, timeouts):
         ],
         heartbeat=True,
         include_readonly=True,
+        client_fuel_allocations=[(SLOW_DEPLOY_KEY.get_public_key().to_hex(), SLOW_DEPLOY_CAPACITY)],
     )
     shard = Shard.create(provider, config, timeouts)
     try:
@@ -209,8 +212,8 @@ def test_ft_convergence(convergence_shard, node_conf, timeouts) -> None:
     1.0 needs a controlled consensus configuration this shard does not
     pin.
 
-    Runs before ``test_network_converges_after_slow_deploy``: replay of
-    that test's errored deploy can log ``ComputationOutOfPhlogistons``
+    Runs before ``test_network_converges_after_capacity_exhaustion``: replay of
+    that test's rejected deploy can log ``ComputationOutOfPhlogistons``
     after the test ends, and running first keeps those lines out of this
     test's per-test log-scan window without an allowance marker.
 
@@ -303,20 +306,26 @@ def test_ft_convergence(convergence_shard, node_conf, timeouts) -> None:
 
 
 @pytest.mark.allow_forbidden_patterns("ComputationOutOfPhlogistons")
-def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeouts) -> None:
-    """Deploy a phlo-exhausting loop and verify the shard converges.
+def test_network_converges_after_capacity_exhaustion(
+    convergence_shard, node_conf, timeouts
+) -> None:
+    """Deploy a capacity-exhausting loop and verify that the shard converges.
 
-    The loop contract blocks V1 for ~25s while phlo is exhausted.
+    The loop contract blocks V1 while it exhausts one finite payer vault.
     During this time, V2 and V3 create independent heartbeat blocks,
     causing DAG tip divergence. After the deploy completes (errored),
     the network must converge and LFB must advance.
 
     Reproduces:
-    - #224: phlo-exhausting deploy stalls the proposing validator
+    - #224: capacity-exhausting deploy stalls the proposing validator
     - #437: resulting DAG tip divergence causes permanent LFB stall
     """
     validators = convergence_shard.validators
     all_nodes = convergence_shard.all_nodes
+    readonly = convergence_shard.readonly
+    slow_vault = SLOW_DEPLOY_KEY.get_public_key().get_vault_address()
+    slow_balance_before = readonly.vault.get_balance(slow_vault)
+    assert slow_balance_before == SLOW_DEPLOY_CAPACITY
 
     baseline_lfb = lfb_number(validators[0])
     if baseline_lfb == 0:
@@ -342,23 +351,17 @@ def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeo
     )
 
     # Submit the slow deploy on V1
-    deploy_id = validators[0].deploy_string(
-        SLOW_LOOP_CONTRACT,
-        VALIDATOR1_ID.private_key(),
-        phlo_limit=20_000_000,
-        phlo_price=1,
-    )
+    deploy_id = validators[0].deploy_string(SLOW_LOOP_CONTRACT, SLOW_DEPLOY_KEY)
     logging.info("Deployed loop contract on V1, deploy_id=%s", deploy_id[:24])
 
-    # Wait for the deploy to be included. The phlo-exhausting loop takes
-    # ~25s to execute, much longer than normal deploy inclusion.
+    # Wait for the exhausted deployment's terminal zero-effect record.
     info = wait_for_deploy_included(validators[0], deploy_id, timeout=timeouts.finalization * 10)
     deploy_block = info.blockNumber
 
-    # Verify the slow deploy is errored (phlo exhausted)
+    # Verify that capacity exhaustion rejects the deployment.
     block_info = validators[0].get_block(info.blockHash)
     assert_deploy_errored(block_info, deploy_id)
-    logging.info("Slow deploy errored as expected (phlo exhausted) in block #%d", deploy_block)
+    logging.info("Slow deploy was rejected after capacity exhaustion in block #%d", deploy_block)
 
     # LFB must advance past the deploy block on ALL nodes
     target_lfb = deploy_block + 3
@@ -383,15 +386,16 @@ def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeo
         timeout=timeouts.finalization * 5,
         min_height=target_lfb,
         max_spread=2,
-        description=f"LFB >= #{target_lfb} and spread <= 2 after slow deploy",
+        description=f"LFB >= #{target_lfb} and spread <= 2 after capacity exhaustion",
     )
     spread = max(final_lfbs.values()) - min(final_lfbs.values())
-    logging.info("Final LFBs after slow deploy: %s (spread: %d)", final_lfbs, spread)
+    logging.info("Final LFBs after capacity exhaustion: %s (spread: %d)", final_lfbs, spread)
 
     _wait_for_lfb_ft_at_or_above_ftt(all_nodes, node_conf.ftt, timeouts.finalization)
+    assert readonly.vault.get_balance(slow_vault) == slow_balance_before
 
     logging.info(
-        "Network recovered after slow deploy (LFB spread: %d, FT >= FTT=%.2f)",
+        "Network recovered after capacity exhaustion (LFB spread: %d, FT >= FTT=%.2f)",
         spread,
         node_conf.ftt,
     )

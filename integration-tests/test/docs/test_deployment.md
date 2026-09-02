@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Verifies deploy syntax validation, cross-validator lookup consistency, and exploratory-deploy error propagation on a shared shard.
+Verifies syntax validation, state-bound funding rejection, lookup consistency, and exploratory-deploy error propagation.
 
 ## Tests
 
@@ -18,6 +18,12 @@ Verifies deploy syntax validation, cross-validator lookup consistency, and explo
 1. Deploys `@"deploy-lookup-test"!(1)` on validator 1.
 2. Resolves the deploy on every validator and the readonly node.
 3. Asserts every node returns the same block hash.
+
+### test_unfunded_deploy_rejected_without_stopping_finalization
+
+1. Submits a deployment from a signer without SystemVault funds.
+2. Verifies every node records the same terminal rejection block.
+3. Verifies the finalized floor advances after the rejection.
 
 ### test_exploratory_deploy_invalid_syntax_returns_error
 
@@ -35,4 +41,5 @@ Verifies deploy syntax validation, cross-validator lookup consistency, and explo
 
 - `assert_deploy_succeeded()`
 - `wait_for_deploy_included()`
+- `wait_for_deploy_finalized()`
 - `Node.deploy_string()`, `Node.deploy_rho_file()`, and `Node.get_block()`

@@ -685,8 +685,6 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
             rho_file_path="resources/wallets/bond.rho",
             private_key=VALIDATOR4_ID.private_key(),
             substitutions={"%AMOUNT": str(joiner_bond)},
-            phlo_limit=100_000_000,
-            phlo_price=1,
         )
         logging.info("Bond deploy submitted: %s", bond_deploy_id[:24])
 

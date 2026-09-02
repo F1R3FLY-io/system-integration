@@ -37,6 +37,7 @@ import pytest
 from eth_hash.auto import keccak
 from f1r3fly.client import F1r3flyClientException
 from f1r3fly.crypto import PrivateKey
+from f1r3fly.pb.DeployServiceCommon_pb2 import DEPLOY_STATE_FAILED
 
 from ...infra.assertions import (
     assert_balance_consistent_across_nodes,
@@ -44,7 +45,6 @@ from ...infra.assertions import (
     assert_bonds_map_consistent_across_nodes,
     assert_chain_advances,
     assert_deploy_block_finalized_on_all_nodes,
-    assert_deploy_errored,
     await_balance_converges_on_all_nodes,
     collect_forensics,
     common_finalized_anchor,
@@ -90,9 +90,6 @@ _EPOCH_LENGTH = 4
 _QUARANTINE_LENGTH = 10
 
 _WALLET_BALANCE = 50_000_000_000_000_000
-_BOND_PHLO_LIMIT = 100_000_000
-_BOND_PHLO_PRICE = 1
-_MODE_A_PHLO_LIMIT = 50_000
 
 # Bond bounds deviate from node defaults; epoch and quarantine length are set
 # here because this suite depends on them and conf/rust.conf no longer carries
@@ -142,8 +139,8 @@ _BG_LOAD_ENABLED = False
 # funded so D3 admission succeeds and the contract reaches its amount checks.
 _THROWAWAY_BOND_KEY = PrivateKey.from_seed(80001)
 _THROWAWAY_WITHDRAW_KEY = PrivateKey.from_seed(80002)
-_MODE_B_KEY = PrivateKey.from_seed(80003)
-_MODE_B_BALANCE = _BOND_PHLO_LIMIT + 500
+_UNDERFUNDED_BOND_KEY = PrivateKey.from_seed(80003)
+_UNDERFUNDED_BOND_BALANCE = 1
 
 
 class _BackgroundLoad:
@@ -244,6 +241,36 @@ def _assert_bond_rejected(
         f"rejected bond changed bonds map: before={bonds_before} after={bonds_after}"
     )
     logging.info("Bond correctly rejected (%s): %s", expected_reason, result.reason)
+
+
+def _assert_bond_admission_rejected(proposer, all_nodes, ro, key, amount: int, timeouts) -> None:
+    """Assert one state-bound funding rejection without contract or vault effects."""
+    bonds_before = ro.pos.get_bonds()
+    address = key.get_public_key().get_vault_address()
+    balance_before = ro.vault.get_balance(address)
+    deploy_id = proposer.pos.bond(key, amount)
+    block_hashes = {}
+
+    for node in all_nodes:
+
+        def failed_status():
+            status = node.deploy_status(deploy_id)
+            return status if status.state == DEPLOY_STATE_FAILED else None
+
+        status = poll_until(
+            predicate=failed_status,
+            timeout=timeouts.finalization * 3,
+            interval=timeouts.poll_interval,
+            description=f"{node.name} records underfunded bond as Failed",
+        )
+        assert status.latestBlockHash, f"{node.name}: Failed status has no canonical block"
+        block_hashes[node.name] = status.latestBlockHash.hex()
+
+    assert len(set(block_hashes.values())) == 1, (
+        f"nodes disagree on underfunded bond rejection block: {block_hashes}"
+    )
+    assert ro.pos.get_bonds() == bonds_before, "underfunded bond changed bonds map"
+    assert ro.vault.get_balance(address) == balance_before, "underfunded bond changed payer balance"
 
 
 def _assert_withdraw_rejected(actor, all_nodes, ro, key, expected_reason: str, timeouts) -> int:
@@ -840,8 +867,6 @@ def _advance_lfb_with_traffic(node, producers, n_blocks, timeouts) -> int:
                 _REWARD_DST_ADDR,
                 _BG_TRANSFER_AMOUNT,
                 _REWARD_SRC_KEY,
-                phlo_price=1,
-                phlo_limit=_BOND_PHLO_LIMIT,
             )
         except Exception:  # noqa: BLE001 — traffic is best-effort reward stimulus
             pass
@@ -872,7 +897,12 @@ def lifecycle_shard(provider, timeouts):
     extra_wallets.append(
         (_THROWAWAY_WITHDRAW_KEY.get_public_key().get_vault_address(), _WALLET_BALANCE)
     )
-    extra_wallets.append((_MODE_B_KEY.get_public_key().get_vault_address(), _MODE_B_BALANCE))
+    extra_wallets.append(
+        (
+            _UNDERFUNDED_BOND_KEY.get_public_key().get_vault_address(),
+            _UNDERFUNDED_BOND_BALANCE,
+        )
+    )
     config = ShardConfig(
         bonds=[
             (VALIDATOR1_ID, _GENESIS_STAKE),
@@ -1081,10 +1111,15 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     _assert_withdraw_rejected(
         v1, shard.all_nodes, ro, _THROWAWAY_WITHDRAW_KEY, "not bonded", timeouts
     )
-    _assert_bond_rejected(
-        v1, shard.all_nodes, ro, _MODE_B_KEY, _BOND_MAXIMUM, "Bond deposit failed", timeouts
+    _assert_bond_admission_rejected(
+        v1,
+        shard.all_nodes,
+        ro,
+        _UNDERFUNDED_BOND_KEY,
+        _BOND_MAXIMUM,
+        timeouts,
     )
-    logging.info("Phase 2: bond/withdraw rejection branches verified, including Mode B")
+    logging.info("Phase 2: contract and state-bound funding rejection branches verified")
 
     g1_pk = VALIDATOR1_ID.public_hex
 
@@ -1455,27 +1490,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     )
     logging.info("Phase 12: posVaultTransfer correctly denied for a non-PoS deployer key")
 
-    # ── Phase 13: Mode-A out-of-phlo bond ─────────────────────────────────────
-    bonds_before_a = ro.pos.get_bonds()
-    mode_a_id = v1.pos.bond(
-        _THROWAWAY_BOND_KEY,
-        _BOND_MAXIMUM,
-        phlo_limit=_MODE_A_PHLO_LIMIT,
-    )
-    a_block = wait_for_deploy_included(v1, mode_a_id, timeouts.deploy_inclusion * 3)
-    wait_for_finalized(v1, a_block.blockNumber, timeouts.finalization * 3)
-    assert_block_finalized_on_all_nodes(
-        shard.all_nodes,
-        a_block.blockHash,
-        timeout=timeouts.finalization * 3,
-    )
-    assert_deploy_errored(v1.get_block(a_block.blockHash), mode_a_id)
-    assert ro.pos.get_bonds() == bonds_before_a, (
-        f"Mode-A out-of-phlo must not bond: before={bonds_before_a} after={ro.pos.get_bonds()}"
-    )
-    logging.info("Phase 13: Mode-A out-of-phlo bond errored without changing bonds")
-
-    # ── Phase 14: auth-token-gated system methods reject a bogus token ────────────
+    # ── Phase 13: auth-token-gated system methods reject a bogus token ────────────
     # chargeDeploy / refundDeploy / closeBlock are user-callable (single write-enabled PoS
     # bundle) but reject a bogus token (Nil) before any work, so no state changes.
     bonds_before_t = ro.pos.get_bonds()
@@ -1489,5 +1504,5 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         f"bogus-token system calls must not mutate state: {bonds_before_t} -> {ro.pos.get_bonds()}"
     )
     logging.info(
-        "Phase 14: chargeDeploy/refundDeploy/closeBlock reject a bogus auth token, no state change"
+        "Phase 13: chargeDeploy/refundDeploy/closeBlock reject a bogus auth token, no state change"
     )

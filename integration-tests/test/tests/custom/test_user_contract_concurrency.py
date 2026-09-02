@@ -76,8 +76,6 @@ pytestmark = pytest.mark.xdist_group("custom")
 # ── Shard parameters (aligned with the lifecycle shard) ──────────────────────
 _GENESIS_STAKE = 100
 _WALLET_BALANCE = 50_000_000_000_000_000
-_PHLO_LIMIT = 100_000_000
-_PHLO_PRICE = 1
 
 # A dedicated funded deployer key per producer node: each concurrent op runs on
 # its own vault (no inter-op phlo contention) and is submitted to a distinct
@@ -315,9 +313,7 @@ def _finalize_setup(shard, term: str, timeouts) -> None:
     """Deploy a one-time setup term on validator1 and wait until it finalizes
     cluster-wide so the initialized cell is visible to every proposer."""
     v1 = shard.node("validator1")
-    did = v1.deploy_string(
-        term, _PRODUCER_KEYS["validator1"], phlo_limit=_PHLO_LIMIT, phlo_price=_PHLO_PRICE
-    )
+    did = v1.deploy_string(term, _PRODUCER_KEYS["validator1"])
     # Canonical-inclusion anchor: the first inclusion block can be
     # orphaned under load and the deploy re-homed (pinned-hash
     # anti-pattern, see assert_deploy_block_finalized_on_all_nodes).
@@ -1190,8 +1186,6 @@ def test_scalar_value_conflict_resolves_deterministically(user_shard, timeouts):
                 v1.deploy_string(
                     f'@"ucc_scalar_{label}"!({{"v" : "INIT"}})',
                     _PRODUCER_KEYS["validator1"],
-                    phlo_limit=_PHLO_LIMIT,
-                    phlo_price=_PHLO_PRICE,
                 )
             )
         for did in seed_ids:

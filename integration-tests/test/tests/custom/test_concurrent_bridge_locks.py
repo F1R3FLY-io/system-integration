@@ -31,7 +31,6 @@ pytestmark = [
 ]
 
 _LOCK_COUNT = 12
-_PHLO_LIMIT = 500_000_000
 
 
 def _lock_term(lock_uri: str, amount: int, recipient: str, from_addr: str) -> str:
@@ -86,7 +85,6 @@ def test_concurrent_bridge_locks_exact_accounting(bridge_shard, timeouts) -> Non
         timeouts.custom(120),
         timeouts.finalization * 4,
         rho_file=BRIDGE_CONTRACT,
-        phlo_limit=_PHLO_LIMIT,
     )
     query_uri, lock_uri, _ = extract_bridge_uris(deploy_pars)
     wait_for_block_visible(readonly, deploy_block_hash, timeouts.finalization)
@@ -100,7 +98,7 @@ def test_concurrent_bridge_locks_exact_accounting(bridge_shard, timeouts) -> Non
 
     def submit(index: int) -> str:
         term = _lock_term(lock_uri, 1, f"0x{index:040x}", from_addr)
-        return v1.deploy_string(term, key, phlo_limit=_PHLO_LIMIT)
+        return v1.deploy_string(term, key)
 
     with ThreadPoolExecutor(max_workers=_LOCK_COUNT) as executor:
         deploy_ids = list(executor.map(submit, range(_LOCK_COUNT)))

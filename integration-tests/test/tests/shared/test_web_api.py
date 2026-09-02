@@ -103,8 +103,6 @@ def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
         did = node.deploy_string(
             f"new ret in {{ ret!({i}) | for (_ <- ret) {{ Nil }} }}",
             VALIDATOR1_ID.private_key(),
-            phlo_limit=100_000,
-            phlo_price=1,
         )
         deploy_ids.append(did)
 
@@ -735,8 +733,6 @@ def test_deploy_via_http(shared_shard) -> None:
     deploy_proto = DeployDataProto(
         term="@2!(1)",
         timestamp=timestamp,
-        phloLimit=100_000,
-        phloPrice=1,
         validAfterBlockNumber=valid_after_block_number,
         shardId="root",
         language="rholang",
@@ -746,8 +742,6 @@ def test_deploy_via_http(shared_shard) -> None:
         "data": {
             "term": "@2!(1)",
             "timestamp": timestamp,
-            "phloLimit": 100_000,
-            "phloPrice": 1,
             "validAfterBlockNumber": valid_after_block_number,
             "shardId": "root",
             "language": "rholang",

@@ -12,12 +12,16 @@ import logging
 import pytest
 from f1r3fly.client import F1r3flyClientException
 from f1r3fly.cost_accounting import CostAuthorityEvidence
+from f1r3fly.crypto import PrivateKey
+from f1r3fly.polling import DeployError
 
-from ...infra.assertions import assert_deploy_errored, assert_deploy_succeeded
+from ...infra.assertions import assert_deploy_succeeded
 from ...infra.keys import VALIDATOR1_ID
-from ...infra.polling import poll_until, wait_for_deploy_included
+from ...infra.polling import poll_until, wait_for_deploy_finalized, wait_for_deploy_included
 
 pytestmark = pytest.mark.xdist_group("shared")
+
+_UNFUNDED_DEPLOY_KEY = PrivateKey.from_seed(99001)
 
 
 def test_deploy_invalid_syntax_rejected(shared_shard, timeouts) -> None:
@@ -55,21 +59,35 @@ def test_deploy_invalid_syntax_rejected(shared_shard, timeouts) -> None:
     logging.info("Invalid syntax rejected, valid deploy succeeded in block %s", block_hash[:16])
 
 
-@pytest.mark.allow_forbidden_patterns("ComputationOutOfPhlogistons")
-def test_deploy_insufficient_phlo_errored(shared_shard, timeouts) -> None:
-    """An insufficient-phlo deploy errors without stopping finalization."""
+def test_unfunded_deploy_rejected_without_stopping_finalization(shared_shard, timeouts) -> None:
+    """State-bound admission rejects an unfunded deploy without changing liveness."""
     v1 = shared_shard.node("validator1")
+    baseline = min(
+        node.last_finalized_block().blockInfo.blockNumber for node in shared_shard.all_nodes
+    )
 
     deploy_id = v1.deploy_string(
-        "@1!(1)",
-        VALIDATOR1_ID.private_key(),
-        phlo_limit=10,
-        phlo_price=1,
+        '@"unfunded-deploy-must-not-run"!(1)',
+        _UNFUNDED_DEPLOY_KEY,
     )
-    light_block = wait_for_deploy_included(v1, deploy_id, timeouts.deploy_inclusion)
-    assert_deploy_errored(v1.get_block(light_block.blockHash), deploy_id)
+    rejection_blocks = {}
+    for node in shared_shard.all_nodes:
+        with pytest.raises(DeployError, match="terminal state Failed"):
+            wait_for_deploy_finalized(
+                node,
+                deploy_id,
+                timeouts.finalization,
+                absolute_timeout=timeouts.deploy_finalization_absolute,
+            )
+        status = node.deploy_status(deploy_id)
+        assert status.latestBlockHash, f"{node.name}: funding rejection has no block"
+        rejection_blocks[node.name] = status.latestBlockHash.hex()
 
-    target = light_block.blockNumber + 3
+    assert len(set(rejection_blocks.values())) == 1, (
+        f"nodes disagree on funding rejection block: {rejection_blocks}"
+    )
+
+    target = baseline + 3
     for node in shared_shard.all_nodes:
         poll_until(
             predicate=lambda n=node: (
