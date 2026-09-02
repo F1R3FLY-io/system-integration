@@ -18,10 +18,13 @@ Synchrony math (weights among bonded validators only):
     V2 (102): needs >= 0.33*(100+98)  = 65.3. V1 alone suffices.
     V3 (98):  needs >= 0.99*(100+102) = 199.98. Both V1 and V2 required.
 
-Note: The rejection case (proposal denied when threshold not met) cannot
-be reliably tested with FTT=-1 because the finalized-baseline fallback
-rescues the proposer. The `--synchrony-finalized-baseline-enabled` config
-key is not exposed as a CLI flag.
+Note: The rejection case (proposal denied when threshold not met) is not
+tested here: the finalized-baseline fallback can rescue a proposer once
+the baseline advances, and `--synchrony-finalized-baseline-enabled` is
+not exposed as a CLI flag. The shard runs the production FTT (conf
+default) — instant finalization is not needed by any phase, and a
+negative FTT would void the divergence-sentinel invariant the suite's
+forbidden-log check asserts.
 """
 
 import logging
@@ -62,7 +65,6 @@ def test_synchrony_constraint(provider, timeouts) -> None:
     """
     config = ShardConfig(
         bonds=_BONDS,
-        ftt=-1,
         heartbeat=False,
         global_cli_options={"--synchrony-constraint-threshold": "0"},
         per_node_cli_options=_PER_NODE_SYNC,

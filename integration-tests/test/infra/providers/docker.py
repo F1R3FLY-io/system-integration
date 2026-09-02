@@ -1,8 +1,10 @@
 """Docker provider — creates nodes via docker compose / docker run.
 
 Implements the ``Provider`` protocol for Docker-based test environments.
-All container/volume/network names are prefixed with the session ID to
-prevent collisions across parallel runs and with v1 tests.
+Shard containers, volumes, and networks are scoped per shard
+(``{session_id}-s{n}``) so neither parallel sessions nor sequential
+shards within one session can collide; standalone nodes carry their own
+per-instance scope.
 """
 
 from __future__ import annotations
@@ -46,6 +48,129 @@ _NODE_PORT_RESERVATION_ARGS: List[str] = [
     "--sysctl",
     "net.ipv4.ip_local_reserved_ports=40400-40405",
 ]
+
+# The daemon's json-file driver is unbounded by default, so a debug-level run
+# (gigabytes per minute across a shard) fills the host disk and takes the run
+# with it. Cap the stdout copy: the node's own rotating file sink is the
+# authoritative log that scans read, and this buffer only has to cover the
+# startup-crash case where the file sink never opened.
+_NODE_LOG_OPTS: List[str] = [
+    "--log-opt",
+    "max-size=100m",
+    "--log-opt",
+    "max-file=3",
+]
+
+
+# Probe for per-core CPU accounting, run inside the container. cgroup v1
+# exposes cumulative per-core nanoseconds directly (cpuacct.usage_percpu);
+# cgroup v2 dropped per-CPU accounting entirely, so the fallback dumps every
+# thread's /proc stat line — cumulative utime/stime, the core the thread last
+# ran on, and its start time — and the caller attributes CPU-time deltas to
+# cores. A thread that migrated cores mid-interval is attributed wholly to
+# its current core, so the v2 path is an approximation (a cell can briefly
+# exceed 100% of one core); peaks per core remain representative at the
+# monitor's multi-second sampling interval.
+#
+# The v1 file must be the CONTAINER's cgroup, not the mount root: with a host
+# cgroup namespace (the classic v1 Docker setup) the controller mount shows
+# the full host hierarchy, and the root-level cpuacct.usage_percpu is
+# host-wide — every node would report identical numbers. So the probe
+# resolves this process's own cpuacct membership path from /proc/self/cgroup
+# and joins it onto the mount root; only a "/" membership (private cgroup
+# namespace, where the mount root IS the container) may read the root file.
+# No cpuacct line at all means cgroup v2 — fall through to the thread dump.
+_PERCORE_PROBE = (
+    "rel=\"$(awk -F: '$2 ~ /(^|,)cpuacct(,|$)/ { print $3; exit }' /proc/self/cgroup"
+    ' 2>/dev/null)"; '
+    'if [ -n "$rel" ]; then '
+    "for base in /sys/fs/cgroup/cpuacct /sys/fs/cgroup/cpu,cpuacct /sys/fs/cgroup; do "
+    'if [ "$rel" = / ]; then f="$base/cpuacct.usage_percpu"; '
+    'else f="$base$rel/cpuacct.usage_percpu"; fi; '
+    'if [ -r "$f" ]; then echo PERCPU; cat "$f"; exit 0; fi; done; fi; '
+    "echo THREADS; "
+    # One cat for the whole thread dump — a per-thread cat loop costs one
+    # fork/exec per thread per sample, which perturbs the very CPU numbers
+    # being measured. 2>/dev/null absorbs threads exiting between glob and
+    # read; the trailing `true` keeps that from failing the probe (the parser
+    # rejects an empty dump).
+    "cat /proc/[0-9]*/task/[0-9]*/stat 2>/dev/null; "
+    "true"
+)
+
+# USER_HZ for /proc stat utime/stime ticks. Fixed at 100 on every Linux ABI
+# the node images run (the syscall-visible constant, independent of kernel
+# CONFIG_HZ); not worth an exec round trip to `getconf CLK_TCK` per sample.
+_CLK_TCK = 100.0
+
+
+def _parse_percore_probe(text: str):
+    """Parse ``_PERCORE_PROBE`` output.
+
+    Returns ``("percpu", {core_id: cpu_seconds})`` for the cgroup v1 counters,
+    ``("threads", {tid: (cpu_seconds, core_id, starttime)})`` for the v2
+    thread dump, or ``("", {})`` when the output is unrecognized. Malformed
+    lines are skipped (threads exit between the shell glob and the cat; their
+    stat lines vanish). ``starttime`` (ticks since boot) makes the thread's
+    identity — tids are recycled, and a recycled tid must not be differenced
+    against its predecessor's counters.
+    """
+    lines = text.splitlines()
+    if not lines:
+        return "", {}
+    marker, body = lines[0].strip(), lines[1:]
+    if marker == "PERCPU":
+        cores: Dict[str, float] = {}
+        for i, tok in enumerate(" ".join(body).split()):
+            try:
+                cores[str(i)] = int(tok) / 1e9
+            except ValueError:
+                return "", {}
+        return ("percpu", cores) if cores else ("", {})
+    if marker != "THREADS":
+        return "", {}
+    threads: Dict[str, tuple] = {}
+    for line in body:
+        # "<tid> (<comm>) <state> <ppid> ..." — comm may contain ") ", so
+        # split on the LAST ") ". Fields after comm: utime is field 14,
+        # starttime field 22, and processor field 39 (1-indexed per proc(5))
+        # → offsets 11, 19, and 36.
+        head, sep, rest = line.rpartition(") ")
+        fields = rest.split()
+        if not sep or len(fields) < 37:
+            continue
+        tid = head.split(" (", 1)[0]
+        try:
+            cpu_seconds = (int(fields[11]) + int(fields[12])) / _CLK_TCK
+        except ValueError:
+            continue
+        threads[tid] = (cpu_seconds, fields[36], fields[19])
+    return ("threads", threads) if threads else ("", {})
+
+
+def _percore_percent(prev: tuple, cur: tuple, dt: float) -> Dict[str, float]:
+    """Per-core CPU% over ``dt`` seconds from two ``_parse_percore_probe``
+    results (mode, data). ``{}`` when the modes differ (baseline invalid) or
+    no time elapsed. A percpu counter reset (container restart) clamps to
+    zero rather than spiking. A thread is the same thread only if its tid AND
+    starttime match the baseline — a recycled tid is a different thread whose
+    counters must not be differenced, even when they happen to be larger."""
+    (prev_mode, prev_data), (cur_mode, cur_data) = prev, cur
+    if prev_mode != cur_mode or dt <= 0:
+        return {}
+    if cur_mode == "percpu":
+        return {
+            core: max(0.0, (seconds - prev_data[core]) / dt * 100.0)
+            for core, seconds in cur_data.items()
+            if core in prev_data
+        }
+    totals: Dict[str, float] = {}
+    for tid, (seconds, core, started) in cur_data.items():
+        prev_entry = prev_data.get(tid)
+        if prev_entry is None or prev_entry[2] != started or prev_entry[0] > seconds:
+            continue
+        totals[core] = totals.get(core, 0.0) + (seconds - prev_entry[0])
+    return {core: spent / dt * 100.0 for core, spent in totals.items()}
 
 
 def _docker(*args: str, check: bool = False, timeout: int = 120) -> subprocess.CompletedProcess:
@@ -282,6 +407,8 @@ class DockerNodeHandle:
         self._identity = identity
         self._volume_name = volume_name
         self._config_file = config_file
+        # per_core_cpu_percent baseline: (mode, data, monotonic_time)
+        self._percore_prev: Optional[tuple] = None
 
     @property
     def volume_name(self) -> Optional[str]:
@@ -315,22 +442,46 @@ class DockerNodeHandle:
     def identity(self) -> Optional[ValidatorIdentity]:
         return self._identity
 
-    # Path inside every container where the node writes its structured log.
-    _LOG_FILE_PATH = "/var/lib/rnode/logs/node.log"
+    # Directory inside every container where the node writes its structured
+    # log. The appender uses filename_prefix "node.log" with rotation, so the
+    # files on disk are "node.log.<date>" (plus gzipped predecessors) — the
+    # unsuffixed name NEVER exists. Reading a fixed "node.log" therefore always
+    # missed and fell through to `docker logs`, whose json buffer is capped by
+    # the daemon: log scans silently saw a truncated tail instead of the run.
+    _LOG_DIR = "/var/lib/rnode/logs"
+    _LOG_GLOB = "node.log*"
+
+    def _log_files_newest_first(self) -> list:
+        """Uncompressed log files in the container, newest first ([] if none)."""
+        listing = _docker(
+            "exec", self._name, "sh", "-c", f"ls -1t {self._LOG_DIR}/{self._LOG_GLOB} 2>/dev/null"
+        )
+        if listing.returncode != 0:
+            return []
+        return [
+            line.strip()
+            for line in (listing.stdout or "").splitlines()
+            # .gz predecessors are not readable by `cat`; the live file and its
+            # uncompressed siblings carry the window diagnostics need.
+            if line.strip() and not line.strip().endswith(".gz")
+        ]
 
     def logs(self, tail: Optional[int] = None) -> str:
         """Return the node's log content.
 
-        Reads from the structured log file written by the node's file
-        sink (``--log-sink=both``). Falls back to ``docker logs``
-        (stdout/stderr buffer) when the file does not exist or is not
-        yet accessible — this covers the startup-failure case where the
-        node crashes before the file sink opens.
+        Reads the rotated files written by the node's file sink
+        (``--log-sink=both``), oldest-first so the result is chronological.
+        Falls back to ``docker logs`` (stdout/stderr buffer) only when no log
+        file exists — the startup-failure case where the node crashed before
+        the file sink opened.
         """
-        result = _docker("exec", self._name, "cat", self._LOG_FILE_PATH)
-        if result.returncode == 0:
-            text = result.stdout or ""
-        else:
+        files = self._log_files_newest_first()
+        text = ""
+        if files:
+            result = _docker("exec", self._name, "cat", *reversed(files))
+            if result.returncode == 0:
+                text = result.stdout or ""
+        if not text:
             fallback = _docker("logs", self._name)
             text = (fallback.stdout or "") + (fallback.stderr or "")
         if tail:
@@ -350,13 +501,22 @@ class DockerNodeHandle:
         """
         try:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
-            cp_result = subprocess.run(
-                ["docker", "cp", f"{self._name}:{self._LOG_FILE_PATH}", str(dest_path)],
-                capture_output=True,
-                check=False,
-                timeout=30,
-            )
-            if cp_result.returncode != 0:
+            # Rotation means there is no single file to copy; concatenate the
+            # uncompressed set oldest-first so the archive is chronological and
+            # complete rather than one rotation slice.
+            files = self._log_files_newest_first()
+            copied = False
+            if files:
+                with dest_path.open("w") as f:
+                    cat_result = subprocess.run(
+                        ["docker", "exec", self._name, "cat", *reversed(files)],
+                        stdout=f,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                        timeout=120,
+                    )
+                copied = cat_result.returncode == 0 and dest_path.stat().st_size > 0
+            if not copied:
                 with dest_path.open("w") as f:
                     subprocess.run(
                         ["docker", "logs", self._name],
@@ -452,6 +612,35 @@ class DockerNodeHandle:
             }
         except (ValueError, IndexError):
             return {"memory_mb": 0, "cpu_percent": 0, "memory_limit_mb": 0}
+
+    def per_core_cpu_percent(self) -> Dict[str, float]:
+        """Instantaneous per-core CPU% (core id -> % of that core) since the
+        previous call.
+
+        Feeds the soak dashboard's node × core heatmap (BACKLOG-FI-003 in
+        f1r3node-rust): real core rows instead of the aggregate-only "all"
+        row. The first call establishes the baseline and returns ``{}``, as
+        does any failed probe — per-core sampling is best-effort telemetry
+        and must never affect the run. A failed probe keeps the previous
+        baseline, so the next successful sample simply averages over the
+        longer interval.
+        """
+        try:
+            result = _docker("exec", self._name, "sh", "-c", _PERCORE_PROBE, timeout=15)
+        except Exception:  # noqa: BLE001 — best-effort telemetry
+            return {}
+        now = time.monotonic()
+        if result.returncode != 0:
+            return {}
+        mode, data = _parse_percore_probe(result.stdout or "")
+        if not mode:
+            return {}
+        prev = self._percore_prev
+        self._percore_prev = (mode, data, now)
+        if prev is None:
+            return {}
+        prev_mode, prev_data, prev_t = prev
+        return _percore_percent((prev_mode, prev_data), (mode, data), now - prev_t)
 
     def stop(self) -> None:
         # 30s grace period (vs Docker's 10s default) — rnode needs time to
@@ -580,8 +769,9 @@ def _parse_mem(s: str) -> float:
 class DockerProvider:
     """Creates and destroys Docker-based test infrastructure.
 
-    All resources use session-prefixed names to prevent collisions
-    across parallel sessions.
+    Shard resources use per-shard scopes (``{session_id}-s{n}``) so
+    sequential shards in one session share no names and no network;
+    session-level prefixes still separate parallel sessions.
     """
 
     def __init__(
@@ -680,11 +870,22 @@ class DockerProvider:
         for role in roles:
             port_map[role] = self._ports.allocate()
 
+        # Per-shard scope: container names AND the network carry the shard
+        # ordinal, so sequential shards in one session can never touch each
+        # other — a container that outlives its test keeps its own DNS name
+        # on its own network, and a fresh boot resolves nobody's ghosts.
+        # Session-scoped names let a leaked joiner feed a later shard's
+        # boot foreign blocks through a reused name on the shared network
+        # (CI run 32588262605: six prior shards' readonly identities at one
+        # name; the lifecycle shard adopted foreign history and wedged).
+        self._shard_counter += 1
+        shard_scope = f"{self._session_id}-s{self._shard_counter}"
+
         compose_path = generate_compose(
             config=config,
             genesis_dir=genesis_dir,
             port_assignments=port_map,
-            session_id=self._session_id,
+            scope=shard_scope,
             paths=self._paths,
             registry=self._registry,
         )
@@ -695,8 +896,7 @@ class DockerProvider:
         # ID that one test's teardown removed but another test's compose
         # still references — surfaces as "Container ... Recreate" /
         # "No such container" on the next compose up).
-        self._shard_counter += 1
-        project_name = f"test-{self._session_id}-{self._shard_counter}"
+        project_name = f"test-{shard_scope}"
 
         # Start all services. Retry on Docker-on-Mac transient network race
         # (network just created but daemon reports "not found" when attaching
@@ -735,9 +935,9 @@ class DockerProvider:
         # Build handles
         handles: List[DockerNodeHandle] = []
         boot_handle = DockerNodeHandle(
-            name=f"rnode.test.{self._session_id}.boot",
+            name=f"rnode.test.{shard_scope}.boot",
             ports=port_map["boot"],
-            network=f"f1r3fly-test-{self._session_id}",
+            network=f"f1r3fly-test-{shard_scope}",
             role=NodeRole.BOOTSTRAP,
             config_file=f"{genesis_dir}/rnode.conf",
         )
@@ -747,9 +947,9 @@ class DockerProvider:
             role_name = f"validator{idx + 1}"
             handles.append(
                 DockerNodeHandle(
-                    name=f"rnode.test.{self._session_id}.{role_name}",
+                    name=f"rnode.test.{shard_scope}.{role_name}",
                     ports=port_map[role_name],
-                    network=f"f1r3fly-test-{self._session_id}",
+                    network=f"f1r3fly-test-{shard_scope}",
                     role=NodeRole.VALIDATOR,
                     identity=identity,
                     config_file=f"{genesis_dir}/rnode.conf",
@@ -759,18 +959,19 @@ class DockerProvider:
         if config.include_readonly:
             handles.append(
                 DockerNodeHandle(
-                    name=f"rnode.test.{self._session_id}.readonly",
+                    name=f"rnode.test.{shard_scope}.readonly",
                     ports=port_map["readonly"],
-                    network=f"f1r3fly-test-{self._session_id}",
+                    network=f"f1r3fly-test-{shard_scope}",
                     role=NodeRole.READONLY,
                     config_file=f"{genesis_dir}/rnode.conf",
                 )
             )
 
-        # Store compose path for teardown
+        # Store compose path for teardown, keyed per shard: keying by
+        # session let a second live shard overwrite the first's record,
+        # orphaning its compose project at teardown.
         self._compose_files = getattr(self, "_compose_files", {})
-        shard_key = f"shard-{self._session_id}"
-        self._compose_files[shard_key] = (compose_path, project_name, genesis_dir)
+        self._compose_files[project_name] = (compose_path, project_name, genesis_dir)
 
         activate_handles_then_wait(
             self._active_handles,
@@ -823,22 +1024,46 @@ class DockerProvider:
             )
             if h in self._active_handles:
                 self._active_handles.remove(h)
-        archive_handles(handles, self._archive_dir / f"shard{self._shard_counter}")
+        # Derive this shard's scope from its own handles — the provider
+        # counter has moved on if another shard was created since.
+        scope = (
+            handles[0].network_name.removeprefix("f1r3fly-test-")
+            if handles
+            else f"{self._session_id}-s{self._shard_counter}"
+        )
+        ordinal = scope.rsplit("-s", 1)[-1]
+        archive_handles(handles, self._archive_dir / f"shard{ordinal}")
 
-        shard_key = f"shard-{self._session_id}"
+        shard_key = f"test-{scope}"
         compose_files = getattr(self, "_compose_files", {})
-        if shard_key in compose_files:
-            compose_path, project_name, genesis_dir = compose_files.pop(shard_key)
-            _compose(
-                "down",
-                "--volumes",
-                "--remove-orphans",
-                compose_file=compose_path,
-                project_name=project_name,
-            )
-        else:
+        try:
+            if shard_key in compose_files:
+                compose_path, project_name, genesis_dir = compose_files.pop(shard_key)
+                _compose(
+                    "down",
+                    "--volumes",
+                    "--remove-orphans",
+                    compose_file=compose_path,
+                    project_name=project_name,
+                )
+            else:
+                for handle in handles:
+                    handle.remove()
+            # Verified teardown: compose down covers the project's own
+            # containers, but joiners and observers were docker-run'd
+            # outside the project — force-remove every handle by name and
+            # wait until the daemon agrees, so a leak is impossible to
+            # miss. Idempotent for containers compose already removed.
             for handle in handles:
-                handle.remove()
+                _ensure_no_container(handle.name)
+        finally:
+            # Hand the port blocks back even when teardown raises midway
+            # — a block whose container survived stays bind-probe busy,
+            # so releasing it is safe, while NOT releasing on the error
+            # path would leak the whole shard's blocks for the session
+            # (the exhaustion defect this fix exists for).
+            for handle in handles:
+                self._ports.release(handle.ports)
 
         logger.info("Shard destroyed")
 
@@ -906,6 +1131,7 @@ class DockerProvider:
             "--user",
             "root",
             *_NODE_PORT_RESERVATION_ARGS,
+            *_NODE_LOG_OPTS,
             "--name",
             container_name,
             "--network",
@@ -1028,6 +1254,7 @@ class DockerProvider:
             "--user",
             "root",
             *_NODE_PORT_RESERVATION_ARGS,
+            *_NODE_LOG_OPTS,
             "--name",
             container_name,
             "--network",
@@ -1102,11 +1329,14 @@ class DockerProvider:
 
         archive_handles([handle], self._archive_dir)
 
-        handle.remove()
-        suffix = handle.name.split("standalone")[-1] if "standalone" in handle.name else ""
-        vol = f"test-{self._session_id}-standalone{suffix}-data"
-        _docker("volume", "rm", "-f", vol)
-        _docker("network", "rm", handle.network_name)
+        try:
+            handle.remove()
+            suffix = handle.name.split("standalone")[-1] if "standalone" in handle.name else ""
+            vol = f"test-{self._session_id}-standalone{suffix}-data"
+            _docker("volume", "rm", "-f", vol)
+            _docker("network", "rm", handle.network_name)
+        finally:
+            self._ports.release(handle.ports)
 
     # ── Joiner / observer lifecycle ─────────────────────────────────
 
@@ -1140,8 +1370,12 @@ class DockerProvider:
 
         ports = self._ports.allocate()
         identity = node_config.identity
-        node_name = f"rnode.test.{self._session_id}.{role_key}"
-        volume_name = f"test-{self._session_id}-{role_key}-data"
+        # Join the shard's own namespace: the scope embedded in its network
+        # name, so a joiner's DNS name and volume can never collide with a
+        # later shard's roster.
+        scope = shard_network.removeprefix("f1r3fly-test-")
+        node_name = f"rnode.test.{scope}.{role_key}"
+        volume_name = f"test-{scope}-{role_key}-data"
 
         bootstrap_url = (
             f"rnode://{BOOTSTRAP_NODE_ID}@{bootstrap_handle.name}?protocol=40400&discovery=40404"
@@ -1179,6 +1413,7 @@ class DockerProvider:
             "--user",
             "root",
             *_NODE_PORT_RESERVATION_ARGS,
+            *_NODE_LOG_OPTS,
             "--name",
             node_name,
             "--network",
@@ -1260,9 +1495,12 @@ class DockerProvider:
         )
         archive_handles([handle], self._archive_dir)
 
-        handle.remove()
-        if handle.volume_name:
-            _docker("volume", "rm", "-f", handle.volume_name)
+        try:
+            handle.remove()
+            if handle.volume_name:
+                _docker("volume", "rm", "-f", handle.volume_name)
+        finally:
+            self._ports.release(handle.ports)
 
     # ── Global cleanup ──────────────────────────────────────────────
 

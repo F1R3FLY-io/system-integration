@@ -5,13 +5,17 @@ Tests that the network recovers after DAG tip divergence caused by:
 1. Validator pause -- pausing a container forces other validators to
    produce independent blocks, creating DAG forks that must be merged
    after unpause.
-2. FT convergence -- fault tolerance for finalized blocks converges
-   to 1.0 across all nodes as later finalization rounds update
-   cached values.
+2. FT convergence -- cached fault tolerance for finalized blocks
+   reaches FTT on every node and only grows as later finalization
+   rounds update cached values (exact 1.0 is not guaranteed).
+3. Slow deploy -- a phlo-exhausting deploy (#224) blocks one validator
+   while others produce heartbeat blocks, causing divergence (#437).
+   Runs last so its trailing phlo-exhaustion replay lines cannot land
+   in another test's log-scan window.
 
-With synchrony-constraint-threshold=0, the synchrony constraint does not
-block proposals. The affected validator eventually recovers, proposes,
-and the network converges normally.
+The module uses a dedicated shard because pause and phlo-exhaustion
+change network state. Fixture teardown prevents these effects from
+reaching downstream shared-shard tests.
 """
 
 import logging
@@ -19,16 +23,98 @@ import time
 
 import pytest
 
+from ...infra.assertions import assert_deploy_errored
+from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
-from ...infra.polling import poll_until
+from ...infra.polling import (
+    lfb_number,
+    poll_until,
+    wait_for_deploy_included,
+    wait_for_lfb_converged,
+)
+from ...infra.shard import Shard
 
-pytestmark = pytest.mark.xdist_group("shared")
+pytestmark = [
+    pytest.mark.xdist_group("shared"),
+    pytest.mark.isolated_shard,
+]
 
 VALIDATOR_KEYS = [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID]
 
+# Phlo-exhausting loop contract. Runs until phlo runs out, blocking the
+# proposing validator long enough for other validators to create independent
+# blocks via heartbeat, causing DAG tip divergence.
+SLOW_LOOP_CONTRACT = """
+new stdout(`rho:io:stdout`) in {
+  new loop in {
+    contract loop(@n) = {
+      if (n <= 0) {
+        stdout!("done")
+      } else {
+        loop!(n - 1)
+      }
+    } |
+    loop!(100000)
+  }
+}
+"""
 
-def _get_lfb_number(node) -> int:
-    return node.last_finalized_block().blockInfo.blockNumber
+
+@pytest.fixture(scope="module")
+def convergence_shard(provider, timeouts):
+    config = ShardConfig(
+        bonds=[
+            (VALIDATOR1_ID, 100),
+            (VALIDATOR2_ID, 100),
+            (VALIDATOR3_ID, 100),
+        ],
+        heartbeat=True,
+        include_readonly=True,
+    )
+    shard = Shard.create(provider, config, timeouts)
+    try:
+        yield shard
+    finally:
+        shard.destroy()
+
+
+def _wait_for_lfb_ft_at_or_above_ftt(nodes, ftt, timeout):
+    """Wait until every node's LFB reports FT >= FTT, and report the values.
+
+    FT on a freshly adopted LFB is a convergent witness cache, not an
+    at-adoption guarantee: finality can arrive by floor inheritance while the
+    local live view is still re-converging, and later finalization rounds only
+    raise the cached value. Both recovery tests must poll rather than assert
+    instantly — the same contract ``test_ft_convergence`` relies on — so the
+    wait lives here once instead of being written out at each call site.
+    """
+
+    def _all_lfbs_clear_ftt():
+        ft_values = {}
+        for node in nodes:
+            lfb = node.last_finalized_block()
+            ft_values[node.name] = (
+                lfb.blockInfo.blockNumber,
+                float(lfb.blockInfo.faultTolerance),
+            )
+        if all(ft >= ftt for _, ft in ft_values.values()):
+            return ft_values
+        logging.info(
+            "FT still below FTT=%.2f on some nodes: %s",
+            ftt,
+            {k: f"#{n} FT={ft:.2f}" for k, (n, ft) in ft_values.items()},
+        )
+        return None
+
+    final_fts = poll_until(
+        predicate=_all_lfbs_clear_ftt,
+        timeout=timeout,
+        interval=5.0,
+        description=f"post-recovery LFB FT >= FTT={ftt:.2f} on all nodes",
+    )
+    for name, (number, ft) in final_fts.items():
+        logging.info("%s: LFB #%d, FT=%.2f", name, number, ft)
+    return final_fts
 
 
 def _poll_lfb_all_nodes(nodes, target, timeout):
@@ -48,7 +134,7 @@ def _poll_lfb_all_nodes(nodes, target, timeout):
             if node.name not in remaining:
                 continue
             try:
-                if _get_lfb_number(node) >= target:
+                if lfb_number(node) >= target:
                     remaining.discard(node.name)
             except Exception:
                 pass
@@ -63,7 +149,7 @@ def _poll_lfb_all_nodes(nodes, target, timeout):
 
 
 @pytest.mark.allow_forbidden_patterns("DAGStorageMissingHash")
-def test_network_recovers_from_validator_pause(shared_shard, node_conf, timeouts) -> None:
+def test_network_recovers_from_validator_pause(convergence_shard, node_conf, timeouts) -> None:
     """Pause validator1 for 30s to force DAG tip divergence, then verify
     the network converges and LFB advances on all nodes.
 
@@ -72,8 +158,8 @@ def test_network_recovers_from_validator_pause(shared_shard, node_conf, timeouts
     heartbeat. After unpause, the validators exchange tips and must
     propose multi-parent convergence blocks to merge the diverged forks.
     """
-    validators = shared_shard.validators
-    all_nodes = shared_shard.all_nodes
+    validators = convergence_shard.validators
+    all_nodes = convergence_shard.all_nodes
 
     # Deploy on each validator to create active state before pause
     for node, key_id in zip(validators, VALIDATOR_KEYS):
@@ -83,7 +169,7 @@ def test_network_recovers_from_validator_pause(shared_shard, node_conf, timeouts
         )
     logging.info("Pre-pause deploys submitted to all validators")
 
-    baseline_lfb = _get_lfb_number(validators[0])
+    baseline_lfb = lfb_number(validators[0])
     logging.info("Baseline LFB: block #%d", baseline_lfb)
 
     logging.info("Pausing validator1 for 30s to force DAG divergence...")
@@ -107,63 +193,59 @@ def test_network_recovers_from_validator_pause(shared_shard, node_conf, timeouts
         timeout=timeouts.finalization * 3,
     )
 
-    # Report final LFB values and verify FT >= FTT on post-recovery LFB
-    for node in all_nodes:
-        lfb = node.last_finalized_block()
-        ft = float(lfb.blockInfo.faultTolerance)
-        logging.info(
-            "%s: LFB #%d, FT=%.2f",
-            node.name,
-            lfb.blockInfo.blockNumber,
-            ft,
-        )
-        assert ft >= node_conf.ftt, (
-            f"{node.name}: post-recovery LFB #{lfb.blockInfo.blockNumber} "
-            f"has FT={ft}, expected >= FTT={node_conf.ftt}"
-        )
+    _wait_for_lfb_ft_at_or_above_ftt(all_nodes, node_conf.ftt, timeouts.finalization)
 
     logging.info("Network converged after validator pause (FT >= FTT=%.2f)", node_conf.ftt)
 
 
-def test_ft_convergence(shared_shard, node_conf, timeouts) -> None:
-    """Verify FT for finalized blocks converges to 1.0 across all nodes.
+def test_ft_convergence(convergence_shard, node_conf, timeouts) -> None:
+    """Verify cached FT reaches FTT on every node and never decreases.
 
-    FT is cached at finalization time and monotonically increases as later
-    finalization rounds update ancestor blocks. With all validators active,
-    FT should converge to 1.0 (all stake agrees) on every node.
+    FT is cached at finalization time and may only grow as later
+    finalization rounds update ancestor blocks. Exact FT=1.0 is NOT a
+    valid requirement: with FTT=0.10 a node can validly hold a cached
+    FT of 0.3333 forever — later finalization does not guarantee every
+    node's cache is updated to full-stake agreement. Reaching exactly
+    1.0 needs a controlled consensus configuration this shard does not
+    pin.
+
+    Runs before ``test_network_converges_after_slow_deploy``: replay of
+    that test's errored deploy can log ``ComputationOutOfPhlogistons``
+    after the test ends, and running first keeps those lines out of this
+    test's per-test log-scan window without an allowance marker.
 
     Test flow:
     1. Wait for LFB to advance past genesis
     2. Pick a finalized block from V1's LFB ancestor chain
     3. Assert FT >= FTT on V1 (cache works)
-    4. Poll all nodes until they all report FT = 1.0 for the block
-    5. Verify FT stays at 1.0 (stability check)
+    4. Poll all nodes until every one reports FT >= FTT for the block
+    5. Re-sample: FT must stay >= FTT and never decrease (monotonicity)
     """
-    all_nodes = shared_shard.all_nodes
+    all_nodes = convergence_shard.all_nodes
     ftt = node_conf.ftt
 
     # Wait for LFB to advance past genesis so we have finalized blocks
     lfb = poll_until(
-        predicate=lambda: _lfb_past_genesis(shared_shard.validators[0]),
+        predicate=lambda: _lfb_past_genesis(convergence_shard.validators[0]),
         timeout=timeouts.finalization,
         interval=3.0,
         description="LFB advances past genesis",
     )
     lfb_hash = lfb.blockInfo.blockHash
     lfb_number = lfb.blockInfo.blockNumber
-    logging.info("LFB at block #%d on %s", lfb_number, shared_shard.validators[0].name)
+    logging.info("LFB at block #%d on %s", lfb_number, convergence_shard.validators[0].name)
 
     # Walk to the first non-genesis ancestor — this block was indirectly finalized
     # and will have a conservative FT that should converge upward
-    target_block = shared_shard.validators[0].get_block(lfb_hash)
+    target_block = convergence_shard.validators[0].get_block(lfb_hash)
     parents = list(target_block.blockInfo.parentsHashList)
     target_hash = parents[0] if parents else lfb_hash
-    target_number = shared_shard.validators[0].get_block(target_hash).blockInfo.blockNumber
+    target_number = convergence_shard.validators[0].get_block(target_hash).blockInfo.blockNumber
 
     logging.info("Tracking FT convergence for block #%d (%s...)", target_number, target_hash[:16])
 
     # Verify FT >= FTT and isFinalized on reference node
-    ref_block = shared_shard.validators[0].get_block(target_hash)
+    ref_block = convergence_shard.validators[0].get_block(target_hash)
     ft_ref = float(ref_block.blockInfo.faultTolerance)
     assert ft_ref >= ftt, (
         f"Block #{target_number} has FT={ft_ref} on reference node, expected >= FTT={ftt}"
@@ -173,36 +255,145 @@ def test_ft_convergence(shared_shard, node_conf, timeouts) -> None:
     )
     logging.info("Reference node FT=%.4f (>= FTT=%.2f)", ft_ref, ftt)
 
-    # Poll until all nodes report FT = 1.0 for the target block
-    def all_nodes_ft_converged():
+    # Poll until every node reports FT >= FTT for the target block —
+    # cross-node agreement that the block is finalized. Exact 1.0 is not
+    # required (see docstring).
+    def all_nodes_ft_finalized():
         ft_values = {}
         for node in all_nodes:
             block = node.get_block(target_hash)
-            ft = float(block.blockInfo.faultTolerance)
-            ft_values[node.name] = ft
-        all_converged = all(abs(ft - 1.0) < 0.01 for ft in ft_values.values())
-        if not all_converged:
-            logging.info("FT values: %s", {k: f"{v:.4f}" for k, v in ft_values.items()})
-        return ft_values if all_converged else None
+            ft_values[node.name] = float(block.blockInfo.faultTolerance)
+        if all(ft >= ftt for ft in ft_values.values()):
+            return ft_values
+        logging.info("FT values: %s", {k: f"{v:.4f}" for k, v in ft_values.items()})
+        return None
 
-    ft_values = poll_until(
-        predicate=all_nodes_ft_converged,
+    ft_first = poll_until(
+        predicate=all_nodes_ft_finalized,
         timeout=timeouts.finalization * 6,
         interval=5.0,
-        description=f"all nodes converge to FT=1.0 for block #{target_number}",
+        description=f"all nodes report FT >= FTT={ftt:.2f} for block #{target_number}",
     )
-    logging.info("All nodes converged to FT=1.0: %s", {k: f"{v:.4f}" for k, v in ft_values.items()})
+    logging.info(
+        "All nodes report FT >= FTT=%.2f: %s",
+        ftt,
+        {k: f"{v:.4f}" for k, v in ft_first.items()},
+    )
 
-    # Stability check: query again and verify FT is still 1.0
+    # Monotonicity check: cached FT may only grow — re-sample and verify
+    # it never decreased and still clears FTT on every node.
     for node in all_nodes:
         block = node.get_block(target_hash)
-        ft = float(block.blockInfo.faultTolerance)
-        assert abs(ft - 1.0) < 0.01, (
-            f"FT for block #{target_number} decreased on {node.name}: was 1.0, now {ft}"
+        ft_now = float(block.blockInfo.faultTolerance)
+        ft_before = ft_first[node.name]
+        assert ft_now >= ftt, (
+            f"FT for block #{target_number} dropped below FTT on {node.name}: "
+            f"was {ft_before:.4f}, now {ft_now:.4f} < {ftt:.2f}"
+        )
+        assert ft_now >= ft_before - 1e-9, (
+            f"FT for block #{target_number} decreased on {node.name}: "
+            f"was {ft_before:.4f}, now {ft_now:.4f}"
         )
 
     logging.info(
-        "FT stability verified: block #%d is FT=1.0 on all %d nodes", target_number, len(all_nodes)
+        "FT monotonicity verified: block #%d holds FT >= FTT on all %d nodes",
+        target_number,
+        len(all_nodes),
+    )
+
+
+@pytest.mark.allow_forbidden_patterns("ComputationOutOfPhlogistons")
+def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeouts) -> None:
+    """Deploy a phlo-exhausting loop and verify the shard converges.
+
+    The loop contract blocks V1 for ~25s while phlo is exhausted.
+    During this time, V2 and V3 create independent heartbeat blocks,
+    causing DAG tip divergence. After the deploy completes (errored),
+    the network must converge and LFB must advance.
+
+    Reproduces:
+    - #224: phlo-exhausting deploy stalls the proposing validator
+    - #437: resulting DAG tip divergence causes permanent LFB stall
+    """
+    validators = convergence_shard.validators
+    all_nodes = convergence_shard.all_nodes
+
+    baseline_lfb = lfb_number(validators[0])
+    if baseline_lfb == 0:
+        logging.info("Waiting for initial LFB advancement...")
+        poll_until(
+            predicate=lambda: lfb_number(validators[0]) if lfb_number(validators[0]) > 0 else None,
+            timeout=timeouts.finalization,
+            interval=5.0,
+            description="initial LFB > 0",
+        )
+        baseline_lfb = lfb_number(validators[0])
+
+    logging.info("Baseline LFB: #%d", baseline_lfb)
+
+    # Deploy on V2 and V3 to create active state alongside the slow deploy
+    validators[1].deploy_string(
+        '@"pre-slow-v2"!(1)',
+        VALIDATOR2_ID.private_key(),
+    )
+    validators[2].deploy_string(
+        '@"pre-slow-v3"!(1)',
+        VALIDATOR3_ID.private_key(),
+    )
+
+    # Submit the slow deploy on V1
+    deploy_id = validators[0].deploy_string(
+        SLOW_LOOP_CONTRACT,
+        VALIDATOR1_ID.private_key(),
+        phlo_limit=20_000_000,
+        phlo_price=1,
+    )
+    logging.info("Deployed loop contract on V1, deploy_id=%s", deploy_id[:24])
+
+    # Wait for the deploy to be included. The phlo-exhausting loop takes
+    # ~25s to execute, much longer than normal deploy inclusion.
+    info = wait_for_deploy_included(validators[0], deploy_id, timeout=timeouts.finalization * 10)
+    deploy_block = info.blockNumber
+
+    # Verify the slow deploy is errored (phlo exhausted)
+    block_info = validators[0].get_block(info.blockHash)
+    assert_deploy_errored(block_info, deploy_id)
+    logging.info("Slow deploy errored as expected (phlo exhausted) in block #%d", deploy_block)
+
+    # LFB must advance past the deploy block on ALL nodes
+    target_lfb = deploy_block + 3
+    logging.info(
+        "Waiting for LFB to advance past deploy block #%d (target=#%d) on all nodes...",
+        deploy_block,
+        target_lfb,
+    )
+
+    # Poll the height and spread conditions together. Waiting per-node on a
+    # lower bound and then snapshotting the spread measures scheduling luck:
+    # nothing stops a fast node running ahead while the slower ones are still
+    # being polled, and a lower bound alone cannot tell "still catching up"
+    # from "permanently diverged". See wait_for_lfb_converged.
+    #
+    # Timeout is *5 for the same reason as the consensus-safety call site: the
+    # previous helper latched, finishing once each node had crossed target at
+    # any past instant, whereas this must observe a simultaneous tight band.
+    # max_spread stays at 2 — extend the timeout, never the tolerance.
+    final_lfbs = wait_for_lfb_converged(
+        all_nodes,
+        timeout=timeouts.finalization * 5,
+        min_height=target_lfb,
+        max_spread=2,
+        description=f"LFB >= #{target_lfb} and spread <= 2 after slow deploy",
+    )
+    spread = max(final_lfbs.values()) - min(final_lfbs.values())
+    logging.info("Final LFBs after slow deploy: %s (spread: %d)", final_lfbs, spread)
+
+    _wait_for_lfb_ft_at_or_above_ftt(all_nodes, node_conf.ftt, timeouts.finalization)
+
+    logging.info(
+        "Network recovered after slow deploy (LFB spread: %d, FT >= FTT=%.2f)",
+        spread,
+        node_conf.ftt,
     )
 
 

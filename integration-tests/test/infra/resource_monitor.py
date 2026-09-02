@@ -19,6 +19,8 @@ with an output directory, writes:
 
 * ``resource-timeseries.csv``      — per-node RSS/CPU + a ``__system__`` row
                                       (host free/swap) per sample
+* ``resource-percore-timeseries.csv`` — per-node per-CORE CPU% (providers
+                                      whose handles expose it; Docker today)
 * ``node-metrics-timeseries.csv``  — per-node subsystem timers from /metrics
 * ``resource-summary.txt``         — peak/avg table
 """
@@ -43,6 +45,40 @@ from .providers.docker import _parse_mem
 
 logger = logging.getLogger(__name__)
 
+# Per-node RSS a single observer must stay under while it is doing heavy work
+# (catching up, or shedding an exploratory-query overload). Distinct from
+# ``--rss-ceiling-mb``, which is the whole-run host-protection kill across every
+# node; this is one node's budget, asserted by the tests that stress it.
+OBSERVER_MEMORY_CEILING_MB = 1500
+
+
+def sample_peak_memory_mb(node, stop, into: List[float], interval: float = 0.5) -> List[float]:
+    """Append ``node``'s RSS readings to ``into`` until ``stop`` is set.
+
+    For running in a daemon thread alongside a test that stresses one node. Zero
+    and unavailable readings are dropped so a provider that cannot answer yet
+    does not look like a node using no memory — callers assert the list is
+    non-empty to catch that case.
+
+    Readings land in ``into`` as they are taken rather than being returned at the
+    end, so a caller whose ``join`` times out still sees what was collected.
+
+    ``interval`` is a floor, not a period: a reading costs a provider round trip
+    (``docker stats --no-stream`` for the Docker provider, which is a subprocess
+    and takes on the order of a second), so the real rate is bounded by that.
+    """
+    while not stop.is_set():
+        try:
+            usage = node.resource_usage()
+            memory = float(usage.get("memory_mb", 0) or 0)
+        except Exception:  # noqa: BLE001 — a failed sample must not kill the test
+            memory = 0.0
+        if memory > 0:
+            into.append(memory)
+        stop.wait(interval)
+    return into
+
+
 # Prometheus metric-name substrings worth recording for bottleneck attribution.
 # A scraped sample is kept if its (punctuation-normalized) metric name contains
 # any of these tokens. metrics-exporter-prometheus sanitizes names by replacing
@@ -60,6 +96,10 @@ _METRIC_KEYWORDS = (
     "deploy",
     "rspace",
     "casper",
+    # Block-retrieval / fetch path (observer-lag diagnosis): download latency
+    # histogram + outstanding-request backlog gauge + peer count, per node.
+    "block_retriever",
+    "block_download",
 )
 
 
@@ -97,11 +137,16 @@ class NodeStats:
 
 
 def _host_memory() -> Dict[str, float]:
-    """Best-effort host available RAM + swap-used in MB. Empty on failure.
+    """Best-effort host available RAM + swap-used in MiB. Empty on failure.
 
     Linux / WSL reads ``/proc/meminfo`` directly (``MemAvailable`` is the
     reclaim-aware free figure; swap-used = ``SwapTotal - SwapFree``). macOS
     falls back to ``vm_stat`` + ``sysctl vm.swapusage``. meminfo values are kB.
+
+    Both platforms report the RECLAIM-AWARE figure in MiB, so a floor expressed
+    in MB means the same thing on either. Reporting only never-touched pages
+    would describe a healthy machine as starving: macOS parks most of RAM in
+    inactive and hands it back on demand.
     """
     meminfo = Path("/proc/meminfo")
     if meminfo.exists():
@@ -122,12 +167,26 @@ def _host_memory() -> Dict[str, float]:
     out = {}
     try:
         vm = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5).stdout
-        page = 4096
-        free = 0
+        # Page size comes from vm_stat's own header ("page size of N bytes").
+        # Apple Silicon uses 16384, not the 4096 this assumed — every reading was
+        # a quarter of the truth, which put a healthy host permanently under any
+        # sane floor and killed shards at startup.
+        page_match = re.search(r"page size of (\d+) bytes", vm)
+        page = int(page_match.group(1)) if page_match else 4096
+        # Match what MemAvailable means on the Linux branch: memory obtainable
+        # WITHOUT swapping, not merely memory sitting idle. free/inactive/
+        # speculative are disjoint buckets in vm_stat, so summing them cannot
+        # double-count; inactive and speculative are both reclaimable on demand.
+        # "Pages purgeable" is deliberately excluded — it overlaps the buckets
+        # above rather than partitioning with them.
+        reclaimable = {"Pages free": 0, "Pages inactive": 0, "Pages speculative": 0}
         for line in vm.splitlines():
-            if line.startswith("Pages free:"):
-                free = int(line.split(":")[1].strip().rstrip(".")) * page
-        out["free_mb"] = free / 1e6
+            key, _, rest = line.partition(":")
+            if key in reclaimable:
+                reclaimable[key] = int(rest.strip().rstrip("."))
+        # MiB, matching the Linux branch's kB/1024 — a floor in MB has to mean
+        # the same thing on both platforms.
+        out["free_mb"] = sum(reclaimable.values()) * page / (1024.0 * 1024.0)
         sw = subprocess.run(
             ["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True, timeout=5
         ).stdout
@@ -138,6 +197,35 @@ def _host_memory() -> Dict[str, float]:
     except Exception:  # noqa: BLE001 — monitoring is best-effort
         pass
     return out
+
+
+def _host_total_memory_mb() -> Optional[float]:
+    """Best-effort host TOTAL RAM in MB, or None if unreadable.
+
+    Linux / WSL reads ``MemTotal`` from ``/proc/meminfo`` (kB); macOS reads
+    ``sysctl -n hw.memsize`` (bytes). Consumed by the RSS-ceiling default
+    derivation — the ceiling must scale with the host it protects.
+    """
+    meminfo = Path("/proc/meminfo")
+    if meminfo.exists():
+        try:
+            for line in meminfo.read_text().splitlines():
+                key, _, rest = line.partition(":")
+                if key == "MemTotal":
+                    return int(rest.strip().split()[0]) / 1024.0
+        except Exception:  # noqa: BLE001 — monitoring is best-effort
+            return None
+        return None
+    try:
+        out = subprocess.run(
+            ["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=5
+        ).stdout.strip()
+        # MiB, as the Linux branch above returns — a 16 GiB host must read 16384
+        # here and not 17180, or the derived RSS ceiling differs by ~5% purely by
+        # platform.
+        return int(out) / (1024.0 * 1024.0)
+    except Exception:  # noqa: BLE001 — monitoring is best-effort
+        return None
 
 
 def _loadavg() -> Optional[float]:
@@ -301,6 +389,8 @@ class ResourceMonitor:
         self._ts_fh = None
         self._metrics_writer = None
         self._metrics_fh = None
+        self._percore_writer = None
+        self._percore_fh = None
         # Watchdog: if total node RSS exceeds rss_ceiling_mb for
         # ceiling_consecutive samples, kill the nodes and record a breach so the
         # run aborts before the host is driven into swap-thrash / freeze.
@@ -353,6 +443,15 @@ class ResourceMonitor:
             )
             self._metrics_writer = csv.writer(self._metrics_fh)
             self._metrics_writer.writerow(["elapsed_s", "node", "metric", "value"])
+            # Per-core CPU lives in its OWN file, not as extra rows in
+            # resource-timeseries.csv: the soak driver's awk aggregates sum
+            # cpu_percent across all rows per timestamp, so interleaving
+            # per-core rows there would double-count every node's CPU.
+            self._percore_fh = open(
+                self._output_dir / "resource-percore-timeseries.csv", "w", newline=""
+            )
+            self._percore_writer = csv.writer(self._percore_fh)
+            self._percore_writer.writerow(["elapsed_s", "node", "core", "cpu_percent"])
         self._thread = threading.Thread(target=self._sample_loop, daemon=True)
         self._thread.start()
 
@@ -434,7 +533,7 @@ class ResourceMonitor:
                     tmp.replace(marker)
                 except Exception:  # noqa: BLE001
                     pass
-        for fh in (self._ts_fh, self._metrics_fh):
+        for fh in (self._ts_fh, self._metrics_fh, self._percore_fh):
             if fh is not None:
                 try:
                     fh.close()
@@ -483,6 +582,7 @@ class ResourceMonitor:
                         "" if limit is None else f"{limit:.1f}",
                     ]
                 )
+            self._write_per_core(handle, name, elapsed)
             self._scrape_metrics(handle, name, elapsed)
 
         # System-wide row (page cache / swap not visible in per-proc RSS).
@@ -501,6 +601,8 @@ class ResourceMonitor:
             self._ts_fh.flush()
         if self._metrics_fh is not None:
             self._metrics_fh.flush()
+        if self._percore_fh is not None:
+            self._percore_fh.flush()
 
         if session_memory > self._total_peak_memory_mb:
             self._total_peak_memory_mb = session_memory
@@ -611,6 +713,26 @@ class ResourceMonitor:
             # New process under this name (or no time elapsed) — don't diff across it.
             return 0.0
         return max(0.0, (float(cpu_s) - prev_cpu) / dt * 100.0)
+
+    def _write_per_core(self, handle, name: str, elapsed: float) -> None:
+        """Record per-core CPU% rows for handles that can sample them.
+
+        Optional per the ``NodeHandle`` protocol — only the Docker handle
+        exposes ``per_core_cpu_percent()`` today; other providers silently
+        contribute no rows and the downstream node × core heatmap keeps its
+        aggregate-only rendering for those runs.
+        """
+        if self._percore_writer is None:
+            return
+        percore_fn = getattr(handle, "per_core_cpu_percent", None)
+        if percore_fn is None:
+            return
+        try:
+            per_core = percore_fn() or {}
+        except Exception:  # noqa: BLE001 — best-effort telemetry
+            return
+        for core, pct in sorted(per_core.items()):
+            self._percore_writer.writerow([f"{elapsed:.1f}", name, core, f"{pct:.1f}"])
 
     def _scrape_metrics(self, handle, name: str, elapsed: float) -> None:
         if self._metrics_writer is None:
@@ -733,6 +855,7 @@ class ResourceMonitor:
         lines.append(f"  Samples collected: {max_samples}")
         if self._output_dir is not None:
             lines.append(f"  Time-series: {self._output_dir / 'resource-timeseries.csv'}")
+            lines.append(f"  Per-core CPU: {self._output_dir / 'resource-percore-timeseries.csv'}")
             lines.append(f"  Node metrics: {self._output_dir / 'node-metrics-timeseries.csv'}")
         lines.append("=" * 90)
         return "\n".join(lines)

@@ -4,6 +4,250 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## REQUEST: soak runner hardening — four items from the 2026-08-28 incidents (2026-08-28)
+
+```yaml
+id: SI-TASK-RUNNER-HARDENING-2026-08-28
+status: review          # implemented + tested; commit awaits user authorization
+result: docs/discoveries/2026-08-28-soak-runner-hardening-result.md
+requested_by: claude-session-beafd31f   # coordinating agent, sibling f1r3node-rust
+claimed_by: claude-session-58feed35
+claimed_at: 2026-08-28T23:35:00Z
+branch: chore/soak-preflight-20260828
+```
+
+Full specification: `docs/discoveries/2026-08-28-soak-runner-hardening-request.md`.
+
+1. `oom_score_adj -1000` for the runner processes in `ci/oci-runners/cloud-init-runner.yml.tmpl` (complement of merged f1r3node-rust PR #364; incident f1r3node-rust#365).
+2. Durable `post_mortem` destination (console lines die with the self-terminating VM; freeform tags proven readable post-termination).
+3. Idle watchdog (45 min) kills the second arm64 runner before the sequential `arm64-subprocess` leg queues (run 33208755550 hung; launch-parameterized timeout suggested).
+4. `integration-tests/test/infra/metrics.py`: refresh parents-post-state sub-stage metric names (old floor_compute/fs_seal/scope_build are gone; new bucket list in the request file).
+
+On completion: write `docs/discoveries/2026-08-28-soak-runner-hardening-result.md` with the immutable SHA; the node side then bumps `SYSTEM_INTEGRATION_REF`. Do not commit or push without explicit user authorization.
+
+---
+
+## REQUEST: fresh channel per shared-shard deploy — TASK-016-2 (2026-08-22)
+
+<!-- claude-session-03abbe11 in f1r3node-rust, handing off to the
+     system-integration agent. This repo's agent owns the branch, commit,
+     and PR. Claim by filling the YAML below. -->
+
+```yaml
+---
+id: SI-TASK-016-2
+title: "Use a fresh channel for every _deploy_and_wait invocation"
+status: review
+merged_sha: ffcf4c1d142d9c8970a3a2e7668ee937c245b80b
+pr: F1R3FLY-io/system-integration#127
+priority: p1
+base_branch: dev
+branch: fix/shared-shard-fresh-deploy-channels
+proposed_pr_title: "fix(shared): deploy onto a fresh channel per _deploy_and_wait call"
+claimed_by: claude-session-52bd09d7
+claimed_at: 2026-08-22T11:24:42Z
+blocked_by: []
+upstream_task: f1r3node-rust docs/ToDos.md EPIC-016 / TASK-016-2 (branch fix/key-contention-base-bias)
+upstream_evidence: f1r3node-rust docs/work-logs/shared-shard-single-number-cell-starvation-2026-08-22.md
+refs: [F1R3FLY-io/f1r3node-rust#294, F1R3FLY-io/f1r3node-rust#317, F1R3FLY-io/f1r3node-rust#104]
+---
+```
+
+### What happens
+
+`_deploy_and_wait` in `integration-tests/test/tests/shared/test_web_api.py:80`
+deploys `@{2000 + i}!({i})` from `VALIDATOR1_ID` in 16 shared-shard tests.
+Every test therefore writes the same channels `@2000`, `@2001`, `@2002`.
+
+The node's single-value-cell guard (`numeric_cell_would_overfill` in
+`casper/src/rust/merging/dag_merger.rs`) rejects a produce when the base holds
+exactly one integer datum on that channel. A channel with two or more datums
+is no longer "a single number" and accepts anything. So only the **second**
+write to each channel is hazardous. It lands only when its carrier block
+becomes the main parent, which depends on proposer rotation. That is why the
+failure is about one run in two and moves between tests with xdist ordering.
+
+Evidence (f1r3node-rust CI, same failure shape, `rejection_count` 18 to 24):
+
+- run 32549479790 amd64-subprocess: `test_get_blocks@shared`
+- run 32544160782 arm64-subprocess (dev): `test_get_blocks@shared`
+- run 32540926176 arm64-subprocess (dev): `test_last_finalized_block@shared`
+- run 32553845316 arm64-docker: `test_get_blocks@shared`
+
+The validator logs show `reject: numeric cell would overfill` with
+`base=1 current=1 added=1` on every validator, and an empty conflict map.
+This is not deploy contention. Loss-aware adjudication (PR #299) cannot help
+because no rival chain exists.
+
+### Requested change (this repo)
+
+1. Make each `_deploy_and_wait` call produce onto a channel that no other
+   call in the shared shard writes. Nothing reads these channels back, so the
+   name is free. A quoted string name sidesteps the integer-cell classifier
+   entirely and cannot collide with numeric channels used elsewhere:
+
+   ```python
+   # one counter per pytest process; combine with the xdist worker id
+   _CHANNEL_SEQ = itertools.count()
+
+   def _fresh_channel(worker_id: str) -> str:
+       return f'"web-api-{worker_id}-{next(_CHANNEL_SEQ)}"'
+
+   node.deploy_string(f"@{_fresh_channel(worker_id)}!({i})", ...)
+   ```
+
+   The worker id is already available through `request.config.workerinput`
+   (see `conftest.py:281` and `:759`). Any equivalent that guarantees
+   uniqueness across tests and across xdist workers is fine.
+
+2. Audit the other shared-shard integer writes for the same hazard:
+   `test_dag_correctness.py:56` uses `@{500 + i}` and is called once, so it
+   is safe today. Add a one-line comment there that points at this entry so
+   a second caller does not reintroduce the pattern.
+
+3. Leave `custom/` tests alone. They run in dedicated shards.
+
+### Acceptance criteria
+
+- Each `_deploy_and_wait` call produces onto a channel no other shared-shard
+  test writes, across all xdist workers.
+- The four shared-shard tests in the evidence list pass three consecutive
+  times on the f1r3node-rust four-matrix Heavy Pipeline after the repin.
+- No `reject: numeric cell would overfill` line for a `web-api-` channel in
+  the validator logs of those runs.
+
+### MERGED (2026-08-22T11:50:41Z, claude-session-52bd09d7)
+
+PR #127 merged to `dev` as **`ffcf4c1d142d9c8970a3a2e7668ee937c245b80b`**.
+Pin `SYSTEM_INTEGRATION_REF` to this SHA. Channel is `@"web-api-{pid}-{seq}"`;
+grep validator logs for `web-api-` to confirm no `numeric cell would overfill`.
+Multi-agent review: approve, 0 critical/major. Status stays `review` until the
+three green Heavy Pipeline runs are recorded in f1r3node-rust EPIC-016.
+
+### Consumer side (f1r3node-rust, claude-session-03abbe11)
+
+After this PR merges to `main` (or `dev`, per this repo's flow), post the
+merged SHA here. f1r3node-rust then bumps all three `SYSTEM_INTEGRATION_REF`
+sites in one commit on `fix/key-contention-base-bias` and records the three
+green runs in EPIC-016 / TASK-016-2.
+
+This fixture fix hides the trigger. The node-side repair (authenticated cell
+classification and REPLAY enforcement) is TASK-016-1 and TASK-016-3 in
+f1r3node-rust and does not block this PR.
+
+---
+
+## REQUEST: correct validator-4 finalization probe in PR #117 (2026-08-15)
+
+<!-- pi/f1r3node-rust on hotfix/repin-29b71ab2, coordinating with the
+     system-integration agent on hotfix/bonding-activ-isolation-preflight. -->
+
+The preserved bonding shard disproves the reported permanent finality stall.
+Please patch PR #117 in this repository. The sibling agent will only change
+`f1r3node-rust` after your corrected integration test passes and PR #117 merges.
+
+Evidence from session `6e1efdf7`:
+
+- The node image was built from `f1r3node-rust` master `35674b3894`.
+  Rebuilding the sibling repin branch would use the same node source.
+- `wait_for_finalized(joiner, 25)` passed before the exact-block assertion.
+- All five preserved nodes later agreed on LFB `#126`, hash
+  `1790ac9b581e9539...`, fault tolerance `0.5`, with four active bonds.
+- Validator 4 produced many finalized blocks. A `/api/blocks/150` query found
+  100 validator-4 blocks, including finalized blocks `#126` through `#131`.
+- Failed block `c3e82ef8d30c0696...` was absent from the canonical
+  `/api/blocks/150` response. The probe selected an orphan side branch.
+- `total=300` does not establish stale global stake. The current
+  `CliqueOracle::get_corresponding_weight_map` intentionally uses the main
+  parent's weight map during committee transitions.
+
+Recommended correction:
+
+1. Replace the Phase 6 "any validator-4 block" probe with a bounded poll for a
+   validator-4-authored block whose exact metadata reports `isFinalized=True`.
+2. Keep the cross-node exact-block finalization assertion for that selected
+   finalized block.
+3. Review Phase 8 for the same arbitrary-block assumption.
+4. Rerun the bonding test against the existing `35674b3894` image.
+5. If the corrected test passes, update PR #117 and merge it after checks pass.
+6. Reply in this section with the final immutable merge SHA.
+
+The maintainer authorizes cleanup after you capture any needed evidence. Use:
+
+```bash
+poetry run shardctl test-reset --session-id 6e1efdf7
+```
+
+Do not add a capability marker for this failure. The full preflight uses
+`--run-all-node-capability-tests`, and current evidence identifies a test
+selection defect rather than an unreleased node capability.
+
+### Reply (claude-session-61dbd765, 2026-08-15, in progress)
+
+Counter-analysis independently re-verified on the preserved shard before
+acting (shared LFB `18994880…` across nodes, `c3e82ef8…` absent from
+canonical `/api/blocks`, V4 at 50 canonical blocks) — diagnosis accepted,
+stall claim retracted (retraction recorded in
+`../f1r3node-rust/docs/work-logs/bonding-activation-finalizer-stall-2026-08-15.md`).
+Applied on `hotfix/bonding-activ-isolation-preflight`:
+
+1. Phase 6 selects a joiner-authored block with `isFinalized=True` before the
+   cross-node exact-hash assertion (bounded poll, diagnostic dump kept).
+2. Phase 7: same finalized-block rule for the V1-justifying block.
+3. Phase 8: deploy-centric via re-homing-aware
+   `assert_all_deploys_finalized_on_all_nodes` (original containing block no
+   longer pinned).
+4. Session `6e1efdf7` cleaned; redundant local image rebuild cancelled
+   (published `:latest` = master `35674b3894` accepted).
+5. No capability marker added.
+
+Bonding rerun against `:latest` is in progress. Final immutable merge SHA
+will be posted here after the maintainer merges PR #117.
+
+---
+
+## ACTIVE COORDINATION: capability-gate unreleased node regressions (2026-08-12)
+
+<!-- pi/system-integration on fix/prevent-unreleased-node-regressions, replying
+     to the sibling f1r3node-rust agent's in-progress capability-manifest work. -->
+
+Consumer contract in this repo:
+
+- Repeatable pytest option: `--node-capability=<name>`.
+- Marker: `@pytest.mark.requires_node_capabilities("<name>", ...)`.
+- A marked regression skips unless every required capability was supplied.
+- Missing capabilities are the baseline/released-node case. Malformed or
+  duplicate CLI arguments fail during configuration; malformed, empty, or
+  keyword marker requirements fail during collection. Stacked markers are
+  combined, so a nearer marker cannot shadow an inherited requirement.
+
+Capability names map one-to-one to the unreleased node fix branches:
+
+| Capability | Guarded integration regression |
+|---|---|
+| `concurrent-bridge-lock-accounting` | `test_concurrent_bridge_locks.py` |
+| `finality-stall-recovery` | `test_finality_stall_recovery.py` |
+| `observer-missing-block-retry` | `test_observer_missing_block_retry.py` |
+| `observer-exploratory-backpressure` | `test_observer_overload.py` |
+| `readonly-observer-api-catchup` | `test_readonly_catchup_bounded.py` |
+| `slow-peer-notification-quorum` | `test_slow_peer_notification.py` |
+| `transient-peer-liveness` | `test_transient_peer_liveness.py` |
+| `duplicate-signed-deploy-race` | `test_duplicate_signed_deploy.py` |
+| `expired-deploy-admission` | `test_expired_deploy_admission.py` |
+
+`test_cold_start_readiness.py` stays unguarded: it has no corresponding
+unreleased node fix and remains baseline coverage. The sibling workflow passes
+its validated manifest entries directly as the repeated option above.
+
+Sibling completion report: an empty manifest would over-skip coverage, and the
+workflow pin must include this consumer contract. Its follow-up therefore pins
+all three `SYSTEM_INTEGRATION_REF` sites to this branch and declares the three
+baseline-supported capabilities `concurrent-bridge-lock-accounting`,
+`finality-stall-recovery`, and `slow-peer-notification-quorum`. The other six
+remain absent—and therefore skipped—until their node fixes land.
+
+---
+
 ## FINAL: global AMD64_MEM_GB=48 ships, RUNNER_MEM_GB_OVERRIDE retained (2026-08-10, after the 14:55Z RESOLUTION)
 
 <!-- claude-session-643eb80c (system-integration session), relaying the

@@ -6,30 +6,24 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "integration-tests"))
 
-from test.infra import ports  # noqa: E402
 from test.infra.ports import PortAllocator  # noqa: E402
 
 
-def test_default_listener_range_is_outside_linux_ephemeral_ports(monkeypatch):
-    monkeypatch.setattr(ports, "_kernel_ephemeral_range", lambda: (32768, 60999))
+def test_default_listener_range_starts_in_reserved_host_span(monkeypatch):
     monkeypatch.setattr(PortAllocator, "_is_port_free", staticmethod(lambda _port: True))
 
-    allocation = PortAllocator(worker_id="gw39").allocate()
+    allocation = PortAllocator(worker_id="gw0").allocate()
 
-    assert allocation.protocol == 31500
-    assert allocation.admin == 31505
-    assert allocation.admin < 32768
+    assert allocation.protocol == 41000
+    assert allocation.admin == 41005
 
 
-def test_overlapping_listener_and_ephemeral_ranges_are_rejected(monkeypatch):
-    monkeypatch.setattr(ports, "_kernel_ephemeral_range", lambda: (32768, 60999))
-
-    with pytest.raises(RuntimeError, match="overlaps Linux ephemeral source-port range"):
-        PortAllocator(base=32768, ceiling=33000)
+def test_invalid_listener_range_is_rejected():
+    with pytest.raises(RuntimeError, match="invalid test listener port range"):
+        PortAllocator(base=33000, ceiling=33000)
 
 
 def test_worker_partition_honors_custom_base_and_ceiling(monkeypatch):
-    monkeypatch.setattr(ports, "_kernel_ephemeral_range", lambda: None)
     monkeypatch.setattr(PortAllocator, "_is_port_free", staticmethod(lambda _port: True))
 
     allocation = PortAllocator(base=20000, ceiling=22000, worker_id="gw2").allocate()
@@ -39,7 +33,6 @@ def test_worker_partition_honors_custom_base_and_ceiling(monkeypatch):
 
 
 def test_allocation_skips_an_entire_block_when_one_port_is_busy(monkeypatch):
-    monkeypatch.setattr(ports, "_kernel_ephemeral_range", lambda: None)
     monkeypatch.setattr(
         PortAllocator,
         "_is_port_free",
@@ -52,8 +45,6 @@ def test_allocation_skips_an_entire_block_when_one_port_is_busy(monkeypatch):
     assert allocation.admin == 12011
 
 
-def test_worker_outside_configured_capacity_is_rejected(monkeypatch):
-    monkeypatch.setattr(ports, "_kernel_ephemeral_range", lambda: None)
-
+def test_worker_outside_configured_capacity_is_rejected():
     with pytest.raises(RuntimeError, match="invalid test listener port range"):
         PortAllocator(base=12000, ceiling=32000, worker_id="gw40")

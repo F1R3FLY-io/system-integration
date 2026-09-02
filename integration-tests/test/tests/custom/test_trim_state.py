@@ -8,8 +8,9 @@ the entire chain from genesis.
 Uses a custom shard with:
 - 2 genesis validators (V1=10M, V2=1) -- V2 has minimal stake so V1 controls
   finalization. Two validators are needed for the genesis ceremony to complete
-  (required_signatures defaults to len(bonds)-1 = 1).
-- FTT = -1 (immediate finalization)
+  (required_signatures defaults to len(bonds)-1 = 1). V1's stake dominance
+  finalizes its blocks immediately at the production FTT (no -1 override
+  needed, and the divergence sentinel invariant holds).
 - heartbeat disabled (manual block orchestration)
 - synchrony-constraint-threshold = 0
 
@@ -34,7 +35,6 @@ from ...infra.shard import Shard
 pytestmark = pytest.mark.xdist_group("custom")
 
 _SYNC_THRESHOLD = "0"
-_FTT = "-1"
 
 _SHARD_CLI_OPTIONS = {
     "--synchrony-constraint-threshold": _SYNC_THRESHOLD,
@@ -62,7 +62,6 @@ def test_trim_state(provider, timeouts) -> None:
             (VALIDATOR1_ID, 10_000_000),
             (VALIDATOR2_ID, 1),
         ],
-        ftt=-1,
         heartbeat=False,
         global_cli_options=_SHARD_CLI_OPTIONS,
     )
@@ -86,7 +85,9 @@ def test_trim_state(provider, timeouts) -> None:
         v1_lfb = v1.last_finalized_block()
         v1_lfb_number = v1_lfb.blockInfo.blockNumber
         logging.info("V1 LFB after phase 1: block #%d", v1_lfb_number)
-        assert v1_lfb_number > 0, f"Expected LFB > 0 with FTT=-1, got #{v1_lfb_number}"
+        assert v1_lfb_number > 0, (
+            f"Expected LFB > 0 (V1's stake dominance self-finalizes), got #{v1_lfb_number}"
+        )
 
         # ── Phase 2: Add joiner and verify it syncs from LFS ──
         logging.info("Phase 2: Adding joiner (V2) to the shard")
@@ -94,7 +95,6 @@ def test_trim_state(provider, timeouts) -> None:
             VALIDATOR2_ID,
             cli_options={
                 "--synchrony-constraint-threshold": _SYNC_THRESHOLD,
-                "--fault-tolerance-threshold": _FTT,
             },
         ) as joiner:
             # Joiner should sync from LFS and see the latest block

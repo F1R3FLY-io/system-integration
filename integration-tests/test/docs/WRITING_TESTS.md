@@ -191,6 +191,18 @@ result = deploy_and_read(
     timeouts.finalization,
     finalization_absolute_timeout=timeouts.deploy_finalization_absolute,
 )
+
+# Or read the term from a .rho file, with optional string substitution:
+result = deploy_and_read(
+    node,
+    "",
+    private_key,
+    timeouts.deploy_inclusion,
+    timeouts.finalization,
+    finalization_absolute_timeout=timeouts.deploy_finalization_absolute,
+    rho_file="resources/bridge-v2.rho",
+    substitutions={"__ADDR__": vault_addr},
+)
 ```
 
 ### Poll with a deadline
@@ -333,6 +345,58 @@ Which `Node` methods, which `provider` methods, which polling helpers.
 ```
 
 See any file in `test/docs/test_*.md` for concrete examples. Add your new doc to [INDEX.md](INDEX.md).
+
+---
+
+### Build a known-depth history on a quiet shard
+
+`propose_until_included` drives the node to propose until a deploy lands, for
+shards created with `heartbeat=False` where nothing proposes on its own. Pair it
+with `deterministic_history_shard_config()`, whose stake split and `ftt=-1` make
+every propose finalize immediately, so block heights are a function of the test
+rather than of elapsed time.
+
+```python
+from ...infra.config import deterministic_history_shard_config
+from ...infra.polling import propose_until_included
+
+shard = Shard.create(provider, deterministic_history_shard_config(), timeouts)
+block_hash = propose_until_included(node, deploy_id, timeout=timeouts.custom(120))
+```
+
+### Drive the bridge contract
+
+`infra/bridge.py` owns everything bridge tests share: `BRIDGE_CONTRACT`,
+`extract_bridge_uris`, `make_query_rho`, `query_one`, and
+`wait_for_registry_visible`.
+
+```python
+from ...infra.bridge import (
+    BRIDGE_CONTRACT,
+    extract_bridge_uris,
+    query_one,
+    wait_for_registry_visible,
+)
+
+pars, block_hash, _ = deploy_and_read(v1, "", key, incl, fin, rho_file=BRIDGE_CONTRACT)
+query_uri, lock_uri, unlock_uri = extract_bridge_uris(pars)
+
+# Block finalization does NOT finalize a deploy's effects — a later merge can
+# reject the registry insert. Wait for the entry to answer before querying it.
+wait_for_registry_visible([shard.readonly], query_uri, timeouts.finalization)
+nonce = par_as_int(query_one(shard.readonly, query_uri, "getNonce", block_hash))
+```
+
+Only pass nodes that serve exploratory deploys — the readonly observer. Validators
+reject exploratory reads, so polling one turns the barrier into a guaranteed
+timeout.
+
+### Assert on node log markers
+
+Node log substrings a test waits for live in `infra/log_events.SYNC_MARKERS`,
+reached via `marker("Key")`. Register new ones there rather than inlining the
+string, so a node-side reword is a one-place fix. `FORBIDDEN_PATTERNS` in the same
+module is the opposite: lines a test must never see.
 
 ---
 

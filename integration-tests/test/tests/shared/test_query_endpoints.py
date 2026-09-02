@@ -220,13 +220,13 @@ def test_estimate_cost_storage_only(shared_shard) -> None:
     _assert_estimate_context(result)
 
 
-def test_estimate_cost_invalid_syntax(shared_shard) -> None:
+def test_estimate_cost_invalid_syntax(shared_shard, timeouts) -> None:
     """POST /api/estimate-cost returns error for invalid Rholang."""
     ro = shared_shard.readonly
     import requests
 
     url = f"{ro.http_url}/api/estimate-cost"
-    resp = requests.post(url, json={"term": "invalid {{{{ rholang"}, timeout=60)
+    resp = requests.post(url, json={"term": "invalid {{{{ rholang"}, timeout=timeouts.custom(60))
 
     # Should return an error (non-200 or error in body)
     assert resp.status_code != 200 or "error" in resp.text.lower(), (

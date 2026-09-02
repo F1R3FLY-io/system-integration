@@ -124,9 +124,9 @@ def test_joiner_mismatch_fails_startup(
         assert expected_field in mismatched, (
             f"Expected {expected_field!r} in mismatched_fields, got {mismatched!r}"
         )
-        assert (
-            find_event(joiner_node.logs(), event="casper_running_state_published") is None
-        ), "Mismatched joiner published Running before rejecting startup"
+        assert find_event(joiner_node.logs(), event="casper_running_state_published") is None, (
+            "Mismatched joiner published Running before rejecting startup"
+        )
         logging.info("Joiner mismatch detected: override=%s, mismatched=%s", override, mismatched)
     finally:
         joiner_node.close()
@@ -161,9 +161,9 @@ def test_joiner_mismatch_all_three_fields(provider, timeouts, group_b_baseline) 
             "native-token-symbol",
             "native-token-decimals",
         }, f"Expected all three fields mismatched, got {mismatched!r}"
-        assert (
-            find_event(joiner_node.logs(), event="casper_running_state_published") is None
-        ), "Mismatched joiner published Running before rejecting startup"
+        assert find_event(joiner_node.logs(), event="casper_running_state_published") is None, (
+            "Mismatched joiner published Running before rejecting startup"
+        )
         logging.info("All three fields mismatched as expected: %s", mismatched)
     finally:
         joiner_node.close()
@@ -197,9 +197,9 @@ def test_joiner_matching_config_succeeds(provider, timeouts, group_b_baseline) -
         # An additional API-level sanity check confirms the joiner is
         # actually serving requests.
         api_status = fetch_api_status_token(joiner_node.http_url)
-        assert find_event(
-            joiner_node.logs(), event="casper_running_state_published"
-        ) is not None, "Matching joiner reached its API without publishing Running"
+        assert find_event(joiner_node.logs(), event="casper_running_state_published") is not None, (
+            "Matching joiner reached its API without publishing Running"
+        )
         assert api_status.name == BASELINE_NAME, (
             f"Joiner API reports name={api_status.name!r}, expected {BASELINE_NAME!r}"
         )
@@ -474,7 +474,7 @@ def test_genesis_validator_with_wrong_token_blocks_ceremony(provider, timeouts) 
         master_running = False
         while time.time() < deadline:
             try:
-                resp = requests.get(boot_status_url, timeout=3)
+                resp = requests.get(boot_status_url, timeout=timeouts.custom(3))
                 if resp.status_code == 200 and resp.json().get("isReady") is True:
                     master_running = True
                     break

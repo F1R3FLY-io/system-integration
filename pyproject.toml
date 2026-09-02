@@ -29,7 +29,7 @@ urllib3 = ">=1.24.2"
 ecdsa = "*"
 eth-hash = { version = "*", extras = ["pycryptodome"] }
 pycryptodome = "*"
-pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git", rev = "1f1e599b3e5e35b3425855b3903122cf60653662" }
+pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git", rev = "0189d1717ccd6032dad7319c95d29a83d9bc1562" }
 requests = "*"
 pytest-timeout = "^2.4.0"
 pytest-instafail = "^0.5.0"
@@ -55,6 +55,7 @@ jsonapi = "anything"
 testpaths = ["integration-tests/test/tests"]
 markers = [
 	"xdist_group: assign test to an xdist load group (shared, custom, standalone)",
+	"requires_node_capabilities(*names): run only when every named node capability is supplied with --node-capability",
 ]
 # Per-test timeout (seconds). Includes fixture setup time, so session-scoped
 # fixtures (shard startup: compose up + 5 containers reaching Running state)
@@ -91,3 +92,11 @@ ignore = ["N999"]
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
+
+# Static-analysis environment (Pyright / pi lens): resolve imports from the
+# in-project poetry venv and treat integration-tests as a source root so
+# `test.infra.*` and unit-test loader paths type-check.
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["integration-tests"]

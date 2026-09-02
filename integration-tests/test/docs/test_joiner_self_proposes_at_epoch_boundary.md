@@ -2,93 +2,125 @@
 
 ## Purpose
 
-**Negative-control / forward-regression** for the bug observed in v19 of `test_bonding_validators` (joiner silently dropped from bonds when self-proposing first epoch-boundary block). After 6 variants — linear, concurrent multi-parent, V4 lagging, continuous bg proposers, multi-iteration scan covering 4 epoch boundaries — the bug **does not reproduce** under deterministic manual propose control.
+**Negative-control turned forward-regression** for the historical
+joiner-bond-drop bug (v19 of `test_bonding_validators`: a freshly-bonded
+joiner silently vanished from the bonds map after producing an
+epoch-boundary block, ~33% flake). Six deterministic manual-propose
+variants — linear, concurrent multi-parent, V4 lagging, continuous bg
+proposers, multi-iteration boundary scan — never reproduced it: the bug
+needed heartbeat-driven actor-message timing races. The bug class has
+since been fixed (the seal-base / fresh-joiner-latest-message work) and
+the bonding suite runs green under heartbeat.
 
-The test is preserved as:
-1. **Negative control** — proves the simple architectural shape (joiner produces first epoch-boundary block + multi-parent merges + bg chaos) is **not sufficient** to trigger the bug. The bug needs something more — most likely the heartbeat-driven actor-message timing race that manual propose can't replicate.
-2. **Forward regression** — when the bug is fixed at the node level, this test continues to pass, confirming the deterministic shape stays correct.
-
-For the actual flake repro, run `test_bonding_validators` (heartbeat=True + bg load) under subprocess provider — it surfaces the bug intermittently (~33% rate).
+The test remains as the deterministic regression for the shape nothing
+else covers deterministically: a bond sealed exactly ON an epoch
+boundary, activation via closeBlock, and the joiner self-proposing
+across multiple later boundaries with the bonds map held node-identical
+throughout.
 
 ## Setup
 
-Custom shard (NOT shared) — needs heartbeat-disabled config that the shared shard doesn't provide.
+Dedicated per-test shard (heartbeat-disabled config the shared shard
+doesn't provide).
 
-- **Topology**: 3 genesis validators (V1/V2/V3 at stake 100 each) + readonly observer + V4 attached as joiner mid-test
-- **Heartbeat**: **Disabled**. All blocks come from explicit `node.propose()` calls.
-- **FTT**: -1 (instant finalization). Avoids needing additional confirmations after propose.
-- **Synchrony constraint threshold**: 0 (any validator can propose at any time).
-- **Epoch length**: 4 (inherited from `conf/rust.conf`).
-- **V4's joiner attach**: `cli_flags={"--heartbeat-disabled"}` is passed explicitly. By default joiners auto-inherit heartbeat-enabled — only readonly observers auto-disable. Without this flag V4 would heartbeat-propose in parallel with the manual schedule and break the determinism.
+- **Topology**: 3 genesis validators (V1/V2/V3, stake 100 each) + readonly
+  observer + V4 attached as a joiner mid-test
+- **Heartbeat**: disabled everywhere. Every block comes from an explicit
+  `node.propose()`.
+- **FTT**: production default from `conf/rust.conf` (no override).
+  Finalization therefore needs a 2-of-3 mutual-justification clique — the
+  round-driven advance phase supplies the witnessing rounds. A negative
+  FTT finalizes on bare majority per snapshot, which legally permits
+  divergent floors under this test's sibling contests, and the suite
+  forbids the FinalityDivergence sentinel that reports them (caught live
+  on arm64 CI).
+- **Synchrony constraint threshold**: 0 (any validator can propose any time)
+- **Epoch length 4 / quarantine 10**: pinned explicitly via the shard's
+  `global_cli_options` AND V4's attach `cli_options` — never inherited from
+  `conf/rust.conf`. The whole test is built around block #4 being a
+  boundary; rust.conf carries a long epoch for suites that never bond, and
+  the two drifted (rust.conf moved to 50) while this test assumed 4.
+- **V4's attach**: `cli_flags={"--heartbeat-disabled"}` is passed
+  explicitly — joiners default to heartbeat-enabled (only readonly
+  observers auto-disable), and a heartbeat-proposing V4 would break the
+  manual schedule. V4 also carries the matching synchrony/epoch/
+  quarantine options (FTT comes from the shared conf on every node),
+  since consensus parameters must agree across nodes.
+- **Genesis wallet**: V4's vault seeded with `50_000_000_000_000_000` via
+  `extra_wallets` so bond.rho can pay phlo + stake.
 
-### Genesis wallet seeding
+## Test flow
 
-V4's vault is seeded at genesis with `50_000_000_000_000_000` tokens via `extra_wallets` so the bond.rho deploy can pay phlo + stake.
-
-## Test
-
-### `test_joiner_self_proposes_at_epoch_boundary`
-
-Single test, single phase. Block-by-block sequence:
-
-| # | Producer | Action | Why |
-|---|---|---|---|
-| 1 | V1 | filler deploy + propose | advance height |
-| 2 | V2 | filler deploy + propose | advance height |
-| 3 | V3 | filler deploy + propose | advance height |
-| **4** | **V1** | **bond.rho(V4) deploy + propose** | **bond block at exactly #4. closeBlock runs at end of #4 (4 % 4 == 0) and activates V4 via `pickActiveValidators`.** |
-| 5 | V1 | filler deploy + propose | post-activation: V4 active starting here |
-| 6 | V2 | filler deploy + propose | V4 still active |
-| 7 | V3 | filler deploy + propose | V4 still active |
-| **8** | **V4** | **filler deploy + propose** | **the bond-drop bug TRIGGER: V4's first block IS the next epoch boundary after activation. closeBlock at #8 reads V4's local snapshot of allBondsTHM and per the the bond-drop bug hypothesis silently drops V4.** |
-| 9 | V4 | filler deploy + propose | liveness check — does V4 still propose post-#8? |
-
-### Why V4 must NOT propose during #5-#7
-
-If V4 propose-rotates with V1/V2/V3 and produces, say, #6 (a non-epoch-boundary block), V4's local state catches up and the the bond-drop bug trigger no longer fires at #8. The flake nature of the bug in `test_bonding_validators` is exactly this — it depends on whether V4 happens to produce the epoch-boundary block as its first block.
-
-### Block-numbering invariant
-
-Manual propose with heartbeat off advances by exactly +1 per call. Each call is `deploy + propose` (propose requires non-empty mempool). Asserts at #3 and #4 verify the chain doesn't drift via multi-parent merge or auto-block-creation.
-
-## What the test proves
-
-- PoS bond.rho correctly records V4's bond at the bond block (verified at #4)
-- closeBlock at #4 epoch boundary correctly activates V4 (verified by V4 being able to propose #8)
-- **(currently failing — the bug)** closeBlock at the joiner's first self-proposed epoch boundary preserves the joiner in the active validator set
-- **(when fixed)** V4 stays bonded across epoch boundaries it produces
+1. **Blocks #1–#3** — linear fillers from V1, V2, V3, each waited visible
+   on every node. A block-numbering assert at #3 confirms manual propose
+   advances exactly +1 (no drift via merge or auto-creation).
+2. **Block #4** — V1 deploys `bond.rho` for V4 and proposes: the bond
+   block lands exactly on the epoch boundary, so closeBlock activates V4
+   in the same block. The boundary block's bonds map may validly show
+   EITHER side of the transition (pre- or post-activation weights,
+   depending on when the transition applies relative to header
+   construction — same semantics as the bonding suite; an earlier soak
+   preflight failed by demanding the post-set unconditionally). Whichever
+   side #4 shows is pinned, and all five nodes must agree on that exact
+   map. Block #5 gets the same either-side treatment: a preflight showed
+   every node uniformly still carrying the pre-activation map at #5 —
+   activation can surface in headers at a later transition. The
+   behavioral proof of activation is V4's own successful self-propose
+   below.
+3. **Advance phase** — round-driven, not clock-driven: each round fires
+   V1/V2/V3's deploy+propose concurrently (`_concurrent_propose_round` —
+   sibling forks at one height merged by the next round preserve the
+   multi-parent contention shape), waits the round's blocks visible on
+   every node, then checks the LFB. The loop runs until the LFB crosses
+   the epoch boundary at #8 (a bond made during epoch 1 only surfaces in
+   headers from the next boundary), bounded by a logical budget of 30
+   rounds — no wall-clock success gate, so host speed affects duration
+   only. V4 stays idle (receiving gossip).
+4. **Pre-propose guard** — V4 must be in the bonds map of the current
+   LFB before it proposes. The advance loop only exits with the LFB at
+   >= 8, so the finalized header is post-boundary and the guard is a
+   deterministic assertion — the header-lag window (an LFB read at
+   exactly #7 showing the bond absent; CI run 32588262605 caught the old
+   single-shot assert there) can no longer occur. This is the check that
+   catches an activation failure first — it fired when the epoch pin
+   drifted.
+5. **V4 boundary scan** — V4 deploys + proposes 12 sequential blocks
+   (sole producer now, so heights advance +1 each). At least one — in
+   practice three (e.g. #12/#16/#20) — lands on an epoch boundary. At
+   every V4-authored boundary block: V4 still in the bonds map (the
+   historical drop), and the full 4-validator map cross-node consistent.
+   A V4 propose failure at any iteration is treated as a bond-drop
+   manifestation (a node that believes it is not active), not tolerated.
 
 ## Key assertions
 
 | Stage | Assertion |
 |---|---|
-| #3 | `blockNumber == 3` (block-numbering invariant) |
-| #4 | bonds map = {V1, V2, V3, V4}, cross-node consistent |
-| #7 | V4 in bonds (mid-epoch, V4 must remain bonded leading into next boundary) |
-| #8 | sender == V4, blockNumber == 8 (epoch boundary) |
-| #8 | **V4 still in bonds map** ← the the bond-drop bug check; currently fails |
-| #8 | bonds map cross-node consistent at {V1, V2, V3, V4} |
-| #9 | V4 still proposing (liveness) |
+| #3 | `blockNumber == 3` — block-numbering invariant |
+| #4 | bonds map matches ONE transition side (pre- or post-set), cross-node consistent on that side |
+| #5 | same either-side + cross-node agreement |
+| pre-scan | V4 present in the current LFB's bonds map |
+| scan | every V4 propose succeeds; `sender == V4` on each block |
+| scan | ≥ 1 V4 block lands on an epoch boundary |
+| boundary blocks | V4 still in bonds; full map `{V1,V2,V3,V4}` node-identical |
 
 ## Forbidden-pattern coverage
 
-The test does **NOT** opt out of any forbidden patterns by default. the bond-drop bug is a **silent** bug — no `RecordingInvalidBlock`, no `InvalidBondsCache`, no `KvStoreError`, no FATAL signals. If observation later shows additional patterns firing, add the marker.
+No `allow_forbidden_patterns` opt-out: the historical bug was silent (no
+`RecordingInvalidBlock`, `InvalidBondsCache`, or storage errors), and a
+clean run is expected to stay clean.
 
 ## Infrastructure used
 
-- `provider.create_shard(config)` via `Shard.create()` — fresh per-test shard
-- `shard.attach_joiner(VALIDATOR4_ID, cli_flags={"--heartbeat-disabled"}, ...)` — joiner with manual propose
+- `Shard.create()` / `shard.destroy()` — fresh per-test shard
+- `shard.attach_joiner(VALIDATOR4_ID, cli_flags={"--heartbeat-disabled"}, cli_options={...})`
+- `_concurrent_propose_round` (test-local) — one synchronized parallel deploy+propose round across V1/V2/V3
 - `Node.deploy_string()` / `Node.deploy_rho_file()` / `Node.propose()` / `Node.get_block()`
 - `wait_for_block_visible()` from `infra/polling.py`
 - `assert_bonds_map_consistent_across_nodes()` from `infra/assertions.py`
-- `pytest.mark.xfail(strict=True)` — flips when bug is fixed
 
 ## Related
 
-- [test_bonding_validators](test_bonding_validators.md) — heartbeat-driven test that exposes the bug ~33% of the time as a flake
-- [PoS.rhox](../../../services/f1r3node-rust/casper/src/main/resources/PoS.rhox) — `closeBlock` (line 559) and `pickActiveValidators` (line 790)
-
-## Notes for future maintenance
-
-- If V4's `propose()` at step #8 raises `F1r3flyClientException`, that's an **earlier** the bond-drop bug manifestation (V4 thinks it's not active locally before even reaching closeBlock). The test treats this as a fail with a clear message rather than catching it.
-- The `xfail(strict=True)` marker means a passing run is itself a signal — when this test passes, the bond-drop bug is fixed. Don't silently flip to `xfail(strict=False)` if the test starts passing intermittently; that would mask noise where deterministic signal is the whole point.
+- [test_bonding_validators](test_bonding_validators.md) — the heartbeat-driven suite where the historical flake surfaced; now green
+- [test_validator_lifecycle](test_validator_lifecycle.md) — full PoS lifecycle including epoch-boundary activation under heartbeat
+- [PoS.rhox](../../../services/f1r3node-rust/casper/src/main/resources/PoS.rhox) — `closeBlock` / `pickActiveValidators`

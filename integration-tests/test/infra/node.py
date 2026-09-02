@@ -317,6 +317,21 @@ class Node:
         ``None`` when empty. Delegates to ``F1r3flyClient.read_channel``."""
         return self._external_client().read_channel(channel, block_hash)
 
+    def deploy_status(self, deploy_id: str):
+        """One-shot canonical-state finalization status for a deploy.
+
+        The non-polling counterpart to ``polling.wait_for_deploy_finalized``.
+        Callers that must sample SEVERAL nodes against a shared deadline need
+        this: polling each node in turn spends a full budget per node, so the
+        node sampled first has the earliest-closing window and reports "no
+        verdict" for a decision its peers observe moments later.
+
+        Returns ``DeployFinalizationStatusInfo`` (``state``,
+        ``rejection_count``, ``latest_block_hash``); raises only on transport
+        failure, never on a Pending or terminal state.
+        """
+        return self._external_client().deploy_finalization_status(deploy_id)
+
     def registry_lookup(self, uri: str, block_hash: str = "") -> list:
         """Look up a value in the registry via exploratory deploy.
 
@@ -407,6 +422,19 @@ class Node:
 
     def logs(self, tail: Optional[int] = None) -> str:
         return self._handle.logs(tail)
+
+    def iter_log_lines(self):
+        """Yield the node's log line-by-line without materializing it whole.
+
+        Diagnostic scans run against multi-hundred-MB debug logs; ``logs()``
+        reads the file into one string. Providers that expose a streaming
+        iterator use it; the rest fall back to the string API.
+        """
+        streaming = getattr(self._handle, "iter_log_lines", None)
+        if streaming is None:
+            yield from self._handle.logs().splitlines()
+            return
+        yield from streaming()
 
     def is_running(self) -> bool:
         return self._handle.is_running()

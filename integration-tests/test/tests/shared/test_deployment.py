@@ -13,9 +13,9 @@ import pytest
 from f1r3fly.client import F1r3flyClientException
 from f1r3fly.cost_accounting import CostAuthorityEvidence
 
-from ...infra.assertions import assert_deploy_succeeded
+from ...infra.assertions import assert_deploy_errored, assert_deploy_succeeded
 from ...infra.keys import VALIDATOR1_ID
-from ...infra.polling import wait_for_deploy_included
+from ...infra.polling import poll_until, wait_for_deploy_included
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -53,6 +53,34 @@ def test_deploy_invalid_syntax_rejected(shared_shard, timeouts) -> None:
     assert deploy.cost == evidence.byte_cost
 
     logging.info("Invalid syntax rejected, valid deploy succeeded in block %s", block_hash[:16])
+
+
+@pytest.mark.allow_forbidden_patterns("ComputationOutOfPhlogistons")
+def test_deploy_insufficient_phlo_errored(shared_shard, timeouts) -> None:
+    """An insufficient-phlo deploy errors without stopping finalization."""
+    v1 = shared_shard.node("validator1")
+
+    deploy_id = v1.deploy_string(
+        "@1!(1)",
+        VALIDATOR1_ID.private_key(),
+        phlo_limit=10,
+        phlo_price=1,
+    )
+    light_block = wait_for_deploy_included(v1, deploy_id, timeouts.deploy_inclusion)
+    assert_deploy_errored(v1.get_block(light_block.blockHash), deploy_id)
+
+    target = light_block.blockNumber + 3
+    for node in shared_shard.all_nodes:
+        poll_until(
+            predicate=lambda n=node: (
+                n.last_finalized_block().blockInfo.blockNumber
+                if n.last_finalized_block().blockInfo.blockNumber >= target
+                else None
+            ),
+            timeout=timeouts.finalization * 3,
+            interval=5.0,
+            description=f"{node.name} LFB >= #{target}",
+        )
 
 
 def test_deploy_lookup_consistent_across_validators(shared_shard, timeouts) -> None:

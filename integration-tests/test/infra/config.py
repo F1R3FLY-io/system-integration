@@ -176,6 +176,31 @@ class ShardConfig:
         return len(self.bonds)
 
 
+def deterministic_history_shard_config(**overrides) -> "ShardConfig":
+    """A shard whose block history is entirely test-driven.
+
+    One validator holds effectively all the stake and ``ftt=-1`` finalizes on its
+    vote alone, so every propose finalizes immediately and without waiting on
+    peers. ``heartbeat=False`` means nothing is proposed unless a test asks, so
+    block heights are a function of the test rather than of elapsed time.
+
+    Use for building a known-depth history — observer catch-up, LFS sync,
+    missing-block retry. Do NOT use where the point is multi-validator agreement:
+    the stake split makes the other two validators unable to affect finalization.
+
+    ``overrides`` are applied on top, e.g. ``include_readonly=True``.
+    """
+    from .keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+
+    params = dict(
+        bonds=[(VALIDATOR1_ID, 10_000_000), (VALIDATOR2_ID, 1), (VALIDATOR3_ID, 1)],
+        ftt=-1,
+        heartbeat=False,
+    )
+    params.update(overrides)
+    return ShardConfig(**params)
+
+
 @dataclasses.dataclass(frozen=True)
 class ResourcePaths:
     """Absolute paths to config, genesis, and cert files.

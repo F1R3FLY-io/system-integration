@@ -27,13 +27,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Tuple
 
 import pytest
-from f1r3fly.par import par_as_int, par_as_list, par_as_string, par_as_uri
+from f1r3fly.par import par_as_int, par_as_string, par_as_uri
 
 from ...infra.assertions import (
     assert_all_nodes_agree_on_block,
-    assert_all_nodes_agree_on_lfb,
     assert_contracts_consistent_across_nodes,
+    common_finalized_anchor,
 )
+from ...infra.bridge import extract_bridge_uris, make_query_rho
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import deploy_and_read, wait_for_deploy_finalized, wait_for_finalized
 
@@ -44,7 +45,6 @@ pytestmark = pytest.mark.xdist_group("shared")
 
 BRIDGE_CONTRACT = "resources/bridge-v2.rho"
 STORE_DATA_CONTRACT = "resources/storage/store-data.rho"
-READ_DATA_CONTRACT = "resources/storage/read-data.rho"
 DATA_PROVIDER_CONTRACT = "resources/lifecycle/data-provider.rho"
 DATA_CONSUMER_CONTRACT = "resources/lifecycle/data-consumer.rho"
 
@@ -52,48 +52,6 @@ VALIDATOR_KEYS = [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID]
 
 
 # ── Bridge URI extraction ─────────────────────────────────────────────
-
-
-def _extract_bridge_uris(pars) -> Tuple[str, str, str]:
-    """Extract (queryUri, lockUri, unlockUri) from bridge deploy data."""
-    for par in pars:
-        try:
-            items = par_as_list(par)
-        except ValueError:
-            continue
-        if len(items) != 3:
-            continue
-        try:
-            uris = [par_as_uri(item) for item in items]
-        except ValueError:
-            continue
-        if all(u.startswith("rho:id:") for u in uris):
-            return uris[0], uris[1], uris[2]
-
-    par_summaries = [str(p)[:80] for p in pars]
-    raise AssertionError(
-        f"Could not find [queryUri, lockUri, unlockUri] in deploy data. "
-        f"Got {len(pars)} par entries: {par_summaries}"
-    )
-
-
-# ── Rholang builders (bridge-specific) ───────────────────────────────
-
-
-def _make_query_rho(query_uri: str, method: str, param: str = "Nil") -> str:
-    """Build Rholang for a bridge query via real deploy (uses deployId)."""
-    return f"""
-new deployId(`rho:system:deployId`),
-    lookup(`rho:registry:lookup`),
-    queryCh, ret
-in {{
-  lookup!(`{query_uri}`, *queryCh) |
-  for (q <- queryCh) {{
-    q!("{method}", {param}, *ret) |
-    for (@result <- ret) {{ deployId!(result) }}
-  }}
-}}
-"""
 
 
 def _make_lock_rho(
@@ -254,7 +212,7 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
 
     # Extract bridge URIs
     for bridge_name in ("bridge1", "bridge2"):
-        query_uri, lock_uri, unlock_uri = _extract_bridge_uris(results[bridge_name]["pars"])
+        query_uri, lock_uri, unlock_uri = extract_bridge_uris(results[bridge_name]["pars"])
         results[bridge_name]["query_uri"] = query_uri
         results[bridge_name]["lock_uri"] = lock_uri
         results[bridge_name]["unlock_uri"] = unlock_uri
@@ -364,7 +322,7 @@ def test_cross_validator_queries_real_deploy(
             f = executor.submit(
                 deploy_and_read,
                 node,
-                _make_query_rho(uri, method),
+                make_query_rho(uri, method),
                 key.private_key(),
                 find_timeout,
                 lfb_timeout,
@@ -563,7 +521,7 @@ def test_transfers_interleaved_with_queries(
         query_future = executor.submit(
             deploy_and_read,
             validators[1],
-            _make_query_rho(
+            make_query_rho(
                 deployed_contracts["bridge1"]["query_uri"],
                 "getNonce",
             ),
@@ -656,11 +614,16 @@ def test_multi_block_state_evolution(
     )
     logging.info("Lock 1 result: %s", str(lock1_pars[0])[:120] if lock1_pars else "empty")
 
-    # Verify after lock 1
+    # Verify after lock 1. The nonce increments only on the lock's success
+    # path (the four-cell join), so this assert is also proof the lock
+    # itself succeeded — a (status: error) return leaves the nonce flat.
     wait_for_finalized(ro, lock1_num + 1, lfb_timeout)
     lfb_hash = ro.last_finalized_block().blockInfo.blockHash
     nonce_after_1 = par_as_int(ro.registry_query(query_uri, "getNonce", block_hash=lfb_hash)[0])
-    logging.info("Nonce after lock 1: %d (expected %d)", nonce_after_1, initial_nonce + 1)
+    assert nonce_after_1 == initial_nonce + 1, (
+        f"Nonce after lock 1: got {nonce_after_1}, expected {initial_nonce + 1} — "
+        f"the lock did not apply (result: {str(lock1_pars[0])[:120] if lock1_pars else 'empty'})"
+    )
 
     # Verify all nodes agree
     assert_all_nodes_agree_on_block(shared_shard.all_nodes, lock1_hash)
@@ -681,11 +644,14 @@ def test_multi_block_state_evolution(
     )
     logging.info("Lock 2 result: %s", str(lock2_pars[0])[:120] if lock2_pars else "empty")
 
-    # Verify after lock 2
+    # Verify after lock 2 — same success-proof semantics as lock 1.
     wait_for_finalized(ro, lock2_num + 1, lfb_timeout)
     lfb_hash = ro.last_finalized_block().blockInfo.blockHash
     nonce_after_2 = par_as_int(ro.registry_query(query_uri, "getNonce", block_hash=lfb_hash)[0])
-    logging.info("Nonce after lock 2: %d (expected %d)", nonce_after_2, initial_nonce + 2)
+    assert nonce_after_2 == initial_nonce + 2, (
+        f"Nonce after lock 2: got {nonce_after_2}, expected {initial_nonce + 2} — "
+        f"the lock did not apply (result: {str(lock2_pars[0])[:120] if lock2_pars else 'empty'})"
+    )
 
     assert_all_nodes_agree_on_block(shared_shard.all_nodes, lock2_hash)
 
@@ -709,15 +675,14 @@ def test_final_cross_node_state_agreement(shared_shard, deployed_contracts, time
     """All nodes agree on final LFB and all contract state."""
     ro = shared_shard.readonly
 
-    # All nodes agree on LFB. Opt into polling — normal propagation can
-    # leave one validator's finalizer a beat ahead of the others at the
-    # moment of the snapshot; timeouts.finalization gives the rest a
-    # window to catch up before the assertion fires.
-    lfb_hash = assert_all_nodes_agree_on_lfb(
-        shared_shard.all_nodes,
-        timeout=timeouts.finalization,
-    )
-    logging.info("All nodes agree on LFB: %s...", lfb_hash[:16])
+    # Stable finalized anchor, not live-pointer agreement: under
+    # heartbeat the LFB pointers may never coincide within one
+    # sequential sweep even with every finalizer healthy. The anchor —
+    # one hash verified FINALIZED on every node — is the achievable
+    # cross-node cut, and state agreement at that cut is the invariant
+    # this phase actually needs.
+    lfb_hash = common_finalized_anchor(shared_shard.all_nodes, timeouts.finalization)
+    logging.info("All nodes finalized the anchor cut: %s...", lfb_hash[:16])
 
     # Verify all nodes agree on LFB post-state
     assert_all_nodes_agree_on_block(shared_shard.all_nodes, lfb_hash)

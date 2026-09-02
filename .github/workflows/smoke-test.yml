@@ -185,6 +185,8 @@ jobs:
       F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
     steps:
       - uses: actions/checkout@v5
+      - name: Reserve shard ports from the ephemeral range
+        run: ./scripts/ci/reserve-shard-ports.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
@@ -223,7 +225,7 @@ jobs:
       - name: Start monitoring
         run: |
           poetry run shardctl up monitoring
-          sleep 20
+          ./scripts/ci/wait-for-monitoring.sh
       - name: Verify monitoring stack
         run: |
           echo "--- Prometheus targets ---"
@@ -313,6 +315,8 @@ jobs:
       F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
     steps:
       - uses: actions/checkout@v5
+      - name: Reserve shard ports from the ephemeral range
+        run: ./scripts/ci/reserve-shard-ports.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
@@ -346,7 +350,7 @@ jobs:
       - name: Start monitoring
         run: |
           poetry run shardctl up monitoring
-          sleep 20
+          ./scripts/ci/wait-for-monitoring.sh
       - name: Verify monitoring stack (standalone - no false DOWN)
         run: |
           echo "--- Prometheus targets ---"
@@ -449,6 +453,8 @@ jobs:
       F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
     steps:
       - uses: actions/checkout@v5
+      - name: Reserve shard ports from the ephemeral range
+        run: ./scripts/ci/reserve-shard-ports.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
@@ -499,6 +505,8 @@ jobs:
       F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
     steps:
       - uses: actions/checkout@v5
+      - name: Reserve shard ports from the ephemeral range
+        run: ./scripts/ci/reserve-shard-ports.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
@@ -546,6 +554,8 @@ jobs:
       F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
     steps:
       - uses: actions/checkout@v5
+      - name: Reserve shard ports from the ephemeral range
+        run: ./scripts/ci/reserve-shard-ports.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
@@ -598,6 +608,8 @@ jobs:
       F1R3FLY_NODE_IMAGE: f1r3flyindustries/f1r3fly-rust:dev
     steps:
       - uses: actions/checkout@v5
+      - name: Reserve shard ports from the ephemeral range
+        run: ./scripts/ci/reserve-shard-ports.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"

@@ -1,7 +1,7 @@
 """Port allocation for the test framework.
 
-Allocates non-overlapping 6-port blocks from a range below Linux's
-ephemeral source-port range. Each block maps to a single node's port layout:
+Allocates non-overlapping 6-port blocks from the reserved host range.
+Each block maps to a single node's port layout:
 protocol, gRPC-ext, gRPC-int, HTTP, discovery, admin-HTTP.
 
 Thread-safe via ``threading.Lock`` for pytest-xdist compatibility.
@@ -13,38 +13,18 @@ from __future__ import annotations
 
 import logging
 import socket
-import sys
 import threading
 import time
-from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List
 
 from .types import PortMapping
 
 logger = logging.getLogger(__name__)
 
-_BASE = 12000
-_CEILING = 32000
+_BASE = 41000
+_CEILING = 49000
 _BLOCK_SIZE = 6
 _WORKER_RANGE = 500  # ports per xdist worker (83 nodes max per worker)
-_LINUX_EPHEMERAL_RANGE = Path("/proc/sys/net/ipv4/ip_local_port_range")
-
-
-def _kernel_ephemeral_range() -> Optional[Tuple[int, int]]:
-    if not sys.platform.startswith("linux"):
-        return None
-    try:
-        fields = _LINUX_EPHEMERAL_RANGE.read_text(encoding="utf-8").split()
-        if len(fields) != 2:
-            raise ValueError("expected two port bounds")
-        lower, upper = (int(field) for field in fields)
-    except (OSError, ValueError) as error:
-        raise RuntimeError(
-            f"unable to read Linux ephemeral port range from {_LINUX_EPHEMERAL_RANGE}"
-        ) from error
-    if not (0 < lower <= upper <= 65535):
-        raise RuntimeError(f"invalid Linux ephemeral port range: {lower}-{upper}")
-    return lower, upper
 
 
 class PortAllocator:
@@ -67,49 +47,88 @@ class PortAllocator:
         if not (0 < base < ceiling <= 65536):
             raise RuntimeError(f"invalid test listener port range: {base}-{ceiling - 1}")
 
-        ephemeral_range = _kernel_ephemeral_range()
-        if ephemeral_range is not None:
-            ephemeral_lower, ephemeral_upper = ephemeral_range
-            if base <= ephemeral_upper and ceiling - 1 >= ephemeral_lower:
-                raise RuntimeError(
-                    f"test listener port range {base}-{ceiling - 1} overlaps Linux ephemeral "
-                    f"source-port range {ephemeral_lower}-{ephemeral_upper}"
-                )
-
-        self._range_start = base
+        self._base = base
         self._next = base
         self._ceiling = ceiling
+        # Blocks released by providers when their node is removed. Reused
+        # (oldest first, still bind-probed) before consuming fresh range.
+        # Without reuse the allocator is strictly monotonic and a long
+        # single-worker session that creates/destroys many shards exhausts
+        # its whole range while nearly every earlier block is free again
+        # (soak preflight 31919610258: 14 errors + 2 failures at 46% of
+        # the custom suite).
+        self._released: List[int] = []
+        # Blocks currently handed out and not yet released. Guards reuse:
+        # a just-allocated block whose node has not bound its ports yet
+        # must never be handed out a second time via the free-list.
+        self._in_use: set = set()
 
     def allocate(self) -> PortMapping:
         """Allocate a 6-port block for a single node.
 
-        Skips a block if any of its 6 ports is already bound (TIME_WAIT
-        from a previous test, ephemeral assignment by another process,
-        or a leftover container).
+        Serves released blocks first (FIFO), then fresh range. Skips a
+        block if any of its 6 ports is already bound (TIME_WAIT from a
+        previous test, ephemeral assignment by another process, or a
+        leftover container).
 
         Raises RuntimeError if the entire test range is exhausted.
         """
         with self._lock:
+            # Released blocks: probe each once per call; blocks still in
+            # TIME_WAIT go back to the end of the queue for a later call.
+            requeue: List[int] = []
+            reused = None
+            while self._released:
+                base = self._released.pop(0)
+                if self._block_free(base) is None:
+                    reused = base
+                    break
+                requeue.append(base)
+            self._released.extend(requeue)
+            if reused is not None:
+                self._in_use.add(reused)
+                return PortMapping.from_base(reused)
+
             while self._next + _BLOCK_SIZE <= self._ceiling:
                 base = self._next
                 self._next += _BLOCK_SIZE
-                busy = next(
-                    (p for p in range(base, base + _BLOCK_SIZE) if not self._is_port_free(p)),
-                    None,
-                )
+                busy = self._block_free(base)
                 if busy is None:
+                    self._in_use.add(base)
                     return PortMapping.from_base(base)
                 logger.debug(
                     "Block %d-%d skipped: port %d in use", base, base + _BLOCK_SIZE - 1, busy
                 )
             raise RuntimeError(
-                f"test port range exhausted ({self._range_start}-{self._ceiling - 1}). "
+                f"test port range exhausted ({self._base}-{self._ceiling - 1}). "
                 f"Too many concurrent nodes or leftover TIME_WAIT sockets."
             )
+
+    def release(self, mapping: PortMapping) -> None:
+        """Return a block to the allocator after its node is removed.
+
+        Safe to call more than once for the same block (subsequent calls
+        are no-ops), and ignores blocks this allocator never handed out
+        (e.g. handles adopted from a pre-existing container).
+        """
+        base = mapping.protocol
+        with self._lock:
+            if base not in self._in_use:
+                return
+            self._in_use.discard(base)
+            self._released.append(base)
 
     def allocate_many(self, count: int) -> List[PortMapping]:
         """Allocate ``count`` port blocks."""
         return [self.allocate() for _ in range(count)]
+
+    @classmethod
+    def _block_free(cls, base: int):
+        """Return the first busy port in the block, or None if all free."""
+        return next(
+            (p for p in range(base, base + _BLOCK_SIZE) if not cls._is_port_free(p)),
+            None,
+        )
 
     @staticmethod
     def _is_port_free(port: int) -> bool:

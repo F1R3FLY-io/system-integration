@@ -44,17 +44,24 @@ Submits a vault transfer (V1 → V2) and a bridge query in parallel. Verifies th
 ### test_multi_block_state_evolution
 
 Exercises bridge lock operations across multiple blocks from different validators:
-1. Lock 100 tokens from V1 — verify nonce increments
-2. Lock 200 tokens from V2 — verify nonce increments again
+1. Lock 100 tokens from V1 — assert the nonce is exactly `initial + 1`
+2. Lock 200 tokens from V2 — assert the nonce is exactly `initial + 2`
 3. After each lock, verify all nodes agree on the block's post-state
+
+The nonce asserts double as lock-success proofs: the nonce increments only
+on the lock's success path (the four-cell state join), so a lock that
+returns an error leaves it flat and fails the assert directly.
 
 Proves contract state correctly evolves across multiple blocks with mutations from different validators.
 
 ### test_final_cross_node_state_agreement
 
 Final verification after all phases:
-- All nodes agree on the same LFB hash
-- All nodes agree on the LFB's post-state hash
+- A common finalized anchor exists — one block hash proven `isFinalized` on
+  every node via `common_finalized_anchor` (under heartbeat the live LFB
+  pointers may never coincide in one sequential sweep, so anchor agreement
+  is the achievable cross-node cut)
+- All nodes agree on the anchor's post-state hash
 - All contracts accessible via exploratory deploy on readonly (8 contract queries)
 - Provider returns expected values ("hello_from_provider", 42)
 - Bridge instances have different vault addresses (independence check)
@@ -80,9 +87,9 @@ Final verification after all phases:
 ## Key assertions
 
 - `assert_all_nodes_agree_on_block` after every deployment and mutation block
-- `assert_all_nodes_agree_on_lfb` in final verification
+- `common_finalized_anchor` + post-state agreement at the anchor in final verification
 - `assert_contracts_consistent_across_nodes` for exploratory queries
-- Bridge nonce increments after each lock
+- Bridge nonce exactly `initial + k` after each lock (also the lock-success proof)
 - Bridge instances have different vault addresses
 - Consumer receives provider's data after cross-contract interaction
 - Transfer amounts exactly match balance changes
@@ -93,7 +100,7 @@ Final verification after all phases:
 - `deploy_and_read()` for contract deployment and real deploy queries
 - `Node.registry_query()` for exploratory deploy queries
 - `Node.vault.transfer_ensure()` and `Node.vault.get_balance()` for transfers
-- `assert_all_nodes_agree_on_block` / `assert_all_nodes_agree_on_lfb` from `infra/assertions.py`
+- `assert_all_nodes_agree_on_block` / `common_finalized_anchor` from `infra/assertions.py`
 - `assert_contracts_consistent_across_nodes` from `infra/assertions.py`
 - `ThreadPoolExecutor` for parallel deploy and query submission
 - `wait_for_finalized()` for block-height finalization checks (LFB advances)

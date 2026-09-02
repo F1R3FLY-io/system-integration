@@ -403,7 +403,7 @@ def test_validator_failure_halts_finalization(provider, timeouts) -> None:
         # with only V1+V2 stake (0.667 < 0.67 in strict-greater-than
         # semantics) — a safety violation.
         logging.info("Verifying post-pause blocks stay non-finalized (FT=0.33 NOT > FTT=0.67)...")
-        deadline = time.time() + 30
+        deadline = time.time() + timeouts.custom(30)
         while time.time() < deadline:
             for node in (v1, v2):
                 for block_hash, label in (
@@ -453,22 +453,29 @@ def test_validator_failure_halts_finalization(provider, timeouts) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Test 3: FTT boundary — strict greater-than (FTT=0.5, bonds 75/75/50)
+# Test 3: FTT boundary — inclusive (FTT=0.5, bonds 75/75/50)
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
-    """Kill V3, verify FT=0.5 does NOT finalize at FTT=0.5 (strict >).
+def test_ftt_boundary_is_inclusive(provider, timeouts) -> None:
+    """Kill V3, verify FT=0.5 DOES finalize at FTT=0.5 (inclusive >=).
 
     With bonds 75/75/50 (total=200) and FTT=0.5:
-    - All 3 alive: FT = (200*2 - 200) / 200 = 1.0 > 0.5 → finalizes
+    - All 3 alive: FT = (200*2 - 200) / 200 = 1.0 >= 0.5 -> finalizes
     - V3 (50) dead, V1+V2 (150): FT = (150*2 - 200) / 200 = 0.5
-      Comparison is strict >: 0.5 is NOT > 0.5 → halts
-    - After V3 restart: FT returns to 1.0 → resumes
+      Comparison is inclusive >=: 0.5 IS >= 0.5 -> still finalizes
+    - After V3 restart: FT returns to 1.0 -> continues
 
-    This proves the finalization formula uses strict greater-than.
-    FT must EXCEED FTT, not merely equal it. At the exact boundary,
-    there is zero safety margin and finalization correctly refuses.
+    The bond split exists to land FT EXACTLY on the threshold, which is
+    the only point where >= and > disagree. FTT is the minimum tolerable
+    margin, so meeting it exactly is sufficient: `ft_decides_exact` runs
+    `2*q*den >= S*(den+num)` and every production caller passes
+    strict=false (the four sites in floor.rs). The strict arm survives
+    only for the unit tests that pin this same boundary.
+
+    Finalization BELOW the threshold is a different property and is
+    covered by test_validator_failure_halts_finalization (FT=0.33 against
+    FTT=0.67), which must keep passing — this test says nothing about it.
     """
     config = ShardConfig(
         bonds=[
@@ -511,14 +518,14 @@ def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
         v3.pause()
 
         # Verify the property directly: blocks PROPOSED AFTER v3.pause()
-        # cannot be finalized under FTT=0.5 with only V1+V2 voting
-        # (FT = (150*2 - 200) / 200 = 0.5, which is NOT > 0.5 under
-        # strict-greater-than semantics). Observing the LFB alone is
-        # fragile: V3's already-cast votes on PRE-pause blocks can
-        # finalize after pause (those had FT=1.0), advancing the LFB —
-        # that's irrelevant to the strict-> property and shouldn't fail
-        # the test. Tracking specific post-pause block hashes isolates
-        # the actual invariant.
+        # still finalize under FTT=0.5 with only V1+V2 voting
+        # (FT = (150*2 - 200) / 200 = 0.5, which IS >= 0.5 under
+        # inclusive semantics). Observing the LFB alone would prove
+        # nothing here: V3's already-cast votes on PRE-pause blocks
+        # finalize after the pause on their own (those had FT=1.0) and
+        # advance the LFB regardless of what the boundary does. Tracking
+        # specific post-pause block hashes is what isolates the exact-tie
+        # decision from that unrelated advance.
         post_v1_deploy = v1.deploy_string(
             '@"post-boundary-v1"!(10)',
             VALIDATOR1_ID.private_key(),
@@ -551,31 +558,33 @@ def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
             post_v2_hash[:16],
         )
 
-        # Verify those specific blocks remain non-finalized over the
-        # observation window. Either V1 or V2 reporting them as
-        # finalized would mean FT=0.5 was treated as crossing FTT=0.5,
-        # violating strict-greater-than.
-        logging.info("Verifying post-pause blocks stay non-finalized (FT=0.5 NOT > FTT=0.5)...")
-        deadline = time.time() + 30
-        while time.time() < deadline:
+        # Verify those specific blocks DO finalize, on both surviving
+        # validators. Each is tracked independently so a partial result
+        # names exactly which (node, block) pair never crossed rather
+        # than collapsing to one opaque timeout.
+        logging.info("Verifying post-pause blocks finalize (FT=0.5 >= FTT=0.5)...")
+        targets = ((post_v1_hash, "v1"), (post_v2_hash, "v2"))
+        budget = timeouts.finalization * 3
+        pending = {(node.name, label) for node in (v1, v2) for _, label in targets}
+        deadline = time.time() + budget
+        while pending and time.time() < deadline:
             for node in (v1, v2):
-                for block_hash, label in (
-                    (post_v1_hash, "v1"),
-                    (post_v2_hash, "v2"),
-                ):
-                    if node.is_finalized(block_hash):
-                        raise AssertionError(
-                            f"Post-pause block {block_hash[:16]} from {label} "
-                            f"was finalized (observed on {node.name}) at "
-                            f"FT=0.5, FTT=0.5 — violates strict > semantics."
-                        )
-            time.sleep(2.0)
-        logging.info("Post-pause blocks remained non-finalized for 30s as expected")
+                for block_hash, label in targets:
+                    if (node.name, label) in pending and node.is_finalized(block_hash):
+                        pending.discard((node.name, label))
+            if pending:
+                time.sleep(2.0)
+        assert not pending, (
+            f"Post-pause blocks did NOT finalize at FT=0.5, FTT=0.5 within "
+            f"{budget:.0f}s — the boundary is inclusive, so a block whose "
+            f"fault tolerance exactly equals the threshold must finalize. "
+            f"Outstanding (node, block): {sorted(pending)}"
+        )
+        logging.info("Post-pause blocks finalized on V1 and V2 as expected")
         post_kill_lfb = lfb_number(v1)
         logging.info(
-            "V1 LFB after observation: #%d (pre-kill was #%d) — any LFB "
-            "advance came from V3's pre-pause in-flight votes finalizing "
-            "PRE-pause blocks, which is correct behavior",
+            "V1 LFB after observation: #%d (pre-kill was #%d) — the exact-threshold "
+            "blocks finalized on V1+V2 stake alone, with V3 still paused",
             post_kill_lfb,
             pre_kill_lfb,
         )
@@ -588,14 +597,14 @@ def test_ftt_boundary_strict_greater_than(provider, timeouts) -> None:
         v2.deploy_string('@"post-resume-v2"!(200)', VALIDATOR2_ID.private_key())
         v3.deploy_string('@"post-resume-v3"!(300)', VALIDATOR3_ID.private_key())
 
-        logging.info("Verifying finalization resumes after V3 restart...")
+        logging.info("Verifying finalization continues after V3 restart...")
         for node in all_nodes:
             wait_for_lfb_at_least(node, post_kill_lfb + 3, timeouts.finalization * 3)
 
         final_lfbs = {n.name: lfb_number(n) for n in all_nodes}
         logging.info("Final LFBs after V3 restart: %s", final_lfbs)
 
-        logging.info("FTT boundary strict > test passed (FT=0.5 halts at FTT=0.5)")
+        logging.info("FTT boundary inclusive test passed (FT=0.5 finalizes at FTT=0.5)")
     finally:
         try:
             v3.unpause()
@@ -664,16 +673,22 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
             baseline_lfb = lfb_number(v1)
         logging.info("Baseline LFB: #%d", baseline_lfb)
 
-        # Bond the joiner via PoS contract (deploy on V1)
+        # Bond the joiner via PoS contract (deploy on V1). The dominant
+        # stake is load-bearing: after activation V4 holds ~99.998% of
+        # total weight, so finalization past the boundary is impossible
+        # unless the bond applied, activation fired, AND the fresh
+        # joiner's heartbeat participates — the LFB target below proves
+        # the whole chain, not just non-stall.
+        joiner_bond = 10_000_000
         logging.info("Bonding joiner via PoS contract...")
         bond_deploy_id = v1.deploy_rho_file(
             rho_file_path="resources/wallets/bond.rho",
             private_key=VALIDATOR4_ID.private_key(),
-            substitutions={"%AMOUNT": "10000000"},
+            substitutions={"%AMOUNT": str(joiner_bond)},
+            phlo_limit=100_000_000,
+            phlo_price=1,
         )
         logging.info("Bond deploy submitted: %s", bond_deploy_id[:24])
-
-        from ...infra.polling import wait_for_deploy_finalized
 
         bond_status = wait_for_deploy_finalized(
             v1,
@@ -732,19 +747,35 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
                     f"{node.name} LFB #{node_lfb} too far behind target #{target_lfb}"
                 )
 
-            # Check if joiner produced any blocks (appeared in justifications)
-            latest_blocks = v1.get_blocks(20)
-            joiner_produced = False
-            for b in latest_blocks:
-                if b.sender == VALIDATOR4_ID.public_hex:
-                    joiner_produced = True
-                    logging.info("Joiner produced block #%d", b.blockNumber)
-                    break
+            # The bond must actually be in the active map: without this,
+            # a silently failed bond (e.g. a tightened bond-maximum
+            # default) leaves a plain 2-validator shard that reaches the
+            # LFB target on its own and the test passes vacuously. Poll
+            # rather than snapshot to ride out header-side activation lag.
+            def _joiner_active():
+                bonds = {b.validator: b.stake for b in v1.last_finalized_block().blockInfo.bonds}
+                return bonds if bonds.get(VALIDATOR4_ID.public_hex) == joiner_bond else None
 
-            if joiner_produced:
-                logging.info("Joiner activated and producing blocks")
-            else:
-                logging.warning("Joiner did not produce blocks in latest 20 — may need more epochs")
+            active_bonds = poll_until(
+                predicate=_joiner_active,
+                timeout=timeouts.finalization,
+                interval=3.0,
+                description="joiner in the active bonds map at the finalized tip",
+            )
+            logging.info("Joiner active with stake %d", active_bonds[VALIDATOR4_ID.public_hex])
+
+            # With V4 holding ~99.998% of stake, the LFB target above is
+            # unreachable unless V4 voted — so a produced block must exist.
+            latest_blocks = v1.get_blocks(20)
+            joiner_blocks = [
+                b.blockNumber for b in latest_blocks if b.sender == VALIDATOR4_ID.public_hex
+            ]
+            assert joiner_blocks, (
+                f"Joiner produced no blocks in the latest {len(latest_blocks)} despite "
+                f"finalization past the activation boundary — activation without "
+                f"participation should be impossible at this stake weight"
+            )
+            logging.info("Joiner activated and produced blocks: %s", joiner_blocks)
 
             logging.info("Epoch transition under heartbeat test passed")
     finally:

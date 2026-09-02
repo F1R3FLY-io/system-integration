@@ -80,6 +80,39 @@ if [[ -n "${RUNNER_MEM_GB_OVERRIDE+x}" ]]; then
   MEM_GB="$RUNNER_MEM_GB_OVERRIDE"
 fi
 
+# RUNNER_IDLE_TIMEOUT_SECS raises the idle watchdog cap for this launch only.
+# Origin: run 33208755550 — the Heavy Pipeline launches its arm64 runner pair
+# up front, arm64-docker held one runner for ~61 minutes, and the 45-minute
+# default reaped the idle second runner ~10 minutes before the sequential
+# arm64-subprocess leg queued; the job then re-queued with no runner alive and
+# hung until a manual cancel. A caller serving a multi-leg pipeline passes
+# e.g. 7200; everyone else keeps the default so the leak guardrail stays
+# tight. Same `+x` + fail-closed validation pattern as RUNNER_MEM_GB_OVERRIDE:
+# a malformed value dies here, not inside cloud-init on a VM that then leaks.
+IDLE_TIMEOUT_SECS_DEFAULT=2700
+if [[ -n "${RUNNER_IDLE_TIMEOUT_SECS+x}" ]]; then
+  if [[ ! "$RUNNER_IDLE_TIMEOUT_SECS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: RUNNER_IDLE_TIMEOUT_SECS must be a positive integer (seconds), got: '$RUNNER_IDLE_TIMEOUT_SECS'" >&2
+    exit 1
+  fi
+  # Floor: below this the watchdog races normal queue->assignment latency and
+  # reaps runners that were about to get work — the failure this knob exists
+  # to fix, reintroduced from the other side.
+  if (( RUNNER_IDLE_TIMEOUT_SECS < 600 )); then
+    echo "ERROR: RUNNER_IDLE_TIMEOUT_SECS ${RUNNER_IDLE_TIMEOUT_SECS}s is below the 600s floor" >&2
+    exit 1
+  fi
+  # Ceiling: an idle cap measured in a workday is a leak with a config entry,
+  # not a wait. 6h covers any sequential leg observed to date with margin.
+  if (( RUNNER_IDLE_TIMEOUT_SECS > 21600 )); then
+    echo "ERROR: RUNNER_IDLE_TIMEOUT_SECS ${RUNNER_IDLE_TIMEOUT_SECS}s exceeds the 21600s (6h) sanity ceiling" >&2
+    exit 1
+  fi
+  IDLE_TIMEOUT_SECS="$RUNNER_IDLE_TIMEOUT_SECS"
+else
+  IDLE_TIMEOUT_SECS="$IDLE_TIMEOUT_SECS_DEFAULT"
+fi
+
 # Verify gh CLI is authenticated
 if ! gh auth status >/dev/null 2>&1; then
   echo "ERROR: gh CLI not authenticated. Run 'gh auth login' first." >&2
@@ -253,6 +286,7 @@ sed \
   -e "s|__GH_REPO__|$(esc "$GH_REPO")|g" \
   -e "s|__RUNNER_NAME__|$(esc "$RUNNER_NAME")|g" \
   -e "s|__RUNNER_LABELS__|$(esc "$LABELS")|g" \
+  -e "s|__RUNNER_IDLE_TIMEOUT_SECS__|$(esc "$IDLE_TIMEOUT_SECS")|g" \
   -e "s|__RUNNER_VERSION__|$(esc "$RUNNER_VERSION")|g" \
   -e "s|__RUNNER_ARCH__|$(esc "$RUNNER_AGENT_ARCH")|g" \
   "$CLOUD_INIT_TMPL" > "$CLOUD_INIT_RENDERED"
@@ -271,6 +305,7 @@ echo "=== Launching $RUNNER_NAME ==="
 echo "  Shape:       $SHAPE"
 echo "  OCPUs:       $OCPUS"
 echo "  Memory:      ${MEM_GB} GB${RUNNER_MEM_GB_OVERRIDE:+ (via RUNNER_MEM_GB_OVERRIDE)}"
+echo "  Idle cap:    ${IDLE_TIMEOUT_SECS}s${RUNNER_IDLE_TIMEOUT_SECS:+ (via RUNNER_IDLE_TIMEOUT_SECS)}"
 echo "  Image:       $IMAGE_OCID"
 echo "  Labels:      $LABELS"
 

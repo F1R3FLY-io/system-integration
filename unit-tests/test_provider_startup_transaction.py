@@ -185,9 +185,12 @@ def test_subprocess_shard_propagates_ceremony_threshold_to_readonly(tmp_path):
         wait_running=False,
     )
 
-    assert [
-        "--required-signatures=1" in call["cli_args"] for call in spawn_calls
-    ] == [True, True, True, True]
+    assert ["--required-signatures=1" in call["cli_args"] for call in spawn_calls] == [
+        True,
+        True,
+        True,
+        True,
+    ]
 
 
 @pytest.mark.parametrize("method_name", ["add_joiner", "add_observer"])
@@ -343,6 +346,7 @@ class _RemovableHandle:
     def __init__(self):
         self.name = "rnode.test.session.standalone1"
         self.network_name = "f1r3fly-test-session-standalone1"
+        self.ports = object()
         self.archived = False
         self.removed = False
 
@@ -360,6 +364,7 @@ def test_docker_failed_startup_force_cleanup_overrides_keep_running(monkeypatch,
     provider._session_id = "session"
     provider._paths = SimpleNamespace(integration_tests=str(tmp_path))
     provider._registry = SimpleNamespace(keep_running=True, keep_on_failure=False)
+    provider._ports = SimpleNamespace(release=lambda _ports: None)
     docker_calls = []
     monkeypatch.setattr(
         "test.infra.providers.docker._docker",
@@ -387,6 +392,7 @@ def test_subprocess_failed_startup_force_cleanup_overrides_keep_running(tmp_path
     provider._session_id = "session"
     provider._paths = SimpleNamespace(integration_tests=str(tmp_path))
     provider._keep_running = True
+    provider._ports = SimpleNamespace(release=lambda _ports: None)
 
     provider.destroy_standalone(handle)
     assert provider._active_handles == [handle]

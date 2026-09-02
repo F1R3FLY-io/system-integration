@@ -33,7 +33,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 
-import pytest
+import pytest  # type: ignore[import-not-found]
+
+from shardctl.soak_metrics import emit_lfb_spread_metric
 
 from ...infra.config import ShardConfig
 from ...infra.keys import (
@@ -51,7 +53,12 @@ from ...infra.metrics import (
     percentiles,
     scrape_metrics,
 )
-from ...infra.polling import poll_until, wait_for_lfb_converged
+from ...infra.polling import (
+    lfb_number,
+    parse_vabn_expiration,
+    poll_until,
+    wait_for_lfb_converged,
+)
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
@@ -74,7 +81,13 @@ PHASES = [
     {"name": "sustained", "rate": 4, "duration": 300, "workers": 3},
 ]
 
-VABN_REFRESH_INTERVAL = 30
+# How often the rated loop refreshes validAfterBlockNumber. Deploys are
+# rejected once the DAG advances more than the 50-block deploy lifespan
+# past their vabn, and a loaded 3-validator shard can clear 50 blocks in
+# well under 30 seconds — the soak preflight (31919610258) expired 17
+# sustained-phase deploys exactly this way. 5s keeps worst-case staleness
+# far inside the lifespan at any observed block rate.
+VABN_REFRESH_INTERVAL = 5
 
 VALIDATORS_AND_KEYS = [
     (VALIDATOR1_ID, "validator1"),
@@ -104,7 +117,16 @@ def _submit_deploy(node, key, index, vabn, phase):
 
 
 def _current_block_number(node, monitor=None) -> int:
-    """``node.get_current_block_number()``, but explaining itself when it fails.
+    """The node's DAG-TIP height, with watchdog attribution on failure.
+
+    ``Node.get_current_block_number()`` returns the LAST FINALIZED block
+    number — the wrong height for validAfterBlockNumber freshness, since
+    deploy expiration compares against the latest DAG height. When the
+    un-finalized cone runs deep (tip − LFB > deploy lifespan), an
+    LFB-derived vabn is expired on arrival no matter how recently it was
+    read (sibling review of eace78ff). ``get_blocks(1)`` reports the
+    actual tip; LFB remains only as a fallback when the tip read comes
+    back empty.
 
     When the host-protection watchdog trips it SIGKILLs every node, so the next
     query dies with a bare ``grpc StatusCode.UNAVAILABLE / Connection refused``.
@@ -116,6 +138,9 @@ def _current_block_number(node, monitor=None) -> int:
     failure, instead of leaving the two halves to be correlated by hand.
     """
     try:
+        blocks = node.get_blocks(1)
+        if blocks:
+            return max(b.blockNumber for b in blocks)
         return node.get_current_block_number()
     # Deliberately broad. A watchdog kill arrives as grpc.RpcError, but a dead
     # node also surfaces as connection resets and client-wrapper errors, and all
@@ -145,8 +170,8 @@ def _current_block_number(node, monitor=None) -> int:
                 "failure rather than a watchdog kill — check that node's logs"
             )
         raise AssertionError(
-            f"Node {node.name} became unreachable while querying the last "
-            f"finalized block. {diagnosis}. Underlying error: {exc}"
+            f"Node {node.name} became unreachable while querying the chain "
+            f"height. {diagnosis}. Underlying error: {exc}"
         ) from exc
 
 
@@ -206,8 +231,28 @@ def _run_phase(nodes, tracker, phase, start_index, monitor=None):
                 rec = _submit_deploy(node, key, idx, vabn, phase_name)
                 tracker.track_deploy(rec)
                 deploy_count += 1
-            except Exception as e:
-                errors.append(f"deploy {idx}: {e}")
+            except Exception as first_err:
+                # Retry ONLY the exact vabn-expiration rejection — the one
+                # failure that guarantees the node did NOT accept the
+                # deploy. parse_vabn_expiration is the GATE (its regex pins
+                # the node's rejection shape, unit-tested against captured
+                # wording) AND the freshness source: the rejection carries
+                # the node's current height. Any other failure (deadline,
+                # connection loss) is ambiguous — the first submission may
+                # have landed, and a blind retry would double-submit
+                # untracked load — so it is recorded, never retried.
+                height = parse_vabn_expiration(str(first_err))
+                if height is not None:
+                    try:
+                        vabn = max(0, height - 1)
+                        vabn_refreshed_at = time.time()
+                        rec = _submit_deploy(node, key, idx, vabn, phase_name)
+                        tracker.track_deploy(rec)
+                        deploy_count += 1
+                    except Exception as e:
+                        errors.append(f"deploy {idx}: {e} (vabn-refresh retry after: {first_err})")
+                else:
+                    errors.append(f"deploy {idx}: {first_err}")
             target_time = phase_start + (i + 1) * interval
             sleep_time = target_time - time.time()
             if sleep_time > 0:
@@ -238,18 +283,17 @@ def _format_report(reports):
     return "\n".join(lines)
 
 
-def _get_lfb_number(node) -> int:
-    try:
-        return node.last_finalized_block().blockInfo.blockNumber
-    except Exception:
-        return 0
-
-
 def _get_tip(node) -> int:
     """Highest block number the node knows (the DAG tip). ``tip - LFB`` is the
-    un-finalized cone depth — the direct finalization-lag / runaway signal."""
+    un-finalized cone depth — the direct finalization-lag / runaway signal.
+
+    Must read the ACTUAL tip (``get_blocks(1)``): the previous
+    implementation used ``get_current_block_number()``, which returns the
+    LFB — making the cone telemetry compute LFB − LFB = 0 and hiding the
+    very lag it exists to expose (sibling review of eace78ff)."""
     try:
-        return node.get_current_block_number()
+        blocks = node.get_blocks(1)
+        return max(b.blockNumber for b in blocks) if blocks else 0
     except Exception:
         return 0
 
@@ -309,16 +353,16 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
         nodes = {"validator1": v1, "validator2": v2, "validator3": v3}
 
         # Wait for shard to be healthy
-        baseline_lfb = _get_lfb_number(v1)
+        baseline_lfb = lfb_number(v1)
         if baseline_lfb == 0:
             logging.info("Waiting for initial LFB advancement...")
             poll_until(
-                predicate=lambda: _get_lfb_number(v1) if _get_lfb_number(v1) > 0 else None,
+                predicate=lambda: lfb_number(v1) if lfb_number(v1) > 0 else None,
                 timeout=timeouts.finalization,
                 interval=5.0,
                 description="initial LFB > 0",
             )
-            baseline_lfb = _get_lfb_number(v1)
+            baseline_lfb = lfb_number(v1)
 
         logging.info("Baseline LFB: #%d", baseline_lfb)
 
@@ -339,7 +383,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
                 logging.info("--- Phase: %s ---", phase_name)
 
                 tracker.clear()
-                lfb_start = _get_lfb_number(v1)
+                lfb_start = lfb_number(v1)
                 metrics_before_by_v = {name: scrape_metrics(node) for name, node in nodes.items()}
                 metrics_before = metrics_before_by_v["validator1"]
                 phase_time_start = time.time()
@@ -371,7 +415,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
                 # across the rated phases (esp. the sustained phase) is the runaway;
                 # one that stays bounded means finalization keeps pace.
                 tip_now = _get_tip(v1)
-                lfb_now = _get_lfb_number(v1)
+                lfb_now = lfb_number(v1)
                 peak_lag = tip_now - lfb_now
                 logging.info(
                     "  Cone at end of %s submission: tip-LFB lag = %d blocks (tip #%d, LFB #%d)",
@@ -383,7 +427,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
 
                 tracker.wait_for_finalization(timeout=finalization_timeout)
 
-                lfb_end = _get_lfb_number(v1)
+                lfb_end = lfb_number(v1)
                 metrics_after_by_v = {name: scrape_metrics(node) for name, node in nodes.items()}
                 metrics_after = metrics_after_by_v["validator1"]
                 node_metrics = compute_metric_deltas(metrics_before, metrics_after)
@@ -480,9 +524,10 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
         # instant load stopped: it is what a telemetry-only run wants, and it
         # makes a later convergence failure interpretable by showing how far
         # behind the shard started from.
-        drain_lfbs = {n.name: _get_lfb_number(n) for n in shard.all_nodes}
+        drain_lfbs = {n.name: lfb_number(n) for n in shard.all_nodes}
         drain_spread = max(drain_lfbs.values()) - min(drain_lfbs.values())
         logging.info("All-node LFBs at drain: %s (spread %d blocks)", drain_lfbs, drain_spread)
+        emit_lfb_spread_metric(drain_spread)
 
         # Hard assertions. Set LOAD_TEST_TELEMETRY_ONLY=1 to skip the
         # finalization gate when collecting metrics across capacity limits.

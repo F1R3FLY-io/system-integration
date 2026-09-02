@@ -18,7 +18,9 @@ HTTP endpoints tested:
   /api/deploy (POST)
 """
 
+import itertools
 import logging
+import os
 import re
 import time
 
@@ -27,12 +29,31 @@ from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto
 from f1r3fly.util import sign_deploy_data
 
 from ...infra.keys import VALIDATOR1_ID
-from ...infra.polling import poll_until, wait_for_deploy_finalized, wait_for_deploy_included
+from ...infra.polling import (
+    lfb_number,
+    poll_until,
+    wait_for_deploy_finalized,
+    wait_for_deploy_included,
+)
 
 pytestmark = pytest.mark.xdist_group("shared")
 
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 _HEX_130 = re.compile(r"^[0-9a-f]{130}$")
+
+# SI-TASK-016-2: every _deploy_and_wait call must produce onto a channel no
+# other shared-shard test writes. The node's single-value-cell guard
+# (`numeric_cell_would_overfill`) rejects the *second* integer write to a
+# channel whose base holds exactly one datum, and whether that second write
+# lands depends on proposer rotation — which made the shared suite fail about
+# one run in two. A quoted string name sidesteps the integer-cell classifier;
+# pid + counter is unique across xdist workers (one process each) without
+# threading a worker id through every caller.
+_CHANNEL_SEQ = itertools.count()
+
+
+def _fresh_channel() -> str:
+    return f'"web-api-{os.getpid()}-{next(_CHANNEL_SEQ)}"'
 
 
 def _shard_expectations(shard, node_conf):
@@ -59,7 +80,7 @@ def _shard_expectations(shard, node_conf):
 
 def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
     """Deploy `count` contracts and wait for each deploy to reach canonical
-    state via sig-based finalization tracking. Returns (deploy_ids, block_hashes)
+    state via deploy-ID finalization tracking. Returns (deploy_ids, block_hashes)
     where each block_hash is the resolver's `latestBlockHash` — the canonical
     block containing the deploy after multi-parent merge / re-inclusion.
 
@@ -68,17 +89,26 @@ def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
     whenever the test iterates per-node assertions on the deploy (e.g.
     `/deploy/<id>` returning `isFinalized=true`) — finalization can complete
     on the submitting node a few seconds before peers in multi-parent DAGs.
+
+    Budget is `finalization * 3`, matching the custom suite's measured basis:
+    a deploy that loses merges must win a cut via recovery and then finalize,
+    measured at ~102s for a 7-rejection round. A plain `finalization` budget
+    (67s at CI scale) failed a deploy that recovered after 13 rejections and
+    reached its terminal verdict at ~118s — the deploy was healthy and the
+    shard decided; only the wait was short.
     """
+    finalization_timeout = timeouts.finalization * 3
     deploy_ids = []
     for i in range(count):
         did = node.deploy_string(
             f"new ret in {{ ret!({i}) | for (_ <- ret) {{ Nil }} }}",
             VALIDATOR1_ID.private_key(),
+            phlo_limit=100_000,
+            phlo_price=1,
         )
         deploy_ids.append(did)
 
     block_hashes = []
-    finalization_timeout = timeouts.finalization * 2
     for did in deploy_ids:
         status = wait_for_deploy_finalized(
             node,
@@ -696,22 +726,34 @@ def test_deploy_via_http(shared_shard) -> None:
     v1 = shared_shard.node("validator1")
     key = VALIDATOR1_ID.private_key()
     timestamp = int(time.time() * 1000)
+    # Read from the LFB rather than hardcoding: the node rejects a deploy whose
+    # valid-after block has fallen outside `deploy_lifespan` behind the tip, and
+    # this shard is shared, so a fixed low value expires once enough tests have
+    # run against it. The LFB trails the tip by far less than the lifespan.
+    valid_after_block_number = lfb_number(v1)
 
     deploy_proto = DeployDataProto(
         term="@2!(1)",
         timestamp=timestamp,
-        validAfterBlockNumber=5,
+        phloLimit=100_000,
+        phloPrice=1,
+        validAfterBlockNumber=valid_after_block_number,
         shardId="root",
+        language="rholang",
     )
+    signature = sign_deploy_data(key, deploy_proto).hex()
     deploy_req = {
         "data": {
             "term": "@2!(1)",
             "timestamp": timestamp,
-            "validAfterBlockNumber": 5,
+            "phloLimit": 100_000,
+            "phloPrice": 1,
+            "validAfterBlockNumber": valid_after_block_number,
             "shardId": "root",
+            "language": "rholang",
         },
         "deployer": key.get_public_key().to_hex(),
-        "signature": sign_deploy_data(key, deploy_proto).hex(),
+        "signature": signature,
         "sigAlgorithm": "secp256k1",
     }
 
@@ -924,7 +966,7 @@ def test_transfers_null_on_validator_http(shared_shard, timeouts) -> None:
     logging.info("Transfer null/populated behavior verified: validator=null, readonly=list")
 
 
-def test_removed_endpoints_404(shared_shard) -> None:
+def test_removed_endpoints_404(shared_shard, timeouts) -> None:
     """Removed endpoints return 404."""
     import requests
 
@@ -934,14 +976,14 @@ def test_removed_endpoints_404(shared_shard) -> None:
     resp = requests.post(
         f"{v1.http_url}/api/data-at-name",
         json={"name": {"UnforgDeploy": {"data": "abc"}}, "depth": 1},
-        timeout=10,
+        timeout=timeouts.command,
     )
     assert resp.status_code == 404, f"/api/data-at-name should return 404, got {resp.status_code}"
 
     # GET /api/transactions/{hash} — removed
     resp = requests.get(
         f"{v1.http_url}/api/transactions/abc123",
-        timeout=10,
+        timeout=timeouts.command,
     )
     assert resp.status_code == 404, f"/api/transactions should return 404, got {resp.status_code}"
 
