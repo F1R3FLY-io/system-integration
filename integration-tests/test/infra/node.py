@@ -235,7 +235,7 @@ class Node:
     # ── Deploy operations ──
 
     def send_deploy(self, deploy_proto) -> str:
-        """Submit a pre-built DeployDataProto. Returns deploy ID (signature hex)."""
+        """Submit a pre-built DeployDataProto and return its deploy ID."""
         return self._external_client().send_deploy(deploy_proto)
 
     def deploy_string(
@@ -245,7 +245,7 @@ class Node:
         valid_after_block_no: Optional[int] = None,
         shard_id: str = "root",
     ) -> str:
-        """Deploy Rholang code. Returns the deploy ID (signature hex).
+        """Deploy Rholang code and return its deploy ID.
 
         ``valid_after_block_no`` defaults to the current latest block
         number (auto-filled). Pass an explicit value to override.
@@ -274,7 +274,7 @@ class Node:
         """Deploy a .rho file with optional string substitutions.
 
         Relative paths are resolved from the integration-tests/ directory.
-        Returns the deploy ID (signature hex).
+        Returns the deploy ID.
         """
         import os
 

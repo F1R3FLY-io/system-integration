@@ -50,7 +50,7 @@ def test_deploy_invalid_syntax_rejected(shared_shard, timeouts) -> None:
 
     full_block = v1.get_block(block_hash)
     assert_deploy_succeeded(full_block, deploy_id)
-    deploy = next(d for d in full_block.deploys if d.sig == deploy_id)
+    deploy = next(d for d in full_block.deploys if d.deployId.hex() == deploy_id)
     evidence = CostAuthorityEvidence.from_processed_deploy(deploy)
     assert evidence.witness.events == ()
     assert evidence.byte_cost > 0

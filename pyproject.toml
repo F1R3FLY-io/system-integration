@@ -29,7 +29,7 @@ urllib3 = ">=1.24.2"
 ecdsa = "*"
 eth-hash = { version = "*", extras = ["pycryptodome"] }
 pycryptodome = "*"
-pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git", rev = "0189d1717ccd6032dad7319c95d29a83d9bc1562" }
+pyf1r3fly = { git = "https://github.com/F1R3FLY-io/pyf1r3fly.git", rev = "c572ef560feb87ebb233dec16915071e8011638e" }
 requests = "*"
 pytest-timeout = "^2.4.0"
 pytest-instafail = "^0.5.0"

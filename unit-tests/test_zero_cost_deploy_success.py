@@ -9,6 +9,7 @@ from test.infra.assertions import assert_deploy_succeeded  # noqa: E402
 
 
 def test_zero_comm_deploy_is_successful_when_execution_did_not_error():
-    block = BlockInfo(deploys=[DeployInfo(sig="deploy-id", cost=0, errored=False)])
+    deploy_id = bytes(range(32))
+    block = BlockInfo(deploys=[DeployInfo(deployId=deploy_id, cost=0, errored=False)])
 
-    assert_deploy_succeeded(block, "deploy-id")
+    assert_deploy_succeeded(block, deploy_id.hex())

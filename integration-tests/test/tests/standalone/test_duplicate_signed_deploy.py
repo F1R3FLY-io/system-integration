@@ -1,7 +1,7 @@
 """Concurrent submissions of one signed deploy admit and execute exactly one copy.
 
-Resubmitting an identical ``DeployDataProto`` — same signature, so the same deploy
-id — must be refused after the first acceptance rather than queued twice. Beyond
+Resubmitting an identical ``DeployDataProto`` with the same deploy ID must be
+refused after the first acceptance rather than queued twice. Beyond
 the admission count, this asserts the property no unit test can reach: after
 finalization the deploy appears exactly once in the canonical block, so a
 duplicate cannot be executed twice.
@@ -39,13 +39,11 @@ def test_duplicate_signed_deploy_race(provider, timeouts) -> None:
         deploy = create_deploy_data(
             BOOTSTRAP_ID.private_key(),
             '@"duplicate-race-state"!(1)',
-            1,
-            100_000,
-            vabn,
-            int(time.time() * 1000),
-            "root",
+            valid_after_block_no=vabn,
+            timestamp_millis=int(time.time() * 1000),
+            shard_id="root",
         )
-        expected_id = deploy.sig.hex()
+        expected_id = deploy.deployId.hex()
 
         accepted = []
         rejected = []
@@ -57,10 +55,6 @@ def test_duplicate_signed_deploy_race(provider, timeouts) -> None:
                 except F1r3flyClientException as exc:
                     rejected.append(str(exc))
 
-        # Only the COUNT is a server-side fact: send_deploy returns the signature of
-        # the request it sent, so every accepted entry equals expected_id by
-        # construction. Check both anyway — the equality documents which deploy id
-        # the surviving submission carries.
         assert len(accepted) == 1, f"expected exactly one acceptance, got {accepted}"
         assert accepted == [expected_id]
         assert len(rejected) == 31, f"expected 31 duplicate rejections, got {len(rejected)}"
@@ -71,7 +65,9 @@ def test_duplicate_signed_deploy_race(provider, timeouts) -> None:
 
         status = wait_for_deploy_finalized(node, expected_id, timeouts.finalization)
         block = node.get_block(status.latestBlockHash.hex())
-        occurrences = sum(1 for processed in block.deploys if processed.sig == expected_id)
+        occurrences = sum(
+            1 for processed in block.deploys if processed.deployId.hex() == expected_id
+        )
         assert occurrences == 1, f"deploy executed {occurrences} times in canonical block"
     finally:
         node.close()

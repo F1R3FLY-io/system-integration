@@ -34,6 +34,19 @@ def test_integration_calls_omit_retired_phlo_keywords() -> None:
     assert violations == []
 
 
+def test_deploy_constructor_uses_keyword_only_protocol_fields() -> None:
+    violations = []
+    for path in INTEGRATION_TEST_ROOT.rglob("*.py"):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+            name = call.func.attr if isinstance(call.func, ast.Attribute) else None
+            if isinstance(call.func, ast.Name):
+                name = call.func.id
+            if name == "create_deploy_data" and len(call.args) > 2:
+                violations.append(f"{path.relative_to(REPO_ROOT)}:{call.lineno}")
+    assert violations == []
+
+
 def test_http_deploy_request_omits_retired_phlo_fields() -> None:
     path = INTEGRATION_TEST_ROOT / "tests" / "shared" / "test_web_api.py"
     tree = ast.parse(path.read_text(), filename=str(path))

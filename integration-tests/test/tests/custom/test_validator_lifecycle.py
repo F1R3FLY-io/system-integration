@@ -301,7 +301,7 @@ def _finalized_deploy_cost(node, deploy_id: str, block_hash: str) -> int:
     """The phlo cost a finalized deploy charged its signer's vault."""
     info = node.get_block(block_hash)
     for d in info.deploys:
-        if d.sig == deploy_id:
+        if d.deployId.hex() == deploy_id:
             return d.cost
     raise AssertionError(
         f"deploy {deploy_id[:16]} not found in its inclusion block {block_hash[:16]}"
