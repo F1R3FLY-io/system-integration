@@ -192,14 +192,18 @@ write_files:
             # writing the runner's own _diag log, and the instance record
             # carried no number that said where the volume went. The df line
             # is short and sits early so the chunk cap never drops it; the du
-            # lines are best-effort and bounded, /var/lib/docker included, so
-            # a slow walk costs seconds and never the stamp.
+            # lines are best-effort and bounded, /var/lib/docker included. The
+            # four walks run concurrently under one shared 10s ceiling: a
+            # slow walk costs its own line, and the stamp is delayed by at
+            # most 10s in aggregate, not 40s serially. Line order among the
+            # du entries is whatever finishes first.
             df -Pm / 2>/dev/null | awk 'NR == 2 { printf "disk: avail=%sM used=%sM\n", $4, $3 }'
             dmesg 2>/dev/null | grep -iE 'out of memory|oom|killed process' | tail -n 4
             grep -iE 'out of memory|oom|killed process' /var/log/kern.log 2>/dev/null | tail -n 4
             for d in /opt/actions-runner/_diag /opt/actions-runner/_work /tmp /var/lib/docker; do
-              timeout 10 du -sm "$d" 2>/dev/null | awk -v d="$d" '{ printf "du: %s=%sM\n", d, $1 }'
+              ( timeout 10 du -sm "$d" 2>/dev/null | awk -v d="$d" '{ printf "du: %s=%sM\n", d, $1 }' ) &
             done
+            wait
             dmesg 2>/dev/null | tail -n 3
           } | tr '\n' '|' | tr -d '"\\'
         ) || true
