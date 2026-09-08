@@ -347,63 +347,92 @@ def classify_deploy_losses(nodes, sig_prefixes: Iterable[str]) -> Dict[str, str]
     gate counts are NOT log-recoverable; the per-decision basis needs
     ``f1r3fly.casper.recovery=debug`` and a hand-read.
 
-    Takes ALL nodes and merges their evidence, because the evidence is split
-    across them: quarantine fires only on the deploy's OWNER, merge rejections
-    on whichever node performed the merge, and each node's lifecycle register
-    writes its own terminal verdict.
-
+    Keep each node's verdict separate in the description. A terminal state
+    on one node must not overwrite a different state on another node.
+    This display-only API still returns one description per signature prefix.
     One streaming pass per node, on the failure path only.
     """
     facts = collect_deploy_loss_facts(nodes, sig_prefixes)
-    return {prefix: _describe_deploy_loss(fact) for prefix, fact in facts.items()}
+    descriptions: Dict[str, List[str]] = {}
+    for (prefix, node_name), fact in facts.items():
+        descriptions.setdefault(prefix, []).append(f"{node_name}: {describe_deploy_loss(fact)}")
+    return {prefix: "; ".join(parts) for prefix, parts in descriptions.items()}
 
 
-def collect_deploy_loss_facts(nodes, sig_prefixes: Iterable[str]) -> Dict[str, dict]:
-    """The structured evidence behind ``classify_deploy_losses``.
+def collect_deploy_loss_facts(nodes, sig_prefixes: Iterable[str]) -> Dict[tuple[str, str], dict]:
+    """Collect facts keyed by (signature prefix, node name), without merging nodes.
 
-    Returns per-sig facts (``quarantined``, ``merge_rejected``, ``state``,
-    ``rejection_count``) so callers that must DISCRIMINATE loss classes —
-    contention (Expired with rejections) vs starvation (Expired at zero
-    rejections) — key on structure instead of parsing the descriptions.
+    The caller must reject ambiguous 16-character prefixes before using these
+    facts for a verdict. Full signatures and the node's 16-character log
+    signatures are supported. A failed log stream invalidates its partial
+    evidence and is reported explicitly, not as proof of starvation.
     """
     prefixes = {p[:16] for p in sig_prefixes if p}
-    if not prefixes:
-        return {}
-    facts: Dict[str, dict] = {
-        p: {"quarantined": False, "merge_rejected": 0, "state": None, "rejection_count": None}
-        for p in prefixes
-    }
+    facts: Dict[tuple[str, str], dict] = {}
     for node in nodes:
-        try:
-            lines = node.iter_log_lines()
-        except Exception:  # noqa: BLE001 - a node with no readable log adds nothing
+        node_facts = {
+            p: {"quarantined": False, "merge_rejected": 0, "state": None, "rejection_count": None}
+            for p in prefixes
+        }
+        if not node_facts:
             continue
-        for line in lines:
-            for prefix in prefixes:
-                if prefix not in line:
-                    continue
-                fact = facts[prefix]
-                if "quarantined_toxic_rejected_buffer=true" in line:
-                    fact["quarantined"] = True
-                if "DagMerger rejected" in line:
-                    fact["merge_rejected"] += 1
-                if "terminal verdict written" in line:
-                    try:
-                        record = json.loads(line)
-                    except (ValueError, TypeError):
-                        continue
-                    fact["state"] = record.get("state")
-                    fact["rejection_count"] = record.get("rejection_count")
+        try:
+            for line in node.iter_log_lines():
+                for prefix, fact in node_facts.items():
+                    if prefix in line:
+                        _record_deploy_loss_line(fact, prefix, line)
+        except Exception as exc:  # noqa: BLE001 - includes failures during iteration
+            for fact in node_facts.values():
+                fact["diagnostics_error"] = f"log read failed ({type(exc).__name__})"
+        facts.update({(p, node.name): fact for p, fact in node_facts.items()})
     return facts
 
 
-def _describe_deploy_loss(fact: dict) -> str:
-    """Turn one deploy's log evidence into a cause description."""
+def _record_deploy_loss_line(fact: dict, prefix: str, line: str) -> None:
+    """Accumulate one node's evidence. Never replace a conflicting terminal verdict."""
+    if "quarantined_toxic_rejected_buffer=true" in line:
+        fact["quarantined"] = True
+    if "DagMerger rejected" in line:
+        fact["merge_rejected"] += 1
+    if "terminal verdict written" not in line:
+        return
+    try:
+        record = json.loads(line)
+    except (ValueError, TypeError):
+        fact["diagnostics_error"] = "malformed terminal verdict"
+        return
+    # Match the signature field, not an incidental mention elsewhere in JSON.
+    if not isinstance(record, dict) or str(record.get("sig", ""))[:16] != prefix:
+        return
+    state, rejections = record.get("state"), record.get("rejection_count")
+    if (
+        state not in ("Finalized", "Expired", "Failed")
+        or type(rejections) is not int
+        or rejections < 0
+    ):
+        fact["diagnostics_error"] = "invalid terminal verdict"
+        return
+    # A terminal verdict is write-once on the node. A repeat must match on
+    # BOTH fields: a second Expired line with a different rejection_count is
+    # contradictory evidence, not a refinement, and must not make the result
+    # depend on log order (0 then 2 tolerated, 2 then 0 not).
+    if fact["state"] is not None and (
+        fact["state"] != state or fact["rejection_count"] != rejections
+    ):
+        fact["diagnostics_error"] = "conflicting terminal verdicts"
+        return
+    fact["state"], fact["rejection_count"] = state, rejections
+
+
+def describe_deploy_loss(fact: dict) -> str:
+    """Describe already-collected evidence without reading node logs again."""
+    if fact.get("diagnostics_error"):
+        return f"diagnostics unavailable: {fact['diagnostics_error']}"
     state = fact.get("state") or "unknown"
     rejection_count = fact.get("rejection_count")
     rej = str(rejection_count) if rejection_count is not None else "?"
 
-    if fact["quarantined"]:
+    if fact.get("quarantined"):
         return (
             f"refund-quarantined (state={state}): a failed phlo refund removed the "
             "deploy from the rejected-deploy buffer, the only re-proposable copy"
@@ -419,15 +448,15 @@ def _describe_deploy_loss(fact: dict) -> str:
             "failure"
         )
     if state == "unknown":
-        if fact["merge_rejected"]:
+        if fact.get("merge_rejected"):
             return (
-                f"still pending: lost {fact['merge_rejected']} merge(s), no terminal "
+                f"diagnostics unavailable: lost {fact['merge_rejected']} merge(s), no terminal "
                 "verdict written — the test's timeout expired while the deploy was "
                 "still contestable, which is NOT proof it was lost (per-sig gate "
                 "decisions are visible only at f1r3fly.casper.recovery=debug)"
             )
         return (
-            "no per-sig log evidence and no terminal verdict — either genuinely "
+            "diagnostics unavailable: no per-sig terminal verdict — either genuinely "
             "pending untouched by any merge, or the scanned logs don't cover the "
             "run (the terminal-verdict line is INFO; check the logging filter)"
         )

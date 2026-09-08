@@ -127,6 +127,11 @@ def observer_shard(provider, timeouts):
         ],
         heartbeat=True,
         include_readonly=True,
+        per_node_cli_options={
+            # The overload geometry is this test's own condition: exactly one
+            # permit, independent of the node's derived default (cores - 2).
+            "readonly": {"--api-exploratory-deploy-max-concurrent": "1"},
+        },
     )
     shard = Shard.create(provider, config, timeouts)
     yield shard

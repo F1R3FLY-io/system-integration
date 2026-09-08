@@ -17,6 +17,7 @@ multi-parent merge has to get right. The claims gated here:
   surplus being gas).
 """
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -44,8 +45,11 @@ _LOCK_COUNT = 12
 # winner per round, and a round costs a finality lag (re-homing waits for the
 # rejection to finalize) plus carrier play latency — so on a slow leg the
 # validity window fits only a couple of attempts for the last stragglers.
-# Losing up to two lock(s) to recorded contention is legal; anything lost any
-# other way stays fatal.
+# Evidence: f1r3node-rust run 33548073107 lost 1 of 12 locks with
+# rejection_count=2 after 38 losing merges (SI PR #134, commit af0ab83).
+# The allowance of two is policy headroom, not a measured two-loss rate.
+# Each node must report Expired with rejections for a tolerated loss.
+# Log the loss rate on every run so movement toward the floor remains visible.
 _FINALIZE_FLOOR = 10
 _PHLO_LIMIT = 500_000_000
 
@@ -139,6 +143,14 @@ def test_concurrent_bridge_locks_exact_accounting(bridge_shard, timeouts) -> Non
         contention_floor=_FINALIZE_FLOOR,
     )
     landed = len(finalized_ids)
+    logging.info(
+        "concurrent-bridge-locks: finalized=%d/%d, contention_losses=%d (%.1f%%), floor=%d",
+        landed,
+        _LOCK_COUNT,
+        _LOCK_COUNT - landed,
+        100 * (_LOCK_COUNT - landed) / _LOCK_COUNT,
+        _FINALIZE_FLOOR,
+    )
 
     # Every read below is pinned to one block. Sampling the counters at an LFB and
     # the balances at "latest" would reconcile two different states, and the drift
