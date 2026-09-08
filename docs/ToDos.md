@@ -8,7 +8,7 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ```yaml
 id: SI-TASK-SOAK-DISK-POST-MORTEM-2026-09-07
-status: review           # PR #137 head 7f488f93 (main merged in at 1e411383); node side repinned to it on fix/soak-disk-hygiene-stop at feb90dba9, 2026-09-08T06:20Z; merge #137 when CI is green
+status: review           # PR #137 head 022ae6d3 (main merged in at 1e411383, du walks bounded); node side repinned to it on fix/soak-disk-hygiene-stop 2026-09-08T06:40Z; merge #137 when CI is green
 resolved_blocker: c32f1f1d did not descend from the node pin 0fb6337; fixed by the main merge 1e411383 (claude-session-74f6ecbb verified with merge-base --is-ancestor)
 pr: F1R3FLY-io/system-integration#137
 result: docs/discoveries/2026-09-07-soak-disk-post-mortem-result.md
