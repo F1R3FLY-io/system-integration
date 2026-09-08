@@ -26,7 +26,9 @@ Pause V3, wait for V3's process to actually halt, then deploy fresh blocks on V1
 
 After `v3.pause()`, the test calls `wait_for_node_quiet(v3)` which polls V3's HTTP API until it stops responding. This is required because SIGSTOP delivery is not instantaneous — V3's block-creation thread can keep producing blocks for 10+ seconds after `pause()` returns (observed in CI run 26122442592). Only once V3 is confirmed quiet does the test deploy V1+V2 strings; those deploys land in blocks V3 had no chance to vote on.
 
-The assertion tracks SPECIFIC post-pause block hashes (returned from `try_find_deploy`) and polls `is_finalized()` on each for 30s. LFB number advancement is allowed and irrelevant — pre-pause blocks whose finalization was already in flight can legitimately advance the LFB without violating safety. Only the post-pause blocks reflect the steady-state property.
+After V3 becomes quiet, V1 submits `@"post-halt-v1"!(10)` and V2 submits `@"post-halt-v2"!(20)`. Each `deploy_string` call returns a deploy signature. The test polls `try_find_deploy(node, signature)` and records the returned `blockHash` as `post_v1_hash` or `post_v2_hash`. These hashes are generated at runtime, not fixed fixtures. The test logs their prefixes and polls both hashes with `is_finalized()` on V1 and V2 for `timeouts.custom(30)` seconds.
+
+LFB advancement alone is not a failure. Pre-pause blocks can still finalize from votes already in flight. Only the selected post-pause blocks test this safety property.
 
 **What it proves:** FTT=0.67 (production default) requires all 3 equal-stake validators. Once V3 is dead, new V1+V2-only blocks cannot finalize — the safety margin is enforced.
 
@@ -60,7 +62,7 @@ Pause V1 (heaviest validator, 60 stake) for 30 seconds. V2+V3 produce independen
 
 - **Recovery (FTT=0.1):** V1+V2 LFB advances by 3+ with V3 dead; FT >= 0.1; all nodes converge after restart
 - **Halt (FTT=0.67):** after V3 is paused and confirmed quiet, the specific post-pause V1+V2 blocks remain non-finalized for 30s; resumes after V3 restart
-- **Boundary (FTT=0.5):** LFB does NOT advance for 30s (FT=0.5 is not > 0.5); resumes after restart
+- **Boundary (FTT=0.5):** each selected post-pause block finalizes on V1 and V2 because FT=0.5 meets the inclusive threshold.
 - **Epoch:** LFB reaches target past epoch boundary; all nodes within 3 of target
 - **Merge:** `assert_all_nodes_agree_on_block` on LFB; FT >= 0.1; spread <= 3
 

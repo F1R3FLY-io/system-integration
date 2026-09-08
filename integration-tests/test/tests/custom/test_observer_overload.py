@@ -60,7 +60,7 @@ new loop in {
 """
 
 
-def _metric_value(node, name: str) -> float:
+def _metric_value(node, name: str, timeouts) -> float:
     """Sum one Prometheus counter or gauge across its label sets.
 
     ``infra.metrics.scrape_metrics`` reads only its own allowlist of histogram
@@ -68,7 +68,7 @@ def _metric_value(node, name: str) -> float:
     incremented is not exported, so absence is zero.
     """
     total = 0.0
-    for line in node.http_get("/metrics", timeout=10).text.splitlines():
+    for line in node.http_get("/metrics", timeout=timeouts.command).text.splitlines():
         if line.startswith("#"):
             continue
         if line.startswith(f"{name}{{") or line.startswith(f"{name} "):
@@ -81,7 +81,7 @@ def _metric_value(node, name: str) -> float:
 def _wait_for_permit_held(node, timeouts) -> None:
     """Block until the observer reports an exploratory execution in flight."""
     poll_until(
-        lambda: _metric_value(node, _PERMIT_GAUGE) > 0,
+        lambda: _metric_value(node, _PERMIT_GAUGE, timeouts) > 0,
         timeout=timeouts.custom(_PERMIT_WAIT_BUDGET),
         interval=_PERMIT_POLL_INTERVAL,
         description=f"{_PERMIT_GAUGE} > 0 on {node.name}",
@@ -101,7 +101,7 @@ def _attempt_overload(observer, url, timeouts):
             timeout=timeouts.custom(_SLOW_HTTP_BUDGET),
         )
         _wait_for_permit_held(observer, timeouts)
-        rejected_before = _metric_value(observer, _REJECTED_COUNTER)
+        rejected_before = _metric_value(observer, _REJECTED_COUNTER, timeouts)
         excess = [
             executor.submit(
                 requests.post,
@@ -113,7 +113,7 @@ def _attempt_overload(observer, url, timeouts):
         ]
         responses = [future.result() for future in excess]
         slow_response = slow.result()
-    rejected_after = _metric_value(observer, _REJECTED_COUNTER)
+    rejected_after = _metric_value(observer, _REJECTED_COUNTER, timeouts)
     return responses, slow_response, rejected_after - rejected_before
 
 
@@ -164,7 +164,7 @@ def test_observer_exploratory_overload_recovers(observer_shard, timeouts) -> Non
             )
     finally:
         stop.set()
-        sampler.join(timeout=5)
+        sampler.join(timeout=timeouts.custom(5))
 
     assert statuses == [503] * _EXCESS_COUNT
     assert all(response.json().get("error") == "observer_busy" for response in responses)

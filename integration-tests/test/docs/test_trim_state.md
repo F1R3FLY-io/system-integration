@@ -8,10 +8,11 @@ Verifies that a new node joining an existing network correctly syncs from the La
 
 - **Topology**: Custom 2-validator shard (V1, V2) + V2 re-joins mid-chain as joiner
 - **Heartbeat**: Disabled (manual block orchestration for deterministic chain)
-- **FTT**: -1 (instant finalization -- every block with FT > -1 is finalized)
-- **Synchrony constraint threshold**: 0 (disabled, via `_SYNC_THRESHOLD` constant)
-
-Sync constraint and FTT values are extracted to module-level constants (`_SYNC_THRESHOLD`, `_FTT`, `_SHARD_CLI_OPTIONS`) so that both the shard config and the joiner's CLI options reference the same values.
+- **FTT**: production default from `conf/rust.conf` (no override). V1's stake
+  dominance finalizes its blocks immediately anyway, and a negative FTT
+  would void the FinalityDivergence-sentinel invariant the suite's
+  forbidden-log check asserts.
+- **Synchrony constraint threshold**: 0 (disabled, via `_SYNC_THRESHOLD` constant, shared by the shard config and the joiner's CLI options)
 
 ### Bond configuration
 
@@ -26,13 +27,13 @@ V2's bond of 1 ensures `required_signatures` defaults to 1 (len(bonds)-1), so th
 
 ### Phase 1: Create finalized blocks (9 blocks)
 
-V1 deploys 9 diverse Rholang contracts (channel sends, pattern matching, new channels) and proposes each one. With FTT=-1, every block is immediately finalized. After this phase, the LFB number is verified > 0.
+V1 deploys 9 diverse Rholang contracts (channel sends, pattern matching, new channels) and proposes each one. V1's stake dominance finalizes every block immediately. After this phase, the LFB number is verified > 0.
 
 The diverse contracts ensure the LFS contains non-trivial state (channel bindings, tuple space entries) that the joiner must correctly reconstruct.
 
 ### Phase 2: Add joiner, verify LFS sync
 
-V2 (already a genesis-bonded validator) joins the shard mid-chain via `shard.add_joiner()`. The joiner uses `--fault-tolerance-threshold=-1` and `--synchrony-constraint-threshold=0` (via the same `_SYNC_THRESHOLD` / `_FTT` constants used by the shard) to match the shard's configuration. It syncs from the LFS rather than replaying all 9 blocks from genesis. The timeout is `timeouts.node_startup * 3` (semantically: startup + LFS download + state replay). After the joiner sees the latest block, its LFB is verified to be within 2 of V1's LFB, confirming finalization state transferred correctly.
+V2 (already a genesis-bonded validator) joins the shard mid-chain via `shard.add_joiner()`. The joiner uses `--synchrony-constraint-threshold=0` (the same `_SYNC_THRESHOLD` constant the shard uses) and inherits the FTT from the mounted conf, matching the shard. It syncs from the LFS rather than replaying all 9 blocks from genesis. The timeout is `timeouts.node_startup * 3` (semantically: startup + LFS download + state replay). After the joiner sees the latest block, its LFB is verified to be within 2 of V1's LFB, confirming finalization state transferred correctly.
 
 ### Phase 3: Continuous sync verification (4 blocks)
 
@@ -56,7 +57,7 @@ Three checks confirm complete synchronization:
 
 ## Key assertions
 
-- Phase 1: `lfb_number > 0` (finalization working with FTT=-1)
+- Phase 1: `lfb_number > 0` (finalization working via V1's stake dominance)
 - Phase 2: joiner sees `latest_block_hash` within `node_startup * 3` timeout
 - Phase 2: `joiner_lfb_number >= v1_lfb_number - 2` (LFB agreement after initial sync)
 - Phase 3: joiner sees each post-join block within `deploy_inclusion` timeout

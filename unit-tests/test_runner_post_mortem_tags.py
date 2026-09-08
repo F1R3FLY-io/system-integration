@@ -31,6 +31,15 @@ _END = "# Wedge escape."
 
 _BASE_TAGS = {"purpose": "soak", "series": "weekend", "soak-deadline-epoch": "1756500000"}
 
+# The stubbed dmesg tail's first line. Both the stub and the ordering
+# assertions reference this constant so a fixture rename cannot silently
+# turn a crafted assertion into a bare ValueError from str.index.
+_DMESG_TAIL_LINE = "irrelevant line"
+_OOM_LINE = "Out of memory: Killed process 4242"
+
+# Directories persist_post_mortem walks with `du -sm`, in template order.
+_DU_DIRS = ("/opt/actions-runner/_diag", "/opt/actions-runner/_work", "/tmp", "/var/lib/docker")
+
 
 def _extract() -> str:
     text = TEMPLATE.read_text()
@@ -69,7 +78,11 @@ def _run(
                 'log() { echo "LOG: $*"; }',
                 "attempt=1",
                 f"curl() {{ {curl_body}; }}",
-                'dmesg() { printf "irrelevant line\\nOut of memory: Killed process 4242\\n"; }',
+                f'dmesg() {{ printf "{_DMESG_TAIL_LINE}\\n{_OOM_LINE}\\n"; }}',
+                # du walks run for real otherwise; stub both so the du lines
+                # are deterministic on any host (macOS ships no `timeout`).
+                'timeout() { shift; "$@"; }',
+                'du() { printf "%s\\t%s\\n" 42 "$2"; }',
                 "oci_stub() {",
                 '  case "$*" in',
                 f'    *" get "*) {get_body};;',
@@ -116,6 +129,40 @@ def test_evidence_carries_the_oom_line_and_exit_context():
     assert "attempt=1" in evidence, "exit context missing"
     assert "Out of memory" in evidence, "the line that names the root cause is missing"
     assert "Job completed with result" in evidence, "runner-run tail missing"
+
+
+def test_evidence_carries_the_disk_line_ahead_of_the_dmesg_tail():
+    """Soak runs 33939315110/33978505238/34056342543 died on ENOSPC and the
+    tags said nothing about the disk. The df line must be present, and it
+    must come before the dmesg tail so the chunk cap trims dmesg, not df."""
+    _, _, args = _run()
+    tags = _merged_tags(args)
+    evidence = "".join(tags[k] for k in sorted(tags) if k.startswith("pm"))
+
+    assert "disk: avail=" in evidence, "df line missing from the post-mortem"
+    assert "used=" in evidence
+    assert _DMESG_TAIL_LINE in evidence, "dmesg tail sentinel missing; fixture drifted"
+    assert evidence.index("disk: avail=") < evidence.index(_DMESG_TAIL_LINE), (
+        "the df line must outrank the dmesg tail under the chunk cap"
+    )
+
+
+def test_evidence_carries_every_du_line_between_df_and_the_dmesg_tail():
+    """The df line says how much is gone; the du lines say where. All four
+    walks must land in the evidence, after the df line and before the dmesg
+    tail, so a dropped loop or a reordered block cannot pass unnoticed."""
+    _, _, args = _run()
+    tags = _merged_tags(args)
+    evidence = "".join(tags[k] for k in sorted(tags) if k.startswith("pm"))
+
+    assert "disk: avail=" in evidence, "df line missing from the post-mortem"
+    assert _DMESG_TAIL_LINE in evidence, "dmesg tail sentinel missing; fixture drifted"
+    df_at = evidence.index("disk: avail=")
+    tail_at = evidence.index(_DMESG_TAIL_LINE)
+    for d in _DU_DIRS:
+        line = f"du: {d}=42M"
+        assert line in evidence, f"du line missing for {d}"
+        assert df_at < evidence.index(line) < tail_at, f"du line for {d} is out of place"
 
 
 def test_chunks_respect_the_tag_value_and_count_caps():

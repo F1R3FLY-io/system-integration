@@ -924,7 +924,7 @@ def test_transfers_null_on_validator_http(shared_shard, timeouts) -> None:
     logging.info("Transfer null/populated behavior verified: validator=null, readonly=list")
 
 
-def test_removed_endpoints_404(shared_shard) -> None:
+def test_removed_endpoints_404(shared_shard, timeouts) -> None:
     """Removed endpoints return 404."""
     import requests
 
@@ -934,14 +934,14 @@ def test_removed_endpoints_404(shared_shard) -> None:
     resp = requests.post(
         f"{v1.http_url}/api/data-at-name",
         json={"name": {"UnforgDeploy": {"data": "abc"}}, "depth": 1},
-        timeout=10,
+        timeout=timeouts.command,
     )
     assert resp.status_code == 404, f"/api/data-at-name should return 404, got {resp.status_code}"
 
     # GET /api/transactions/{hash} — removed
     resp = requests.get(
         f"{v1.http_url}/api/transactions/abc123",
-        timeout=10,
+        timeout=timeouts.command,
     )
     assert resp.status_code == 404, f"/api/transactions should return 404, got {resp.status_code}"
 

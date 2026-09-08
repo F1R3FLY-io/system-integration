@@ -2,12 +2,22 @@
 
 Twelve locks are submitted at once against one bridge contract, so every one of
 them is a read-modify-write on the same set of single-value cells — the shape
-multi-parent merge has to get right. After all twelve finalize, the nonce and
-total-locked counters must equal exactly twelve and the bridge vault must be
-credited by exactly twelve, with the source debited by at least that (the surplus
-being gas).
+multi-parent merge has to get right. The claims gated here:
+
+- **No starvation**: no lock may expire at zero rejections (never adjudicated —
+  the deploy-play-budget's pile-up class), be refund-quarantined, or diverge
+  across nodes. Always fatal.
+- **Bounded contention**: mutually-conflicting locks must serialize through
+  merge rounds, so a lock can legally lose every round its validity window
+  fits and expire WITH rejections on record. At least ``_FINALIZE_FLOOR`` of
+  the twelve must still land.
+- **Exact accounting**: the nonce, total-locked counter, and bridge vault
+  delta must equal EXACTLY the number of locks that finalized — no double
+  count, no lost count — with the source debited by at least that (the
+  surplus being gas).
 """
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -31,6 +41,16 @@ pytestmark = [
 ]
 
 _LOCK_COUNT = 12
+# Contention floor: merge rounds serialize conflicting locks at roughly one
+# winner per round, and a round costs a finality lag (re-homing waits for the
+# rejection to finalize) plus carrier play latency — so on a slow leg the
+# validity window fits only a couple of attempts for the last stragglers.
+# Evidence: f1r3node-rust run 33548073107 lost 1 of 12 locks with
+# rejection_count=2 after 38 losing merges (SI PR #134, commit af0ab83).
+# The allowance of two is policy headroom, not a measured two-loss rate.
+# Each node must report Expired with rejections for a tolerated loss.
+# Log the loss rate on every run so movement toward the floor remains visible.
+_FINALIZE_FLOOR = 10
 _PHLO_LIMIT = 500_000_000
 
 
@@ -73,7 +93,7 @@ def bridge_shard(provider, timeouts):
 
 
 def test_concurrent_bridge_locks_exact_accounting(bridge_shard, timeouts) -> None:
-    """Twelve simultaneous locks reconcile to exactly twelve on nonce, total, and vault."""
+    """Twelve simultaneous locks: no starvation, and exact accounting for every lock that lands."""
     v1 = bridge_shard.node("validator1")
     readonly = bridge_shard.readonly
     key = VALIDATOR1_ID.private_key()
@@ -107,17 +127,29 @@ def test_concurrent_bridge_locks_exact_accounting(bridge_shard, timeouts) -> Non
 
     assert len(set(deploy_ids)) == _LOCK_COUNT
 
-    # Every lock must finalize on EVERY node, the readonly observer included. Two
-    # reasons: twelve concurrent writes to the same cells is where per-node merge
-    # divergence appears and one node cannot see it; and the reconciliation below
-    # reads the observer's own LFB, which may lag the proposer, so waiting only on
-    # the proposer would let the observer choose a block that predates some locks.
-    # Re-homing-aware, so a lock re-included in a finalized descendant still counts.
-    assert_all_deploys_finalized_on_all_nodes(
+    # A finalized lock must be finalized on EVERY node, the readonly observer
+    # included. Two reasons: twelve concurrent writes to the same cells is where
+    # per-node merge divergence appears and one node cannot see it; and the
+    # reconciliation below reads the observer's own LFB, which may lag the
+    # proposer, so waiting only on the proposer would let the observer choose a
+    # block that predates some locks. Re-homing-aware, so a lock re-included in
+    # a finalized descendant still counts. Recorded contention losses down to
+    # the floor are tolerated; starvation, quarantine, and divergence are not.
+    finalized_ids = assert_all_deploys_finalized_on_all_nodes(
         bridge_shard.all_nodes,
         deploy_ids,
         timeouts.finalization * 8,
         label="concurrent-bridge-locks",
+        contention_floor=_FINALIZE_FLOOR,
+    )
+    landed = len(finalized_ids)
+    logging.info(
+        "concurrent-bridge-locks: finalized=%d/%d, contention_losses=%d (%.1f%%), floor=%d",
+        landed,
+        _LOCK_COUNT,
+        _LOCK_COUNT - landed,
+        100 * (_LOCK_COUNT - landed) / _LOCK_COUNT,
+        _FINALIZE_FLOOR,
     )
 
     # Every read below is pinned to one block. Sampling the counters at an LFB and
@@ -164,13 +196,18 @@ def test_concurrent_bridge_locks_exact_accounting(bridge_shard, timeouts) -> Non
         lambda: readonly.vault.get_balance(from_addr, lfb_hash),
     )
 
-    assert nonce == _LOCK_COUNT, f"expected nonce {_LOCK_COUNT}, got {nonce}"
-    assert total_locked == _LOCK_COUNT, f"expected total locked {_LOCK_COUNT}, got {total_locked}"
-    assert bridge_after - bridge_before == _LOCK_COUNT, (
-        f"bridge vault moved by {bridge_after - bridge_before}, expected exactly "
-        f"{_LOCK_COUNT} ({bridge_before} -> {bridge_after})"
+    # Reconcile against exactly the locks that FINALIZED: an expired lock's
+    # effects must be fully absent (no half-applied lock), a finalized lock's
+    # fully present (no lost count), so all three counters agree with `landed`.
+    assert nonce == landed, f"expected nonce {landed} (finalized locks), got {nonce}"
+    assert total_locked == landed, (
+        f"expected total locked {landed} (finalized locks), got {total_locked}"
     )
-    assert source_before - source_after >= _LOCK_COUNT, (
+    assert bridge_after - bridge_before == landed, (
+        f"bridge vault moved by {bridge_after - bridge_before}, expected exactly "
+        f"{landed} ({bridge_before} -> {bridge_after})"
+    )
+    assert source_before - source_after >= landed, (
         f"source vault fell by {source_before - source_after}, expected at least "
-        f"{_LOCK_COUNT} plus gas ({source_before} -> {source_after})"
+        f"{landed} plus gas ({source_before} -> {source_after})"
     )

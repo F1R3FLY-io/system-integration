@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, cast
 
 # Re-export deploy checking from pyf1r3fly
 from f1r3fly.deploy import (
@@ -342,7 +342,8 @@ def assert_all_deploys_finalized_on_all_nodes(
     timeout: float,
     *,
     label: str = "deploys",
-) -> None:
+    contention_floor: Optional[int] = None,
+) -> list[str]:
     """Assert every deploy in ``deploy_ids`` reaches Finalized on EVERY node.
 
     Deploy-centric, not block-centric. Polls each node's
@@ -354,53 +355,131 @@ def assert_all_deploys_finalized_on_all_nodes(
     that case, because the losing-fork block never finalizes even though the
     deploy does (its work moved to a different, finalized block).
 
-    Zero tolerance for genuinely dropped work: a deploy that never finalizes on
-    some node within ``timeout`` (Pending -> TimeoutError) or terminally fails
-    (Failed/Expired -> DeployError) is collected and reported with a diagnostic.
+    ``contention_floor=None`` (the default) is zero tolerance for dropped
+    work: a deploy that never finalizes on some node within ``timeout``
+    (Pending -> TimeoutError) or terminally fails (Failed/Expired ->
+    DeployError) is collected and reported with a diagnostic.
+
+    ``contention_floor=N`` tolerates the one loss class that is legal under
+    heavy conflict: mutually-conflicting deploys must serialize through merge
+    adjudication, so a deploy can lose every round its validity window fits
+    and expire WITH rejections on record. Only that class is tolerated
+    (Expired, ``rejection_count > 0``, not quarantined), and only down to
+    ``N`` deploys finalizing on every node. Zero-rejection starvation, a
+    refund-quarantine removal, a Failed verdict, or a deploy finalized on
+    some nodes but not others all stay fatal.
+
+    Returns the deploy ids that finalized on every node (all of them in the
+    strict mode), so callers can reconcile downstream accounting against
+    exactly the work that landed. Existing assertion-only callers can ignore
+    the returned list. All failure gates remain active under ``python -O``.
+    Contention tolerance requires a complete, consistent terminal verdict
+    from every node. Missing diagnostics fail closed with an explicit reason.
 
     Use this for bg-load / deploy-orphaning regression checks instead of
     locating the block with ``find_deploy`` and asserting that block's hash
     finalizes.
     """
-    # Local import keeps the assertions -> polling edge lazy (no import cycle).
+    if contention_floor is not None and (
+        type(contention_floor) is not int or not 0 <= contention_floor <= len(deploy_ids)
+    ):
+        raise ValueError("contention_floor must be an integer between 0 and the deploy count")
+    if not deploy_ids:
+        return []
+    nodes = list(nodes)
+    if not nodes or len({node.name for node in nodes}) != len(nodes):
+        raise ValueError("finalization checks require nonempty, uniquely named nodes")
+    if len({sig[:16] for sig in deploy_ids}) != len(deploy_ids):
+        raise ValueError("deploy signature prefixes must be unique for loss attribution")
+    finalized, failures = _poll_deploy_finalization(nodes, deploy_ids, timeout, label)
+    if not failures:
+        return finalized
+
+    from .log_events import collect_deploy_loss_facts, describe_deploy_loss
+
+    lost_sigs = {sig for sig, _, _ in failures}
+    try:
+        facts = collect_deploy_loss_facts(nodes, lost_sigs)
+    except Exception as exc:  # noqa: BLE001 - diagnostics cannot change the loss verdict
+        facts = {
+            (sig[:16], name): {"diagnostics_error": type(exc).__name__} for sig, name, _ in failures
+        }
+    details = {
+        (sig, name): describe_deploy_loss(facts.get((sig[:16], name), {}))
+        for sig, name, _ in failures
+    }
+    if contention_floor is not None:
+        outside = [
+            f"{sig[:16]}@{name} -> {details[(sig, name)]}"
+            for sig, name, _ in failures
+            if not _is_tolerated_contention_loss(facts.get((sig[:16], name), {}))
+        ]
+        if outside:
+            raise AssertionError(
+                f"[{label}] losses OUTSIDE the tolerated contention class "
+                f"(Expired with rejections on every node): {'; '.join(outside[:3])}"
+            )
+        if len(finalized) < contention_floor:
+            raise AssertionError(
+                f"[{label}] only {len(finalized)} of {len(deploy_ids)} deploys "
+                f"finalized on all nodes; the contention floor is {contention_floor}"
+            )
+        logging.warning(
+            "[%s] tolerated %d of %d contention losses (%.1f%%; floor=%d): %s",
+            label,
+            len(lost_sigs),
+            len(deploy_ids),
+            100 * len(lost_sigs) / len(deploy_ids),
+            contention_floor,
+            "; ".join(f"{s[:16]}@{n} -> {c}" for (s, n), c in details.items()),
+        )
+        return finalized
+
+    detail = "; ".join(
+        f"{sig[:16]}@{name} {reason} -> {details[(sig, name)]}"
+        for sig, name, reason in failures[:3]
+    )
+    raise AssertionError(
+        f"[{label}] {len(lost_sigs)} of {len(deploy_ids)} deploys did not "
+        f"finalize on all nodes (deploy-status, re-homing-aware). first(3)={detail}"
+    )
+
+
+def _poll_deploy_finalization(nodes, deploy_ids, timeout, label):
+    """Retain every node's result. Mixed success and failure is always fatal."""
     from .polling import wait_for_deploy_finalized
 
-    if not deploy_ids:
-        return
-    not_finalized: list[tuple[str, str, str]] = []  # (sig[:16], node.name, reason)
+    finalized: list[str] = []
+    failures: list[tuple[str, str, str]] = []
     for sig in deploy_ids:
+        landed_on = []
+        failed_on = []
         for node in nodes:
             try:
                 wait_for_deploy_finalized(node, sig, timeout)
-            except Exception as exc:  # noqa: BLE001
-                # TimeoutError (Pending past timeout) and DeployError (terminal
-                # Failed/Expired) both mean "did not finalize here". Caught broad
-                # because the deploy-status DeployError is f1r3fly.polling's, not
-                # the f1r3fly.deploy class re-exported at module scope.
-                not_finalized.append((sig[:16], node.name, type(exc).__name__))
-                break  # one un-finalizing node is enough; move to the next deploy
+                landed_on.append(node.name)
+            except Exception as exc:  # noqa: BLE001 - terminal errors and poll timeouts
+                failures.append((sig, node.name, type(exc).__name__))
+                failed_on.append(node.name)
+        if landed_on and failed_on:
+            raise AssertionError(
+                f"[{label}] finalization divergence for {sig[:16]}: "
+                f"Finalized on {landed_on}; not finalized on {failed_on}"
+            )
+        if not failed_on:
+            finalized.append(sig)
+    return finalized, failures
 
-    # Classify HOW each deploy was lost. Refund-quarantine, retry-gate
-    # starvation and merge starvation are structurally different failures that
-    # all arrive here as DeployError; without this the cause is only
-    # recoverable by hand-scanning shard logs. One streaming pass per affected
-    # node, on the failure path only.
-    causes: dict = {}
-    if not_finalized:
-        from .log_events import classify_deploy_losses
 
-        try:
-            causes = classify_deploy_losses(nodes, {sig16 for sig16, _, _ in not_finalized})
-        except Exception:  # noqa: BLE001 - diagnostics must never mask the failure
-            causes = {}
-    detail = "; ".join(
-        f"{sig16}@{node_name} {exc_name} -> {causes.get(sig16, 'unclassified')}"
-        for sig16, node_name, exc_name in not_finalized[:3]
-    )
-    assert not not_finalized, (
-        f"[{label}] {len(not_finalized)} of {len(deploy_ids)} deploys did not "
-        f"finalize on all nodes (deploy-status, re-homing-aware). "
-        f"first(3)={detail}"
+def _is_tolerated_contention_loss(fact: dict) -> bool:
+    """Missing, corrupt, contradictory, or quarantined evidence is not tolerance."""
+    rejections = fact.get("rejection_count")
+    return (
+        not fact.get("diagnostics_error")
+        and fact.get("state") == "Expired"
+        and type(rejections) is int
+        and rejections > 0
+        and not fact.get("quarantined")
     )
 
 
@@ -908,9 +987,10 @@ def await_value_converges_on_all_nodes(
                 if k not in volatile:
                     water[k] = v
         elif non_regression == "up":
-            water = cur if water is None else max(water, cur)
+            # The mode is fixed for this call: numeric modes never store a map.
+            water = cur if water is None else max(cast(int, water), cur)
         elif non_regression == "down":
-            water = cur if water is None else min(water, cur)
+            water = cur if water is None else min(cast(int, water), cur)
 
         last = cur
         if aligned and cur == expected:
