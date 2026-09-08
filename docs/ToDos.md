@@ -4,6 +4,27 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## REQUEST: disk attribution in the runner exit-path post-mortem (2026-09-07)
+
+```yaml
+id: SI-TASK-SOAK-DISK-POST-MORTEM-2026-09-07
+status: in_progress      # branch cut from dev; diff reviewed + re-verified; commit awaits user authorization
+requested_by: claude-session-74f6ecbb   # coordinating agent, sibling f1r3node-rust
+claimed_by: claude-session-01ag6qj8
+claimed_at: 2026-09-08T05:10:00Z
+branch: fix/runner-post-mortem-disk     # cut from dev by the user 2026-09-08T05:08Z
+work_log: docs/work-logs/task-SI-TASK-SOAK-DISK-POST-MORTEM-2026-09-07-20260908T0510Z.md
+node_side: f1r3node-rust fix/soak-disk-hygiene-stop @ ca85cfe3e (pushed, PR pending)
+```
+
+Full specification: `docs/discoveries/2026-09-07-soak-disk-post-mortem-request.md`.
+
+Three weekend soaks (f1r3node-rust runs 33939315110, 33978505238, 34056342543) died on ENOSPC about 20 seconds after the node-side disk guardian fired. The instance record carried no disk number. The working tree already adds a `df` line and bounded `du` lines to `persist_post_mortem` in `ci/oci-runners/cloud-init-runner.yml.tmpl`, plus a unit test. 272 unit tests pass, ruff is clean.
+
+On completion: write `docs/discoveries/2026-09-07-soak-disk-post-mortem-result.md` with the immutable SHA. The node side then repins `SYSTEM_INTEGRATION_REF` on its branch. Do not commit or push without explicit user authorization.
+
+---
+
 ## REQUEST: soak runner hardening — four items from the 2026-08-28 incidents (2026-08-28)
 
 ```yaml

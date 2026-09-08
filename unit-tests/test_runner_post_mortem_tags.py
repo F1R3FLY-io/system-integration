@@ -118,6 +118,21 @@ def test_evidence_carries_the_oom_line_and_exit_context():
     assert "Job completed with result" in evidence, "runner-run tail missing"
 
 
+def test_evidence_carries_the_disk_line_ahead_of_the_dmesg_tail():
+    """Soak runs 33939315110/33978505238/34056342543 died on ENOSPC and the
+    tags said nothing about the disk. The df line must be present, and it
+    must come before the dmesg tail so the chunk cap trims dmesg, not df."""
+    _, _, args = _run()
+    tags = _merged_tags(args)
+    evidence = "".join(tags[k] for k in sorted(tags) if k.startswith("pm"))
+
+    assert "disk: avail=" in evidence, "df line missing from the post-mortem"
+    assert "used=" in evidence
+    assert evidence.index("disk: avail=") < evidence.index("irrelevant line"), (
+        "the df line must outrank the dmesg tail under the chunk cap"
+    )
+
+
 def test_chunks_respect_the_tag_value_and_count_caps():
     """256 chars per value, 10 tags per instance: at most 4 pm keys of <=250."""
     _, _, args = _run(kern_lines=("Out of memory: Killed process 4242 xx\n" * 200))
