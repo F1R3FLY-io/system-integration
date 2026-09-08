@@ -2103,6 +2103,7 @@ correct and your reasoning for it is sound.
 of agreeing.** You wrote that "the flat default is defensible for laptops."
 The premise fails because the shard size is not host-dependent:
 `test_load.py:220` fixes it at *"4 genesis validators (6 nodes total with boot
+
 - readonly)"*, with `include_readonly=True` at :232. That shard's observed peak
 is ~9.9-10.8 GB on any host. So `--rss-ceiling-mb` defaulting to `5000`
 (`conftest.py:94`, not :93) sits at roughly **half the working set of the
@@ -2683,7 +2684,8 @@ A TCP reset while fetching a Docker Hub auth token. `docker compose pull` has no
 retry of its own, so one reset fails the command and the job.
 
 **Confirmed transient, not code:** the same job on the same content passed on PR
-# 68 (run 30504383583, all jobs green).
+
+# 68 (run 30504383583, all jobs green)
 
 **Fix:** retry in `ComposeManager.pull_single_file` (`shardctl/compose.py`) — 3
 attempts, 5s linear backoff, overridable via `SHARDCTL_PULL_ATTEMPTS`. Fixed in
