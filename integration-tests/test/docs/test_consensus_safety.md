@@ -26,7 +26,7 @@ Pause V3, wait for V3's process to actually halt, then deploy fresh blocks on V1
 
 After `v3.pause()`, the test calls `wait_for_node_quiet(v3)` which polls V3's HTTP API until it stops responding. This is required because SIGSTOP delivery is not instantaneous — V3's block-creation thread can keep producing blocks for 10+ seconds after `pause()` returns (observed in CI run 26122442592). Only once V3 is confirmed quiet does the test deploy V1+V2 strings; those deploys land in blocks V3 had no chance to vote on.
 
-The assertion tracks SPECIFIC post-pause block hashes (returned from `try_find_deploy`) and polls `is_finalized()` on each for 30s. LFB number advancement is allowed and irrelevant — pre-pause blocks whose finalization was already in flight can legitimately advance the LFB without violating safety. Only the post-pause blocks reflect the steady-state property.
+The assertion tracks SPECIFIC post-pause block hashes (returned from `try_find_deploy`) and polls `is_finalized()` on each for a scaled 30s observation window (`timeouts.custom(30)`). LFB number advancement is allowed and irrelevant — pre-pause blocks whose finalization was already in flight can legitimately advance the LFB without violating safety. Only the post-pause blocks reflect the steady-state property.
 
 **What it proves:** FTT=0.67 (production default) requires all 3 equal-stake validators. Once V3 is dead, new V1+V2-only blocks cannot finalize — the safety margin is enforced.
 

@@ -342,7 +342,8 @@ def assert_all_deploys_finalized_on_all_nodes(
     timeout: float,
     *,
     label: str = "deploys",
-) -> None:
+    contention_floor: Optional[int] = None,
+) -> list[str]:
     """Assert every deploy in ``deploy_ids`` reaches Finalized on EVERY node.
 
     Deploy-centric, not block-centric. Polls each node's
@@ -354,9 +355,23 @@ def assert_all_deploys_finalized_on_all_nodes(
     that case, because the losing-fork block never finalizes even though the
     deploy does (its work moved to a different, finalized block).
 
-    Zero tolerance for genuinely dropped work: a deploy that never finalizes on
-    some node within ``timeout`` (Pending -> TimeoutError) or terminally fails
-    (Failed/Expired -> DeployError) is collected and reported with a diagnostic.
+    ``contention_floor=None`` (the default) is zero tolerance for dropped
+    work: a deploy that never finalizes on some node within ``timeout``
+    (Pending -> TimeoutError) or terminally fails (Failed/Expired ->
+    DeployError) is collected and reported with a diagnostic.
+
+    ``contention_floor=N`` tolerates the one loss class that is legal under
+    heavy conflict: mutually-conflicting deploys must serialize through merge
+    adjudication, so a deploy can lose every round its validity window fits
+    and expire WITH rejections on record. Only that class is tolerated
+    (Expired, ``rejection_count > 0``, not quarantined), and only down to
+    ``N`` deploys finalizing on every node. Zero-rejection starvation, a
+    refund-quarantine removal, a Failed verdict, or a deploy finalized on
+    some nodes but not others all stay fatal.
+
+    Returns the deploy ids that finalized on every node (all of them in the
+    strict mode), so callers can reconcile downstream accounting against
+    exactly the work that landed.
 
     Use this for bg-load / deploy-orphaning regression checks instead of
     locating the block with ``find_deploy`` and asserting that block's hash
@@ -366,9 +381,11 @@ def assert_all_deploys_finalized_on_all_nodes(
     from .polling import wait_for_deploy_finalized
 
     if not deploy_ids:
-        return
+        return []
+    finalized: list[str] = []
     not_finalized: list[tuple[str, str, str]] = []  # (sig[:16], node.name, reason)
     for sig in deploy_ids:
+        landed = True
         for node in nodes:
             try:
                 wait_for_deploy_finalized(node, sig, timeout)
@@ -378,26 +395,62 @@ def assert_all_deploys_finalized_on_all_nodes(
                 # because the deploy-status DeployError is f1r3fly.polling's, not
                 # the f1r3fly.deploy class re-exported at module scope.
                 not_finalized.append((sig[:16], node.name, type(exc).__name__))
+                landed = False
                 break  # one un-finalizing node is enough; move to the next deploy
+        if landed:
+            finalized.append(sig)
+
+    if not not_finalized:
+        return finalized
 
     # Classify HOW each deploy was lost. Refund-quarantine, retry-gate
     # starvation and merge starvation are structurally different failures that
     # all arrive here as DeployError; without this the cause is only
     # recoverable by hand-scanning shard logs. One streaming pass per affected
     # node, on the failure path only.
-    causes: dict = {}
-    if not_finalized:
-        from .log_events import classify_deploy_losses
+    from .log_events import classify_deploy_losses, collect_deploy_loss_facts
 
-        try:
-            causes = classify_deploy_losses(nodes, {sig16 for sig16, _, _ in not_finalized})
-        except Exception:  # noqa: BLE001 - diagnostics must never mask the failure
-            causes = {}
+    causes: dict = {}
+    facts: dict = {}
+    try:
+        lost_sigs = {sig16 for sig16, _, _ in not_finalized}
+        facts = collect_deploy_loss_facts(nodes, lost_sigs)
+        causes = classify_deploy_losses(nodes, lost_sigs)
+    except Exception:  # noqa: BLE001 - diagnostics must never mask the failure
+        causes = {}
+
+    if contention_floor is not None:
+        starved = [
+            (sig16, node_name, causes.get(sig16, "unclassified"))
+            for sig16, node_name, _ in not_finalized
+            if not (
+                (fact := facts.get(sig16, {})).get("state") == "Expired"
+                and (fact.get("rejection_count") or 0) > 0
+                and not fact.get("quarantined")
+            )
+        ]
+        assert not starved, (
+            f"[{label}] {len(starved)} deploy(s) lost OUTSIDE the tolerated "
+            f"contention class (Expired with rejections on record): "
+            + "; ".join(f"{s}@{n} -> {c}" for s, n, c in starved[:3])
+        )
+        assert len(finalized) >= contention_floor, (
+            f"[{label}] only {len(finalized)} of {len(deploy_ids)} deploys "
+            f"finalized on all nodes; the contention floor is {contention_floor}"
+        )
+        logging.warning(
+            "[%s] tolerated %d contention loss(es): %s",
+            label,
+            len(not_finalized),
+            "; ".join(f"{s} -> {causes.get(s, 'unclassified')}" for s, _, _ in not_finalized),
+        )
+        return finalized
+
     detail = "; ".join(
         f"{sig16}@{node_name} {exc_name} -> {causes.get(sig16, 'unclassified')}"
         for sig16, node_name, exc_name in not_finalized[:3]
     )
-    assert not not_finalized, (
+    raise AssertionError(
         f"[{label}] {len(not_finalized)} of {len(deploy_ids)} deploys did not "
         f"finalize on all nodes (deploy-status, re-homing-aware). "
         f"first(3)={detail}"

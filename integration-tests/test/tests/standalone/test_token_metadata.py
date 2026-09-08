@@ -456,7 +456,7 @@ def test_genesis_validator_with_wrong_token_blocks_ceremony(provider, timeouts) 
         master_running = False
         while time.time() < deadline:
             try:
-                resp = requests.get(boot_status_url, timeout=3)
+                resp = requests.get(boot_status_url, timeout=timeouts.custom(3))
                 if resp.status_code == 200 and resp.json().get("isReady") is True:
                     master_running = True
                     break

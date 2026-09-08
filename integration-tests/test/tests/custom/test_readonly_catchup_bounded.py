@@ -159,7 +159,7 @@ def test_readonly_catchup_parallelism_keeps_api_responsive(
         finally:
             stop.set()
             for thread in threads:
-                thread.join(timeout=5)
+                thread.join(timeout=timeouts.custom(5))
 
         probes = len(latencies) + len(over_budget)
         assert probes >= _MIN_PROBES, f"only {probes} status probes completed"

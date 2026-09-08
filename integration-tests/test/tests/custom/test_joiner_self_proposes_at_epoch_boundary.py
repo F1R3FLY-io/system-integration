@@ -35,7 +35,6 @@ map held node-identical throughout.
 
 import logging
 import threading
-import time
 from typing import List, Tuple
 
 import pytest
@@ -89,76 +88,67 @@ def _propose_with_filler(node, identity, label: str) -> str:
     return node.propose()
 
 
-class _BgProposers:
-    """Background daemon threads continuously deploy+propose on V1/V2/V3.
+# Logical budget for the advance-to-#8 phase: rounds, not wall-clock, so
+# host speed changes duration but never the verdict. Each round advances
+# the height by ~1 and the LFB trails it by the witnessing lag (a few
+# rounds at the production FTT), so reaching #8 from #5 needs well under
+# ten rounds on a healthy shard.
+_MAX_ADVANCE_ROUNDS = 30
 
-    Approximates the propose churn that heartbeat-driven proposing creates
-    in production, so V4's boundary blocks land on a chain advanced under
-    contention rather than a quiet linear one.
 
-    Threads catch all exceptions individually so the chaos doesn't fail
-    the test (we expect propose contention errors under contention).
+def _concurrent_propose_round(producers, identities, round_idx: int) -> List[str]:
+    """One synchronized round: every producer deploys + proposes in parallel.
+
+    Sibling blocks at one height merged by the next round preserve the
+    multi-parent contention shape the bg-proposer chaos used to create,
+    without free-running threads racing a wall-clock deadline. Individual
+    propose failures are expected contention (siblings compete) and are
+    tolerated; the round reports whichever blocks landed.
     """
+    results: List[str] = []
+    errors: List[str] = []
+    lock = threading.Lock()
 
-    def __init__(self, producers, identities, interval: float = 0.4) -> None:
-        self._producers = producers
-        self._identities = identities
-        self._interval = interval
-        self._stop = threading.Event()
-        self._counter = 0
-        self._errors = 0
-        self._proposes = 0
-        self._threads: List[threading.Thread] = []
-
-    def start(self) -> None:
-        for i, (node, ident) in enumerate(zip(self._producers, self._identities)):
-            t = threading.Thread(
-                target=self._loop,
-                args=(i, node, ident),
-                daemon=True,
-                name=f"bg-prop-{i}",
+    def _one(idx: int, node, identity) -> None:
+        try:
+            node.deploy_string(
+                f'@"round-{round_idx}-prop-{idx}"!({round_idx})',
+                identity.private_key(),
+                phlo_limit=100_000_000,
+                phlo_price=1,
             )
-            t.start()
-            self._threads.append(t)
+            block = node.propose()
+            with lock:
+                results.append(block)
+        except Exception as e:
+            with lock:
+                errors.append(f"{idx}: {e}")
 
-    def stop(self, join_timeout: float = 5.0) -> None:
-        self._stop.set()
-        for t in self._threads:
-            t.join(timeout=join_timeout)
-        logging.info(
-            "BgProposers stopped: %d deploys, %d proposes, %d errors",
-            self._counter,
-            self._proposes,
-            self._errors,
-        )
-
-    def _loop(self, idx: int, node, identity) -> None:
-        while not self._stop.is_set():
-            try:
-                node.deploy_string(
-                    f'@"bg-prop-{idx}-{self._counter}"!({self._counter})',
-                    identity.private_key(),
-                    phlo_limit=100_000_000,
-                    phlo_price=1,
-                )
-                self._counter += 1
-                node.propose()
-                self._proposes += 1
-            except Exception:
-                self._errors += 1
-            self._stop.wait(self._interval)
+    threads = [
+        threading.Thread(target=_one, args=(i, n, ident), name=f"round-prop-{i}")
+        for i, (n, ident) in enumerate(zip(producers, identities))
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if errors:
+        logging.info("Round %d propose contention: %s", round_idx, errors)
+    return results
 
 
 def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
     """Negative-control for the joiner-bond-drop bug.
 
-    With manual propose (heartbeat disabled), bg proposers on V1/V2/V3
-    creating multi-parent merges, and V4 cycling through 12 sequential
-    proposes including 4 epoch-boundary blocks, V4 stays bonded
+    With manual propose (heartbeat disabled), concurrent propose rounds
+    on V1/V2/V3 creating multi-parent merges, and V4 cycling through 12
+    sequential proposes including epoch-boundary blocks, V4 stays bonded
     throughout. Six variants of this test (linear, multi-parent
-    concurrent, V4 lagging, bg proposers, multi-iteration scan) all
-    PASS. The simple architectural shape — joiner produces first
-    epoch-boundary block — is insufficient to trigger the bug.
+    concurrent, V4 lagging, free-running bg proposers, multi-iteration
+    scan) all PASS. The simple architectural shape — joiner produces
+    first epoch-boundary block — is insufficient to trigger the bug.
+    The advance phase is round-driven with a logical round budget (no
+    wall-clock success gates), so host speed affects duration only.
 
     See module docstring for full variant matrix and what conditions
     ARE needed (heartbeat-driven concurrency in the v19 trace).
@@ -175,7 +165,11 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
             (VALIDATOR2_ID, _BOND_AMOUNT),
             (VALIDATOR3_ID, _BOND_AMOUNT),
         ],
-        ftt=-1,  # instant finalization
+        # Production FTT (conf default). A negative FTT finalizes on bare
+        # majority per snapshot, which legally permits divergent floors
+        # under the sibling contests the bg-proposer phase creates — and
+        # the suite forbids the FinalityDivergence sentinel that reports
+        # them.
         heartbeat=False,  # manual propose only
         include_readonly=True,
         extra_wallets=extra_wallets,
@@ -201,7 +195,6 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
             cli_flags={"--heartbeat-disabled"},
             cli_options={
                 "--synchrony-constraint-threshold": "0",
-                "--fault-tolerance-threshold": "-1",
                 "--epoch-length": str(_EPOCH_LENGTH),
                 "--quarantine-length": str(_QUARANTINE_LENGTH),
             },
@@ -289,45 +282,37 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
             "post" if b5_bonds == bonds_4 else "pre",
         )
 
-        # ── Blocks #6+: continuous bg proposers create chaotic chain advance ──
-        # Linear AND concurrent-burst-style proposing does NOT reproduce
-        # the bug. The hypothesis is that the bug needs the actor-message
-        # timing race that continuous heartbeat-driven proposing creates.
-        # Inject this by running 3 daemon threads on V1/V2/V3 that
-        # continuously deploy + propose at high rate, advancing the chain
-        # while V4 stays idle. Wait until the LFB crosses the epoch
-        # boundary at 8 (so V4's bond is surfaced in headers), stop bg,
-        # then V4 manual propose.
-        bg = _BgProposers(
-            producers=[v1, v2, v3],
-            identities=[VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID],
-            interval=0.4,
-        )
-        bg.start()
-        try:
-            # Poll until v1's view of latest block height is ≥ 7. Then
-            # stop bg and let V4 propose. Some slop is OK — V4 might
-            # land at 8, 9, 10... if it lands on an epoch boundary we
-            # have our trigger.
-            # ≥ 8, not 7: V4's bond (made during epoch 1) surfaces in
-            # block headers at the next epoch boundary, #8. Stopping the
-            # proposers with the LFB still at #7 leaves nothing to advance
-            # it, and the bonds guard below would read the pre-boundary
-            # header forever.
-            deadline = time.time() + 60
-            while time.time() < deadline:
-                lfb_n = v1.last_finalized_block().blockInfo.blockNumber
-                if lfb_n >= 8:
-                    logging.info(
-                        "Bg proposers advanced LFB to #%d; stopping",
-                        lfb_n,
-                    )
-                    break
-                time.sleep(0.5)
-            else:
-                pytest.fail("Bg proposers failed to advance LFB to ≥8 within 60s")
-        finally:
-            bg.stop()
+        # ── Blocks #6+: concurrent propose rounds advance the chain ──
+        # Round-driven, not clock-driven: each round fires V1/V2/V3
+        # concurrently (sibling forks merged by the next round — the
+        # multi-parent contention shape), then checks the LFB. The loop
+        # runs until the LFB crosses the epoch boundary at 8 — V4's bond
+        # (made during epoch 1) surfaces in block headers at #8, so
+        # stopping earlier would leave the bonds guard reading the
+        # pre-boundary header forever. Success is bounded by a ROUND
+        # budget so host speed changes duration, never the verdict.
+        producers = [v1, v2, v3]
+        identities = [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID]
+        for round_idx in range(_MAX_ADVANCE_ROUNDS):
+            round_blocks = _concurrent_propose_round(producers, identities, round_idx)
+            for block in round_blocks:
+                for n in (v1, v2, v3, joiner, ro):
+                    wait_for_block_visible(n, block, t)
+            lfb_n = v1.last_finalized_block().blockInfo.blockNumber
+            if lfb_n >= 8:
+                logging.info(
+                    "Round %d advanced LFB to #%d; handing off to V4",
+                    round_idx,
+                    lfb_n,
+                )
+                break
+        else:
+            pytest.fail(
+                f"LFB did not reach #8 within {_MAX_ADVANCE_ROUNDS} propose "
+                f"rounds (last seen "
+                f"#{v1.last_finalized_block().blockInfo.blockNumber}) — a "
+                f"finalization liveness failure, not host speed."
+            )
 
         # Wait for V4 to catch up to v1's LFB before V4 proposes — V4
         # has been idle but receiving gossip; ensure V4's view is
@@ -336,31 +321,23 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
         wait_for_block_visible(joiner, v1_lfb_hash, t)
 
         # Guard: V4 must be visible in the LFB's bonds before its propose.
-        # Polled, not asserted at a single instant: a bond made during
-        # epoch 1 only surfaces in block headers at the NEXT epoch
-        # boundary (#8), so an LFB caught at exactly #7 shows the bond as
-        # absent — the documented header-lag window, not a drop.
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            v1_lfb_info = v1.last_finalized_block().blockInfo
-            if v4_pub in _bonds_set(_expect(v1, v1_lfb_info.blockHash)):
-                break
-            time.sleep(0.5)
-        else:
-            v1_lfb_info = v1.last_finalized_block().blockInfo
-            pytest.fail(
-                f"V4 never surfaced in the LFB's bonds before V4's propose "
-                f"(latest LFB #{v1_lfb_info.blockNumber}). "
-                f"Bonds: {sorted(_bonds_set(_expect(v1, v1_lfb_info.blockHash)))}"
-            )
+        # A bond made during epoch 1 surfaces in block headers at the next
+        # epoch boundary (#8); the round loop above only exits with the
+        # LFB at >= 8, so the finalized header is post-boundary and this
+        # holds deterministically — no header-lag window to wait out.
+        v1_lfb_info = v1.last_finalized_block().blockInfo
+        lfb_bonds = _bonds_set(_expect(v1, v1_lfb_info.blockHash))
+        assert v4_pub in lfb_bonds, (
+            f"V4 absent from the post-boundary LFB's bonds "
+            f"(LFB #{v1_lfb_info.blockNumber}). Bonds: {sorted(lfb_bonds)}"
+        )
 
         # ── V4 proposes multiple times — at least one will land on an epoch boundary ──
-        # After bg proposers, the chain is at some non-deterministic
-        # height. V4's first manual propose lands at max+1. Subsequent
-        # proposes advance by 1 each (V4 is the only producer now).
-        # Heights mod 4 == 0 are epoch boundaries — the bug trigger.
-        # Run V4 through enough blocks to catch at least 2 epoch
-        # boundaries (so we have multiple chances to fire the bug).
+        # The advance rounds leave the chain at a round-quantized height.
+        # V4's first manual propose lands at max+1 and subsequent
+        # proposes advance by 1 each (V4 is the only producer now), so 12
+        # consecutive heights always contain at least two epoch
+        # boundaries (heights mod 4 == 0 — the bug trigger).
         v4_blocks: List[Tuple[int, str, set]] = []  # (blockNumber, hash, bonds_set)
         for i in range(12):
             try:
@@ -395,7 +372,7 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
         assert epoch_blocks, (
             f"V4 didn't produce any epoch-boundary block in {len(v4_blocks)} "
             f"proposes (heights {[n for n, _, _ in v4_blocks]}). Test "
-            f"setup didn't put V4 on a boundary — adjust the bg-proposer "
+            f"setup didn't put V4 on a boundary — adjust the advance-round "
             f"phase to land V4 closer to a boundary."
         )
 

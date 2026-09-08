@@ -259,7 +259,7 @@ def test_validator_failure_halts_finalization(provider, timeouts) -> None:
         # with only V1+V2 stake (0.667 < 0.67 in strict-greater-than
         # semantics) — a safety violation.
         logging.info("Verifying post-pause blocks stay non-finalized (FT=0.33 NOT > FTT=0.67)...")
-        deadline = time.time() + 30
+        deadline = time.time() + timeouts.custom(30)
         while time.time() < deadline:
             for node in (v1, v2):
                 for block_hash, label in (
