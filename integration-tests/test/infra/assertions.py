@@ -458,41 +458,56 @@ def _poll_deploy_finalization(nodes, deploy_ids, timeout, label):
     bounds each deploy at ``timeout`` and gives every node the same window,
     so the divergence gate only fires on a node that is still behind after
     the full budget. The worker threads are daemonic: a poll that ignores
-    its own timeout cannot pin the test process.
+    its own timeout cannot pin the test process. Such a thread keeps
+    running until the process exits; that leak is accepted over a hang.
+    Deploys are still handled in turn, so the bound is
+    ``len(deploy_ids) * (timeout + grace)`` and attribution stays simple.
     """
     from .polling import wait_for_deploy_finalized
 
     finalized: list[str] = []
     failures: list[tuple[str, str, str]] = []
     for sig in deploy_ids:
-        outcomes: dict[str, Optional[str]] = {}
+        # Keyed by position, not node.name, so the helper cannot alias two
+        # nodes even if a caller skips the unique-name check.
+        outcomes: dict[int, Optional[str]] = {}
         lock = threading.Lock()
 
-        def _poll(node, sig=sig, outcomes=outcomes, lock=lock) -> None:
+        # Default arguments bind the CURRENT loop values; a plain closure
+        # would see the last deploy's ``sig`` and ``outcomes`` once the loop
+        # moves on while a stalled worker is still running.
+        def _poll(idx: int, node, sig=sig, outcomes=outcomes, lock=lock) -> None:
             try:
                 wait_for_deploy_finalized(node, sig, timeout)
                 reason = None
             except Exception as exc:  # noqa: BLE001 - terminal errors and poll timeouts
                 reason = type(exc).__name__
             with lock:
-                outcomes[node.name] = reason
+                outcomes[idx] = reason
 
-        deadline = time.monotonic() + timeout
+        # ONE join deadline for the whole deploy. Joining each worker with
+        # its own ``remaining + grace`` let every stalled worker add a fresh
+        # grace period, so N stalled nodes cost ``timeout + N * grace`` and
+        # the bound grew with node count again (PR #139 review).
+        join_deadline = time.monotonic() + timeout + _POLL_JOIN_GRACE_S
         workers = [
-            threading.Thread(target=_poll, args=(node,), name=f"finalize-{sig[:8]}", daemon=True)
-            for node in nodes
+            threading.Thread(
+                target=_poll,
+                args=(idx, node),
+                name=f"finalize-{sig[:8]}-{node.name}",
+                daemon=True,
+            )
+            for idx, node in enumerate(nodes)
         ]
         for worker in workers:
             worker.start()
         for worker in workers:
-            # Small grace over the shared deadline so a poll that returns
-            # right at its own timeout is recorded rather than stalled.
-            worker.join(timeout=max(0.0, deadline - time.monotonic()) + 1.0)
+            worker.join(timeout=max(0.0, join_deadline - time.monotonic()))
         landed_on = []
         failed_on = []
-        for node in nodes:
+        for idx, node in enumerate(nodes):
             with lock:
-                reason = outcomes.get(node.name, "StalledPoll")
+                reason = outcomes.get(idx, "StalledPoll")
             if reason is None:
                 landed_on.append(node.name)
             else:
@@ -701,6 +716,10 @@ _VERDICT_STATE_NAMES = {
 }
 
 _VERDICT_SWEEP_INTERVAL = 3.0
+
+# Grace over the shared finalization deadline before a worker that has not
+# reported is recorded as StalledPoll. Applied ONCE per deploy, not per worker.
+_POLL_JOIN_GRACE_S = 1.0
 
 
 def _resolve_sig_across_nodes(nodes, sig: str, timeout: float) -> Dict[str, str]:

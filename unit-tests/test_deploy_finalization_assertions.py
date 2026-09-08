@@ -168,6 +168,31 @@ def test_stalled_poll_is_recorded_as_a_loss_not_a_hang(monkeypatch):
         release.set()
 
 
+def test_join_grace_is_applied_once_not_per_stalled_worker(monkeypatch):
+    """PR #139 review: N stalled nodes must cost timeout + grace, not timeout + N * grace."""
+    release = threading.Event()
+    stalled = ["b", "c", "d", "e"]
+
+    def wait(node, sig, timeout):
+        node.polls.append(sig)
+        if node.name in stalled:
+            release.wait(30)
+
+    monkeypatch.setattr(polling, "wait_for_deploy_finalized", wait)
+    nodes = [Node("a", "Finalized")] + [Node(name, "Finalized") for name in stalled]
+    started = time.monotonic()
+    try:
+        with pytest.raises(AssertionError, match="divergence"):
+            check(nodes, ids=[LOST], floor=None)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+    budget = 1 + assertions._POLL_JOIN_GRACE_S
+    assert elapsed < budget + 0.5, (
+        f"{elapsed:.2f}s for {len(stalled)} stalled nodes; bound is {budget}s"
+    )
+
+
 @pytest.mark.parametrize("lines", [[], [verdict()]])
 def test_log_read_failure_is_explicit_even_after_partial_evidence(lines):
     nodes = [Node("a", lines=lines, log_error="log stream unavailable"), Node("b")]

@@ -8,13 +8,15 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ```yaml
 id: SI-TASK-FINALIZATION-EVIDENCE-FAIL-CLOSED-2026-09-08
-status: in_progress      # source, unit tests, lint done; awaiting commit/push authorization and PR
+status: review           # PR #139 open against dev; review remediation for the join bound is in the working tree
 claimed_by: claude-session-8caaf4ad
 claimed_at: 2026-09-08T13:27:00Z
 branch: fix/finalization-evidence-fail-closed   # cut from dev by the user 2026-09-08T13:25Z; targets dev
+pr: F1R3FLY-io/system-integration#139
 origin: multi-agent reviews of PR #137 (merged) and PR #138 (dev->main)
-verification: 312 unit tests passed; ruff format and check clean on the four changed files
-remaining: commit, push, open PR against dev, CI green, one live run of the joiner and bridge-lock suites
+review_remediation: join grace applied once per deploy (critical, 3 of 5 providers); outcomes keyed by index
+verification: 313 unit tests passed; ruff format and check clean; regression case fails against the pre-fix join loop
+remaining: commit and push the remediation, CI green, one live run of the joiner and bridge-lock suites
 work_log: docs/work-logs/task-SI-TASK-FINALIZATION-EVIDENCE-FAIL-CLOSED-2026-09-08-20260908T1327Z.md
 ```
 
@@ -23,6 +25,12 @@ Three review findings that survived a source check, all on `dev` after PR #137 m
 - `log_events.py`: a repeated terminal verdict with the same state but a different `rejection_count` overwrote the earlier value. The result depended on log order. A repeat now must match both fields or the fact is marked `conflicting terminal verdicts`. Reported by OpenAI on both PRs and by xAI and Claude as minor.
 - `assertions.py`: `_poll_deploy_finalization` polled the nodes in turn, each with its own full timeout. A deploy lost everywhere blocked for nodes x timeout, and the first node sampled got the earliest-closing window, so propagation lag on a later node could read as divergence. The nodes are now polled concurrently against one shared deadline per deploy. The divergence gate stays fatal. Reported by Claude as major and by OpenAI as minor.
 - `test_joiner_self_proposes_at_epoch_boundary.py`: the V4 bonds guard was a bare `assert`, stripped under `python -O`. It is now an explicit raise. Reported by xAI on PR #137.
+
+### PR #139 review remediation
+
+Three of five providers flagged the same defect in the new join loop: each worker was joined with `remaining + 1.0s`, so every stalled worker added a fresh grace second and N stalled nodes cost `timeout + N` seconds. The bound grew with node count again. The join deadline is now computed once per deploy as `timeout + _POLL_JOIN_GRACE_S`, and every worker joins against the remaining time to that one deadline. A regression case with four stalled nodes asserts the total stays under `timeout + grace + 0.5s`. Against the committed loop it takes about five seconds; after the fix, two.
+
+Also taken from that review: outcomes are keyed by node index rather than name, thread names carry the node name for stall triage, and the docstring records that leaked stalled threads and the serial deploy loop are accepted trade-offs.
 
 Skipped: Bedrock's claim that the propose round swallows exceptions. Setup errors abort the barrier and raise after the join; only propose-phase losses are logged, which is the contention the test exists to exercise.
 
