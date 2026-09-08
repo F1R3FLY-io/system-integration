@@ -29,8 +29,10 @@ doesn't provide).
   `node.propose()`.
 - **FTT**: production default from `conf/rust.conf` (no override).
   Finalization therefore needs a 2-of-3 mutual-justification clique — the
-  round-driven advance phase supplies the witnessing rounds. A negative
-  FTT finalizes on bare majority per snapshot, which legally permits
+  round-driven advance phase supplies the witnessing rounds. The test does
+  **not** use a negative FTT. The old override accelerated finalization but
+  reduced the safety requirement: a negative FTT finalizes on bare majority
+  per snapshot, which legally permits
   divergent floors under this test's sibling contests, and the suite
   forbids the FinalityDivergence sentinel that reports them (caught live
   on arm64 CI).
@@ -67,15 +69,19 @@ doesn't provide).
    activation can surface in headers at a later transition. The
    behavioral proof of activation is V4's own successful self-propose
    below.
-3. **Advance phase** — round-driven, not clock-driven: each round fires
-   V1/V2/V3's deploy+propose concurrently (`_concurrent_propose_round` —
-   sibling forks at one height merged by the next round preserve the
-   multi-parent contention shape), waits the round's blocks visible on
-   every node, then checks the LFB. The loop runs until the LFB crosses
-   the epoch boundary at #8 (a bond made during epoch 1 only surfaces in
-   headers from the next boundary), bounded by a logical budget of 30
-   rounds — no wall-clock success gate, so host speed affects duration
-   only. V4 stays idle (receiving gossip).
+3. **Advance phase** — V1/V2/V3 deploy in parallel, then wait at a barrier
+   immediately before proposing. Each round has one shared deadline of
+   `timeouts.command * 2` for deployment, barrier waits, and thread joins.
+   A deployment failure aborts the barrier. A stalled RPC fails the round.
+   Threads are daemonized so an unresponsive RPC cannot pin the pytest worker.
+   Proposal errors can still represent normal contention.
+
+   A barrier does not guarantee a DAG shape. After block visibility checks,
+   the test checks for distinct validators' blocks at one height with a
+   shared parent. The advance phase must observe at least one such sibling
+   pair. It must also advance the LFB to #8 or later within 30 rounds.
+   Failure to establish either condition fails the test. V4 remains idle
+   and receives gossip until both conditions hold.
 4. **Pre-propose guard** — V4 must be in the bonds map of the current
    LFB before it proposes. The advance loop only exits with the LFB at
    >= 8, so the finalized header is post-boundary and the guard is a
@@ -95,10 +101,11 @@ doesn't provide).
 ## Key assertions
 
 | Stage | Assertion |
-|---|---|
+| --- | --- |
 | #3 | `blockNumber == 3` — block-numbering invariant |
 | #4 | bonds map matches ONE transition side (pre- or post-set), cross-node consistent on that side |
 | #5 | same either-side + cross-node agreement |
+| advance | at least one observed sibling pair, LFB ≥ 8, bounded RPC rounds |
 | pre-scan | V4 present in the current LFB's bonds map |
 | scan | every V4 propose succeeds; `sender == V4` on each block |
 | scan | ≥ 1 V4 block lands on an epoch boundary |
@@ -114,7 +121,8 @@ clean run is expected to stay clean.
 
 - `Shard.create()` / `shard.destroy()` — fresh per-test shard
 - `shard.attach_joiner(VALIDATOR4_ID, cli_flags={"--heartbeat-disabled"}, cli_options={...})`
-- `_concurrent_propose_round` (test-local) — one synchronized parallel deploy+propose round across V1/V2/V3
+- `_concurrent_propose_round` (test-local) — barrier-aligned proposals with one shared deadline
+- `_has_sibling_proposals` (test-local) — checks actual block metadata, not thread scheduling
 - `Node.deploy_string()` / `Node.deploy_rho_file()` / `Node.propose()` / `Node.get_block()`
 - `wait_for_block_visible()` from `infra/polling.py`
 - `assert_bonds_map_consistent_across_nodes()` from `infra/assertions.py`

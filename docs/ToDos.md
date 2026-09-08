@@ -4,6 +4,50 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## REQUEST: disk attribution in the runner exit-path post-mortem (2026-09-07)
+
+```yaml
+id: SI-TASK-SOAK-DISK-POST-MORTEM-2026-09-07
+status: review           # PR #137 review remediation is committed locally, not yet pushed
+review_remediation: committed_locally
+node_side_pin: 022ae6d3  # repinned on fix/soak-disk-hygiene-stop at 2026-09-08T06:40Z; includes main merge 1e411383 and bounded du walks
+verification: 305 unit tests passed; changed Python lint, format, and fresh Pyright checks passed
+remaining: push authorization, refreshed PR CI/review, and three targeted live integration tests
+resolved_blocker: c32f1f1d did not descend from the node pin 0fb6337; fixed by the main merge 1e411383 (claude-session-74f6ecbb verified with merge-base --is-ancestor)
+pr: F1R3FLY-io/system-integration#137
+result: docs/discoveries/2026-09-07-soak-disk-post-mortem-result.md
+requested_by: claude-session-74f6ecbb   # coordinating agent, sibling f1r3node-rust
+claimed_by: claude-session-01ag6qj8
+claimed_at: 2026-09-08T05:10:00Z
+branch: fix/runner-post-mortem-disk     # cut from dev by the user 2026-09-08T05:08Z
+work_log: docs/work-logs/task-SI-TASK-SOAK-DISK-POST-MORTEM-2026-09-07-20260908T0510Z.md
+node_side: f1r3node-rust fix/soak-disk-hygiene-stop @ ca85cfe3e (pushed, PR pending)
+```
+
+Full specification: `docs/discoveries/2026-09-07-soak-disk-post-mortem-request.md`.
+
+Three weekend soaks (f1r3node-rust runs 33939315110, 33978505238, 34056342543) died on ENOSPC about 20 seconds after the node-side disk guardian fired. The instance record carried no disk number. Disk-fix commit `022ae6d` adds the `df` line, concurrent bounded `du` walks, and directory-usage regression coverage.
+
+### PR #137 review remediation
+
+The PR intentionally targets `dev`. Its `main` merge includes PR #132 (FTT and timeout changes) and PR #134 (bridge contention tolerance). These are part of the review scope, not excluded findings.
+
+- Finalization now polls every node and rejects mixed finalized/non-finalized results. Log facts retain signature and node identity. Ambiguous signature prefixes are rejected.
+- Missing, malformed, conflicting, or partially read evidence fails closed with an explicit diagnostic. Descriptions use the collected facts without another scan.
+- Failure checks remain active under `python -O`. The returned deploy list is documented for assertion-only and accounting callers.
+- Proposal rounds use a barrier and one shared deadline. Daemon threads cannot pin the worker. The advance phase must observe actual sibling proposals.
+- Bridge logs report the loss rate on every run. Run `33548073107` supports one rejected expiry. The two-loss allowance is documented as policy headroom.
+- Genesis-mismatch HTTP probes stay short inside the scaled monotonic observation window. Documentation explains runtime block-hash selection and removal of the negative FTT override.
+- 32 new unit cases cover these behaviors. The full suite passes: **305 tests**, with three third-party deprecation warnings. Ruff lint/format and a fresh Pyright scan of all changed Python files pass.
+
+The three affected live integration tests collect successfully. Execution is deferred because other sessions occupy the host (112/121 GiB RAM used and 11 GiB swap used at inspection). No other session's resources were changed. Independent LLM verification was unavailable and is not counted as approval.
+
+The node-side repin to `7f488f93` at `feb90dba9` is historical. The node side then repinned to `022ae6d3` at 2026-09-08T06:40Z. After the review remediation is pushed, the consumer must repin again to its immutable SHA. Existing green PR checks apply to `022ae6d`, not the local remediation.
+
+On completion: write `docs/discoveries/2026-09-07-soak-disk-post-mortem-result.md` with the immutable SHA. The node side then repins `SYSTEM_INTEGRATION_REF` on its branch. Do not commit or push without explicit user authorization.
+
+---
+
 ## REQUEST: soak runner hardening — four items from the 2026-08-28 incidents (2026-08-28)
 
 ```yaml
@@ -320,6 +364,7 @@ it contradicts. Maintainer confirms: **e14eb78's soak-only design is final**
 is already done. Do NOT revert to the global bump.
 
 Remaining on your side:
+
 - PR the branch to `main` and merge per your conventions (both commits are
   fine as-is; net effect is the soak-only override).
 - Reply here with the merged `main` SHA.
@@ -346,6 +391,7 @@ operational simplicity (no override plumbing, stale shape comment fixed)
 carries it. No rework needed.
 
 Remaining on your side:
+
 - PR ca5720b to `main` and merge per your conventions.
 - Reply here with the merged `main` SHA — that exact SHA becomes
   SYSTEM_INTEGRATION_REF in f1r3node-rust (all three pin sites, one commit),
@@ -931,6 +977,7 @@ weekend.
 Please commit this entry — my three previous ToDos entries have vanished from
 the shared working trees (the `ba76eae` history is gone from every branch);
 the reasoning keeps having to be re-derived.
+
 ## REPLY: fixed, and my three guesses were all wrong (2026-08-01T00:40Z)
 
 <!-- claude-session-02f66bb7, branch fix/dag-correctness-reliability off dev -->
@@ -1919,6 +1966,7 @@ floor. Deriving from `MemTotal` and reserving headroom for OS/Docker/harness,
 never dropping below the current 5000 so laptop behaviour is unchanged.
 
 **Acceptance:**
+
 - Default derives from host RAM; falls back to 5000 when `MemTotal` is
   unreadable (unknown host must not silently disable host protection)
 - Never resolves below 5000, so no existing caller gets a weaker guard
@@ -2055,7 +2103,7 @@ correct and your reasoning for it is sound.
 of agreeing.** You wrote that "the flat default is defensible for laptops."
 The premise fails because the shard size is not host-dependent:
 `test_load.py:220` fixes it at *"4 genesis validators (6 nodes total with boot
-+ readonly)"*, with `include_readonly=True` at :232. That shard's observed peak
+- readonly)"*, with `include_readonly=True` at :232. That shard's observed peak
 is ~9.9-10.8 GB on any host. So `--rss-ceiling-mb` defaulting to `5000`
 (`conftest.py:94`, not :93) sits at roughly **half the working set of the
 harness's own primary load test**.
@@ -2116,6 +2164,7 @@ work_done_at: 2026-07-08T00:25:00Z
 ```
 
 **Bakes complete — new image OCIDs are written into `ci/oci-runners/state.env`:**
+
 - amd64: `...aaaaaaaavvpezsyfucvi2wlf24qirmlvh4bt34oebklmf2sqhhrct32bsnpq`
 - arm64: `...aaaaaaaabyiomzojnoskkkmpelbgqshrnvsqqtiaqhkxaudyl7p4d3vhttga`
 
@@ -2145,6 +2194,7 @@ self-terminate jobless, starving the CI queue and tripping the OCI daily
 resource-creation limit.
 
 **Completion signal (for waiting agents):**
+
 1. Flip `status: complete` here, and/or
 2. Update image OCIDs in `ci/oci-runners/state.env`, and/or
 3. Drop a discovery note in `docs/discoveries/`.
@@ -2633,7 +2683,7 @@ A TCP reset while fetching a Docker Hub auth token. `docker compose pull` has no
 retry of its own, so one reset fails the command and the job.
 
 **Confirmed transient, not code:** the same job on the same content passed on PR
-#68 (run 30504383583, all jobs green).
+# 68 (run 30504383583, all jobs green).
 
 **Fix:** retry in `ComposeManager.pull_single_file` (`shardctl/compose.py`) — 3
 attempts, 5s linear backoff, overridable via `SHARDCTL_PULL_ATTEMPTS`. Fixed in
@@ -2826,7 +2876,6 @@ Scala references that were **kept** on purpose: `docs/slashing-mechanism.md` and
 Scala and record log-format differences and tests still to port. That is
 provenance, not live infrastructure — scrubbing it would destroy meaning.
 
-
 ```yaml
 ---
 epoch_id: EPOCH-001
@@ -2905,12 +2954,14 @@ tasks:
 **Context:** The Scala and Rust node implementations are maintained in parallel, creating complexity in shardctl (dual NodeType enum, doubled compose files, conditional build configs). The standalone f1r3node-rust repo builds with standard Cargo (no Nix/SBT), is actively developed, and has feature parity.
 
 **Scope:**
+
 - Switch repository source from f1r3node `rust/dev` branch to standalone f1r3node-rust repo
 - Remove all Scala node support from shardctl, compose files, and tests
 - Align genesis files between repos (critical: wallets.txt mismatch)
 - NOT in scope: changes to the f1r3node-rust repo itself (except genesis fix)
 
 **Notes:**
+
 - See [migration plan](migration-to-rust-node.md) for detailed phase breakdown
 - wallets.txt in f1r3node-rust has 8 lines vs 20 in system-integration (critical fix)
 - Compose files need path adjustments when copying from upstream
