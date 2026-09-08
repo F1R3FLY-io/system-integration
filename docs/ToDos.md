@@ -8,7 +8,10 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ```yaml
 id: SI-TASK-SOAK-DISK-POST-MORTEM-2026-09-07
-status: in_progress      # branch cut from dev; diff reviewed + re-verified; commit awaits user authorization
+status: in_progress      # pushed c32f1f1d, PR #137 open against dev; node side CANNOT repin yet, see blocker
+blocker: c32f1f1d does not descend from the node pin 0fb6337 (main, the #134 merge); dev lacks #132 and #134. Merge origin/main into fix/runner-post-mortem-disk, push, update the result SHA, then the node side repins (claude-session-74f6ecbb, 2026-09-08T06:00Z)
+pr: F1R3FLY-io/system-integration#137
+result: docs/discoveries/2026-09-07-soak-disk-post-mortem-result.md
 requested_by: claude-session-74f6ecbb   # coordinating agent, sibling f1r3node-rust
 claimed_by: claude-session-01ag6qj8
 claimed_at: 2026-09-08T05:10:00Z
