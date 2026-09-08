@@ -4,6 +4,30 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## REQUEST: finalization evidence fails closed and polls share one deadline (2026-09-08)
+
+```yaml
+id: SI-TASK-FINALIZATION-EVIDENCE-FAIL-CLOSED-2026-09-08
+status: in_progress      # source, unit tests, lint done; awaiting commit/push authorization and PR
+claimed_by: claude-session-8caaf4ad
+claimed_at: 2026-09-08T13:27:00Z
+branch: fix/finalization-evidence-fail-closed   # cut from dev by the user 2026-09-08T13:25Z; targets dev
+origin: multi-agent reviews of PR #137 (merged) and PR #138 (dev->main)
+verification: 312 unit tests passed; ruff format and check clean on the four changed files
+remaining: commit, push, open PR against dev, CI green, one live run of the joiner and bridge-lock suites
+work_log: docs/work-logs/task-SI-TASK-FINALIZATION-EVIDENCE-FAIL-CLOSED-2026-09-08-20260908T1327Z.md
+```
+
+Three review findings that survived a source check, all on `dev` after PR #137 merged:
+
+- `log_events.py`: a repeated terminal verdict with the same state but a different `rejection_count` overwrote the earlier value. The result depended on log order. A repeat now must match both fields or the fact is marked `conflicting terminal verdicts`. Reported by OpenAI on both PRs and by xAI and Claude as minor.
+- `assertions.py`: `_poll_deploy_finalization` polled the nodes in turn, each with its own full timeout. A deploy lost everywhere blocked for nodes x timeout, and the first node sampled got the earliest-closing window, so propagation lag on a later node could read as divergence. The nodes are now polled concurrently against one shared deadline per deploy. The divergence gate stays fatal. Reported by Claude as major and by OpenAI as minor.
+- `test_joiner_self_proposes_at_epoch_boundary.py`: the V4 bonds guard was a bare `assert`, stripped under `python -O`. It is now an explicit raise. Reported by xAI on PR #137.
+
+Skipped: Bedrock's claim that the propose round swallows exceptions. Setup errors abort the barrier and raise after the join; only propose-phase losses are logged, which is the contention the test exists to exercise.
+
+---
+
 ## REQUEST: disk attribution in the runner exit-path post-mortem (2026-09-07)
 
 ```yaml

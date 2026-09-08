@@ -412,7 +412,13 @@ def _record_deploy_loss_line(fact: dict, prefix: str, line: str) -> None:
     ):
         fact["diagnostics_error"] = "invalid terminal verdict"
         return
-    if fact["state"] is not None and fact["state"] != state:
+    # A terminal verdict is write-once on the node. A repeat must match on
+    # BOTH fields: a second Expired line with a different rejection_count is
+    # contradictory evidence, not a refinement, and must not make the result
+    # depend on log order (0 then 2 tolerated, 2 then 0 not).
+    if fact["state"] is not None and (
+        fact["state"] != state or fact["rejection_count"] != rejections
+    ):
         fact["diagnostics_error"] = "conflicting terminal verdicts"
         return
     fact["state"], fact["rejection_count"] = state, rejections

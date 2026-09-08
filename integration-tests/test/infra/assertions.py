@@ -7,6 +7,7 @@ Shard assertions: test-specific helpers for multi-node agreement checks.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, cast
@@ -446,20 +447,56 @@ def assert_all_deploys_finalized_on_all_nodes(
 
 
 def _poll_deploy_finalization(nodes, deploy_ids, timeout, label):
-    """Retain every node's result. Mixed success and failure is always fatal."""
+    """Retain every node's result. Mixed success and failure is always fatal.
+
+    Every node is polled for a deploy at the same time, against ONE shared
+    deadline. Polling the nodes in turn, each with its own full ``timeout``,
+    had two costs: a deploy lost everywhere blocked for ``len(nodes) *
+    timeout`` before the assertion fired, and the node sampled first got
+    the earliest-closing window, so ordinary propagation lag on a later
+    node could be reported as finalization divergence. Concurrent polling
+    bounds each deploy at ``timeout`` and gives every node the same window,
+    so the divergence gate only fires on a node that is still behind after
+    the full budget. The worker threads are daemonic: a poll that ignores
+    its own timeout cannot pin the test process.
+    """
     from .polling import wait_for_deploy_finalized
 
     finalized: list[str] = []
     failures: list[tuple[str, str, str]] = []
     for sig in deploy_ids:
+        outcomes: dict[str, Optional[str]] = {}
+        lock = threading.Lock()
+
+        def _poll(node, sig=sig, outcomes=outcomes, lock=lock) -> None:
+            try:
+                wait_for_deploy_finalized(node, sig, timeout)
+                reason = None
+            except Exception as exc:  # noqa: BLE001 - terminal errors and poll timeouts
+                reason = type(exc).__name__
+            with lock:
+                outcomes[node.name] = reason
+
+        deadline = time.monotonic() + timeout
+        workers = [
+            threading.Thread(target=_poll, args=(node,), name=f"finalize-{sig[:8]}", daemon=True)
+            for node in nodes
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            # Small grace over the shared deadline so a poll that returns
+            # right at its own timeout is recorded rather than stalled.
+            worker.join(timeout=max(0.0, deadline - time.monotonic()) + 1.0)
         landed_on = []
         failed_on = []
         for node in nodes:
-            try:
-                wait_for_deploy_finalized(node, sig, timeout)
+            with lock:
+                reason = outcomes.get(node.name, "StalledPoll")
+            if reason is None:
                 landed_on.append(node.name)
-            except Exception as exc:  # noqa: BLE001 - terminal errors and poll timeouts
-                failures.append((sig, node.name, type(exc).__name__))
+            else:
+                failures.append((sig, node.name, reason))
                 failed_on.append(node.name)
         if landed_on and failed_on:
             raise AssertionError(

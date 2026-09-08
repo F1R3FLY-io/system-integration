@@ -375,10 +375,13 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
         # holds deterministically — no header-lag window to wait out.
         v1_lfb_info = v1.last_finalized_block().blockInfo
         lfb_bonds = _bonds_set(_expect(v1, v1_lfb_info.blockHash))
-        assert v4_pub in lfb_bonds, (
-            f"V4 absent from the post-boundary LFB's bonds "
-            f"(LFB #{v1_lfb_info.blockNumber}). Bonds: {sorted(lfb_bonds)}"
-        )
+        # Explicit raise, not ``assert``: this gate must stay live under
+        # ``python -O`` like the finalization helpers it sits beside.
+        if v4_pub not in lfb_bonds:
+            raise AssertionError(
+                f"V4 absent from the post-boundary LFB's bonds "
+                f"(LFB #{v1_lfb_info.blockNumber}). Bonds: {sorted(lfb_bonds)}"
+            )
 
         # ── V4 proposes multiple times — at least one will land on an epoch boundary ──
         # The advance rounds leave the chain at a round-quantized height.

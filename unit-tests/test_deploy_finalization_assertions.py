@@ -1,7 +1,10 @@
-"""PR #137: contention tolerance must not hide node disagreement or missing evidence."""
+"""PR #137 / #138 review: contention tolerance must not hide node disagreement,
+missing evidence, or contradictory evidence; finalization polls share one deadline."""
 
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -98,6 +101,71 @@ def test_one_nodes_evidence_cannot_override_another_nodes_loss(lines):
     nodes = [Node("a", lines=lines), Node("b")]
     with pytest.raises(AssertionError):
         check(nodes)
+
+
+@pytest.mark.parametrize("counts", [(0, 2), (2, 0), (2, 3)])
+def test_same_state_verdicts_with_different_rejection_counts_fail_closed(counts):
+    """A repeated Expired verdict with a different count is contradictory, in either order."""
+    lines = [verdict(rejections=counts[0]), verdict(rejections=counts[1])]
+    facts = log_events.collect_deploy_loss_facts([Node("a", lines=lines)], [LOST])
+    assert facts[(LOST[:16], "a")]["diagnostics_error"] == "conflicting terminal verdicts"
+    with pytest.raises(AssertionError, match="conflicting terminal verdicts"):
+        check([Node("a", lines=lines), Node("b")])
+
+
+def test_identical_repeated_verdict_is_not_a_conflict():
+    facts = log_events.collect_deploy_loss_facts([Node("a", lines=[verdict(), verdict()])], [LOST])
+    assert "diagnostics_error" not in facts[(LOST[:16], "a")]
+    assert facts[(LOST[:16], "a")]["rejection_count"] == 2
+
+
+def test_every_node_is_polled_concurrently_against_one_deadline(monkeypatch):
+    """Serial per-node polling would never release the barrier and would fail."""
+    nodes = [Node("a", "Finalized"), Node("b", "Finalized"), Node("c", "Finalized")]
+    rendezvous = threading.Barrier(len(nodes), timeout=2.0)
+    budgets = []
+
+    def wait(node, sig, timeout):
+        node.polls.append(sig)
+        budgets.append(timeout)
+        rendezvous.wait()
+
+    monkeypatch.setattr(polling, "wait_for_deploy_finalized", wait)
+    assert check(nodes, ids=[LOST], floor=None) == [LOST]
+    assert budgets == [1, 1, 1], "every node gets the full window, not a shrinking remainder"
+
+
+def test_lagging_node_inside_the_window_is_not_divergence(monkeypatch):
+    nodes = [Node("a", "Finalized"), Node("b", "Finalized")]
+    started = time.monotonic()
+
+    def wait(node, sig, timeout):
+        node.polls.append(sig)
+        if node.name == "b":
+            time.sleep(0.3)
+
+    monkeypatch.setattr(polling, "wait_for_deploy_finalized", wait)
+    assert check(nodes, ids=[LOST], floor=None) == [LOST]
+    assert time.monotonic() - started < 1.0
+
+
+def test_stalled_poll_is_recorded_as_a_loss_not_a_hang(monkeypatch):
+    """A poll that ignores its own timeout cannot pin the test past the deadline."""
+    release = threading.Event()
+
+    def wait(node, sig, timeout):
+        node.polls.append(sig)
+        if node.name == "b":
+            release.wait(30)
+
+    monkeypatch.setattr(polling, "wait_for_deploy_finalized", wait)
+    started = time.monotonic()
+    try:
+        with pytest.raises(AssertionError, match="divergence.*not finalized on \\['b'\\]"):
+            check([Node("a", "Finalized"), Node("b", "Finalized")], ids=[LOST], floor=None)
+        assert time.monotonic() - started < 5.0
+    finally:
+        release.set()
 
 
 @pytest.mark.parametrize("lines", [[], [verdict()]])
