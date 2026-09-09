@@ -1,0 +1,93 @@
+# services-standalone.yml — All non-node services for standalone node testing
+# Usage: F1R3SKY_IP=<ip> docker compose -f compose/services-standalone.yml up -d
+#
+# Prerequisites: a standalone node must be running
+# Set NODE_NETWORK to the standalone node's Docker network name
+
+services:
+  f1r3sky-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: atproto
+    volumes:
+      - f1r3sky-pgdata:/var/lib/postgresql/data
+    networks:
+      - node-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  f1r3sky-redis:
+    image: redis:7-alpine
+    networks:
+      - node-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  f1r3sky:
+    image: f1r3flyindustries/firesky-ts:local
+    ports:
+      - "2581:2581"
+      - "2582:2582"
+      - "2583:2583"
+      - "2584:2584"
+      - "2587:2587"
+    environment:
+      ENABLE_PDS: "1"
+      DB_POSTGRES_URL: postgresql://postgres:postgres@f1r3sky-postgres:5432/atproto
+      REDIS_HOST: f1r3sky-redis
+      PDS_HOSTNAME: f1r3sky
+    depends_on:
+      f1r3sky-postgres:
+        condition: service_healthy
+      f1r3sky-redis:
+        condition: service_healthy
+    networks:
+      - node-net
+
+  embers:
+    image: f1r3flyio/embers:local
+    env_file:
+      - ../services/embers/${EMBERS_ENV:-embers.rust-standalone.env}
+    ports:
+      - "8080:3000"
+    depends_on:
+      f1r3sky:
+        condition: service_started
+    extra_hosts:
+      - "localhost:${F1R3SKY_IP}"
+    networks:
+      - node-net
+
+  embers-frontend:
+    image: f1r3flyio/embers-frontend:local
+    ports:
+      - "8081:80"
+    environment:
+      API_URL: "http://localhost:8080"
+
+  f1r3sky-frontend:
+    image: f1r3flyio/firesky-frontend:local
+    ports:
+      - "8100:8100"
+    environment:
+      HTTP_ADDRESS: ":8100"
+      ATP_APPVIEW_HOST: "http://f1r3sky:2583"
+    command: /usr/bin/bskyweb serve
+    networks:
+      - node-net
+
+volumes:
+  f1r3sky-pgdata:
+
+networks:
+  node-net:
+    name: ${NODE_NETWORK:-rust-standalone_f1r3fly-standalone}
+    external: true
