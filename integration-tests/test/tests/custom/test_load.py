@@ -337,7 +337,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
         global_cli_options={
             "--heartbeat-self-propose-cooldown": "3seconds",
             "--heartbeat-advanced-frontier-chase-max-lag": "20",
-            "--heartbeat-stale-recovery-min-interval": "3seconds",
+            "--heartbeat-stale-recovery-min-interval": "6seconds",
             # Larger blocks reduce the propose-per-deploy ratio and the
             # number of cross-validator races. Default 32 floods the
             # proposer at 10 d/s — at the new cooldown each validator
