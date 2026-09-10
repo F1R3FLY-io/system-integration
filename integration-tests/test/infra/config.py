@@ -122,7 +122,7 @@ class TimeoutConfig:
     # quarantine elapsing so withdrawn validators are paid out. These span
     # ~quarantine-length + epoch-length blocks by construction (not contention),
     # so they need a budget larger than a single finalization. Used unscaled.
-    epoch_transition: int = 45
+    epoch_transition: int = 90
     poll_interval: float = 2.0
     scale: float = 1.0
 
