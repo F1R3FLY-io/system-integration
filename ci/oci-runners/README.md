@@ -57,6 +57,10 @@ Both arches use **16 OCPU / 32 GB / boot from baked image**:
 | `launch-runner.sh` | Launches one ephemeral runner VM. Mints a short-lived (1-hour) registration token via `gh api`, renders cloud-init, calls `oci compute instance launch`. Called by the CI workflow + can be invoked manually for debugging. |
 | `reap-stale-runners.sh` | Safety net: terminates `ci-runner` VMs older than `MAX_AGE_HOURS` (default 6h, well past the ~45-min pipeline) and deregisters offline `ci-eph-*` runner entries. **Manual / on-demand only from this repo** — the scheduled reaping runs in `f1r3node-rust` (`.github/workflows/ci-runner-reaper.yml`), which is where the `ci-eph-*` pool registers and where the OCI credentials are provisioned. Supersedes the old `cleanup-orphan-runners.sh`. |
 | `destroy-all.sh` | Emergency: interactively force-terminates every instance in `ci-runner` compartment. |
+| `hunt-launch.sh` | Launches personal **flake-hunt** VMs (no GitHub runner registration) from the baked image, with a 12h `shutdown -h` cost fuse. Named `flake-hunt-*` so they're distinguishable from `ci-eph-*` runners. |
+| `hunt-slot.sh` | On-VM loop for one hunt slot: repeats a pytest suite with `-x --keep-on-failure` until a failure is caught (shard left running) or the iteration budget is spent. Started by `hunt-run.sh`. |
+| `hunt-run.sh` | Operator-side driver: preps each hunt VM (clone at a chosen ref, poetry install, image pull), starts N slots per VM, monitors, and pulls forensics (pytest log, node file-sink logs, log-archive) to the operator machine on every catch. `--status` / `--stop` / `--setup-only` modes. |
+| `hunt-teardown.sh` | Terminates every `flake-hunt-*` instance (any non-terminated state). `--dry-run` to preview. |
 | `README.md` | This file. |
 
 ## OCI secrets in F1R3FLY-io/f1r3node
@@ -134,13 +138,48 @@ Prefer this over registering with the shared label and relabelling afterwards. R
 ./destroy-all.sh               # nuke EVERY instance in ci-runner now (interactive) — only when no run is active
 ```
 
-### Bigger ad-hoc soaks (for flake measurement)
+### Personal flake-hunt pool (high-volume flake sampling)
 
-The current matrix is 5+5 = 10 samples per PR push. If you need more samples (e.g., 50× for tighter flake stats), either:
+For hunting an intermittent test failure, don't widen the CI matrix (that burns
+the tenancy's daily instance-creation quota on every push — the reason the
+matrix was cut 20→4 in f1r3node-rust PR #103). Instead run a small personal
+pool of long-lived VMs that loop the suite continuously:
 
-1. **Push more commits** — N pushes = N × 10 samples. Cheap and simple.
-2. **Temporarily widen the matrix** in `build-test-and-deploy.yml` (add more `slot` entries), push, then revert. The launch step needs the count bumped to match.
-3. **Run pytest locally** with the canonical baseline against subprocess provider (see `integration-tests/test/docs/ARCHITECTURE.md`).
+```bash
+cd ci/oci-runners
+
+# 1. Launch the pool (billable while up; ~$0.5/hr per 16-OCPU VM)
+./hunt-launch.sh amd64 2
+./hunt-launch.sh arm64 2          # prints public IPs
+
+# 2. Drive the hunt from this machine (setup + slots + monitor)
+./hunt-run.sh --ips "IP1 IP2 IP3 IP4" \
+  --slots 1 \
+  --image f1r3flyindustries/f1r3fly-rust:dev \
+  --ref <system-integration sha to test>
+
+# 3. On a catch: the slot halts, its failing shard stays RUNNING on the VM
+#    (--keep-on-failure), and the driver rsyncs forensics to ./hunt-results/.
+#    Inspect live: ssh -i <SSH_KEY_PRIV> ubuntu@<ip>, then docker ps /
+#    readonly-node HTTP API / pytest --skip-setup --session-id <id>.
+
+# 4. Tear down when done
+./hunt-run.sh --ips "..." --stop     # stop slots + shards, keep VMs
+./hunt-teardown.sh                   # terminate the VMs
+```
+
+Throughput: each 16-OCPU/32GB VM can run ~3 concurrent slots (5-node shards,
+disjoint port ranges via `F1R3FLY_PORT_WORKER`); 4 VMs × 3 slots ≈ 12
+concurrent samples, one ~15-min suite iteration each. Start at `--slots 1` and
+re-invoke `hunt-run.sh` with a higher `--slots` after a clean first pass
+(already-running slots are detected and skipped).
+
+Cost/lifetime guards, in order of firing:
+1. The scheduled CI reaper terminates ANY compartment instance >6h old —
+   hunt VMs included. Plan hunts in <6h windows; pull forensics promptly.
+2. Each VM carries a `shutdown -h +720` fuse from launch (12h backstop for
+   the reaper being down; a stopped Flex instance stops OCPU billing).
+3. `hunt-teardown.sh` is idempotent and also cleans fuse-stopped instances.
 
 ## Relationship to persistent runners
 

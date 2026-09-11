@@ -6,6 +6,7 @@ This directory contains the tooling for two different runner pools:
 |---|---|---|---|---|---|
 | **Persistent** (legacy) | this directory | Long-lived VMs (always running) | `f1r3fly-devops` | `f1r3fly-rust-ci` | Currently powers `build-test-and-deploy.yml`. Source of the state-leak flakiness we're moving away from. |
 | **Ephemeral** (new) | [`oci-runners/`](oci-runners/README.md) | One job per fresh VM | `ci-runner` | `f1r3fly-rust-ci-ephemeral` | Powers `oci-ephemeral-tests.yml`. Solves the flakiness — see `oci-runners/README.md`. |
+| **Flake-hunt** (personal) | [`oci-runners/`](oci-runners/README.md) (`hunt-*.sh`) | Hours (12h fuse; 6h reaper horizon) | `ci-runner` | none (no GH registration) | Operator-driven pool that loops a pytest suite to catch intermittent failures with `--keep-on-failure`. See "Personal flake-hunt pool" in `oci-runners/README.md`. |
 
 The two pools coexist without contention because their labels are distinct.
 
