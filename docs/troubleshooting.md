@@ -108,10 +108,12 @@ brew install protobuf
 
 ### Controlling log verbosity (RUST_LOG)
 
-The `RUST_LOG` environment variable sets the structured log filter and takes the highest priority over any config-file setting. It applies to production nodes (`shardctl up`) and integration-test nodes alike.
+By default, log levels come from `logging.filter` in `conf/rust.conf` (or `conf/standalone-dev.conf`). The `RUST_LOG` environment variable, when set, replaces that filter entirely. It applies to production nodes (`shardctl up`) and integration-test nodes alike; neither passes `RUST_LOG` to the node unless you set it.
+
+Docker keeps at most 3 × 100 MB of each node's stdout. The node's own rotating file sink is the authoritative log.
 
 ```bash
-# Default — info level
+# Default — the filter in conf/rust.conf
 poetry run shardctl up
 
 # Verbose — debug everything
