@@ -39,7 +39,7 @@ Test nodes pick up structured logging from the mounted config files, not from CL
 | `conf/rust.conf` | All shard test nodes (Docker + subprocess) | `format = "json"`, `sink = "both"` |
 | `conf/standalone-dev.conf` | All standalone test nodes (Docker + subprocess) | `format = "json"`, `sink = "both"` |
 
-`sink = "both"` writes to stdout (live inspection via `docker logs -f`) and to `<data-dir>/logs/node.log` (read by the test framework). Log level for test nodes is controlled by the `RUST_LOG` environment variable.
+`sink = "both"` writes to stdout (live inspection via `docker logs -f`) and to `<data-dir>/logs/node.log` (read by the test framework). Log levels come from `logging.filter` in the mounted config, for test nodes and `shardctl` nodes alike. A `RUST_LOG` environment variable, when set, overrides it — see [Controlling log verbosity](troubleshooting.md#controlling-log-verbosity-rust_log).
 
 ---
 

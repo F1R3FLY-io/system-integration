@@ -44,7 +44,13 @@ services:
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
     environment:
       - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
-      - RUST_LOG=${RUST_LOG:-info}
+      # Passed only when set, so conf/rust.conf's logging.filter applies by default.
+      - RUST_LOG
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "3"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
       interval: 30s
