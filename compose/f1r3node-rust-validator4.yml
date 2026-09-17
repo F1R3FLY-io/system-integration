@@ -10,7 +10,7 @@
 #   - A running shard network (bootstrap + validators on f1r3fly network)
 #   - Validator 4 must be bonded before it can participate in consensus
 #
-# See: https://github.com/F1R3FLY-io/rust-client/blob/main/VALIDATOR4_BONDING_GUIDE.md
+# See: docs/adding-a-validator.md
 #
 
 name: f1r3fly-rust-validator4

@@ -30,16 +30,20 @@ Roles within a shard are differentiated by CLI flags injected via the compose fi
 
 See the `command:` block in any compose file for the full per-role flag list.
 
-### Logging configuration (integration tests)
+### Logging configuration
 
 Test nodes pick up structured logging from the mounted config files, not from CLI flags — keeping both Docker and subprocess providers consistent:
 
 | Config file | Used by | Logging settings |
 |---|---|---|
-| `conf/rust.conf` | All shard test nodes (Docker + subprocess) | `format = "json"`, `sink = "both"` |
+| `conf/rust.conf` | All shard test nodes (Docker + subprocess) | `format = "json"`, `sink = "both"`, `filter` = failure-forensics, `file { rotation = "hourly", retention = 2 }` |
 | `conf/standalone-dev.conf` | All standalone test nodes (Docker + subprocess) | `format = "json"`, `sink = "both"` |
 
 `sink = "both"` writes to stdout (live inspection via `docker logs -f`) and to `<data-dir>/logs/node.log` (read by the test framework). Log levels come from `logging.filter` in the mounted config, for test nodes and `shardctl` nodes alike. A `RUST_LOG` environment variable, when set, overrides it — see [Controlling log verbosity](troubleshooting.md#controlling-log-verbosity-rust_log).
+
+The active `filter` in `conf/rust.conf` is the failure-forensics one — an INFO baseline plus about ten debug targets — so a default `shardctl up` is verbose by design. An INFO baseline sits commented out above it. For a shard you intend to leave running, set `RUST_LOG` to that baseline rather than editing the file.
+
+Retention is set in two places, and the file sink is the tighter of the two: hourly rotation keeping 2 files (~2 hours), against Docker's 3 × 100 MB of stdout.
 
 ---
 
@@ -62,6 +66,21 @@ docker compose --env-file .env.node -f compose/f1r3node-rust.yml up -d
 ### Image selection
 
 `F1R3FLY_NODE_IMAGE` is the single env var for choosing the node Docker image. It applies to both `shardctl up` (production) and `shardctl test` / `pytest` (integration tests). See [../COMPOSE_STRUCTURE.md#image-selection](../COMPOSE_STRUCTURE.md#image-selection) for details.
+
+**Pinning an image for a long-running shard.** The compose files default to `f1r3flyindustries/f1r3fly-rust:latest`, and `.env.node` does not set `F1R3FLY_NODE_IMAGE`, so a shard started without it tracks a moving tag. Setting the variable on the command line pins that invocation only: the next `docker compose up`, or a `restart: always` container respawning after a host reboot, silently falls back to the default and can come back on a different binary.
+
+To pin durably, add the tag — ideally a digest — to `.env.node`, which every `f1r3node-*` compose file receives as its `--env-file`:
+
+```bash
+# .env.node
+F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust@sha256:<digest>
+```
+
+Confirm what is actually resolved before starting, rather than trusting the shell:
+
+```bash
+docker compose --env-file .env.node -f compose/f1r3node-rust.yml config | grep image:
+```
 
 ### `.env.node` validator keys
 

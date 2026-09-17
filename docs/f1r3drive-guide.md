@@ -84,7 +84,7 @@ Start a shard with shardctl — the default port mapping works out of the box:
 shardctl up f1r3node-rust
 
 # OR: the light shard
-shardctl up f1r3node
+shardctl up f1r3node-rust-shard-light
 ```
 
 Wait for the node to be fully ready:
@@ -96,7 +96,8 @@ shardctl wait
 > **Using standalone or custom ports?**
 > The default `scripts/run_f1r3drive.sh` connects to `localhost:40412` (validator) and `localhost:40452` (observer) — the ports used by the multi-node shard compose files.
 > If you start a different topology (e.g. `f1r3node-rust-standalone`) or a remote node with different ports, you must either:
-> 1. Set environment variables before starting: `VALIDATOR_PORT=40402 OBSERVER_PORT=40403 shardctl up f1r3drive`
+> 1. Set environment variables before starting: `VALIDATOR_PORT=40402 OBSERVER_PORT=40402 shardctl up f1r3drive`
+>    (both are **gRPC** ports, not HTTP. The standalone topology publishes 40402 and has no separate read-only node, so both point at the same node.)
 > 2. Or edit `scripts/run_f1r3drive.sh` to update the default `VALIDATOR_PORT` and `OBSERVER_PORT` values.
 >
 > See the [F1R3Drive CLI configuration reference](../services/f1r3drive/docs/configuration.md) for all available connection options.
@@ -289,4 +290,4 @@ rm -rf services/f1r3drive-data
 - [F1R3Drive README](../services/f1r3drive/README.md) — upstream documentation and test instructions
 - [F1R3Drive CLI Configuration](../services/f1r3drive/docs/configuration.md) — full reference for all CLI flags and connection options
 - [F1R3Drive Demo](../services/f1r3drive/Demo.md) — step-by-step demo walkthrough with example file operations
-- [Main README — Native Services](../README.md#native-services-no-docker) — overview of native service support in shardctl
+- [docs/cli-reference.md](cli-reference.md) — every `shardctl` command and flag, including native-service support
