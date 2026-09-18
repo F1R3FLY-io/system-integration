@@ -110,10 +110,19 @@ brew install protobuf
 
 By default, log levels come from `logging.filter` in `conf/rust.conf` (or `conf/standalone-dev.conf`). The `RUST_LOG` environment variable, when set, replaces that filter entirely. It applies to production nodes (`shardctl up`) and integration-test nodes alike; neither passes `RUST_LOG` to the node unless you set it.
 
-Docker keeps at most 3 × 100 MB of each node's stdout. The node's own rotating file sink is the authoritative log.
+**The shipped default is not quiet.** The active filter in `conf/rust.conf` is the failure-forensics filter: an INFO baseline plus about ten debug targets, chosen so a failed run can be diagnosed from its first occurrence. That is the right default while chasing a defect and the wrong one for a shard you intend to leave running — it produces far more volume, and on a busy host the extra work is measurable. An INFO baseline is provided in the same file, commented out directly above the active line.
+
+For a long-running shard, pass the production filter explicitly:
 
 ```bash
-# Default — the filter in conf/rust.conf
+RUST_LOG="info,tonic=error,hyper=error,tower=error,reqwest=error,heed=error,h2=error" \
+  poetry run shardctl up
+```
+
+Two retention limits apply, and the tighter one is usually the file sink. Docker keeps at most 3 × 100 MB of each node's stdout. The node's own file sink — the authoritative log the test framework reads — rotates hourly and keeps 2 files (`conf/rust.conf`, `logging.file`), so roughly the last two hours. Copy anything load-bearing out before it rolls.
+
+```bash
+# Default — the forensics filter in conf/rust.conf
 poetry run shardctl up
 
 # Verbose — debug everything
@@ -148,12 +157,19 @@ The integration-test framework reads from the file (via `docker exec cat`) for l
    ```
 2. Verify in logs:
    ```bash
-   poetry run shardctl logs rnode.bootstrap | grep "Running state"
+   poetry run shardctl logs f1r3node-rust | grep "Running state"
+   # or go straight to one container:
+   docker logs rnode.bootstrap | grep "Running state"
    ```
 3. Restart Embers after blockchain is ready:
    ```bash
-   poetry run shardctl restart embers-api
+   poetry run shardctl restart embers
    ```
+
+   `logs` and `restart` take **compose-file names** (`compose/<name>.yml`), not
+   container names — `shardctl logs rnode.bootstrap` exits with
+   "Compose file not found". `exec` and `shell` are the opposite: they take a
+   **container** name, because they call `docker exec` directly.
 
 ### Blockchain stuck or won't start properly
 
