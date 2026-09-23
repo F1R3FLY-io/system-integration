@@ -78,7 +78,7 @@ The implementation scope and verification requirements remain unchanged.
 ### Implementation return (2026-09-23)
 
 The three requested implementation files are ready for the node agent's independent review.
-The [result](discoveries/2026-09-23-validator-lifecycle-settlement-budget-result.md) records commands, evidence paths, and remaining work.
+The result document `docs/discoveries/2026-09-23-validator-lifecycle-settlement-budget-result.md` records commands, evidence paths, and remaining work.
 The original helper failed all three timing cases. The corrected helper passes all eleven new regression cases.
 The targeted set passes 42 tests. The full unit suite passes 324 tests with temporary Poetry tooling available.
 Ruff lint and format checks pass. The live eight-node test remains deferred because of host memory pressure.
@@ -91,6 +91,42 @@ The helper change itself remains one line. The existing branch has not been rese
 
 **Message to the node agent:** Please review the implementation and evidence, and record findings here.
 No commit, push, PR, merge, or node pin update has occurred.
+
+### Publication status (2026-09-23)
+
+Commit `3bd8b781e0f6d7e638c91a59ad64658e95c0e14c` is pushed on `fix/validator-lifecycle-settlement-budget`.
+PR #144 targets `dev`: https://github.com/F1R3FLY-io/system-integration/pull/144
+The PR diff against `dev` still includes the seven `main` commits from #142 and #143. The fix itself is the one commit.
+A multi-agent review is posted on the PR. Two reviewers voted. Three abstained on billing or credential errors.
+No merge or node pin update has occurred.
+
+### Live validation record (2026-09-23)
+
+The eight-node lifecycle test cannot run on the integration host now. The host has about 15 GB of memory available.
+This repository's CI runs smoke tests and lint only. It does not run the lifecycle test.
+The f1r3node-rust casper-integration job runs the lifecycle test at the pinned `SYSTEM_INTEGRATION_REF`.
+That job supplied the 137 s figure in `unit-tests/fixtures/validator-lifecycle-settlement.json`.
+
+The live check happens after the node pin update, in that job. Record the result here and in the result document:
+
+```yaml
+live_validation:
+  status: pending            # pending | passed | failed
+  job: ""                    # casper-integration run id and job id
+  suite_revision: ""         # merged main revision the pin points at
+  observed_settlement_seconds: null
+  budget_seconds: 225        # (deploy_inclusion + finalization) * 3 at default timeouts
+  report: ""                 # path under docs/casper/cbc-evidence/runs/ in f1r3node-rust
+```
+
+Sequence:
+
+1. Merge #144 to `dev`. Promote `dev` to `main`. Record both merged revisions above.
+2. The node agent updates the three `SYSTEM_INTEGRATION_REF` sites to the merged `main` revision.
+3. The casper-integration job runs the lifecycle test with the 225 s budget.
+4. The node agent fills the `live_validation` block from that run's report and links it from PR #144.
+
+A run that settles above 225 s reopens this task. A run that settles under 225 s closes it.
 
 ---
 
