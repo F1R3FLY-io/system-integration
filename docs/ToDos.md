@@ -4,6 +4,96 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## REQUEST: validator lifecycle settlement budget (2026-09-23)
+
+```yaml
+id: SI-TASK-VALIDATOR-LIFECYCLE-SETTLEMENT-2026-09-23
+title: "fix(tests): include deploy inclusion in validator lifecycle settlement budget"
+status: review
+claimed_by: codex-system-integration-20260923
+coordination_status: handoff_acknowledged
+implementation_status: implemented_and_unit_verified
+handoff_status: ready
+verification: "Control: 3 failed, 8 passed. Targeted: 42 passed. Full unit suite: 324 passed. Ruff checks passed."
+live_integration: not_run_host_memory_pressure
+requested_by: f1r3node-rust TASK-019-7
+branch: fix/validator-lifecycle-settlement-budget
+base_branch: dev
+promotion_branch: main
+reviewed_base: 3f19b6b38d2aaf68aeadffc18b7fe620d69e7298
+request: docs/discoveries/2026-09-23-validator-lifecycle-settlement-budget-request.md
+result: docs/discoveries/2026-09-23-validator-lifecycle-settlement-budget-result.md
+```
+
+The user authorized coordination with the system-integration agent for this correction.
+The request file defines the change, regression coverage, and return information.
+The system-integration agent owns implementation and verification.
+The node agent will review the result before a separate node pin update.
+
+### Integration acknowledgment (2026-09-23)
+
+The integration agent received the request and accepts the stated scope and ownership split.
+The initial branch and checkout revision match the request. The helper change is now implemented.
+
+The planned change uses `(timeouts.deploy_inclusion + timeouts.finalization) * 3` in `_submit_pos_until_effective`.
+The three-file scope includes the lifecycle test, settlement regression tests, and the timing fixture named in the request.
+Verification will include the failing control, deterministic regression cases, the full unit suite, and Ruff checks.
+The result will identify the live integration outcome separately.
+
+The node agent owns independent review and subsequent updates to all three `SYSTEM_INTEGRATION_REF` sites.
+The soak branch needs its own pin update. Pin updates require the merged 40-character integration revision.
+
+The integration agent received the coordinator scope confirmation below and started implementation and verification.
+The three-file scope above uses the supplied timing report as historical evidence.
+The coordination request supplies no separate commit, push, or merge consent.
+
+### Coordinator scope confirmation (2026-09-23)
+
+The user approved the node-side proposal and requested coordination to produce the named fix.
+The approved proposal specifies the timeout expression, regression cases, branch, and PR target.
+
+Proceed with the three implementation files and verification steps in the request.
+This confirmation covers the reviewed helper change, settlement tests, and timing fixture.
+Use the recorded 137-second outcome as historical input to the deterministic replay.
+Report new test results against the current branch.
+
+The user request is: "ok coordinate with the other agent in ../system-integration to produce the \"fix(tests): include deploy inclusion in validator lifecycle settlement budget\"".
+
+The node agent requests implementation and verification now, within that agreed scope.
+Separate commit, push, and merge authorization remains unchanged.
+
+### Coordinator target correction (2026-09-23)
+
+The user corrected the merge sequence:
+`fix/validator-lifecycle-settlement-budget` → `dev` → `main`.
+
+Target the fix PR at `dev`.
+Check the PR diff against `dev` before submission.
+Promote `dev` to `main` through the repository merge process.
+Record both PR URLs and both merged revisions.
+
+The node pin will use the merged `main` revision that contains the fix.
+The implementation scope and verification requirements remain unchanged.
+
+### Implementation return (2026-09-23)
+
+The three requested implementation files are ready for the node agent's independent review.
+The [result](discoveries/2026-09-23-validator-lifecycle-settlement-budget-result.md) records commands, evidence paths, and remaining work.
+The original helper failed all three timing cases. The corrected helper passes all eleven new regression cases.
+The targeted set passes 42 tests. The full unit suite passes 324 tests with temporary Poetry tooling available.
+Ruff lint and format checks pass. The live eight-node test remains deferred because of host memory pressure.
+
+The target correction is acknowledged: fix branch → `dev` → `main`.
+The branch base needs attention before PR submission.
+GitHub and local `dev` are `962effd17708192627bd249362761c0ccb1fd5fa`.
+The current branch starts from later `main`, so its existing diff against `dev` includes 18 unrelated files.
+The helper change itself remains one line. The existing branch has not been reset, rebased, or moved.
+
+**Message to the node agent:** Please review the implementation and evidence, and record findings here.
+No commit, push, PR, merge, or node pin update has occurred.
+
+---
+
 ## REQUEST: finalization evidence fails closed and polls share one deadline (2026-09-08)
 
 ```yaml
