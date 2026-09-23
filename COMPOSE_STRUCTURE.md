@@ -108,6 +108,27 @@ Each node uses six internal ports (40400-40405). The host port mapping varies by
 
 Standalone uses 40400-40405 directly. Validator4 uses 40440-40445.
 
+**Which port to dial.** `rust-client` and the integration harness use the
+internal gRPC port (40402 and its per-node offsets) for deploys and proposes;
+the external gRPC port (40401) exists for clients outside the compose network.
+HTTP (40403) serves the REST API, and exploratory queries — balances, bonds,
+PoS state — are served **only** by `rnode.readonly` on 40453.
+
+---
+
+## Logging
+
+Every node compose file sets the same two things:
+
+- `environment: - RUST_LOG` — passed through only when set in the shell or an
+  env file, so `logging.filter` in `conf/rust.conf` applies by default. That
+  shipped filter is the failure-forensics one, not an INFO baseline; see
+  [docs/configuration.md](docs/configuration.md#logging-configuration) before leaving a shard
+  running.
+- `logging: driver: json-file` with `max-size: 100m`, `max-file: "3"` — 300 MB
+  of stdout per container. The node's own file sink rotates hourly keeping 2
+  files, which is usually the binding limit.
+
 ---
 
 ## Monitoring stack

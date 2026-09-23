@@ -33,6 +33,21 @@ poetry run shardctl status
 
 HTTP API endpoints once Running: bootstrap on port 40403, validator1 on 40413, etc. Full port map in [COMPOSE_STRUCTURE.md](COMPOSE_STRUCTURE.md#port-map).
 
+### Which node do I talk to?
+
+The nodes in a shard are not interchangeable, and sending a request to the wrong one usually fails silently rather than with an error.
+
+| I want to... | Send it to | Ports (default shard) |
+|---|---|---|
+| Submit a deploy (transfer, bond, contract) | **A bonded validator** — `rnode.validator1/2/3` | gRPC 40412, HTTP 40413 |
+| Run an exploratory query (balance, bonds, PoS state) | **The read-only node** — `rnode.readonly` | gRPC 40452, HTTP 40453 |
+| Read chain state (status, blocks, a deploy) | Any node | HTTP 40403 / 40413 / 40453 |
+
+Two rules are worth knowing before the first deploy:
+
+- **`rnode.bootstrap` is not a validator.** It runs the genesis ceremony and is absent from `genesis/bonds.txt`, and it starts with `--heartbeat-disabled`. It accepts a deploy, returns a deploy ID, and never includes it in a block — deploy queues are node-local and deploys do not gossip. Nothing reports an error; the deploy simply never lands.
+- **Only `rnode.readonly` serves exploratory deploys.** Balance, bonds and PoS queries are built on them, and every other node answers `Exploratory deploy can only be executed on read-only node`.
+
 ### 3. Stop
 
 ```bash
@@ -56,6 +71,8 @@ poetry run shardctl reset -y         # Stop and wipe data volumes
 | Full multi-service setup (clone all repos, build images, start everything) | [docs/setup.md#full-multi-service-setup](docs/setup.md#full-multi-service-setup) |
 | Every `shardctl` command + flag | [docs/cli-reference.md](docs/cli-reference.md) |
 | Node configs + env files | [docs/configuration.md](docs/configuration.md) |
+| Add a validator to a running shard | [docs/adding-a-validator.md](docs/adding-a-validator.md) |
+| Attach a node from another machine | [docs/attaching-an-external-node.md](docs/attaching-an-external-node.md) |
 | Consensus parameters (FTT, synchrony) | [docs/consensus-configuration.md](docs/consensus-configuration.md) |
 | Monitoring (Prometheus + Grafana) | [COMPOSE_STRUCTURE.md#monitoring-stack](COMPOSE_STRUCTURE.md#monitoring-stack) |
 | Run integration tests | [integration-tests/README.md](integration-tests/README.md) |
@@ -67,204 +84,6 @@ poetry run shardctl reset -y         # Stop and wipe data volumes
 ## Repository structure
 
 See [CLAUDE.md](CLAUDE.md#repository-structure) for the full directory layout.
-
-
-
-### Blockchain Issues
-
-#### F1R3node won't accept deployments (Casper not ready)
-
-**Symptom:** Embers API crashes with "casper instance was not available yet"
-
-**Cause:** Blockchain needs time to initialize after genesis
-
-**Solution:**
-1. Wait 2-3 minutes after `shardctl up` for Casper to fully initialize
-2. Check logs for "Making a transition to Running state":
-   ```bash
-   poetry run shardctl logs rnode.bootstrap | grep "Running state"
-   ```
-3. Restart Embers after blockchain is ready:
-   ```bash
-   poetry run shardctl restart embers-api
-   ```
-
-#### Blockchain stuck or won't start properly
-
-**Symptom:** Nodes stay unhealthy, or blockchain doesn't complete genesis
-
-**Cause:** Corrupted data from previous run
-
-**Solution:**
-```bash
-# Stop all services
-poetry run shardctl down
-
-# Clean blockchain data
-sudo rm -rf services/f1r3node/docker/data
-
-# Restart (will trigger fresh genesis)
-poetry run shardctl up
-```
-
-**Note:** This is a fresh private blockchain, so cleaning data is safe for development.
-
-### Container Issues
-
-#### Permission denied removing files
-
-**Symptom:** Cannot delete `services/f1r3node/docker/data` files
-
-**Cause:** Docker containers created files as root
-
-**Solution:**
-```bash
-sudo rm -rf services/f1r3node/docker/data
-```
-
-#### Services Won't Start
-
-```bash
-# Check compose configuration
-poetry run shardctl compose config
-
-# View service logs
-poetry run shardctl logs service-name
-
-# Check if ports are already in use
-poetry run shardctl ps
-```
-
-#### Permission Issues
-
-```bash
-# Shell into container to check
-poetry run shardctl shell service-name
-
-# Check file ownership
-poetry run shardctl exec service-name ls -la /app
-```
-
-### Network Issues
-
-```bash
-# Restart with fresh network
-poetry run shardctl down
-poetry run shardctl up
-
-# For advanced network diagnostics, you can use docker directly:
-docker network inspect system-integration_f1r3fly
-```
-
-### Complete Clean Slate
-
-If nothing else works, start completely fresh:
-
-```bash
-# Stop everything
-poetry run shardctl down
-
-# Remove all containers and data volumes
-poetry run shardctl reset -y
-
-# Remove and re-clone services
-rm -rf services/*
-poetry run shardctl clone
-
-# Rebuild all Docker images
-poetry run shardctl build-service -a
-
-# Start fresh
-poetry run shardctl up
-# Wait 2-3 minutes for blockchain initialization
-poetry run shardctl logs --follow rnode.bootstrap
-```
-
-## Advanced Usage
-
-### Custom Compose Files
-
-Add additional compose files to `config.py`:
-
-```python
-def get_compose_files_for_profile(self, profile: Optional[str] = None) -> List[Path]:
-    files = [self.compose_file]
-
-    if profile == "staging":
-        files.append(self.root_dir / "docker-compose.staging.yml")
-
-    return [f for f in files if f.exists()]
-```
-
-### Environment Variables
-
-Create `.env` file in repository root:
-
-```env
-# Environment-specific settings
-DATABASE_URL=postgresql://user:pass@postgres:5432/db
-REDIS_URL=redis://redis:6379
-API_KEY=your-api-key
-```
-
-Docker Compose automatically loads this file.
-
-### Custom Scripts
-
-Add convenience scripts that use shardctl:
-
-```bash
-#!/bin/bash
-# scripts/dev-up.sh
-
-poetry run shardctl up --profile dev --build
-poetry run shardctl logs --follow
-```
-
-### Poetry Development Commands
-
-```bash
-# Install dependencies
-poetry install
-
-# Add a new dependency
-poetry add package-name
-
-# Add a dev dependency
-poetry add --group dev package-name
-
-# Update dependencies
-poetry update
-
-# Show installed packages
-poetry show
-
-# Run unit tests (fast, no Docker required)
-poetry run pytest integration-tests/test/test_internal.py -v --tb=short
-
-# Run full integration tests (requires Docker, 10-30+ min)
-poetry run shardctl test
-
-# Format code with ruff
-poetry run ruff format shardctl/
-
-# Lint with ruff
-poetry run ruff check shardctl/
-
-# Activate virtual environment
-poetry shell
-```
-
-## Best Practices
-
-1. **Never commit service directories**: They're git-ignored for a reason
-2. **Use profiles**: Keep prod and dev configurations separate
-3. **Document service dependencies**: Update compose files with proper `depends_on`
-4. **Pin image versions**: Use specific tags, not `latest`
-5. **Use volume mounts in dev**: Enable hot reload for faster development
-6. **Run builds explicitly**: Use `--build` when you've changed dependencies
-7. **Monitor logs**: Use `--follow` during development
-8. **Clean up regularly**: Run `down --volumes` to free space
 
 ## Contributing
 

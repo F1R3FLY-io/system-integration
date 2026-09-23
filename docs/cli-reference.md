@@ -12,7 +12,7 @@ All commands run via `poetry run shardctl ...` (or activate the shell once with 
 shardctl up [SERVICES...]         Start services (detached by default)
   --build, -b                     Build images before starting
   --foreground, -f                Run in foreground
-  --profile, -p TEXT              Compose profile (dev/prod)
+  --profile, -p TEXT              Forwarded to docker compose; no shipped compose file declares profiles
 shardctl down [SERVICES...]       Stop and remove containers
   --volumes, -v                   Also remove named volumes
   --keep-orphans                  Keep orphan containers
@@ -69,7 +69,7 @@ shardctl build [SERVICES...]      Build services from services.yml
   --no-cache                      Build without cache
   --no-docker                     Skip Docker build (source only)
   --docker-only                   Skip source build (Docker only)
-  --profile, -p PROFILE           Compose profile (dev/prod)
+  --profile, -p PROFILE           Forwarded to docker compose; no shipped compose file declares profiles
 shardctl build-service [SERVICE]  Build one service from services.yml
   --no-docker                     Skip Docker build (source only)
   --docker-only                   Skip source build (Docker only)
@@ -96,12 +96,18 @@ shardctl setup [--force]          Clone all service repositories
 ## Container interaction
 
 ```
-shardctl exec SERVICE COMMAND...  Execute command in a container
-  --no-tty, -T                    Disable TTY
-shardctl shell SERVICE            Open an interactive shell
-  --shell, -s TEXT                Shell to use (default /bin/bash)
-shardctl compose ARGS...          Generic passthrough to docker compose
+shardctl exec CONTAINER COMMAND...  Execute command in a container
+  --no-tty, -T                      Disable TTY
+shardctl shell CONTAINER            Open an interactive shell
+  --shell, -s TEXT                  Shell to use (default /bin/bash)
+shardctl compose ARGS...            Generic passthrough to docker compose
 ```
+
+`exec` and `shell` take a **container** name (e.g. `rnode.validator1`,
+`embers`) because they call `docker exec` directly. Everything else that takes
+a service argument — `up`, `down`, `restart`, `logs`, `build` — takes a
+**compose-file** name, resolved as `compose/<name>.yml`. Passing a container
+name to those exits with "Compose file not found" and lists the valid ones.
 
 ---
 
