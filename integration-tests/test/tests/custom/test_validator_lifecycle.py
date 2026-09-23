@@ -729,7 +729,7 @@ def _submit_pos_until_effective(
         verdicts = resolve_deploy_verdicts(
             all_nodes,
             list(ids.values()),
-            timeouts.finalization * 3,
+            (timeouts.deploy_inclusion + timeouts.finalization) * 3,
             label=f"{label} attempt {attempt}",
         )
         finalized = verdicts.finalized_set()
