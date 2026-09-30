@@ -150,7 +150,7 @@ CI runners are slower than laptops — `--timeout-scale=1.5` (or `2.0`) bumps ev
 
 `infra/log_events.py` + autouse fixture in `conftest.py` (`check_node_logs_after_test`).
 
-After **every test**, the fixture pulls logs from every active node via `handle.logs()` — which reads from the structured log file written by the node's `--log-sink=both` flag — and runs `scan_for_forbidden` against a single `FORBIDDEN_PATTERNS` dict. Any unmatched-by-opt-out hit fails the test before teardown destroys the evidence.
+After **every test**, the fixture pulls logs from every active node via `handle.logs()` — which reads from the structured log file written by the node's file sink (`--log-sink=file`, set before `run` at every launch via `NODE_LOG_SINK_ARGS`) — and runs `scan_for_forbidden` against a single `FORBIDDEN_PATTERNS` dict. Any unmatched-by-opt-out hit fails the test before teardown destroys the evidence.
 
 `FORBIDDEN_PATTERNS` covers panics, KvStore failures, bonds-cache mismatches, missing DAG hashes, replay-rig divergence, structural self-validation failures, `FATAL` keyword, and similar consensus/runtime bug signatures — see [`infra/log_events.py`](../../test/infra/log_events.py) for the canonical list with per-pattern comments naming the bug class and known opt-outs.
 

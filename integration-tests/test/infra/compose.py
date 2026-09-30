@@ -42,6 +42,15 @@ _NODE_PORT_RESERVATION_SYSCTLS: List[str] = [
     "net.ipv4.ip_local_reserved_ports=40400-40405",
 ]
 
+# Harness nodes log to the rotating file sink only. conf/rust.conf selects
+# stdout for Compose deployments, but the log scans (DockerNodeHandle.logs /
+# archive_log) need the full rotated history, not the daemon's capped
+# json-file tail — and `both` would double disk use (f1r3node-rust
+# TASK-020-3). A root flag: the node CLI rejects it after the `run`
+# subcommand. Startup errors and panics still reach stderr, which keeps the
+# `docker logs` fallback useful when the node dies before the sink opens.
+NODE_LOG_SINK_ARGS: List[str] = ["--log-sink=file"]
+
 
 def generate_compose(
     config: ShardConfig,
@@ -89,6 +98,7 @@ def generate_compose(
     # ── Bootstrap node ──
     boot_ports = port_assignments["boot"]
     boot_command = [
+        *NODE_LOG_SINK_ARGS,
         "run",
         f"--host={bootstrap_host}",
         f"--bootstrap={bootstrap_url}",
@@ -149,6 +159,7 @@ def generate_compose(
         v_ports = port_assignments[node_key]
 
         validator_command = [
+            *NODE_LOG_SINK_ARGS,
             "run",
             f"--host={host}",
             "--allow-private-addresses",
@@ -209,6 +220,7 @@ def generate_compose(
         ro_ports = port_assignments[ro_key]
 
         ro_command = [
+            *NODE_LOG_SINK_ARGS,
             "run",
             f"--host={ro_host}",
             f"--bootstrap={bootstrap_url}",

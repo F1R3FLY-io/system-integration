@@ -119,7 +119,7 @@ RUST_LOG="info,tonic=error,hyper=error,tower=error,reqwest=error,heed=error,h2=e
   poetry run shardctl up
 ```
 
-Two retention limits apply, and the tighter one is usually the file sink. Docker keeps at most 3 × 100 MB of each node's stdout. The node's own file sink — the authoritative log the test framework reads — rotates hourly and keeps 2 files (`conf/rust.conf`, `logging.file`), so roughly the last two hours. Copy anything load-bearing out before it rolls.
+Retention depends on the sink ([sink per deployment](configuration.md#logging-configuration)). A `shardctl up` node logs to stdout only, and Docker keeps at most 3 × 100 MB of it. An integration-test node logs to its file sink only. The test framework reads that file, which rotates hourly and keeps 2 files (`conf/rust.conf`, `logging.file`), so roughly the last two hours. Copy anything load-bearing out before it rolls.
 
 ```bash
 # Default — the forensics filter in conf/rust.conf
