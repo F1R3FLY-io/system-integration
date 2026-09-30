@@ -14,9 +14,9 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 ---
 id: SI-TASK-020-3
 title: "Select one node log sink per deployment and keep the container caps"
-status: in_progress
+status: review
 merged_sha: null
-pr: null
+pr: 146  # https://github.com/F1R3FLY-io/system-integration/pull/146, base dev, head 39e77252
 priority: p1
 base_branch: dev
 base_revision: ef9844893f19df3e7523bb97e9e0da0ca241bb10
