@@ -32,18 +32,27 @@ See the `command:` block in any compose file for the full per-role flag list.
 
 ### Logging configuration
 
-Test nodes pick up structured logging from the mounted config files, not from CLI flags — keeping both Docker and subprocess providers consistent:
+Nodes pick up structured logging from the mounted config files:
 
 | Config file | Used by | Logging settings |
 |---|---|---|
-| `conf/rust.conf` | All shard test nodes (Docker + subprocess) | `format = "json"`, `sink = "both"`, `filter` = failure-forensics, `file { rotation = "hourly", retention = 2 }` |
-| `conf/standalone-dev.conf` | All standalone test nodes (Docker + subprocess) | `format = "json"`, `sink = "both"` |
+| `conf/rust.conf` | Shard Compose variants, shard test nodes (Docker + subprocess) | `format = "json"`, `sink = "stdout"`, `filter` = failure-forensics, `file { rotation = "hourly", retention = 2 }` |
+| `conf/standalone-dev.conf` | Standalone Compose variant, standalone test nodes (Docker + subprocess) | `format = "json"`, `sink = "stdout"` |
 
-`sink = "both"` writes to stdout (live inspection via `docker logs -f`) and to `<data-dir>/logs/node.log` (read by the test framework). Log levels come from `logging.filter` in the mounted config, for test nodes and `shardctl` nodes alike. A `RUST_LOG` environment variable, when set, overrides it — see [Controlling log verbosity](troubleshooting.md#controlling-log-verbosity-rust_log).
+Each deployment writes to exactly one sink, chosen for the code that reads it. Writing to `both` doubles disk use (f1r3node-rust TASK-020-3).
+
+| Deployment | Sink | Where it comes from | Reader |
+|---|---|---|---|
+| `shardctl up` / `compose/f1r3node-rust*.yml`, smoke-test CI | `stdout` | `sink` in the mounted conf | `docker logs`, `shardctl wait`, `shardctl logs`; bounded by json-file at 3 × 100 MB |
+| Integration tests, Docker provider | `file` | `--log-sink=file` before `run` (`NODE_LOG_SINK_ARGS` in `integration-tests/test/infra/compose.py`) overrides the conf | `DockerNodeHandle.logs()` / `archive_log()` read `/var/lib/rnode/logs/node.log*`, falling back to `docker logs` only when no file exists (the node crashed before the sink opened; startup errors and panics still go to stderr) |
+| Integration tests, subprocess provider | `stdout` | `sink` in the mounted conf | the provider's captured stdout/stderr file |
+| Development override | `both` | pass `--log-sink=both` before `run` | both of the above, at twice the disk cost; never check it in |
+
+`--log-sink` is a root argument: the node rejects it after the `run` subcommand. `unit-tests/test_log_sink_policy.py` guards this contract. Log levels come from `logging.filter` in the mounted config, for test nodes and `shardctl` nodes alike. A `RUST_LOG` environment variable, when set, overrides it — see [Controlling log verbosity](troubleshooting.md#controlling-log-verbosity-rust_log).
 
 The active `filter` in `conf/rust.conf` is the failure-forensics one — an INFO baseline plus about ten debug targets — so a default `shardctl up` is verbose by design. An INFO baseline sits commented out above it. For a shard you intend to leave running, set `RUST_LOG` to that baseline rather than editing the file.
 
-Retention is set in two places, and the file sink is the tighter of the two: hourly rotation keeping 2 files (~2 hours), against Docker's 3 × 100 MB of stdout.
+Retention depends on the sink. A `stdout` deployment keeps Docker's 3 × 100 MB per container. A `file` node (the test harness) keeps hourly rotation with 2 files (~2 hours). Node images built from f1r3node-rust `6e1c8833a` (TASK-020-2) or later also cap the log directory at 100 MiB per file and 2 GiB in total by default. The current `f1r3fly-rust:latest` image predates that commit, so rotation is its only file bound.
 
 ---
 

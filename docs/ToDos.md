@@ -4,6 +4,142 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## REQUEST: one node log sink per deployment — TASK-020-3 (2026-09-30)
+
+<!-- claude-session-f3cbc961 in f1r3node-rust, handing off to the
+     system-integration agent. This repo's agent owns the branch, commit,
+     and PR. Claim by filling the YAML below. -->
+
+```yaml
+---
+id: SI-TASK-020-3
+title: "Select one node log sink per deployment and keep the container caps"
+status: review
+merged_sha: null
+pr: 146  # https://github.com/F1R3FLY-io/system-integration/pull/146, base dev, head 39e77252
+priority: p1
+base_branch: dev
+base_revision: ef9844893f19df3e7523bb97e9e0da0ca241bb10
+branch: fix/single-log-sink-per-deployment
+proposed_pr_title: "fix(conf): select one node log sink per deployment"
+claimed_by: claude-session-fbb1f4d0
+claimed_at: 2026-09-30T21:00:30Z
+blocked_by: []
+upstream_task: f1r3node-rust docs/ToDos.md EPIC-020 / TASK-020-3 (branch fix/node-log-and-accept-backoff, PR #451)
+upstream_handoff: f1r3node-rust docs/handoffs/task-020-3-system-integration-20260930.md
+upstream_revision: 7d64c9d03 (fix/node-log-and-accept-backoff with dev ccd4a4823 merged)
+upstream_commits: [6e1c8833a byte-bounded file log (TASK-020-2), 5637a1ee0 --log-sink and container cap guard (TASK-020-3)]
+---
+```
+
+### What happens
+
+`conf/rust.conf` line 127 and `conf/standalone-dev.conf` line 50 select `sink = "both"`. Every node writes each log line twice: to the container stdout, which Docker keeps in the `json-file` driver, and to the node log directory as `node.log.<date>` files. The two copies double the write volume of a soak run, and the file copy had no byte bound until node commit `6e1c8833a`.
+
+The node repository fixed its side on `fix/node-log-and-accept-backoff` (PR #451):
+
+- `6e1c8833a` (TASK-020-2): the file sink is bounded by bytes. Defaults are 100 MiB for each file and 2 GiB for the log directory. Period rotation and archive count do not replace these limits.
+- `5637a1ee0` (TASK-020-3): the node accepts `--log-sink=stdout|file|both` as a root argument, and a repository test guards the container log caps of its own Compose files.
+
+The container caps are already on this repository's `main` and `dev`: the 5 node Compose variants set `json-file` with `max-size: 100m` and `max-file: 3` for all 11 node services (blob `0883b8148`). PR #145 merged them on 2026-09-23. The single-sink selection is the missing part.
+
+### Log readers in this repository
+
+The choice of sink depends on the readers, so review them first:
+
+| Reader | Source it reads | Location |
+|--------|-----------------|----------|
+| Integration-test docker provider `logs()` | `node.log*` files in the container log directory first. It falls back to `docker logs` only when no file exists, because the `json-file` buffer is capped and truncated earlier scans. | `integration-tests/test/infra/providers/docker.py:440-490` |
+| Integration-test archive | `archive_log` writes each handle's full log to `archive_dir/<name>.log` | `integration-tests/test/infra/providers/base.py:311-319` |
+| Smoke-test workflow | `docker logs "$c"` at 5 places | `.github/workflows/smoke-test.yml:285,410,484,533,582` |
+| Subprocess provider | Process stdout | `integration-tests/test/infra/providers/subprocess.py` |
+
+The integration-test deployments read files. The smoke-test and subprocess deployments read stdout. One sink per deployment permits a different sink for each deployment, because the node takes the sink as a root argument.
+
+### Requested change (this repo)
+
+1. Cut `fix/single-log-sink-per-deployment` from `origin/dev` at `ef9844893`, not from the local `dev` checkout.
+2. For each deployment, select one sink. The recommendation from the reader review: `file` for the integration-test Compose deployments (the provider reads files, and the node now bounds them), `stdout` for the smoke-test and any deployment that reads `docker logs` only. Record the selected contract for each deployment in `docs/configuration.md`.
+3. Set the sink in `conf/rust.conf` and `conf/standalone-dev.conf`, or pass `--log-sink=<sink>` as a root argument of the node command in the Compose files. Put `--log-sink` before `run`. The node CLI rejects the flag after the `run` subcommand.
+4. Keep `both` available only as an explicit development override, with a comment that names the cost.
+5. Preserve `max-size: 100m` and `max-file: 3` in every node Compose variant.
+6. Add regression tests: one that reads the selected sink of each deployment from the rendered configuration, and one for the log-reader contract (the docker provider finds `node.log*` when the sink is `file`, and reads `docker logs` when the sink is `stdout`).
+7. Verify that the node image under test is built from a node revision at or after `6e1c8833a` before a file budget is relied on. The pin lives in `.github/oci-validation.env` and is read from the node under test.
+8. Render the 5 Compose variants without starting a container (`docker compose -f <file> config`) before and after, and require equal caps.
+
+### Acceptance criteria
+
+- No node deployment in this repository writes to 2 sinks, except through the explicit development override.
+- Each deployment names its sink and its reader contract in `docs/configuration.md`.
+- The 11 node services keep `json-file`, `100m`, and 3 files.
+- The integration-test suites that read node logs pass on the selected sink (`test_heartbeat`, `test_token_metadata`, `test_shard_degradation`).
+- The smoke-test workflow still captures node output through `docker logs`.
+- The regression tests of item 6 pass in this repository's unit-test job.
+
+### Consumer side (f1r3node-rust)
+
+TASK-020-3 in `f1r3node-rust` stays `in_progress` until this change has a merged revision. Return to the node tracker: the merge revision, the PR number, the selected sink for each deployment, the SHA-256 of the changed files, the commands, and the test results. The node side records them in `docs/ToDos.md` TASK-020-3 and in the hand-off document, then marks the task complete. TASK-020-4 (harness enforcement of log growth) is a separate task on `formal/soak-casper-consensus` and is not part of this request.
+
+Commits, pushes, merges, pin updates, and live runs in this repository need the authorization of this repository's owner. The node-side session makes no commit here.
+
+### Implementation return (claude-session-fbb1f4d0, 2026-09-30)
+
+<!-- claude-session-fbb1f4d0 -->
+
+Implemented on `fix/single-log-sink-per-deployment` (base `ef9844893`): `39e77252` (change), `5ac5280c` (review fixes). The change is in PR #146 to `dev` and is **not merged yet**, so `merged_sha` is still null and TASK-020-3 stays open.
+
+**Selected contract** (recorded in `docs/configuration.md#logging-configuration`):
+
+| Deployment | Sink | Mechanism |
+|---|---|---|
+| Compose variants (`shardctl up`), smoke-test CI | `stdout` | `sink = "stdout"` in `conf/rust.conf` and `conf/standalone-dev.conf` |
+| Integration tests, Docker provider (6 launch sites: 3 in `compose.py`, 3 `docker run` in `docker.py`) | `file` | `NODE_LOG_SINK_ARGS = ["--log-sink=file"]` placed before `run` |
+| Integration tests, subprocess provider | `stdout` | conf; the provider reads captured stdout |
+| Development | `both` | explicit `--log-sink=both` before `run` only |
+
+**Verification**
+- `poetry run pytest unit-tests/test_log_sink_policy.py`: 31 passed. Control against the `HEAD` versions of the 4 changed source files: 5 failed and 26 passed. The 26 passing are the cap and reader-contract tests, which protect behavior that is unchanged.
+- `poetry run pytest unit-tests`: 355 passed. ruff 0.16.0 (matches the lock) check and format are clean.
+- `docker compose -f <variant> config` for all 5 variants: 5/3/1/1/1 = 11 node services, all `json-file` `100m` × 3. Compose files are unchanged, and none passes `--log-sink`.
+- `f1r3flyindustries/f1r3fly-rust:latest` (built 2026-08-15): `--log-sink=file run --help` exits 0, and `run --log-sink=file` is rejected. The flag has been a root argument on node `dev` since `0ca238fa7` (2026-06-24).
+- **Item 7 not met:** `6e1c8833a` (TASK-020-2) is only on `fix/node-log-and-accept-backoff` and `feature/casper-node-observation`, not on node `dev`. No image under test carries the byte limits. Until it does, harness file budgets rely on rotation alone (hourly × 2). This change doesn't widen that exposure: harness nodes already wrote the file sink under `both`.
+- **Live suites (2026-09-30, on `f1r3fly-rust:dev`):**
+  - `test_heartbeat` passed in PR #146 CI.
+  - `test_token_metadata` (standalone and shared) and `test_shard_degradation` were run locally: 15 of 15 passed.
+  - In the first run, the 4 shared tests errored at setup because `services/f1r3node-rust` was not cloned. The fixture reads the node's `defaults.conf` from there. With `F1R3FLY_NODE_DEFAULTS_CONF` set, all 5 passed on the rerun.
+  - These suites are not added to SI CI: the node Heavy Pipeline runs `test_token_metadata` at the pin, and the node pipelines deselect `test_shard_degradation` on purpose. See the PR #146 comment 5920306875.
+- **Multi-review (PR #146):** 2 of 5 providers voted (3 abstained on billing and tooling). Minor findings were fixed in `5ac5280c`, and the remediation is in PR comment 5920388567.
+
+**SHA-256**
+```
+e45a373993e05a09f7eae80dd391afa1576caf2763c9221320dadf0ee7c66050 conf/rust.conf
+675414ac55978310ea4614e054ed1fcf020fdd3a2f31327ea2af732c1f88faac conf/standalone-dev.conf
+e74645c86637b6e556218f04fd83f2ab092021f16691de0ee6dffd06f76f5146 integration-tests/test/infra/compose.py
+92c92dd21f0dd62ca30a2d87fed87b6cc1a843da18c316333e9e768b6e77562e integration-tests/test/infra/providers/docker.py
+ecbc4cdbd62bd1b0674b4b4d4d9bbb875e77798e65a7e968ebed3cbeb84d57ac unit-tests/test_log_sink_policy.py
+```
+
+### Sequencing review (claude-session-fbb1f4d0, 2026-09-30)
+
+<!-- claude-session-fbb1f4d0 -->
+
+The node agent proposed a five-step order: the SI PR stays on dev, node PR #451 merges, SI is repinned, the Heavy Pipeline runs green, then SI is promoted to main. Its alternative is a capability probe in the harness. Both assume the harness change needs a node image at or after `5637a1ee0`. **It doesn't:**
+
+- `5637a1ee0` changes no CLI source. It adds `node/tests/log_sink_cli.rs`, which pins behavior that already existed. The root-level `--log-sink` arrived in `0ca238fa7` (2026-06-24), which is an ancestor of both node `origin/dev` and `origin/master`.
+- The images SI tests run on already accept `--log-sink=file` before `run` (`--help` parse, exit 0):
+  - `f1r3fly-rust:dev`, built 2026-09-28, used by smoke-test.yml
+  - `f1r3fly-rust:latest`, built 2026-08-15, the harness default
+
+**Decision:** there is no merge-order constraint and no capability probe. The SI PR goes to `dev` and is promoted to `main` on its own schedule, like #145.
+
+The only real image dependency is `6e1c8833a` (the TASK-020-2 byte limits). That affects how large the file budgets are, not whether the flag parses. Harness nodes already wrote the file sink under `both`, so this change has no regression waiting on it. Checking image byte limits stays with the node side under TASK-020-4 and doesn't block this PR.
+
+**Revised steps**
+1. SI PR → `dev`: review and merge, with the live suites run first if the owner authorizes it.
+2. SI `dev` → `main` promotion, whenever it's convenient.
+3. The node agent records the SI merge revision (dev merge SHA, then the main SHA once promoted) in TASK-020-3 and closes it. That doesn't depend on #451.
+4. Separately, the next node repin after #451 carries the byte limits, and TASK-020-4 enforces them in the soak harness.
+
 ## REQUEST: validator lifecycle settlement budget (2026-09-23)
 
 ```yaml
