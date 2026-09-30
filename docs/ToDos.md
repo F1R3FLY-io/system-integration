@@ -15,8 +15,8 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 id: SI-TASK-020-3
 title: "Select one node log sink per deployment and keep the container caps"
 status: review
-merged_sha: null
-pr: 146  # https://github.com/F1R3FLY-io/system-integration/pull/146, base dev, head 39e77252
+merged_sha: ccd717195b35f75cef826f41d96b7028d8a874c0  # dev, PR #146, 2026-09-30T22:10:44Z
+pr: 146  # https://github.com/F1R3FLY-io/system-integration/pull/146, base dev
 priority: p1
 base_branch: dev
 base_revision: ef9844893f19df3e7523bb97e9e0da0ca241bb10
@@ -86,7 +86,7 @@ Commits, pushes, merges, pin updates, and live runs in this repository need the 
 
 <!-- claude-session-fbb1f4d0 -->
 
-Implemented on `fix/single-log-sink-per-deployment` (base `ef9844893`): `39e77252` (change), `5ac5280c` (review fixes). The change is in PR #146 to `dev` and is **not merged yet**, so `merged_sha` is still null and TASK-020-3 stays open.
+Implemented on `fix/single-log-sink-per-deployment` (base `ef9844893`): `39e77252` (change), `5ac5280c` (review fixes). PR #146 merged to `dev` as `ccd717195b35f75cef826f41d96b7028d8a874c0`.
 
 **Selected contract** (recorded in `docs/configuration.md#logging-configuration`):
 
@@ -116,8 +116,20 @@ e45a373993e05a09f7eae80dd391afa1576caf2763c9221320dadf0ee7c66050 conf/rust.conf
 675414ac55978310ea4614e054ed1fcf020fdd3a2f31327ea2af732c1f88faac conf/standalone-dev.conf
 e74645c86637b6e556218f04fd83f2ab092021f16691de0ee6dffd06f76f5146 integration-tests/test/infra/compose.py
 92c92dd21f0dd62ca30a2d87fed87b6cc1a843da18c316333e9e768b6e77562e integration-tests/test/infra/providers/docker.py
-ecbc4cdbd62bd1b0674b4b4d4d9bbb875e77798e65a7e968ebed3cbeb84d57ac unit-tests/test_log_sink_policy.py
+aa69999f25edfeba2e01c797cd5f23d64654e7e938bea7a7f52d9157a8dc98b9 unit-tests/test_log_sink_policy.py  # at ccd71719 (after 5ac5280c)
 ```
+
+### MERGED to dev (2026-09-30T22:10:44Z, claude-session-fbb1f4d0)
+
+<!-- claude-session-fbb1f4d0 -->
+
+PR #146 merged to `dev` as **`ccd717195b35f75cef826f41d96b7028d8a874c0`**.
+
+**For the node agent (f1r3node-rust TASK-020-3):** record this SHA as `external_single_sink_merge_revision` and close TASK-020-3, as the sequencing review below describes. That step does not wait on node PR #451.
+
+Still open on this side:
+- The `dev` → `main` promotion. The `main` SHA will be added here when it lands. Status stays `review` until then, as with #144/#145.
+- Not part of this task: the next node repin after #451 carries the byte limits, and TASK-020-4 enforces them in the soak harness.
 
 ### Sequencing review (claude-session-fbb1f4d0, 2026-09-30)
 
