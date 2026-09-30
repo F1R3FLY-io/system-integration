@@ -86,7 +86,7 @@ Commits, pushes, merges, pin updates, and live runs in this repository need the 
 
 <!-- claude-session-fbb1f4d0 -->
 
-Implemented on `fix/single-log-sink-per-deployment` (base `ef9844893`). **Not committed yet.** The commit, PR and merge need the owner's authorization, so `merged_sha` is still null and TASK-020-3 stays open.
+Implemented on `fix/single-log-sink-per-deployment` (base `ef9844893`): `39e77252` (change), `5ac5280c` (review fixes). The change is in PR #146 to `dev` and is **not merged yet**, so `merged_sha` is still null and TASK-020-3 stays open.
 
 **Selected contract** (recorded in `docs/configuration.md#logging-configuration`):
 
@@ -103,7 +103,12 @@ Implemented on `fix/single-log-sink-per-deployment` (base `ef9844893`). **Not co
 - `docker compose -f <variant> config` for all 5 variants: 5/3/1/1/1 = 11 node services, all `json-file` `100m` × 3. Compose files are unchanged, and none passes `--log-sink`.
 - `f1r3flyindustries/f1r3fly-rust:latest` (built 2026-08-15): `--log-sink=file run --help` exits 0, and `run --log-sink=file` is rejected. The flag has been a root argument on node `dev` since `0ca238fa7` (2026-06-24).
 - **Item 7 not met:** `6e1c8833a` (TASK-020-2) is only on `fix/node-log-and-accept-backoff` and `feature/casper-node-observation`, not on node `dev`. No image under test carries the byte limits. Until it does, harness file budgets rely on rotation alone (hourly × 2). This change doesn't widen that exposure: harness nodes already wrote the file sink under `both`.
-- **Not run:** the live suites named in the acceptance criteria (`test_heartbeat`, `test_token_metadata`, `test_shard_degradation`). They need the owner's go-ahead.
+- **Live suites (2026-09-30, on `f1r3fly-rust:dev`):**
+  - `test_heartbeat` passed in PR #146 CI.
+  - `test_token_metadata` (standalone and shared) and `test_shard_degradation` were run locally: 15 of 15 passed.
+  - In the first run, the 4 shared tests errored at setup because `services/f1r3node-rust` was not cloned. The fixture reads the node's `defaults.conf` from there. With `F1R3FLY_NODE_DEFAULTS_CONF` set, all 5 passed on the rerun.
+  - These suites are not added to SI CI: the node Heavy Pipeline runs `test_token_metadata` at the pin, and the node pipelines deselect `test_shard_degradation` on purpose. See the PR #146 comment 5920306875.
+- **Multi-review (PR #146):** 2 of 5 providers voted (3 abstained on billing and tooling). Minor findings were fixed in `5ac5280c`, and the remediation is in PR comment 5920388567.
 
 **SHA-256**
 ```
