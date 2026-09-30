@@ -15,6 +15,7 @@ soak run. Each deployment now selects one sink, matched to its reader:
 
 import ast
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -58,8 +59,15 @@ def _node_services():
     return out
 
 
+def _argv(value) -> list:
+    """Compose `command` / `entrypoint` as argv: a string is shell-split."""
+    if not value:
+        return []
+    return shlex.split(value) if isinstance(value, str) else [str(a) for a in value]
+
+
 def _sink_args(command) -> list:
-    return [a for a in command if str(a).startswith("--log-sink")]
+    return [a for a in _argv(command) if a.startswith("--log-sink")]
 
 
 # ── Deployment defaults ─────────────────────────────────────────────────────
@@ -94,10 +102,28 @@ def test_node_compose_service_keeps_json_file_cap(compose_file, service, svc):
     _node_services(),
     ids=lambda v: v if isinstance(v, str) else "",
 )
-def test_node_compose_service_does_not_select_both(compose_file, service, svc):
-    """The conf supplies the sink; a command override must not re-add `both`."""
-    command = svc.get("command") or []
-    assert not any("both" in a for a in _sink_args(command))
+def test_node_compose_service_takes_its_sink_from_the_conf(compose_file, service, svc):
+    """Compose deployments get their sink from the mounted conf (stdout).
+
+    Any `--log-sink` in `command` or `entrypoint` would override it, whether
+    to `both` (twice the disk) or `file` (`docker logs`, `shardctl wait` and
+    the smoke-test lose their reader).
+    """
+    for key in ("command", "entrypoint"):
+        assert _sink_args(svc.get(key)) == [], f"{compose_file}:{service} {key}"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "--log-sink=both run --host=x",
+        ["--log-sink", "file", "run"],
+        "run --log-sink both",
+    ],
+)
+def test_sink_override_is_found_in_either_command_form(value):
+    """The Compose guard sees an override in string and list form alike."""
+    assert _sink_args(value) != []
 
 
 # ── Integration harness ─────────────────────────────────────────────────────
