@@ -450,13 +450,15 @@ def test_genesis_validator_with_wrong_token_blocks_ceremony(provider, timeouts) 
     try:
         import time
 
-        deadline = time.time() + timeouts.node_startup
+        deadline = time.monotonic() + timeouts.node_startup
         boot_handle = handles[0]
         boot_status_url = f"http://{boot_handle.grpc_host}:{boot_handle.ports.http}/api/status"
         master_running = False
-        while time.time() < deadline:
+        while (remaining := deadline - time.monotonic()) > 0:
             try:
-                resp = requests.get(boot_status_url, timeout=3)
+                # Scale the observation window, not each HTTP probe. Cap the
+                # request by the remaining window so slow hosts retain retries.
+                resp = requests.get(boot_status_url, timeout=min(3.0, remaining))
                 if resp.status_code == 200 and resp.json().get("isReady") is True:
                     master_running = True
                     break
@@ -466,7 +468,7 @@ def test_genesis_validator_with_wrong_token_blocks_ceremony(provider, timeouts) 
             if crashed:
                 logging.info("Nodes crashed during ceremony: %s", [h.name for h in crashed])
                 break
-            time.sleep(5)
+            time.sleep(min(5.0, max(0.0, deadline - time.monotonic())))
 
         assert not master_running, (
             "Ceremony master reached Running state despite two genesis "

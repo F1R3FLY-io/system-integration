@@ -18,7 +18,9 @@ HTTP endpoints tested:
   /api/deploy (POST)
 """
 
+import itertools
 import logging
+import os
 import re
 import time
 
@@ -27,12 +29,31 @@ from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto
 from f1r3fly.util import sign_deploy_data
 
 from ...infra.keys import VALIDATOR1_ID
-from ...infra.polling import poll_until, wait_for_deploy_finalized, wait_for_deploy_included
+from ...infra.polling import (
+    lfb_number,
+    poll_until,
+    wait_for_deploy_finalized,
+    wait_for_deploy_included,
+)
 
 pytestmark = pytest.mark.xdist_group("shared")
 
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 _HEX_130 = re.compile(r"^[0-9a-f]{130}$")
+
+# SI-TASK-016-2: every _deploy_and_wait call must produce onto a channel no
+# other shared-shard test writes. The node's single-value-cell guard
+# (`numeric_cell_would_overfill`) rejects the *second* integer write to a
+# channel whose base holds exactly one datum, and whether that second write
+# lands depends on proposer rotation — which made the shared suite fail about
+# one run in two. A quoted string name sidesteps the integer-cell classifier;
+# pid + counter is unique across xdist workers (one process each) without
+# threading a worker id through every caller.
+_CHANNEL_SEQ = itertools.count()
+
+
+def _fresh_channel() -> str:
+    return f'"web-api-{os.getpid()}-{next(_CHANNEL_SEQ)}"'
 
 
 def _shard_expectations(shard, node_conf):
@@ -68,11 +89,19 @@ def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
     whenever the test iterates per-node assertions on the deploy (e.g.
     `/deploy/<id>` returning `isFinalized=true`) — finalization can complete
     on the submitting node a few seconds before peers in multi-parent DAGs.
+
+    Budget is `finalization * 3`, matching the custom suite's measured basis:
+    a deploy that loses merges must win a cut via recovery and then finalize,
+    measured at ~102s for a 7-rejection round. A plain `finalization` budget
+    (67s at CI scale) failed a deploy that recovered after 13 rejections and
+    reached its terminal verdict at ~118s — the deploy was healthy and the
+    shard decided; only the wait was short.
     """
+    finalization_timeout = timeouts.finalization * 3
     deploy_ids = []
     for i in range(count):
         did = node.deploy_string(
-            f"@{2000 + i}!({i})",
+            f"@{_fresh_channel()}!({i})",
             VALIDATOR1_ID.private_key(),
             phlo_limit=100_000,
             phlo_price=1,
@@ -81,7 +110,7 @@ def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
 
     block_hashes = []
     for did in deploy_ids:
-        status = wait_for_deploy_finalized(node, did, timeouts.finalization)
+        status = wait_for_deploy_finalized(node, did, finalization_timeout)
         canonical = status.latestBlockHash.hex() if status.latestBlockHash else None
         if canonical is None:
             # Fallback: resolver finalized but didn't populate latestBlockHash.
@@ -95,7 +124,7 @@ def _deploy_and_wait(node, timeouts, count=1, all_nodes=None):
             for other in all_nodes:
                 if other.name == node.name:
                     continue
-                wait_for_deploy_finalized(other, did, timeouts.finalization)
+                wait_for_deploy_finalized(other, did, finalization_timeout)
 
     return deploy_ids, block_hashes
 
@@ -658,13 +687,18 @@ def test_deploy_via_http(shared_shard) -> None:
     v1 = shared_shard.node("validator1")
     key = VALIDATOR1_ID.private_key()
     timestamp = int(time.time() * 1000)
+    # Read from the LFB rather than hardcoding: the node rejects a deploy whose
+    # valid-after block has fallen outside `deploy_lifespan` behind the tip, and
+    # this shard is shared, so a fixed low value expires once enough tests have
+    # run against it. The LFB trails the tip by far less than the lifespan.
+    valid_after_block_number = lfb_number(v1)
 
     deploy_proto = DeployDataProto(
         term="@2!(1)",
         timestamp=timestamp,
         phloLimit=100_000,
         phloPrice=1,
-        validAfterBlockNumber=5,
+        validAfterBlockNumber=valid_after_block_number,
         shardId="root",
     )
     deploy_req = {
@@ -673,7 +707,7 @@ def test_deploy_via_http(shared_shard) -> None:
             "timestamp": timestamp,
             "phloLimit": 100_000,
             "phloPrice": 1,
-            "validAfterBlockNumber": 5,
+            "validAfterBlockNumber": valid_after_block_number,
             "shardId": "root",
         },
         "deployer": key.get_public_key().to_hex(),
@@ -811,11 +845,38 @@ def test_is_finalized_http(shared_shard, timeouts) -> None:
     logging.info("is-finalized verified: HTTP=%s, gRPC=%s", result, grpc_result)
 
 
+def _status_pair_over_stable_lfb(node, attempts: int = 5):
+    """Sample HTTP and gRPC status across a window where the LFB did not move.
+
+    ``lastFinalizedBlockNumber`` advances on a live shard, so reading the two
+    endpoints in sequence is a torn read — the later call legitimately observes
+    a higher value, and comparing them is not a well-posed assertion. Bracket
+    the gRPC call with two HTTP reads and accept the sample only when both
+    agree: the value was then stationary for the whole window, so any residual
+    difference is a real parity defect rather than elapsed time.
+
+    Deliberately not "retry until the two endpoints agree" — that would also
+    converge when the endpoints genuinely disagree, hiding the defect this
+    test exists to catch.
+    """
+    for _ in range(attempts):
+        before = node.api_get("/status")
+        grpc_status = node.grpc_status()
+        after = node.api_get("/status")
+        if before["lastFinalizedBlockNumber"] == after["lastFinalizedBlockNumber"]:
+            return before, grpc_status
+
+    raise AssertionError(
+        f"{node.name}: lastFinalizedBlockNumber advanced during all {attempts} "
+        "sampling attempts; could not compare HTTP and gRPC status over a "
+        "stable window"
+    )
+
+
 def test_grpc_status_matches_http(shared_shard, node_conf) -> None:
     """gRPC status() returns same fields as HTTP /api/status on all nodes."""
     for node in shared_shard.all_nodes:
-        http_status = node.api_get("/status")
-        grpc_status = node.grpc_status()
+        http_status, grpc_status = _status_pair_over_stable_lfb(node)
 
         assert grpc_status.shardId == http_status["shardId"], f"{node.name}: shardId mismatch"
         assert grpc_status.networkId == http_status["networkId"], f"{node.name}: networkId mismatch"
@@ -863,7 +924,7 @@ def test_transfers_null_on_validator_http(shared_shard, timeouts) -> None:
     logging.info("Transfer null/populated behavior verified: validator=null, readonly=list")
 
 
-def test_removed_endpoints_404(shared_shard) -> None:
+def test_removed_endpoints_404(shared_shard, timeouts) -> None:
     """Removed endpoints return 404."""
     import requests
 
@@ -873,14 +934,14 @@ def test_removed_endpoints_404(shared_shard) -> None:
     resp = requests.post(
         f"{v1.http_url}/api/data-at-name",
         json={"name": {"UnforgDeploy": {"data": "abc"}}, "depth": 1},
-        timeout=10,
+        timeout=timeouts.command,
     )
     assert resp.status_code == 404, f"/api/data-at-name should return 404, got {resp.status_code}"
 
     # GET /api/transactions/{hash} — removed
     resp = requests.get(
         f"{v1.http_url}/api/transactions/abc123",
-        timeout=10,
+        timeout=timeouts.command,
     )
     assert resp.status_code == 404, f"/api/transactions should return 404, got {resp.status_code}"
 

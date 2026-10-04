@@ -86,12 +86,12 @@ cd services/embers
 # ... edit code ...
 # Hot reload picks up changes if configured
 
-# 5. Run commands in containers
-shardctl exec embers-api ls -la /app
-shardctl shell embers-api
+# 5. Run commands in containers (these take CONTAINER names)
+shardctl exec embers ls -la /app
+shardctl shell embers
 
-# 6. Restart specific service if needed
-shardctl restart embers-api
+# 6. Restart specific service if needed (this takes a COMPOSE FILE name)
+shardctl restart embers
 
 # 7. Stop when done
 shardctl down
@@ -176,34 +176,25 @@ See [COMPOSE_STRUCTURE.md](../COMPOSE_STRUCTURE.md) for details on each compose 
 
 ### Profiles
 
-Compose profiles allow selective service activation:
+`shardctl up --profile NAME` forwards `--profile` to `docker compose`, but **no
+compose file under `compose/` declares `profiles:`**, so it selects nothing on
+any shipped topology. Pick a topology by naming its compose file instead:
 
 ```bash
-# Start only base services
-shardctl up
-
-# Start with prod profile (includes postgres, redis)
-shardctl up --profile prod
-
-# Start with dev profile (includes dev tools)
-shardctl up --profile dev
+shardctl up                              # startup_order from services.yml
+shardctl up f1r3node-rust                # the default shard
+shardctl up f1r3node-rust-standalone     # single node
 ```
 
 ## Advanced Usage
 
 ### Custom Compose Files
 
-Add additional compose files by extending `config.py`:
-
-```python
-def get_compose_files_for_profile(self, profile: Optional[str] = None) -> List[Path]:
-    files = [self.compose_file]
-
-    if profile == "staging":
-        files.append(self.root_dir / "docker-compose.staging.yml")
-
-    return [f for f in files if f.exists()]
-```
+Add a compose file under `compose/` and name it as a service argument —
+`shardctl` resolves each argument to `compose/<name>.yml`
+(`shardctl/cli.py::_resolve_compose_files`) and reads the default set from
+`services.yml`. To change what a bare `shardctl up` starts, edit the
+`startup_order` in `services.yml`.
 
 ### Environment Variables
 
@@ -230,7 +221,7 @@ Add convenience scripts that use shardctl:
 ```bash
 #!/bin/bash
 # scripts/dev-up.sh
-poetry run shardctl up --profile dev --build
+poetry run shardctl up --build
 poetry run shardctl logs --follow
 ```
 
@@ -252,9 +243,9 @@ poetry shell                # Activate virtual environment
 ## Best Practices
 
 1. **Never commit service directories** — they're git-ignored for a reason
-2. **Use profiles** — keep prod and dev configurations separate
+2. **Pick topologies by compose file** — one file per topology, named as a service argument
 3. **Document service dependencies** — update compose files with proper `depends_on`
-4. **Pin image versions** — use specific tags, not `latest`
+4. **Pin image versions** — set `F1R3FLY_NODE_IMAGE` in `.env.node`, not on the command line, or the pin is lost on the next `up` ([configuration.md](configuration.md#image-selection))
 5. **Use volume mounts in dev** — enable hot reload for faster development
 6. **Run builds explicitly** — use `--build` when you've changed dependencies
 7. **Monitor logs** — use `--follow` during development

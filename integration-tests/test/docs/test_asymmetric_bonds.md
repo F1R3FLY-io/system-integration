@@ -82,7 +82,7 @@ Uses `assert_all_nodes_agree_on_block()` from the assertions module.
 
 - `ShardConfig` with custom bond weights and `include_readonly=True`
 - `Shard.create()` / `shard.destroy()` lifecycle
-- `poll_until()` for block accumulation and finalization polling
+- `poll_until()` for block accumulation; `wait_for_lfb_with_ft()` for the combined LFB-height + FT poll (single gRPC read per iteration — the torn-read fix)
 - `get_blocks_if_enough()`, `try_find_deploy()`, `all_blocks_visible()` from `infra/polling.py`
 - `assert_all_nodes_agree_on_block()` for cross-validator state checks
 - `Node.deploy_string()`, `Node.get_blocks()`, `Node.last_finalized_block()`, `Node.get_block()`

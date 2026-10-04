@@ -6,8 +6,11 @@ Shard assertions: test-specific helpers for multi-node agreement checks.
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, cast
 
 # Re-export deploy checking from pyf1r3fly
 from f1r3fly.deploy import (
@@ -49,7 +52,7 @@ def assert_deploy_errored(
 # ── Shard assertions (test-specific, needs multiple nodes) ─────────────
 
 
-def _get_block_with_retry(node, block_hash: str, timeout: int):
+def _get_block_with_retry(node, block_hash: str, timeout: float):
     """Retrieve a block from one node, polling through transient lookup races.
 
     A peer can have the block hash in its reception buffer but not yet
@@ -83,7 +86,7 @@ def _get_block_with_retry(node, block_hash: str, timeout: int):
             time.sleep(1.0)
 
 
-def assert_all_nodes_agree_on_block(nodes, block_hash: str, timeout: int = 0) -> None:
+def assert_all_nodes_agree_on_block(nodes, block_hash: str, timeout: float = 0) -> None:
     """Assert every node can retrieve the block and has the same post-state.
 
     Retrieval may be polled per-node through transient "not added yet"
@@ -104,7 +107,7 @@ def assert_all_nodes_agree_on_block(nodes, block_hash: str, timeout: int = 0) ->
     )
 
 
-def assert_all_nodes_agree_on_lfb(nodes, timeout: int = 0) -> str:
+def assert_all_nodes_agree_on_lfb(nodes, timeout: float = 0) -> str:
     """Assert all nodes report the same LFB hash. Returns the common hash.
 
     Default (timeout=0) is one-shot: a snapshot disagreement raises
@@ -115,6 +118,13 @@ def assert_all_nodes_agree_on_lfb(nodes, timeout: int = 0) -> str:
     the same LFB hash or the budget elapses. A persistent fork still
     surfaces as a loud AssertionError with the per-node state, just
     after the timeout instead of immediately.
+
+    NOT suitable as an aligned-read cut under CONTINUOUS proposals: the
+    sequential sweep reads a moving frontier, and healthy finalizers a
+    few heights apart may never coincide within any single sweep — the
+    poll then burns its whole budget spuriously (sibling blocker on
+    PR #120 at ``d22f4040``). For a read cut under load, use
+    ``common_finalized_anchor`` instead.
     """
     deadline = time.monotonic() + timeout
     while True:
@@ -128,6 +138,28 @@ def assert_all_nodes_agree_on_lfb(nodes, timeout: int = 0) -> str:
         if time.monotonic() >= deadline:
             raise AssertionError(f"Nodes disagree on LFB after {timeout}s: {lfb_info}")
         time.sleep(2.0)
+
+
+def common_finalized_anchor(nodes, timeout: float) -> str:
+    """A block hash FINALIZED on every node — a stable aligned-read cut.
+
+    Takes the first node's current LFB as the anchor and waits (bounded)
+    until every node reports THAT hash finalized. Unlike comparing live
+    LFB pointers across nodes, the anchor cannot be missed by a moving
+    frontier: finalization is monotonic, so once a node catches up to
+    the anchor's height, the anchor stays finalized there permanently.
+    Under continuous proposals, live pointers may never coincide within
+    a sequential sweep even though every finalizer is healthy and only a
+    few heights apart — settle loops built on pointer agreement then
+    time out with "all-node-consistent read=None" against a working
+    shard (sibling blocker on PR #120 at ``d22f4040``).
+
+    Callers polling toward a settled value should take a FRESH anchor
+    each iteration so the cut advances with the chain.
+    """
+    anchor = nodes[0].last_finalized_block().blockInfo.blockHash
+    assert_block_finalized_on_all_nodes(nodes, anchor, timeout=timeout)
+    return anchor
 
 
 def assert_contracts_consistent_across_nodes(
@@ -173,7 +205,7 @@ def assert_bonds_map_consistent_across_nodes(
     nodes,
     block_hash: str,
     expected_bonds: dict,
-    timeout: int = 0,
+    timeout: float = 0,
 ) -> None:
     """Assert every node's view of ``block_hash`` carries the same bonds map.
 
@@ -218,7 +250,7 @@ def assert_bonds_map_consistent_across_nodes(
 def assert_block_finalized_on_all_nodes(
     nodes,
     block_hash: str,
-    timeout: int = 0,
+    timeout: float = 0,
     interval: float = 2.0,
 ) -> None:
     """Assert every node has the block AND reports `isFinalized=True`.
@@ -277,13 +309,42 @@ def assert_block_finalized_on_all_nodes(
     )
 
 
+def assert_deploy_block_finalized_on_all_nodes(node, deploy_id: str, nodes, timeout: float) -> str:
+    """Canonical-inclusion anchor: resolve the deploy's FINALIZED containing
+    block via ``deploy_finalization_status``, assert THAT hash is finalized on
+    every node, and return the hash (use it for any per-block follow-up reads,
+    e.g. ``pos.read_result``).
+
+    Replaces the recurring anti-pattern
+    ``wait_for_deploy_included -> pin blockHash -> assert finalized everywhere``:
+    the first inclusion block can lose fork choice under load and re-home, and
+    the pinned hash then never finalizes anywhere even though the deploy does
+    (ft -1.0 on every node — nine sightings across the suites as of the
+    43e9f844 preflight; PR #118's bonding anchor was the first fix).
+
+    ``timeout`` bounds EACH of the two waits (the deploy's own finalization,
+    then the cross-node block check), so worst-case wall time is 2x the
+    value — deliberate slack, since both phases legitimately need a full
+    finalization budget under load.
+    """
+    # Local import keeps the assertions -> polling edge lazy (no import
+    # cycle; polling imports nothing from assertions but shares infra).
+    from .polling import wait_for_deploy_finalized
+
+    status = wait_for_deploy_finalized(node, deploy_id, timeout)
+    block_hash = status.latestBlockHash.hex()
+    assert_block_finalized_on_all_nodes(nodes, block_hash, timeout=timeout)
+    return block_hash
+
+
 def assert_all_deploys_finalized_on_all_nodes(
     nodes,
     deploy_ids: list[str],
-    timeout: int,
+    timeout: float,
     *,
     label: str = "deploys",
-) -> None:
+    contention_floor: Optional[int] = None,
+) -> list[str]:
     """Assert every deploy in ``deploy_ids`` reaches Finalized on EVERY node.
 
     Deploy-centric, not block-centric. Polls each node's
@@ -295,46 +356,520 @@ def assert_all_deploys_finalized_on_all_nodes(
     that case, because the losing-fork block never finalizes even though the
     deploy does (its work moved to a different, finalized block).
 
-    Zero tolerance for genuinely dropped work: a deploy that never finalizes on
-    some node within ``timeout`` (Pending -> TimeoutError) or terminally fails
-    (Failed/Expired -> DeployError) is collected and reported with a diagnostic.
+    ``contention_floor=None`` (the default) is zero tolerance for dropped
+    work: a deploy that never finalizes on some node within ``timeout``
+    (Pending -> TimeoutError) or terminally fails (Failed/Expired ->
+    DeployError) is collected and reported with a diagnostic.
+
+    ``contention_floor=N`` tolerates the one loss class that is legal under
+    heavy conflict: mutually-conflicting deploys must serialize through merge
+    adjudication, so a deploy can lose every round its validity window fits
+    and expire WITH rejections on record. Only that class is tolerated
+    (Expired, ``rejection_count > 0``, not quarantined), and only down to
+    ``N`` deploys finalizing on every node. Zero-rejection starvation, a
+    refund-quarantine removal, a Failed verdict, or a deploy finalized on
+    some nodes but not others all stay fatal.
+
+    Returns the deploy ids that finalized on every node (all of them in the
+    strict mode), so callers can reconcile downstream accounting against
+    exactly the work that landed. Existing assertion-only callers can ignore
+    the returned list. All failure gates remain active under ``python -O``.
+    Contention tolerance requires a complete, consistent terminal verdict
+    from every node. Missing diagnostics fail closed with an explicit reason.
 
     Use this for bg-load / deploy-orphaning regression checks instead of
     locating the block with ``find_deploy`` and asserting that block's hash
     finalizes.
     """
-    # Local import keeps the assertions -> polling edge lazy (no import cycle).
-    from .polling import wait_for_deploy_finalized
-
+    if contention_floor is not None and (
+        type(contention_floor) is not int or not 0 <= contention_floor <= len(deploy_ids)
+    ):
+        raise ValueError("contention_floor must be an integer between 0 and the deploy count")
     if not deploy_ids:
-        return
-    not_finalized: list[tuple[str, str, str]] = []  # (sig[:16], node.name, reason)
-    for sig in deploy_ids:
-        for node in nodes:
-            try:
-                wait_for_deploy_finalized(node, sig, timeout)
-            except Exception as exc:  # noqa: BLE001
-                # TimeoutError (Pending past timeout) and DeployError (terminal
-                # Failed/Expired) both mean "did not finalize here". Caught broad
-                # because the deploy-status DeployError is f1r3fly.polling's, not
-                # the f1r3fly.deploy class re-exported at module scope.
-                not_finalized.append((sig[:16], node.name, type(exc).__name__))
-                break  # one un-finalizing node is enough; move to the next deploy
-    assert not not_finalized, (
-        f"[{label}] {len(not_finalized)} of {len(deploy_ids)} deploys did not "
-        f"finalize on all nodes (deploy-status, re-homing-aware). "
-        f"first(3)={not_finalized[:3]}"
+        return []
+    nodes = list(nodes)
+    if not nodes or len({node.name for node in nodes}) != len(nodes):
+        raise ValueError("finalization checks require nonempty, uniquely named nodes")
+    if len({sig[:16] for sig in deploy_ids}) != len(deploy_ids):
+        raise ValueError("deploy signature prefixes must be unique for loss attribution")
+    finalized, failures = _poll_deploy_finalization(nodes, deploy_ids, timeout, label)
+    if not failures:
+        return finalized
+
+    from .log_events import collect_deploy_loss_facts, describe_deploy_loss
+
+    lost_sigs = {sig for sig, _, _ in failures}
+    try:
+        facts = collect_deploy_loss_facts(nodes, lost_sigs)
+    except Exception as exc:  # noqa: BLE001 - diagnostics cannot change the loss verdict
+        facts = {
+            (sig[:16], name): {"diagnostics_error": type(exc).__name__} for sig, name, _ in failures
+        }
+    details = {
+        (sig, name): describe_deploy_loss(facts.get((sig[:16], name), {}))
+        for sig, name, _ in failures
+    }
+    if contention_floor is not None:
+        outside = [
+            f"{sig[:16]}@{name} -> {details[(sig, name)]}"
+            for sig, name, _ in failures
+            if not _is_tolerated_contention_loss(facts.get((sig[:16], name), {}))
+        ]
+        if outside:
+            raise AssertionError(
+                f"[{label}] losses OUTSIDE the tolerated contention class "
+                f"(Expired with rejections on every node): {'; '.join(outside[:3])}"
+            )
+        if len(finalized) < contention_floor:
+            raise AssertionError(
+                f"[{label}] only {len(finalized)} of {len(deploy_ids)} deploys "
+                f"finalized on all nodes; the contention floor is {contention_floor}"
+            )
+        logging.warning(
+            "[%s] tolerated %d of %d contention losses (%.1f%%; floor=%d): %s",
+            label,
+            len(lost_sigs),
+            len(deploy_ids),
+            100 * len(lost_sigs) / len(deploy_ids),
+            contention_floor,
+            "; ".join(f"{s[:16]}@{n} -> {c}" for (s, n), c in details.items()),
+        )
+        return finalized
+
+    detail = "; ".join(
+        f"{sig[:16]}@{name} {reason} -> {details[(sig, name)]}"
+        for sig, name, reason in failures[:3]
+    )
+    raise AssertionError(
+        f"[{label}] {len(lost_sigs)} of {len(deploy_ids)} deploys did not "
+        f"finalize on all nodes (deploy-status, re-homing-aware). first(3)={detail}"
     )
 
 
+def _poll_deploy_finalization(nodes, deploy_ids, timeout, label):
+    """Retain every node's result. Mixed success and failure is always fatal.
+
+    Every node is polled for a deploy at the same time, against ONE shared
+    deadline. Polling the nodes in turn, each with its own full ``timeout``,
+    had two costs: a deploy lost everywhere blocked for ``len(nodes) *
+    timeout`` before the assertion fired, and the node sampled first got
+    the earliest-closing window, so ordinary propagation lag on a later
+    node could be reported as finalization divergence. Concurrent polling
+    bounds each deploy at ``timeout`` and gives every node the same window,
+    so the divergence gate only fires on a node that is still behind after
+    the full budget. The worker threads are daemonic: a poll that ignores
+    its own timeout cannot pin the test process. Such a thread keeps
+    running until the process exits; that leak is accepted over a hang.
+    Deploys are still handled in turn, so the bound is
+    ``len(deploy_ids) * (timeout + grace)`` and attribution stays simple.
+    """
+    from .polling import wait_for_deploy_finalized
+
+    finalized: list[str] = []
+    failures: list[tuple[str, str, str]] = []
+    for sig in deploy_ids:
+        # Keyed by position, not node.name, so the helper cannot alias two
+        # nodes even if a caller skips the unique-name check.
+        outcomes: dict[int, Optional[str]] = {}
+        lock = threading.Lock()
+
+        # Default arguments bind the CURRENT loop values; a plain closure
+        # would see the last deploy's ``sig`` and ``outcomes`` once the loop
+        # moves on while a stalled worker is still running.
+        def _poll(idx: int, node, sig=sig, outcomes=outcomes, lock=lock) -> None:
+            try:
+                wait_for_deploy_finalized(node, sig, timeout)
+                reason = None
+            except Exception as exc:  # noqa: BLE001 - terminal errors and poll timeouts
+                reason = type(exc).__name__
+            with lock:
+                outcomes[idx] = reason
+
+        # ONE join deadline for the whole deploy. Joining each worker with
+        # its own ``remaining + grace`` let every stalled worker add a fresh
+        # grace period, so N stalled nodes cost ``timeout + N * grace`` and
+        # the bound grew with node count again (PR #139 review).
+        join_deadline = time.monotonic() + timeout + _POLL_JOIN_GRACE_S
+        workers = [
+            threading.Thread(
+                target=_poll,
+                args=(idx, node),
+                name=f"finalize-{sig[:8]}-{node.name}",
+                daemon=True,
+            )
+            for idx, node in enumerate(nodes)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=max(0.0, join_deadline - time.monotonic()))
+        landed_on = []
+        failed_on = []
+        for idx, node in enumerate(nodes):
+            with lock:
+                reason = outcomes.get(idx, "StalledPoll")
+            if reason is None:
+                landed_on.append(node.name)
+            else:
+                failures.append((sig, node.name, reason))
+                failed_on.append(node.name)
+        if landed_on and failed_on:
+            raise AssertionError(
+                f"[{label}] finalization divergence for {sig[:16]}: "
+                f"Finalized on {landed_on}; not finalized on {failed_on}"
+            )
+        if not failed_on:
+            finalized.append(sig)
+    return finalized, failures
+
+
+def _is_tolerated_contention_loss(fact: dict) -> bool:
+    """Missing, corrupt, contradictory, or quarantined evidence is not tolerance."""
+    rejections = fact.get("rejection_count")
+    return (
+        not fact.get("diagnostics_error")
+        and fact.get("state") == "Expired"
+        and type(rejections) is int
+        and rejections > 0
+        and not fact.get("quarantined")
+    )
+
+
+def collect_forensics(nodes, *, channel: Optional[str] = None, label: str = "") -> str:
+    """Failure-time facts that are cheap over the node API, gathered in one
+    place so a red test explains itself instead of sending someone to the
+    shard logs.
+
+    Answers, without any node-side debug stream:
+
+    - is the finalized chain forked or merely lagging (per-node LFB number and
+      hash, and whether the hashes agree);
+    - is it advancing at all (two samples a second apart);
+    - what does each node actually hold on the channel under test, read at
+      that node's own finalized state;
+    - did any node emit a forbidden-log signature (fork, merge incoherence,
+      propose BugError) during the run.
+
+    Diagnostics must never mask the failure that triggered them: every probe
+    is individually guarded and reports its own error inline.
+    """
+    lines: list[str] = [f"--- forensics [{label}] ---"]
+
+    def probe(what: str, fn):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - a failed probe is data, not a crash
+            lines.append(f"  {what}: UNAVAILABLE ({type(exc).__name__}: {exc})")
+            return None
+
+    first: dict = {}
+    for node in nodes:
+        info = probe(f"lfb({node.name})", lambda n=node: n.last_finalized_block().blockInfo)
+        if info is not None:
+            first[node.name] = (info.blockNumber, info.blockHash[:10])
+    unreachable = [n.name for n in nodes if n.name not in first]
+    if unreachable:
+        # A node that cannot answer is an INFRASTRUCTURE failure, not a
+        # consensus one, and it silently poisons every all-node assertion:
+        # a dead container reads as "this deploy has no verdict" forever.
+        # Name it first and loudly.
+        lines.append(f"  *** NODE(S) NOT ANSWERING: {unreachable} — treat as infra, not consensus")
+    if first:
+        hashes = {h for _, h in first.values()}
+        lines.append(
+            f"  LFB per node ({len(first)}/{len(nodes)} answering): {first}"
+            f"  -> {'AGREED' if len(hashes) == 1 else 'FORKED/LAGGING'}"
+        )
+
+    # Sample over several block intervals. The heartbeat proposes on a
+    # multi-second cadence, so a sub-interval window shows zero movement on a
+    # perfectly healthy chain — a false FROZEN verdict sends the next reader
+    # hunting a wedge that does not exist.
+    time.sleep(_ADVANCE_SAMPLE_SECONDS)
+    second: dict = {}
+    for node in nodes:
+        info = probe(f"lfb2({node.name})", lambda n=node: n.last_finalized_block().blockInfo)
+        if info is not None:
+            second[node.name] = info.blockNumber
+    if first and second:
+        advanced = {n for n, num in second.items() if num > first.get(n, (-1, ""))[0]}
+        lines.append(
+            f"  chain advancing on {len(advanced)}/{len(second)} nodes"
+            f" over {_ADVANCE_SAMPLE_SECONDS:.0f}s" + ("" if advanced else "  <-- FROZEN")
+        )
+
+    if channel:
+        values: dict = {}
+        for node in nodes:
+            values[node.name] = probe(
+                f"read_channel({node.name})", lambda n=node: n.read_channel(channel)
+            )
+        lines.append(f'  finalized @"{channel}" per node: {values}')
+
+    from .log_events import FORBIDDEN_PATTERNS
+
+    hits: dict = {}
+    for node in nodes:
+        text = probe(f"logs({node.name})", lambda n=node: n.logs(tail=20000)) or ""
+        node_hits = {key: len(pat.findall(text)) for key, pat in FORBIDDEN_PATTERNS.items()}
+        node_hits = {k: v for k, v in node_hits.items() if v}
+        if node_hits:
+            hits[node.name] = node_hits
+    lines.append(f"  forbidden-log signatures: {hits or 'none in scanned tail'}")
+
+    return "\n".join(lines)
+
+
+def assert_chain_advances(nodes, since_number: int, timeout: int, *, label: str) -> int:
+    """Assert the finalized chain moved past ``since_number`` on a quorum of
+    nodes. Returns the lowest advanced LFB number.
+
+    This checks LIVENESS only. It used to also poll
+    ``assert_all_nodes_agree_on_lfb``, which is the pointer-agreement
+    anti-pattern ``common_finalized_anchor`` documents: under continuous
+    proposals healthy finalizers a few heights apart may never coincide within
+    a sweep, so that poll burned its budget against a working shard. Cross-node
+    agreement belongs at a settled cut — ``common_finalized_anchor`` or
+    ``assert_bonds_map_consistent_across_nodes`` — not here.
+
+    A shard that stops finalizing looks identical, from a deploy's point of
+    view, to a shard that is merely slow — both leave deploys Pending. This
+    separates them: a frozen LFB is a shard-liveness failure regardless of
+    what any individual deploy did, and it names the freeze directly instead
+    of surfacing minutes later as a deploy-status timeout.
+
+    Liveness is a QUORUM property, not a unanimous one. Taking the minimum
+    across every node lets a single sick node — a joiner whose DAG is
+    incomplete, a node mid-restart — hold the reported height down forever
+    and report a working shard as halted, which is the misdiagnosis this
+    function exists to prevent. A strict majority advancing is the shard
+    advancing; the laggards are named in the message either way.
+    """
+    deadline = time.monotonic() + timeout
+    quorum = len(nodes) // 2 + 1
+    while True:
+        numbers = {}
+        for node in nodes:
+            try:
+                numbers[node.name] = node.last_finalized_block().blockInfo.blockNumber
+            except Exception as exc:  # noqa: BLE001 — an unreachable node is a laggard, not a halt
+                numbers[node.name] = f"unreachable ({type(exc).__name__})"
+        heights = sorted(n for n in numbers.values() if isinstance(n, int))
+        advanced = [h for h in heights if h > since_number]
+        if len(advanced) >= quorum:
+            return min(advanced)
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"[{label}] finalized chain did not advance past #{since_number} on a "
+                f"quorum ({len(advanced)}/{len(nodes)} advanced, {quorum} needed) in "
+                f"{timeout}s — the shard stopped finalizing. per-node LFB={numbers}"
+            )
+        time.sleep(2.0)
+
+
+def lowest_lfb_number(nodes) -> int:
+    """The slowest node's LFB number — the baseline for ``assert_chain_advances``."""
+    return min(node.last_finalized_block().blockInfo.blockNumber for node in nodes)
+
+
+# ── Verdict-aware deploy resolution ────────────────────────────────────
+#
+# Separates shard INTEGRITY from per-deploy FAIRNESS. A deploy the shard
+# terminally judged Expired is a decision the shard made and reported: the
+# window closed and the effect never landed. That is recorded, not failed.
+# A deploy with NO verdict inside the budget, a Failed one, or one whose
+# verdict disagrees across nodes means the shard did not decide or decided
+# inconsistently — those stay hard failures.
+
+# Window for the chain-advance probe. Must exceed the heartbeat's block cadence
+# (casper.heartbeat.check-interval) or a healthy chain reads as frozen.
+_ADVANCE_SAMPLE_SECONDS = 12.0
+
+
+@dataclass
+class DeployVerdicts:
+    """Per-deploy terminal verdicts across all nodes.
+
+    ``finalized`` is the subset callers must use to build expected state:
+    an expired deploy's effect must NOT appear, and asserting the full
+    submitted set as the expectation would fail for a shard that behaved
+    correctly under contention.
+    """
+
+    finalized: List[str] = field(default_factory=list)
+    expired: Dict[str, str] = field(default_factory=dict)  # sig16 -> detail
+    per_sig_states: Dict[str, Dict[str, str]] = field(default_factory=dict)
+
+    def finalized_set(self) -> set:
+        return set(self.finalized)
+
+    def summary(self) -> str:
+        return f"{len(self.finalized)} finalized, {len(self.expired)} expired" + (
+            f" ({', '.join(sorted(self.expired))})" if self.expired else ""
+        )
+
+
+_VERDICT_STATE_NAMES = {
+    "DEPLOY_STATE_FINALIZED": "Finalized",
+    "DEPLOY_STATE_EXPIRED": "Expired",
+    "DEPLOY_STATE_FAILED": "Failed",
+}
+
+_VERDICT_SWEEP_INTERVAL = 3.0
+
+# Grace over the shared finalization deadline before a worker that has not
+# reported is recorded as StalledPoll. Applied ONCE per deploy, not per worker.
+_POLL_JOIN_GRACE_S = 1.0
+
+
+def _resolve_sig_across_nodes(nodes, sig: str, timeout: float) -> Dict[str, str]:
+    """Sample every node's verdict for ``sig`` against ONE shared deadline.
+
+    Sweeps the not-yet-terminal nodes repeatedly until every node holds a
+    terminal state or the deadline passes; whatever is still Pending then is
+    ``NoVerdict``. Sound because terminal records are write-once on the node
+    (Finalized / Expired / Failed never flip), so a node already terminal
+    needs no re-sampling and a Pending node can only move TOWARD a verdict —
+    a sweep can observe a verdict that exists, never manufacture one.
+
+    Replaces polling each node in turn with its own full ``timeout``. That
+    shape gave the node sampled FIRST the earliest-closing window, so a
+    verdict landing moments after that window was reported as "no terminal
+    verdict" — the shard-never-decided signature — for a shard that in fact
+    decided unanimously within the same second. It also made the worst case
+    ``len(nodes) * timeout`` rather than ``timeout``.
+    """
+    from f1r3fly.pb.DeployServiceCommon_pb2 import DeployFinalizationStateProto
+
+    deadline = time.time() + timeout
+    states: Dict[str, str] = {}
+    pending = list(nodes)
+    while True:
+        still_pending = []
+        for node in pending:
+            try:
+                status = node.deploy_status(sig)
+            except Exception:  # noqa: BLE001 - transport blip; re-sample next sweep
+                still_pending.append(node)
+                continue
+            resolved = _VERDICT_STATE_NAMES.get(DeployFinalizationStateProto.Name(status.state))
+            if resolved is None:
+                still_pending.append(node)
+            else:
+                states[node.name] = resolved
+        pending = still_pending
+        if not pending or time.time() >= deadline:
+            break
+        time.sleep(_VERDICT_SWEEP_INTERVAL)
+    for node in pending:
+        states[node.name] = "NoVerdict"
+    return states
+
+
+def resolve_deploy_verdicts(
+    nodes,
+    deploy_ids: list[str],
+    timeout: int,
+    *,
+    label: str = "deploys",
+) -> DeployVerdicts:
+    """Resolve every deploy to a terminal verdict on EVERY node.
+
+    Hard-fails (AssertionError) when the shard failed to decide or decided
+    inconsistently:
+
+    - no verdict within ``timeout`` (still Pending) — the shard never
+      concluded; this is the frozen-chain / propose-wedge signature;
+    - terminal ``Failed``;
+    - a verdict that differs across nodes (e.g. Finalized on one node,
+      Expired on another) — a forked read surface;
+    - an unparseable terminal state.
+
+    Records, without failing, deploys that every node judged ``Expired``.
+    """
+    verdicts = DeployVerdicts()
+    if not deploy_ids:
+        return verdicts
+
+    # Establish which nodes can answer BEFORE polling deploys. A dead container
+    # cannot report a verdict, so polling it spends the full per-sig budget and
+    # then reports "no terminal verdict" — indistinguishable from a shard that
+    # failed to decide. That misread a node the kernel OOM-killed as a
+    # consensus failure and cost ~29 minutes per occurrence. Fail immediately
+    # and name the node instead.
+    dead = []
+    for node in nodes:
+        try:
+            node.last_finalized_block()
+        except Exception as exc:  # noqa: BLE001
+            dead.append(f"{node.name} ({type(exc).__name__})")
+    if dead:
+        raise AssertionError(
+            f"[{label}] INFRASTRUCTURE: {len(dead)} of {len(nodes)} nodes are not answering "
+            f"({', '.join(dead)}) — deploy verdicts cannot be resolved on a shard with a dead "
+            f"node; this is not a consensus failure.\n" + collect_forensics(nodes, label=label)
+        )
+
+    integrity: list[tuple[str, str, str]] = []  # (sig16, node, reason)
+    for sig in deploy_ids:
+        sig16 = sig[:16]
+        states: Dict[str, str] = _resolve_sig_across_nodes(nodes, sig, timeout)
+        verdicts.per_sig_states[sig16] = states
+
+        distinct = set(states.values())
+        if distinct == {"Finalized"}:
+            verdicts.finalized.append(sig)
+        elif distinct == {"Expired"}:
+            verdicts.expired[sig16] = "Expired on all nodes"
+        elif "NoVerdict" in distinct:
+            integrity.append((sig16, _nodes_in_state(states, "NoVerdict"), "no terminal verdict"))
+        elif "Failed" in distinct:
+            integrity.append((sig16, _nodes_in_state(states, "Failed"), "terminal Failed"))
+        else:
+            integrity.append((sig16, "all", f"verdict differs across nodes: {sorted(distinct)}"))
+
+    if integrity:
+        causes = _classify(nodes, {sig16 for sig16, _, _ in integrity})
+        detail = "; ".join(
+            f"{sig16}@{where} {reason} -> {causes.get(sig16, 'unclassified')}"
+            for sig16, where, reason in integrity[:3]
+        )
+        raise AssertionError(
+            f"[{label}] {len(integrity)} of {len(deploy_ids)} deploys have no coherent "
+            f"terminal verdict (deploy-status, re-homing-aware). first(3)={detail}\n"
+            + collect_forensics(nodes, label=label)
+        )
+
+    if verdicts.expired:
+        causes = _classify(nodes, set(verdicts.expired))
+        for sig16 in sorted(verdicts.expired):
+            verdicts.expired[sig16] = causes.get(sig16, "unclassified")
+        logging.warning(
+            "STARVATION-RECORD [%s]: %d of %d deploys expired without landing — %s",
+            label,
+            len(verdicts.expired),
+            len(deploy_ids),
+            "; ".join(f"{s}: {c}" for s, c in sorted(verdicts.expired.items())),
+        )
+    logging.info("[%s] deploy verdicts: %s", label, verdicts.summary())
+    return verdicts
+
+
+def _nodes_in_state(states: Dict[str, str], state: str) -> str:
+    return ",".join(sorted(name for name, value in states.items() if value == state)) or "?"
+
+
+def _classify(nodes, sig16s: set) -> dict:
+    """Attach the loss mechanism to each sig; diagnostics never mask a failure."""
+    from .log_events import classify_deploy_losses
+
+    try:
+        return classify_deploy_losses(nodes, sig16s)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 # ── Cross-node channel-value agreement (FS node-identity) ──────────────
-
-
-def _values_agree(values) -> bool:
-    """True iff every value equals the first. Works for dicts (which are
-    unhashable and so cannot go through a ``set``)."""
-    items = list(values)
-    return all(v == items[0] for v in items[1:])
 
 
 def _channel_reader(channel: str):
@@ -358,7 +893,7 @@ def _pick_reader(nodes):
 
 
 def assert_value_consistent_across_nodes(
-    nodes, read_fn, block_hash: str, what: str, *, block_timeout: float = 5.0
+    nodes, read_fn, block_hash: str, *, block_timeout: float = 5.0
 ):
     """Read a finalized value (via ``read_fn``) on the read-only node at
     ``block_hash`` and assert every node agrees on that block's POST-STATE HASH.
@@ -377,16 +912,12 @@ def assert_value_consistent_across_nodes(
 
 def assert_channel_consistent_across_nodes(nodes, channel: str, block_hash: str):
     """All-node FS node-identity for a named channel at ``block_hash``."""
-    return assert_value_consistent_across_nodes(
-        nodes, _channel_reader(channel), block_hash, f'@"{channel}"'
-    )
+    return assert_value_consistent_across_nodes(nodes, _channel_reader(channel), block_hash)
 
 
 def assert_balance_consistent_across_nodes(nodes, vault_addr: str, block_hash: str):
     """All-node FS node-identity for a vault balance at ``block_hash``."""
-    return assert_value_consistent_across_nodes(
-        nodes, _balance_reader(vault_addr), block_hash, f"balance({vault_addr[:12]})"
-    )
+    return assert_value_consistent_across_nodes(nodes, _balance_reader(vault_addr), block_hash)
 
 
 def await_value_converges_on_all_nodes(
@@ -423,9 +954,15 @@ def await_value_converges_on_all_nodes(
         below — catches a double-applied decrement, the item-1 ``FS=-20`` mode)
         fail immediately rather than as an opaque convergence timeout.
 
-    Between finalization rounds, nodes' LFBs can momentarily differ; those
-    iterations still advance convergence/non-regression against the read-only
-    node's finalized read but defer the cross-node identity check until aligned.
+    An "aligned cut" is the reader's finalized block VERIFIED FINALIZED on
+    every node — not instantaneous LFB-pointer agreement across a sequential
+    sweep, which under continuous proposals may never occur even though every
+    finalizer is healthy and a few heights apart (sibling blocker on PR #120
+    at ``d22f4040``: pointer-gated acceptance burned whole settle budgets
+    against a working shard). Finalization is monotonic, so the anchor cut is
+    always achievable; iterations where other nodes have not yet caught up to
+    the anchor still advance convergence/non-regression against the reader's
+    finalized read but defer the cross-node identity check.
     """
     reader = _pick_reader(nodes)
     deadline = time.time() + timeout
@@ -433,12 +970,23 @@ def await_value_converges_on_all_nodes(
     last = None
     while time.time() < deadline:
         try:
-            lfbs = {n.name: n.last_finalized_block().blockInfo.blockHash for n in nodes}
+            ref_block = reader.last_finalized_block().blockInfo.blockHash
         except Exception:  # noqa: BLE001 — transient query race during contention
             time.sleep(interval)
             continue
-        aligned = _values_agree(lfbs.values())
-        ref_block = lfbs[reader.name]
+        # Anchor alignment: every node has finalized the reader's cut.
+        # The inner budget is clamped to the REMAINING outer budget (no
+        # floor) so the function cannot overshoot its stated timeout, and
+        # ANY failure — assertion or raw transport error mid-hiccup —
+        # just means "not aligned this iteration", never a loop kill.
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        try:
+            assert_block_finalized_on_all_nodes(nodes, ref_block, timeout=min(30.0, remaining))
+            aligned = True
+        except Exception:  # noqa: BLE001 — alignment is a wait, not an invariant
+            aligned = False
         if aligned:
             # All-node FS node-identity at the shared finalized cut. Retrieval
             # races ("not added yet") are absorbed; a post-state divergence is
@@ -495,18 +1043,36 @@ def await_value_converges_on_all_nodes(
                 if k not in volatile:
                     water[k] = v
         elif non_regression == "up":
-            water = cur if water is None else max(water, cur)
+            # The mode is fixed for this call: numeric modes never store a map.
+            water = cur if water is None else max(cast(int, water), cur)
         elif non_regression == "down":
-            water = cur if water is None else min(water, cur)
+            water = cur if water is None else min(cast(int, water), cur)
 
         last = cur
         if aligned and cur == expected:
             return cur
         time.sleep(interval)
 
+    # Where each node thinks finality is, collected once on the way out. A
+    # convergence timeout is usually a disagreement about that, and the answer
+    # is not recoverable from the message otherwise. Best-effort: a node that
+    # cannot answer reports why rather than masking the real failure. Read here
+    # rather than in the poll loop so a single flaky node cannot stall every
+    # iteration.
+    last_lfb_view = {}
+    for n in nodes:
+        try:
+            info = n.last_finalized_block().blockInfo
+            last_lfb_view[n.name] = f"#{info.blockNumber}:{info.blockHash[:10]}"
+        except Exception as exc:  # noqa: BLE001 — diagnostics never mask the failure
+            last_lfb_view[n.name] = f"unreachable ({type(exc).__name__})"
+
+    channel_name = what[2:-1] if what.startswith('@"') and what.endswith('"') else None
     raise AssertionError(
         f"[{label}] finalized {what} did not converge to {expected} on all nodes "
-        f"within {timeout:.0f}s; last={last}, water={water}"
+        f"within {timeout:.0f}s; last={last}, water={water}, "
+        f"final per-node LFBs={last_lfb_view}\n"
+        + collect_forensics(nodes, channel=channel_name, label=label)
     )
 
 

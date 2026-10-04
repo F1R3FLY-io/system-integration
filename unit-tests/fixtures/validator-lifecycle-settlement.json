@@ -1,0 +1,15 @@
+{
+  "description": "Synthetic timing replay based on the retained incident report, not raw per-node timestamps.",
+  "source": {
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "revision": "12bde79f3255aa09faeeb4ecbcdff7d92fa2d45a",
+    "path": "docs/casper/cbc-evidence/runs/casper-integration-timeout-fix-20260922-01/report.json",
+    "run_id": 35677113121,
+    "job_id": 106588410307,
+    "suite_revision": "b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283"
+  },
+  "nodes": ["bootstrap", "validator1", "validator2", "validator3", "validator4", "validator5", "validator6", "readonly"],
+  "finalized_after_seconds": 137,
+  "previous_budget_seconds": 135,
+  "combined_budget_seconds": 225
+}

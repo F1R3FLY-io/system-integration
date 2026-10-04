@@ -9,7 +9,7 @@ Most blockchains (Bitcoin, Ethereum) produce a **linear chain** — each block h
 This node uses a **multi-parent DAG** — each block can have multiple parents, one per validator. Instead of choosing between forks, validators **merge** them by creating a block that references all known tips as parents. There is no fork-choice in the traditional sense — there's fork-merge.
 
 This is why the system has:
-- `max-number-of-parents = 100` — a single block can reference many parents
+- `max-number-of-parents` (node default 100) — a single block can reference many parents
 - A merger/LCA (Lowest Common Ancestor) calculation during block creation
 - Justifications that track each validator's latest block
 
@@ -174,6 +174,38 @@ fault-tolerance-threshold = 0.1
 synchrony-constraint-threshold = 0
 ```
 Same as dev — tests need 2/3 finalization to verify shard recovery from validator expulsion.
+
+## What `conf/rust.conf` actually sets
+
+The values above describe the knobs this document explains; they are not a
+complete picture of the shipped shard. `conf/rust.conf` sets
+`fault-tolerance-threshold = 0.1` and does **not** set
+`max-number-of-parents` or `synchrony-constraint-threshold` at all — those come
+from the node's `defaults.conf`. What it does set, and what this document does
+not otherwise cover:
+
+| Setting | Shipped value | Why it matters |
+|---|---|---|
+| `casper.heartbeat.check-interval` | 5 seconds | How often the proposer loop evaluates whether to propose |
+| `casper.heartbeat.max-lfb-age` | 5 seconds | LFB age above which stale-recovery may fire |
+| `casper.heartbeat.self-propose-cooldown` | 3 seconds | Minimum gap between a validator's own proposals |
+| `casper.max-parent-depth` | 15 | Adjudication horizon; also the deploy-lifecycle citability horizon |
+| `casper.genesis-block-data.epoch-length` | 50 | Bonds, withdrawals and payouts apply only at an epoch boundary |
+| `casper.genesis-block-data.quarantine-length` | 10 | Delay before an unbonded validator's stake is paid out |
+
+### Changing `check-interval` can stop the node from starting
+
+`casper.heartbeat.stale-recovery-min-interval` is **not** set in
+`conf/rust.conf`, so the node derives it as `check-interval × 1.5` — 7.5
+seconds at the shipped 5-second tick. The node rejects a configuration where
+that interval is at or below `check-interval`, and the rejection is fatal: it
+fails during config validation, before the node starts.
+
+The derived value is always safe. An explicit one is not — if you set
+`stale-recovery-min-interval` and later raise `check-interval` past it, every
+node refuses to boot with a message about the recovery exemption opening on
+every tick. If you must set it explicitly, keep it above `check-interval`, and
+prefer raising both together or leaving it derived.
 
 ## Related
 

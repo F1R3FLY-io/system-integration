@@ -13,7 +13,6 @@ import math
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -29,13 +28,29 @@ METRICS_TO_SCRAPE = [
     "block_validation_step_bonds_cache_time",
     "block_validation_step_block_summary_time",
     "block_processing_stage_parents_post_state_time",
-    # parents-post-state sub-stages — attribute the multi-parent merge cost
-    # (floor compute / FS seal fold / scope build / mergeable recompute / dag merge).
-    "block_processing_stage_parents_post_state_floor_compute_time",
-    "block_processing_stage_parents_post_state_fs_seal_time",
-    "block_processing_stage_parents_post_state_scope_build_time",
+    # parents-post-state sub-stages — attribute the multi-parent merge cost.
+    # Names track the node's metrics_constants.rs parents-post-state family
+    # (f1r3node-rust PR #362 and follow-ups replaced the old
+    # floor_compute / fs_seal / scope_build / merge buckets): cache lookup,
+    # floor derive, base checks, ancestor collection, mergeable recompute,
+    # prior-rejection walk, the dag_merger::merge call itself, and post-merge.
+    "block_processing_stage_parents_post_state_cache_lookup_time",
+    "block_processing_stage_parents_post_state_floor_derive_time",
+    "block_processing_stage_parents_post_state_base_holds_floor_time",
+    "block_processing_stage_parents_post_state_base_lineage_walk_time",
+    "block_processing_stage_parents_post_state_collect_ancestors_time",
     "block_processing_stage_parents_post_state_ensure_mergeable_time",
-    "block_processing_stage_parents_post_state_merge_time",
+    "block_processing_stage_parents_post_state_prior_rejection_counts_time",
+    "block_processing_stage_parents_post_state_merge_call_time",
+    "block_processing_stage_parents_post_state_post_merge_time",
+    # The batched settled-sig indexes built inside the merge call: build time
+    # plus depth (blocks walked) histograms, base and floor kept separate.
+    "block_processing_stage_parents_post_state_settled_index_build_time",
+    "block_processing_stage_parents_post_state_settled_index_blocks",
+    "block_processing_stage_parents_post_state_settled_floor_index_build_time",
+    "block_processing_stage_parents_post_state_settled_floor_index_blocks",
+    # Histogram of |visible_blocks| per merge — a count, not a time.
+    "compute_parents_post_state_merge_scope_size",
     "block_processing_stage_replay_time",
     "dag_merge_total_time",
     "dag_merge_index_time",
@@ -52,9 +67,6 @@ METRICS_TO_SCRAPE = [
     "dag_merge_combine_changes_time",
     "dag_merge_compute_trie_actions_time",
     "dag_merge_apply_trie_actions_time",
-    # dag_merger::merge rejection-expansion path
-    "dag_merge_rejection_expansion_time",
-    "dag_merge_rejection_expansion_fired",
     "block_replay_phase_reset_time",
     "block_replay_phase_user_deploys_time",
     "block_replay_phase_system_deploys_time",
@@ -111,13 +123,8 @@ METRICS_TO_SCRAPE = [
     "clique_oracle_compute_time",
     # compute_rejected_buffer_admits (called from compute_parents_post_state).
     "compute_rejected_buffer_admits_time",
-    # Counter: compute_parents_post_state falling back to a single parent
-    # because the visible-blocks set or LCA distance exceeded its caps.
-    "compute_parents_post_state_fallback_merge_scope_too_large_fired",
     # DAG insert.
     "dag_insert_time",
-    # Counter: is_mergeable_channel calls (every channel produce/consume).
-    "is_mergeable_channel_calls",
     # Runtime spawn timing
     "runtime_spawn_time",
     "runtime_spawn_replay_time",
@@ -127,6 +134,24 @@ METRICS_TO_SCRAPE = [
     "install_time_seconds",
     "replay_consume_time_seconds",
     "replay_produce_time_seconds",
+]
+
+# Plain counters to scrape. metrics-exporter-prometheus renders `counter!`
+# metrics as bare `name{labels} value` lines — no `_sum`/`_count` pair — so
+# they need their own match; listing a counter in METRICS_TO_SCRAPE silently
+# yields nothing. Deltas surface as `<name>.count` (for `..._time_ns` the
+# delta is accumulated nanoseconds, not a call count).
+COUNTERS_TO_SCRAPE = [
+    # settled-sig probe closures invoked from inside the merge call: total
+    # invocations and accumulated nanoseconds (avg = time_ns / calls).
+    "block_processing_stage_parents_post_state_settled_probe_wrapper_calls",
+    "block_processing_stage_parents_post_state_settled_probe_wrapper_time_ns",
+    # Counter: is_mergeable_channel calls (every channel produce/consume).
+    "is_mergeable_channel_calls",
+    # Counter: the deterministic floor-distance backstop refusing a merge
+    # (successor of the removed fallback_merge_scope_too_large_fired — the
+    # silent single-parent fallback became an Err node-side).
+    "compute_parents_post_state_merge_scope_backstop_error",
 ]
 
 
@@ -174,6 +199,12 @@ def scrape_metrics(node) -> Dict[str, float]:
                         if match:
                             val = float(match.group(1))
                             result[key] = result.get(key, 0) + val
+            for counter in COUNTERS_TO_SCRAPE:
+                if line.startswith(counter + "{") or line.startswith(counter + " "):
+                    match = re.search(r"\s+([\d.eE+-]+)$", line)
+                    if match:
+                        val = float(match.group(1))
+                        result[counter] = result.get(counter, 0) + val
     except Exception:
         pass
     return result
@@ -198,6 +229,9 @@ def compute_metric_deltas(
             if delta_count > 0:
                 result[metric] = delta_sum / delta_count
             result[metric + ".count"] = delta_count
+    for counter in COUNTERS_TO_SCRAPE:
+        if counter in after:
+            result[counter + ".count"] = after.get(counter, 0) - before.get(counter, 0)
     return result
 
 
@@ -273,29 +307,61 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             lines.append(
                 f"    replay_block (execution): {replay_avg * 1000:.0f}ms ({int(replay_count)} blocks)"
             )
-    # parents_post_state sub-stage breakdown — where the multi-parent merge cost goes
-    # (the ~1.8s/multi-parent that used to be lumped under parents_post_state).
+    # parents_post_state sub-stage breakdown — where the multi-parent merge cost
+    # goes. Buckets follow the node's metrics_constants.rs parents-post-state
+    # family (the old floor_compute / fs_seal / scope_build / merge names are
+    # gone from the node). merge_call times the dag_merger::merge call alone;
+    # the settled-sig probe wrapper and the settled index builds are indented
+    # under it, mirroring how the node attributes that cost.
+    _pps = "block_processing_stage_parents_post_state"
     pps_substages = [
-        (
-            "floor_compute (clique floor)",
-            "block_processing_stage_parents_post_state_floor_compute_time",
-        ),
-        ("fs_seal (FS fold)", "block_processing_stage_parents_post_state_fs_seal_time"),
-        ("scope_build (cone walk)", "block_processing_stage_parents_post_state_scope_build_time"),
-        (
-            "ensure_mergeable (recompute)",
-            "block_processing_stage_parents_post_state_ensure_mergeable_time",
-        ),
-        ("dag merge", "block_processing_stage_parents_post_state_merge_time"),
+        ("cache_lookup", f"{_pps}_cache_lookup_time"),
+        ("floor_derive", f"{_pps}_floor_derive_time"),
+        ("base_holds_floor", f"{_pps}_base_holds_floor_time"),
+        ("base_lineage_walk", f"{_pps}_base_lineage_walk_time"),
+        ("collect_ancestors", f"{_pps}_collect_ancestors_time"),
+        ("ensure_mergeable (recompute)", f"{_pps}_ensure_mergeable_time"),
+        ("prior_rejection_counts", f"{_pps}_prior_rejection_counts_time"),
+        ("merge_call (dag merge)", f"{_pps}_merge_call_time"),
+        ("post_merge", f"{_pps}_post_merge_time"),
     ]
-    pps_has_data = any(metrics.get(k + ".count", 0) > 0 for _, k in pps_substages)
+    merge_call_children: List[str] = []
+    probe_calls = metrics.get(f"{_pps}_settled_probe_wrapper_calls.count", 0)
+    probe_ns = metrics.get(f"{_pps}_settled_probe_wrapper_time_ns.count", 0)
+    if probe_calls > 0:
+        merge_call_children.append(
+            f"      settled_probe wrapper: {probe_ns / probe_calls / 1e6:.3f}ms avg "
+            f"({int(probe_calls)} probes)"
+        )
+    for child_label, child_base in (
+        ("settled_index", f"{_pps}_settled_index"),
+        ("settled_floor_index", f"{_pps}_settled_floor_index"),
+    ):
+        build_count = metrics.get(child_base + "_build_time.count", 0)
+        if build_count > 0:
+            build_avg = metrics.get(child_base + "_build_time", 0)
+            blocks_avg = metrics.get(child_base + "_blocks", 0)
+            merge_call_children.append(
+                f"      {child_label} build: {build_avg * 1000:.2f}ms "
+                f"({int(build_count)} builds, {blocks_avg:.0f} blocks avg)"
+            )
+    pps_has_data = merge_call_children or any(
+        metrics.get(k + ".count", 0) > 0 for _, k in pps_substages
+    )
     if pps_has_data:
-        lines.append("  parents_post_state sub-stages (avg per multi-parent block):")
+        lines.append("  parents_post_state sub-stages (avg per block):")
         for label, key in pps_substages:
             avg = metrics.get(key, 0)
             count = metrics.get(key + ".count", 0)
             if count > 0:
-                lines.append(f"    {label}: {avg * 1000:.0f}ms ({int(count)} blocks)")
+                lines.append(f"    {label}: {avg * 1000:.2f}ms ({int(count)} blocks)")
+            if key == f"{_pps}_merge_call_time":
+                lines.extend(merge_call_children)
+    # Merge scope size histogram — a count, not a time.
+    scope_count = metrics.get("compute_parents_post_state_merge_scope_size.count", 0)
+    if scope_count > 0:
+        scope_avg = metrics.get("compute_parents_post_state_merge_scope_size", 0)
+        lines.append(f"  merge scope size: {scope_avg:.1f} blocks avg ({int(scope_count)} merges)")
     # DAG merge breakdown
     dag_metrics = [
         ("dag_merge_total", "dag_merge_total_time"),
@@ -320,16 +386,6 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             count = metrics.get(key + ".count", 0)
             if count > 0:
                 lines.append(f"    {label}: {avg * 1000:.0f}ms ({int(count)} merges)")
-    # dag_merger rejection-expansion path: called every merge, fires only
-    # when there are rejected source blocks with descendants in scope.
-    rej_exp_count = metrics.get("dag_merge_rejection_expansion_time.count", 0)
-    rej_exp_fired = metrics.get("dag_merge_rejection_expansion_fired.count", 0)
-    if rej_exp_count > 0:
-        rej_exp_avg = metrics.get("dag_merge_rejection_expansion_time", 0)
-        lines.append(
-            f"    rejection_expansion: {rej_exp_avg * 1000:.2f}ms avg, "
-            f"called {int(rej_exp_count)}× ({int(rej_exp_fired)} fired)"
-        )
     # Replay phases
     replay_phases = [
         ("reset", "block_replay_phase_reset_time"),
@@ -433,12 +489,10 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
             f"  compute_rejected_buffer_admits: {admits_avg * 1000:.2f}ms avg, "
             f"{int(admits_count)} calls"
         )
-    # compute_parents_post_state fallback counter
-    fallback_fired = metrics.get(
-        "compute_parents_post_state_fallback_merge_scope_too_large_fired.count", 0
-    )
-    if fallback_fired > 0:
-        lines.append(f"  merge_scope_too_large fallback fired {int(fallback_fired)}×")
+    # compute_parents_post_state merge-scope backstop (deterministic refusal)
+    backstop_errors = metrics.get("compute_parents_post_state_merge_scope_backstop_error.count", 0)
+    if backstop_errors > 0:
+        lines.append(f"  merge_scope_backstop refused {int(backstop_errors)} merges")
     # DAG insert
     dag_insert_count = metrics.get("dag_insert_time.count", 0)
     if dag_insert_count > 0:
@@ -537,11 +591,28 @@ class DeployResult:
 
 
 class LifecycleTracker:
-    """Tracks deploy inclusion and finalization in background threads.
+    """Tracks deploy inclusion and finalization with one batch-poll thread.
 
-    For each deploy, a background thread polls find_deploy until the deploy
-    appears in a block. A separate background thread polls last_finalized_block
-    continuously and marks deploys as finalized when LFB passes their block.
+    A single background thread sweeps every pending deploy through
+    ``deploy_finalization_status`` — the node's authoritative canonical-state
+    answer. Inclusion is observed when the status first reports a containing
+    block; finalization when the state reaches ``DEPLOY_STATE_FINALIZED``.
+
+    This replaces two unreliable mechanisms that produced the 640 bogus
+    "unfinalized" results in soak preflight 31919610258:
+
+    - a 6-worker pool running one ``find_deploy`` poll loop PER DEPLOY
+      (each occupying a worker for up to ``inclusion_timeout``) — at
+      sustained-phase volume (1200 deploys) the pool starved and most
+      deploys were never polled at all, and
+    - finalization inferred from ``included_block_number <= LFB_number``,
+      which is orphan-unsafe: the recorded inclusion block can lose fork
+      choice and the deploy re-home to a later block (the same
+      ``find_deploy`` race fixed in PR #118's bonding anchor).
+
+    A batch sweep visits EVERY pending deploy each cycle regardless of
+    backlog, and the status API already accounts for merge rejection and
+    re-homing, so no block-number inference is involved.
 
     Usage::
 
@@ -556,72 +627,291 @@ class LifecycleTracker:
     def __init__(self, nodes: dict, inclusion_timeout: int = 90):
         self._nodes = nodes
         self._node_list = list(nodes.values())
+        # Kept for API compatibility; the sweep is continuous and the
+        # overall bound is wait_for_finalization's timeout.
         self._inclusion_timeout = inclusion_timeout
         self._lock = threading.Lock()
         self._records: Dict[str, DeployRecord] = {}
         self._inclusion: Dict[str, Tuple[int, float]] = {}
         self._finalization: Dict[str, float] = {}
+        # Terminal FAILED/EXPIRED deploys: excluded from further sweeps but
+        # deliberately left un-finalized so they count against the load
+        # test's unfinalized assertion instead of hiding.
+        self._terminal: Dict[str, str] = {}
+        # Block-hash → block-number cache for inclusion enrichment. Many
+        # deploys share a containing block, so this collapses the
+        # get_block volume from per-deploy to per-unique-block.
+        # Deliberately clear()-exempt within a sweep (a hash→number
+        # mapping is immutable truth, so a stale write cannot corrupt
+        # the next phase); clear() empties it between phases, which
+        # bounds its growth to one entry per unique block per phase.
+        self._block_numbers: Dict[str, int] = {}
         self._max_block = 0
-        self._executor = ThreadPoolExecutor(max_workers=6)
         self._lfb_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
     def start_lfb_monitor(self):
-        """Start background LFB polling thread."""
+        """Start the background status-sweep thread."""
         self._stop_event.clear()
-        self._lfb_thread = threading.Thread(target=self._lfb_poll_loop, daemon=True)
+        self._lfb_thread = threading.Thread(target=self._sweep_loop, daemon=True)
         self._lfb_thread.start()
 
     def stop_lfb_monitor(self):
-        """Stop background LFB polling thread."""
+        """Stop the background status-sweep thread."""
         self._stop_event.set()
         if self._lfb_thread:
             self._lfb_thread.join(timeout=10)
 
-    def _lfb_poll_loop(self):
+    # Bounded concurrency for the per-cycle status probes. Small enough
+    # to be gentle on a loaded node, large enough that one slow RPC
+    # (e.g. a call riding out its whole gRPC deadline) delays a cycle by
+    # deadline/8 rather than blocking every deploy queued behind it.
+    _SWEEP_WORKERS = 8
+    # Consecutive all-fail cycles before warning: distinguishes a dead
+    # channel / crashed node from ordinary not-yet-included polling.
+    _SWEEP_FAIL_STREAK_WARN = 5
+
+    def _sweep_loop(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from f1r3fly.pb.DeployServiceCommon_pb2 import (
+            DEPLOY_STATE_EXPIRED,
+            DEPLOY_STATE_FAILED,
+            DEPLOY_STATE_FINALIZED,
+        )
+
+        # Human-readable names for terminal diagnostics (get_results /
+        # logs) instead of opaque stringified enum ints.
+        terminal_states = {DEPLOY_STATE_FAILED: "FAILED", DEPLOY_STATE_EXPIRED: "EXPIRED"}
         node = self._node_list[0]
-        while not self._stop_event.is_set():
+        client = node._external_client()
+        fail_streak = 0
+        pool = ThreadPoolExecutor(max_workers=self._SWEEP_WORKERS)
+        try:
+            while not self._stop_event.is_set():
+                cycle_start = time.time()
+                pending, errors = self._sweep_cycle(
+                    pool, node, client, DEPLOY_STATE_FINALIZED, terminal_states
+                )
+
+                if pending and errors == pending:
+                    fail_streak += 1
+                    if fail_streak == self._SWEEP_FAIL_STREAK_WARN:
+                        logger.warning(
+                            "LifecycleTracker: every status probe has failed for %d "
+                            "consecutive cycles (%d pending) — node unreachable or "
+                            "channel dead; dropping the cached client to force a "
+                            "fresh channel",
+                            fail_streak,
+                            pending,
+                        )
+                    if fail_streak >= self._SWEEP_FAIL_STREAK_WARN:
+                        # Real recovery attempt: gRPC channels self-heal
+                        # from transient failures, but a permanently dead
+                        # channel object never will. Build a DEDICATED
+                        # replacement client for this sweep only — the
+                        # node's cached client is shared with concurrent
+                        # deploy-submitter threads, and nulling it from
+                        # here could race a submitter mid-_external_client
+                        # (leaked duplicate channels / half-built client).
+                        client = self._fresh_client(node) or client
+                else:
+                    fail_streak = 0
+
+                # Don't compound a long sweep with the full inter-cycle
+                # pause — target ~1s between cycle STARTS.
+                elapsed = time.time() - cycle_start
+                self._stop_event.wait(timeout=max(0.0, 1.0 - elapsed))
+        finally:
+            # Don't block thread exit on probes still riding out their
+            # gRPC deadlines — stop_lfb_monitor joins with a 10s budget.
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    @staticmethod
+    def _fresh_client(node):
+        """A NEW gRPC client to the node's external port, or None.
+
+        Mirrors ``Node._external_client``'s construction without touching
+        its shared cache (cross-thread safety — see the fail-streak site).
+        Returns None when construction fails (node down), leaving the
+        sweep on its current client to keep retrying.
+        """
+        try:
+            from f1r3fly.client import F1r3flyClient
+
+            from .node import _GRPC_OPTIONS
+
+            return F1r3flyClient(
+                node.grpc_host, node.external_grpc_port, grpc_options=_GRPC_OPTIONS
+            )
+        except Exception as exc:
+            logger.debug("fresh sweep client construction failed: %s", exc)
+            return None
+
+    def _sweep_cycle(self, pool, node, client, finalized_state, terminal_states):
+        """One sweep pass over every pending deploy.
+
+        Two phases, strictly ordered: phase 1 folds EVERY probe result's
+        finalized/terminal state into the bookkeeping; phase 2 runs
+        block-number enrichment. A slow (not just failing) ``get_block``
+        therefore cannot delay any deploy's finalization write in the
+        same sweep — the verdict ``wait_for_finalization`` reads is fully
+        recorded before the first enrichment RPC is issued.
+
+        Returns ``(pending_count, probe_error_count)``. Factored out of
+        the loop so lifecycle unit tests can drive a cycle synchronously
+        (no thread, no inter-cycle wait).
+        """
+        with self._lock:
+            pending = [
+                did
+                for did in self._records
+                if did not in self._finalization and did not in self._terminal
+            ]
+
+        def _probe(deploy_id):
             try:
-                lfb = node.last_finalized_block().blockInfo.blockNumber
-                now = time.time()
+                return deploy_id, client.deploy_finalization_status(deploy_id), None
+            except Exception as exc:
+                return deploy_id, None, exc
+
+        errors = 0
+        succeeded = []
+        for deploy_id, status, exc in pool.map(_probe, pending):
+            if self._stop_event.is_set():
+                return len(pending), errors
+            if exc is not None:
+                errors += 1
+                logger.debug("status probe failed for %s: %s", deploy_id[:16], exc)
+                continue
+            self._apply_state(deploy_id, status, finalized_state, terminal_states)
+            succeeded.append((deploy_id, status))
+
+        # Pre-resolve block numbers for every UNIQUE uncached containing
+        # block through the worker pool: a first cycle over a large
+        # backlog can span hundreds of distinct blocks, and resolving
+        # them serially would stall the cycle for the sum of the lookup
+        # latencies. After this, _enrich_inclusion is cache-hits only.
+        with self._lock:
+            unresolved = list(
+                {status.latestBlockHash.hex() for _, status in succeeded if status.latestBlockHash}
+                - {h for h, n in self._block_numbers.items() if n}
+            )
+
+        def _resolve(block_hash):
+            try:
+                return block_hash, node.get_block(block_hash).blockInfo.blockNumber
+            except Exception as exc:
+                logger.debug("block-number lookup failed for %s: %s", block_hash[:16], exc)
+                return block_hash, 0
+
+        # Every hash counts as attempted this cycle, FAILURES INCLUDED:
+        # per-deploy enrichment must not re-issue the RPC for a hash the
+        # pool already tried and lost — one unavailable block shared by
+        # hundreds of deploys would otherwise serialize hundreds of
+        # deadline-length lookups (round-4 review). Failed hashes stay
+        # uncached, so the pooled path retries them next cycle.
+        attempted = set(unresolved)
+        for block_hash, number in pool.map(_resolve, unresolved):
+            if self._stop_event.is_set():
+                return len(pending), errors
+            if number:
                 with self._lock:
-                    for deploy_id, (bn, _) in self._inclusion.items():
-                        if bn > 0 and bn <= lfb and deploy_id not in self._finalization:
-                            self._finalization[deploy_id] = now
-            except Exception:
-                pass
-            self._stop_event.wait(timeout=1)
+                    self._block_numbers[block_hash] = number
+
+        for deploy_id, status in succeeded:
+            if self._stop_event.is_set():
+                break
+            self._enrich_inclusion(node, deploy_id, status, attempted)
+        return len(pending), errors
+
+    def _apply_state(self, deploy_id, status, finalized_state, terminal_states):
+        """Fold one status response's STATE into the bookkeeping maps.
+
+        Pure dictionary writes — no RPCs, nothing here can be slow.
+        Every write is gated on ``deploy_id in self._records`` under the
+        lock: ``clear()`` runs between load phases while the sweep
+        thread is alive, and a stale write after the clear would corrupt
+        the next phase's counts.
+        """
+        now = time.time()
+        if status.state == finalized_state:
+            with self._lock:
+                if deploy_id in self._records:
+                    self._finalization[deploy_id] = now
+        elif status.state in terminal_states:
+            with self._lock:
+                if deploy_id in self._records:
+                    self._terminal[deploy_id] = terminal_states[status.state]
+
+    def _enrich_inclusion(self, node, deploy_id, status, attempted=None):
+        """Resolve inclusion telemetry (block number) for one deploy.
+
+        Telemetry only — runs strictly AFTER every state write of the
+        sweep, so a slow or broken ``get_block`` can never delay a
+        finalization the verdict depends on. Same ``clear()`` gating as
+        ``_apply_state``. ``attempted``: hashes the pooled pre-resolution
+        already tried this cycle (failures included) — for those, a
+        cache miss records 0 WITHOUT another RPC, so one unavailable
+        block shared by many deploys costs one lookup per cycle, not one
+        per deploy. Timestamps are sweep-granular: the inclusion time is
+        when a sweep first observed a containing block (~cycle cadence
+        after actual inclusion), which slightly skews latency
+        percentiles derived from it.
+        """
+        now = time.time()
+        attempted = attempted if attempted is not None else frozenset()
+        if not status.latestBlockHash:
+            return
+        with self._lock:
+            tracked = deploy_id in self._records
+            existing = self._inclusion.get(deploy_id)
+        # (Re-)resolve the block number when unknown — including a
+        # previous cycle's failed lookup, stored as 0. The original
+        # inclusion timestamp is preserved on re-resolution.
+        if not tracked or (existing is not None and existing[0] != 0):
+            return
+        block_hash = status.latestBlockHash.hex()
+        with self._lock:
+            block_number = self._block_numbers.get(block_hash, 0)
+        if block_number == 0 and block_hash not in attempted:
+            try:
+                block_number = node.get_block(block_hash).blockInfo.blockNumber
+            except Exception as exc:
+                logger.debug("block-number lookup failed for %s: %s", deploy_id[:16], exc)
+        with self._lock:
+            if block_number:
+                self._block_numbers[block_hash] = block_number
+            if deploy_id in self._records:
+                included_at = existing[1] if existing else now
+                self._inclusion[deploy_id] = (block_number, included_at)
+                self._max_block = max(self._max_block, block_number)
 
     def track_deploy(self, record: DeployRecord):
-        """Submit a deploy record for background inclusion tracking."""
+        """Register a deploy; the sweep thread picks it up on its next pass."""
         with self._lock:
             self._records[record.deploy_id] = record
-        self._executor.submit(self._poll_inclusion, record)
 
-    def _poll_inclusion(self, record: DeployRecord):
-        node = self._node_list[0]
-        deadline = time.time() + self._inclusion_timeout
-        while time.time() < deadline:
-            try:
-                light_block = node.find_deploy(record.deploy_id)
-                find_time = time.time()
-                with self._lock:
-                    self._inclusion[record.deploy_id] = (light_block.blockNumber, find_time)
-                    self._max_block = max(self._max_block, light_block.blockNumber)
-                return
-            except Exception:
-                time.sleep(1)
+    def wait_for_finalization(self, timeout: float) -> bool:
+        """Block until every tracked deploy is settled, or timeout.
 
-    def wait_for_finalization(self, timeout: float):
-        """Block until all tracked deploys are finalized or timeout."""
+        Settled means finalized OR terminal (FAILED/EXPIRED). Terminal
+        deploys still surface as unfinalized in ``get_results`` — this
+        just avoids burning the full timeout waiting on a deploy the
+        node has already declared dead. Returns True when everything
+        settled, False on timeout (a final check runs AT the deadline so
+        a deploy settling in the last polling gap is not misreported).
+        """
         deadline = time.time() + timeout
-        while time.time() < deadline:
+        while True:
             with self._lock:
-                all_included = all(did in self._inclusion for did in self._records)
-                if all_included:
-                    all_finalized = all(did in self._finalization for did in self._records)
-                    if all_finalized:
-                        return
+                settled = all(
+                    did in self._finalization or did in self._terminal for did in self._records
+                )
+            if settled:
+                return True
+            if time.time() >= deadline:
+                return False
             time.sleep(1)
 
     def get_results(self) -> List[DeployResult]:
@@ -650,9 +940,10 @@ class LifecycleTracker:
             self._records.clear()
             self._inclusion.clear()
             self._finalization.clear()
+            self._terminal.clear()
+            self._block_numbers.clear()
             self._max_block = 0
 
     def shutdown(self):
-        """Stop all background threads and executor."""
+        """Stop the background sweep thread."""
         self.stop_lfb_monitor()
-        self._executor.shutdown(wait=False)

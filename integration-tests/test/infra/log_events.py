@@ -67,6 +67,60 @@ def find_events(logs: str, **fields: object) -> List[dict]:
     ]
 
 
+# ── Expected progress markers ─────────────────────────────────────────
+#
+# Substrings tests wait FOR, as opposed to FORBIDDEN_PATTERNS below, which they
+# must never see. Centralized for the same reason: each one couples a test to a
+# node log line, so when the node rewords one there is a single place to fix
+# rather than a grep across suites. Every entry names the node behaviour it
+# marks, not the test that waits on it.
+SYNC_MARKERS: Dict[str, str] = {
+    # Node has begun requesting the approved state from its peers — the start of
+    # last-finalized-state sync on a fresh observer or joiner.
+    "ApprovedStateRequestStarted": "request_approved_state: start",
+    # LFS block requester's stream is up, so block requests are being issued and
+    # their responses tracked. Emitted after the approved state is settled.
+    "LfsBlockRequesterStarted": "LFS Block Requester stream initialized",
+    # Requested blocks went unanswered within the requester's window and are
+    # being re-requested. The retry path, not an error.
+    "BlockRequestResend": "No responses for",
+    # The floor-cache request loop re-asked after a response arrived for a
+    # request it had already moved past — evidence the loop kept asking
+    # through peer silence rather than wedging.
+    "FloorCacheReAsked": "floor-cache channel full or closed",
+    # The floor-cache request went unanswered through its retry budget and
+    # the restore degraded to local derivation — loud, never a wedge.
+    "FloorCacheDegraded": "Proceeding without the shipped floor cache",
+    # Engine transitioned to Running — the restore pipeline completed.
+    "TransitionedToRunning": "Making a transition to Running",
+    # Heartbeat proposer created a block. Fires for every heartbeat-created
+    # block, whether or not it carried user deploys.
+    "HeartbeatBlockCreated": "Heartbeat: Successfully created block",
+    # The empty-frontier width cap engaged: a heartbeat check found the
+    # unfinalized-block count over the cap while the validator was inside its
+    # post-mint throttle window. Positive evidence the cap bounds empty-block
+    # churn during a finality stall.
+    "HeartbeatBackpressureActive": "Heartbeat: Empty frontier backpressure active",
+    # A peer was dropped from the connections table, after its heartbeat failure
+    # streak reached the configured threshold.
+    "PeerRemoved": "Removing peer",
+}
+
+
+def marker(key: str) -> str:
+    """Return the node log substring registered under ``key``.
+
+    Raises ``KeyError`` naming the available keys, so a typo fails at once rather
+    than as a poll that can never succeed.
+    """
+    try:
+        return SYNC_MARKERS[key]
+    except KeyError:
+        raise KeyError(
+            f"unknown sync marker {key!r}; registered markers: {sorted(SYNC_MARKERS)}"
+        ) from None
+
+
 # ── Forbidden-pattern scanning ────────────────────────────────────────
 
 
@@ -162,6 +216,17 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
         r"(has \d+ pre-state values; single-value invariant violated"
         r"|Expected at most one value for number channel)"
     ),
+    # ── Reducer single-value violation (eval_single_expr / eval_to_bool) ──
+    # reduce.rs raises this when a Par reaching a single-expression context
+    # holds != 1 expressions: n_exprs=0 (empty Par) or >1 (multi-Datum). The
+    # n_exprs=0 case is the orphan-#3 signature — a coupled state-channel
+    # sub-map decoupled during merge (e.g. pendingWithdrawer[X] with no
+    # allBonds[X] → Nil + reward), surfacing as a ReduceError in the PoS
+    # payout. Dissolved by eager advance-only construction; a recurrence is a
+    # merge/coupling regression. Distinct layer from SingleValueInvariantViolated
+    # (merge pipeline) — this fires inside the reducer. Checked manually every
+    # run; now enforced.
+    "ReducerMultipleExpressions": re.compile(r"Multiple expressions given\. eval_"),
     # ── Seal / merge stale-consume backstop ──
     # state_change_merger.rs `make_trie_action` fail-closed tripwire: a
     # chain whose committed diff was rebased onto a divergent base reached
@@ -229,7 +294,188 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
     # DAG storage missing a referenced hash. Opt-outs:
     #   tests/shared/test_convergence.py::test_network_recovers_from_validator_pause
     "DAGStorageMissingHash": re.compile(r"DAG storage is missing hash"),
+    # ── Finalized-read fork ──
+    # derive_floor refused to advance because two finalized candidates hold
+    # mutually non-contained state: the node's finalized read surface has
+    # forked from its peers'. The guard is working (nothing is erased), but
+    # the shard is split and every propose from the frozen base is refused.
+    "IncompatibleFinalizedFork": re.compile(r"incompatible finalized fork"),
+    # A floor advanced to a block that is not on the adopted LFB lineage, or
+    # two floors certified incompatible chains.
+    "FinalizedFloorSafetyViolation": re.compile(r"finalized-floor safety violation"),
+    # The DivergenceMonitor escalated: the shard kept finalizing floors (>= 10
+    # refusals, rising derived numbers) whose state is missing effects settled
+    # under this node's LFB — the node's finalized read surface has diverged
+    # from the shard's. One ERROR per incident; transient single refusals are
+    # the containment guard working and never fire this.
+    "FinalityDivergence": re.compile(r"FINALITY DIVERGENCE"),
+    # A finalizer run errored. A healthy finalizer never fails — its 15s
+    # timeout backstop is a separate WARN — so any error here is a
+    # finalization-pipeline bug (e.g. the sweep walking pruned ancestry),
+    # named directly instead of via whatever storage error it happens to wrap.
+    "FinalizerRunFailed": re.compile(r"finalizer-run failed"),
+    # ── Merge base / applied-diff incoherence ──
+    # state_change_merger.rs `make_trie_action`: a retained chain removes a
+    # datum the base does not hold, i.e. the applied diffs were computed
+    # against a different base than the one being extended. Deterministic —
+    # every propose over the same scope re-hits it and the shard wedges with
+    # a frozen LFB.
+    "MergeBaseIncoherent": re.compile(r"applied diffs are incoherent with the base state"),
 }
+
+
+def classify_deploy_losses(nodes, sig_prefixes: Iterable[str]) -> Dict[str, str]:
+    """Explain WHY each deploy failed to finalize, not just that it did.
+
+    A deploy can be lost several structurally different ways that all surface
+    as the same ``DeployError``: the phlo-refund quarantine removing it from
+    the rejected-deploy buffer, losing every merge it reaches, or the validity
+    window closing before it was ever (re-)included. Reporting only the
+    exception type forces a hand log-dive to tell them apart.
+
+    Evidence lines matched, all keyed by the first 16 hex chars of the sig:
+
+    - ``deploy lifecycle terminal verdict written`` (INFO,
+      ``f1r3fly.casper.lifecycle``): flattened-JSON fields ``sig`` (exactly
+      16 hex chars), ``state`` (Finalized/Expired/Failed), ``rejection_count``.
+    - ``DagMerger rejected N user deploys: <sigs>`` (INFO): comma-joined
+      16-hex-char sigs, one line per losing merge.
+    - ``quarantined_toxic_rejected_buffer=true`` (WARN): the full sig hex is
+      embedded in the ``error=`` message the quarantine parsed it from.
+
+    Retry-gate deferrals are count-only INFO lines with no sigs, so per-sig
+    gate counts are NOT log-recoverable; the per-decision basis needs
+    ``f1r3fly.casper.recovery=debug`` and a hand-read.
+
+    Keep each node's verdict separate in the description. A terminal state
+    on one node must not overwrite a different state on another node.
+    This display-only API still returns one description per signature prefix.
+    One streaming pass per node, on the failure path only.
+    """
+    facts = collect_deploy_loss_facts(nodes, sig_prefixes)
+    descriptions: Dict[str, List[str]] = {}
+    for (prefix, node_name), fact in facts.items():
+        descriptions.setdefault(prefix, []).append(f"{node_name}: {describe_deploy_loss(fact)}")
+    return {prefix: "; ".join(parts) for prefix, parts in descriptions.items()}
+
+
+def collect_deploy_loss_facts(nodes, sig_prefixes: Iterable[str]) -> Dict[tuple[str, str], dict]:
+    """Collect facts keyed by (signature prefix, node name), without merging nodes.
+
+    The caller must reject ambiguous 16-character prefixes before using these
+    facts for a verdict. Full signatures and the node's 16-character log
+    signatures are supported. A failed log stream invalidates its partial
+    evidence and is reported explicitly, not as proof of starvation.
+    """
+    prefixes = {p[:16] for p in sig_prefixes if p}
+    facts: Dict[tuple[str, str], dict] = {}
+    for node in nodes:
+        node_facts = {
+            p: {"quarantined": False, "merge_rejected": 0, "state": None, "rejection_count": None}
+            for p in prefixes
+        }
+        if not node_facts:
+            continue
+        try:
+            for line in node.iter_log_lines():
+                for prefix, fact in node_facts.items():
+                    if prefix in line:
+                        _record_deploy_loss_line(fact, prefix, line)
+        except Exception as exc:  # noqa: BLE001 - includes failures during iteration
+            for fact in node_facts.values():
+                fact["diagnostics_error"] = f"log read failed ({type(exc).__name__})"
+        facts.update({(p, node.name): fact for p, fact in node_facts.items()})
+    return facts
+
+
+def _record_deploy_loss_line(fact: dict, prefix: str, line: str) -> None:
+    """Accumulate one node's evidence. Never replace a conflicting terminal verdict."""
+    if "quarantined_toxic_rejected_buffer=true" in line:
+        fact["quarantined"] = True
+    if "DagMerger rejected" in line:
+        fact["merge_rejected"] += 1
+    if "terminal verdict written" not in line:
+        return
+    try:
+        record = json.loads(line)
+    except (ValueError, TypeError):
+        fact["diagnostics_error"] = "malformed terminal verdict"
+        return
+    # Match the signature field, not an incidental mention elsewhere in JSON.
+    if not isinstance(record, dict) or str(record.get("sig", ""))[:16] != prefix:
+        return
+    state, rejections = record.get("state"), record.get("rejection_count")
+    if (
+        state not in ("Finalized", "Expired", "Failed")
+        or type(rejections) is not int
+        or rejections < 0
+    ):
+        fact["diagnostics_error"] = "invalid terminal verdict"
+        return
+    # A terminal verdict is write-once on the node. A repeat must match on
+    # BOTH fields: a second Expired line with a different rejection_count is
+    # contradictory evidence, not a refinement, and must not make the result
+    # depend on log order (0 then 2 tolerated, 2 then 0 not).
+    if fact["state"] is not None and (
+        fact["state"] != state or fact["rejection_count"] != rejections
+    ):
+        fact["diagnostics_error"] = "conflicting terminal verdicts"
+        return
+    fact["state"], fact["rejection_count"] = state, rejections
+
+
+def describe_deploy_loss(fact: dict) -> str:
+    """Describe already-collected evidence without reading node logs again."""
+    if fact.get("diagnostics_error"):
+        return f"diagnostics unavailable: {fact['diagnostics_error']}"
+    state = fact.get("state") or "unknown"
+    rejection_count = fact.get("rejection_count")
+    rej = str(rejection_count) if rejection_count is not None else "?"
+
+    if fact.get("quarantined"):
+        return (
+            f"refund-quarantined (state={state}): a failed phlo refund removed the "
+            "deploy from the rejected-deploy buffer, the only re-proposable copy"
+        )
+    # Ordering matters: a deploy that RECOVERED, or that has not yet reached a
+    # terminal verdict, must never be described as lost. Reporting a slow
+    # recovery as destroyed work is the most misleading direction this
+    # diagnostic can fail in.
+    if state == "Finalized":
+        return (
+            f"recovered, not lost: finalized after {rej} rejection(s) — the test's "
+            "timeout expired before recovery completed, so this is a test-patience "
+            "failure"
+        )
+    if state == "unknown":
+        if fact.get("merge_rejected"):
+            return (
+                f"diagnostics unavailable: lost {fact['merge_rejected']} merge(s), no terminal "
+                "verdict written — the test's timeout expired while the deploy was "
+                "still contestable, which is NOT proof it was lost (per-sig gate "
+                "decisions are visible only at f1r3fly.casper.recovery=debug)"
+            )
+        return (
+            "diagnostics unavailable: no per-sig terminal verdict — either genuinely "
+            "pending untouched by any merge, or the scanned logs don't cover the "
+            "run (the terminal-verdict line is INFO; check the logging filter)"
+        )
+    if state == "Expired":
+        if fact["merge_rejected"] or (rejection_count or 0) > 0:
+            return (
+                f"merge-starved (state=Expired): rejected {rej}x "
+                f"({fact['merge_rejected']} losing merge(s) in this shard's logs) and "
+                "never re-landed before the validity window closed"
+            )
+        return (
+            "expired without a recorded rejection: never included, or every inclusion "
+            "was voided by finalization elsewhere — the validity window closed first; "
+            "the count-only 'deferred by the retry gate' INFO lines say whether the "
+            "gate was shut"
+        )
+    if state == "Failed":
+        return f"terminal Failed: the deploy executed and failed ({rej} rejection(s))"
+    return f"terminal verdict {state}: {rej} rejection(s)"
 
 
 def scan_for_forbidden(
@@ -281,6 +527,58 @@ def scan_lines_for_forbidden(
                 )
                 break
     return matches
+
+
+def record_scanned(
+    name: str,
+    offset: int,
+    scanned: int,
+    offsets: Dict[str, int],
+    owners: Dict[str, FrozenSet[str]],
+    allowed: FrozenSet[str],
+) -> None:
+    """Record a SUCCESSFUL per-test scan for later retirement judging.
+
+    ``offsets[name]`` becomes the judged-through line count and
+    ``owners[name]`` the allowance set the lines were judged under. Call
+    only after a completed scan — a failed scan must fail closed by
+    recording nothing (the window was not judged, and accumulating
+    allowances across failed scans could hide a forbidden event produced
+    under a stricter test).
+    """
+    offsets[name] = offset + scanned
+    owners[name] = allowed
+
+
+def scan_retired_snapshot(
+    name: str,
+    log_text: str,
+    offsets: Dict[str, int],
+    owners: Dict[str, FrozenSet[str]],
+    current_allowed: FrozenSet[str],
+) -> List[LogError]:
+    """Judge a retired node's unjudged log tail under its OWNER's allowances.
+
+    The snapshot holds the node's full cumulative log; the prefix through
+    ``offsets[name]`` was already judged by per-test scans under their own
+    tests' allowances and is skipped (re-judging it would mis-attribute
+    lines to the consuming test). The remaining teardown-window lines
+    belong to the node's last owning test and are judged under THAT
+    test's recorded allowances only — the consuming test's allowances
+    never apply to another test's lines, so they cannot hide a forbidden
+    teardown event. ``current_allowed`` is used only when no owner is
+    recorded: a transient node attached and detached within the current
+    test, whose whole log belongs to the current test.
+
+    Pops the bookkeeping entries, so a new node reusing the retired name
+    starts fresh. Callers must invoke this BEFORE recording the current
+    test's scans (see conftest ordering comment).
+    """
+    offset = offsets.pop(name, 0)
+    owner_allowances = owners.pop(name, None)
+    effective = current_allowed if owner_allowances is None else owner_allowances
+    tail = log_text.splitlines()[offset:]
+    return scan_lines_for_forbidden(tail, name, effective)
 
 
 def format_errors(errors: List[LogError], max_display: int = 30) -> str:

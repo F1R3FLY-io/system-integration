@@ -10,7 +10,7 @@
 #   - A running shard network (bootstrap + validators on f1r3fly network)
 #   - Validator 4 must be bonded before it can participate in consensus
 #
-# See: https://github.com/F1R3FLY-io/rust-client/blob/main/VALIDATOR4_BONDING_GUIDE.md
+# See: docs/adding-a-validator.md
 #
 
 name: f1r3fly-rust-validator4
@@ -44,7 +44,13 @@ services:
       - ../genesis/bonds.txt:/var/lib/rnode/genesis/bonds.txt
     environment:
       - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
-      - RUST_LOG=${RUST_LOG:-info}
+      # Passed only when set, so conf/rust.conf's logging.filter applies by default.
+      - RUST_LOG
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "3"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
       interval: 30s

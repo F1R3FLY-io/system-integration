@@ -50,7 +50,9 @@ def test_dag_correctness(shared_shard, node_conf, timeouts) -> None:
     keys = [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID]
     ftt = node_conf.ftt
 
-    # Deploy on each validator — use distinct channels to avoid conflicts
+    # Deploy on each validator — use distinct channels to avoid conflicts.
+    # @500..@502 are written exactly once in the shared shard. Do not add a
+    # second writer: see docs/ToDos.md SI-TASK-016-2 (single-value-cell guard).
     deploy_ids = []
     for i, (node, key) in enumerate(zip(validators, keys)):
         deploy_id = node.deploy_string(f"@{500 + i}!({i})", key.private_key())

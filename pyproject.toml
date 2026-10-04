@@ -55,6 +55,7 @@ jsonapi = "anything"
 testpaths = ["integration-tests/test/tests"]
 markers = [
 	"xdist_group: assign test to an xdist load group (shared, custom, standalone)",
+	"requires_node_capabilities(*names): run only when every named node capability is supplied with --node-capability",
 ]
 # Per-test timeout (seconds). Includes fixture setup time, so session-scoped
 # fixtures (shard startup: compose up + 5 containers reaching Running state)
@@ -91,3 +92,11 @@ ignore = ["N999"]
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
+
+# Static-analysis environment (Pyright / pi lens): resolve imports from the
+# in-project poetry venv and treat integration-tests as a source root so
+# `test.infra.*` and unit-test loader paths type-check.
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["integration-tests"]

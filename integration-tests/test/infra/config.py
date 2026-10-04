@@ -122,7 +122,7 @@ class TimeoutConfig:
     # quarantine elapsing so withdrawn validators are paid out. These span
     # ~quarantine-length + epoch-length blocks by construction (not contention),
     # so they need a budget larger than a single finalization. Used unscaled.
-    epoch_transition: int = 45
+    epoch_transition: int = 90
     poll_interval: float = 2.0
     scale: float = 1.0
 
@@ -172,6 +172,31 @@ class ShardConfig:
     @property
     def validator_count(self) -> int:
         return len(self.bonds)
+
+
+def deterministic_history_shard_config(**overrides) -> "ShardConfig":
+    """A shard whose block history is entirely test-driven.
+
+    One validator holds effectively all the stake and ``ftt=-1`` finalizes on its
+    vote alone, so every propose finalizes immediately and without waiting on
+    peers. ``heartbeat=False`` means nothing is proposed unless a test asks, so
+    block heights are a function of the test rather than of elapsed time.
+
+    Use for building a known-depth history — observer catch-up, LFS sync,
+    missing-block retry. Do NOT use where the point is multi-validator agreement:
+    the stake split makes the other two validators unable to affect finalization.
+
+    ``overrides`` are applied on top, e.g. ``include_readonly=True``.
+    """
+    from .keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+
+    params = dict(
+        bonds=[(VALIDATOR1_ID, 10_000_000), (VALIDATOR2_ID, 1), (VALIDATOR3_ID, 1)],
+        ftt=-1,
+        heartbeat=False,
+    )
+    params.update(overrides)
+    return ShardConfig(**params)
 
 
 @dataclasses.dataclass(frozen=True)

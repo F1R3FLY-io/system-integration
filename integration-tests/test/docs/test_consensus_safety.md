@@ -26,25 +26,29 @@ Pause V3, wait for V3's process to actually halt, then deploy fresh blocks on V1
 
 After `v3.pause()`, the test calls `wait_for_node_quiet(v3)` which polls V3's HTTP API until it stops responding. This is required because SIGSTOP delivery is not instantaneous — V3's block-creation thread can keep producing blocks for 10+ seconds after `pause()` returns (observed in CI run 26122442592). Only once V3 is confirmed quiet does the test deploy V1+V2 strings; those deploys land in blocks V3 had no chance to vote on.
 
-The assertion tracks SPECIFIC post-pause block hashes (returned from `try_find_deploy`) and polls `is_finalized()` on each for 30s. LFB number advancement is allowed and irrelevant — pre-pause blocks whose finalization was already in flight can legitimately advance the LFB without violating safety. Only the post-pause blocks reflect the steady-state property.
+After V3 becomes quiet, V1 submits `@"post-halt-v1"!(10)` and V2 submits `@"post-halt-v2"!(20)`. Each `deploy_string` call returns a deploy signature. The test polls `try_find_deploy(node, signature)` and records the returned `blockHash` as `post_v1_hash` or `post_v2_hash`. These hashes are generated at runtime, not fixed fixtures. The test logs their prefixes and polls both hashes with `is_finalized()` on V1 and V2 for `timeouts.custom(30)` seconds.
+
+LFB advancement alone is not a failure. Pre-pause blocks can still finalize from votes already in flight. Only the selected post-pause blocks test this safety property.
 
 **What it proves:** FTT=0.67 (production default) requires all 3 equal-stake validators. Once V3 is dead, new V1+V2-only blocks cannot finalize — the safety margin is enforced.
 
-### test_ftt_boundary_strict_greater_than
+### test_ftt_boundary_is_inclusive
 
 **Config:** FTT=0.5, bonds 75/75/50, heartbeat, readonly
 
-Kill V3 (50 stake). V1+V2 (150 stake) have FT = (150\*2 - 200) / 200 = 0.5. Since the comparison is strict > (not >=), 0.5 is NOT > 0.5 — finalization halts. Observe 30 seconds of stall. Restart V3, verify finalization resumes.
+Kill V3 (50 stake). V1+V2 (150 stake) have FT = (150\*2 - 200) / 200 = 0.5. The comparison is inclusive >=, so 0.5 IS >= 0.5 and the post-pause blocks finalize on V1+V2 stake alone. Each (node, block) pair is polled independently so a partial result names which one never crossed. Restart V3, verify finalization continues.
 
-**What it proves:** The finalization formula uses strict greater-than. FT must EXCEED FTT, not merely equal it. At the exact boundary there is zero safety margin and finalization correctly refuses.
+The bond split exists to land FT EXACTLY on the threshold — the only point where >= and > disagree. `ft_decides_exact` evaluates `2*q*den >= S*(den+num)` and every production caller passes `strict=false` (four sites in `floor.rs`); the strict arm is reachable only from unit tests.
+
+**What it proves:** FTT is the minimum tolerable margin, so meeting it exactly is sufficient to finalize. Finalization BELOW the threshold is a separate property, covered by `test_validator_failure_halts_finalization`.
 
 ### test_epoch_transition_under_heartbeat
 
 **Config:** FTT=0.1, bonds 100/100, epoch-length=4, heartbeat, readonly, joiner wallet seeded
 
-Bond VALIDATOR4 via `bond.rho` during active heartbeat (not manual propose). Wait for chain to advance past at least one epoch boundary automatically. Verify finalization continues throughout (no stall during epoch transition). Check if joiner produced blocks after activation.
+Bond VALIDATOR4 via `bond.rho` (stake 10,000,000 — dominant on purpose) during active heartbeat (not manual propose). Wait for the LFB to advance well past an epoch boundary. Because V4 then holds ~99.998% of stake, finalization past the boundary is impossible unless the bond applied, activation fired, and the fresh joiner's heartbeat participates — the LFB target proves the whole chain. Then assert V4 is in the active bonds map at the finalized tip (polled, riding out header-side activation lag) and that V4 produced at least one block.
 
-**What it proves:** Epoch-based validator activation works under production conditions (heartbeat, real FTT). The epoch transition doesn't stall finalization.
+**What it proves:** Epoch-based validator activation works under production conditions (heartbeat, real FTT). The epoch transition doesn't stall finalization, and the activated joiner actually participates.
 
 ### test_merge_determinism_asymmetric_divergence
 
@@ -58,7 +62,7 @@ Pause V1 (heaviest validator, 60 stake) for 30 seconds. V2+V3 produce independen
 
 - **Recovery (FTT=0.1):** V1+V2 LFB advances by 3+ with V3 dead; FT >= 0.1; all nodes converge after restart
 - **Halt (FTT=0.67):** after V3 is paused and confirmed quiet, the specific post-pause V1+V2 blocks remain non-finalized for 30s; resumes after V3 restart
-- **Boundary (FTT=0.5):** LFB does NOT advance for 30s (FT=0.5 is not > 0.5); resumes after restart
+- **Boundary (FTT=0.5):** each selected post-pause block finalizes on V1 and V2 because FT=0.5 meets the inclusive threshold.
 - **Epoch:** LFB reaches target past epoch boundary; all nodes within 3 of target
 - **Merge:** `assert_all_nodes_agree_on_block` on LFB; FT >= 0.1; spread <= 3
 

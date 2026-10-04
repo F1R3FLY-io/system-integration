@@ -2,27 +2,47 @@
 
 ## Purpose
 
-End-to-end validator-bonding lifecycle on the session-shared shard. Verifies that a new validator can dynamically bond via the PoS contract, become an active block proposer at the next epoch boundary, and that subsequent bonds (V5 after V4) succeed under the multi-proposer bonds-cache composition path. Also exercises the production scenario for the LFS forward-horizon rspace history sync code path: a fresh observer LFS-syncing against a busy 5-bonded shard.
+End-to-end validator-bonding lifecycle on a dedicated shard. Verifies that a
+new validator can dynamically bond via the PoS contract, become an active
+block proposer at the next epoch boundary, and that subsequent bonds (V5
+after V4) succeed under the multi-proposer bonds-cache composition path.
+Also exercises the production scenario for the LFS forward-horizon rspace
+history sync code path: a fresh observer LFS-syncing against a busy
+5-bonded shard.
 
 The test covers two distinct failure modes:
-1. **`InvalidBondsCache`** — the second bond (V5) is computed differently on the proposer vs. its peers. Surfaced as a `Recording invalid block` cascade following the bond block.
-2. **`UnknownRootError` on sibling-of-LFB blocks** — joiners post-LFS only have the LFB's rspace state; sibling blocks reference parent rspace state the joiner doesn't have. Surfaced as a validation cascade on a busy shard. Closed by the forward-horizon sync landed in `feat/d-thin-mutex-state` (see `services/f1r3node-rust/casper/src/rust/engine/lfs_horizon_requester.rs`).
+1. **`InvalidBondsCache`** — the second bond (V5) is computed differently on
+   the proposer vs. its peers. Surfaced as a `Recording invalid block`
+   cascade following the bond block.
+2. **`UnknownRootError` on sibling-of-LFB blocks** — joiners post-LFS only
+   have the LFB's rspace state; sibling blocks reference parent rspace state
+   the joiner doesn't have. Surfaced as a validation cascade on a busy
+   shard. Closed by the forward-horizon sync (see
+   `services/f1r3node-rust/casper/src/rust/engine/lfs_horizon_requester.rs`).
 
 ## Setup
 
-The test runs on the session-scoped `shared_shard` fixture: bootstrap + V1, V2, V3 + readonly observer. Production-config inherited from `conf/rust.conf` (no per-test config builder).
+The test runs on its own module-scoped `bonding_shard` fixture — NOT the
+session `shared_shard`: bonding permanently changes the validator set, so
+the shard is dedicated and destroyed at fixture teardown, before downstream
+shared tests run.
 
-- **Topology**: 3 genesis validators (V1, V2, V3, all stake=100) + readonly observer + dynamically-attached joiners (V4 in Phase A, V5 in Phase B) + dynamically-attached observer (Phase C)
-- **Heartbeat**: Enabled (production semantics, real propagation timing)
-- **FTT**: From `rust.conf` (`fault-tolerance-threshold = 0.1`)
-- **include_readonly**: True
-- **Epoch length**: 4 blocks (`epoch-length = 4` in `conf/rust.conf` — keeps the bonding-test cadence tight)
-- **Quarantine length**: 10
-- **Number of active validators**: 10000
+- **Topology**: 3 genesis validators (V1, V2, V3, all stake=100) + readonly
+  observer + dynamically-attached joiners (V4 in Phase A, V5 in Phase B) +
+  a dynamically-attached observer (Phase C)
+- **Heartbeat**: Enabled (production semantics, no manual propose)
+- **FTT**: From `conf/rust.conf`
+- **Epoch length**: 4 — passed explicitly by the fixture via
+  `--epoch-length` (deliberately not inherited from `conf/rust.conf`, which
+  carries a long epoch for suites that never bond, so the two cannot drift)
+- **Quarantine length**: 10, also passed explicitly
 
 ### Genesis wallet seeding
 
-V4's and V5's vaults are seeded at genesis with `50_000_000_000_000_000` tokens each via the `shared_shard` fixture's `extra_wallets` so they have phlo to cover bond + transaction costs. Vault addresses are derived from the public key via `PrivateKey.get_public_key().get_vault_address()`.
+V4's and V5's vaults are seeded at genesis with `50_000_000_000_000_000`
+tokens each via the fixture's `extra_wallets` so they have phlo to cover
+bond + transaction costs. Vault addresses are derived from the public key
+via `PrivateKey.get_public_key().get_vault_address()`.
 
 ### Bond configuration
 
@@ -32,123 +52,182 @@ V4's and V5's vaults are seeded at genesis with `50_000_000_000_000_000` tokens 
 | V4 | 100 | First bond | Phase A |
 | V5 | 100 | Second bond | Phase B |
 
-### Persistent attachments
-
-- V4 and V5 attach via `Shard.attach_joiner(...)` — they remain part of the shard for the rest of the session so the on-chain bonds map and live node count stay aligned for downstream `@shared` tests (which see 5 bonded / 5 alive).
-- The Phase C observer attaches via `Shard.attach_observer()` — also persistent, named `observer1` by the provider, addressable as `shared_shard.node("observer1")`.
-
 ### Why one test, not three
 
-Phase B's preconditions (V4 already bonded; second-bond-after-first state) only exist as a consequence of Phase A's success, and Phase C exercises the steady state after V4+V5 are bonded — splitting them would hide cascade failures in earlier phases. All three phases run as a single test.
+Phase B's preconditions (V4 already bonded; second-bond-after-first state)
+only exist as a consequence of Phase A's success, and Phase C exercises the
+steady state after V4+V5 are bonded — splitting them would hide cascade
+failures in earlier phases. All three phases run as a single test.
 
 ## Test
 
 ### `test_bonding_validators`
 
-Three-phase test wrapped in a `try/finally` that drives a background-load thread throughout Phases A and B.
+Three-phase test wrapped in a `try/finally` around a background-load
+thread.
 
-**Background load** — A daemon thread (`_BackgroundLoad`) sends round-robin deploys to V1/V2/V3 every ~0.5 s. This drives concurrent block production from the genesis validators while the joiners are syncing, so the joiners' LFS forward-horizon contains a non-trivial number of side-branch blocks (deeper rspace history horizon = the new code paths fire on real input). Without this, the shard is quiet during bonding and the new sync code is a no-op. Deploy errors from the bg thread are logged at WARN, never fail the test.
+**Background load** — A daemon thread (`_BackgroundLoad`) sends round-robin
+deploys to V1/V2/V3 every 2.0s per producer (~1.5 deploys/sec shard-wide).
+This drives concurrent block production while the joiners sync, so the
+joiners' LFS forward-horizon contains a non-trivial number of side-branch
+blocks. The load runs through Phase A sub-phases 1-5 only and is stopped
+inside `_bond_lifecycle` once V4 activates — continued load past that point
+creates fork-choice contention that starves FT accumulation for the
+joiner's first blocks. Deploy errors from the bg thread are logged at WARN,
+never fail the test.
 
-**Phase A** — Bonds V4 via V1 (genesis validator V1 deploys the bond contract). Runs the full 8-sub-phase `_bond_lifecycle` helper. After this phase, V4 is permanently in the on-chain bonds map.
+**Phase A** — Bonds V4 via V1. Runs the full 8-sub-phase `_bond_lifecycle`
+helper with the bg-load handle (so the helper can stop it after
+activation). After this phase V4 is permanently in the on-chain bonds map,
+and every bg-load deploy is required to have finalized (the
+orphan-recovery regression detector).
 
-**Phase B** — Bonds V5 on the now-4-bonded shard via **V2** (different proposer than V4's bond) to exercise the multi-proposer path through the bonds_cache / justification-set composition. The failure mode this phase covers is `InvalidBondsCache` on the V5 bond block followed by a cascade of invalid blocks as the bonds-cache divergence between V1's replay path and V2's proposer path propagates.
+**Phase B** — Bonds V5 on the now-4-bonded shard via **V2** (different
+proposer than V4's bond) to exercise the multi-proposer path through the
+bonds_cache / justification-set composition. Runs against the deeper DAG
+Phase A's stress window built up, which the state retains. A sanity
+assertion between the phases confirms V4 is in the on-chain bonds map.
 
-A sanity assertion between Phase A and Phase B confirms V4 is in the on-chain bonds map, so a Phase A regression that "passes" but doesn't actually bond V4 surfaces here loudly.
+**Phase C** — Attaches a fresh readonly observer via
+`Shard.attach_observer()` and requires it to LFS-sync against the 5-bonded
+shard:
+- The observer's LFB must come within 10 blocks of V1's (poll-based;
+  observer and V1 finalize independently once the observer is Running, and
+  drift a few blocks apart at steady state).
+- The observer's LFB block must be visible and finalized on V1 too
+  (cross-node propagation, not just LFB advancement), with an exactly
+  matching 5-entry bonds map.
+- The drift must remain within tolerance through a settle window
+  (poll-based, catching the "synced then stalled" case while tolerating
+  transient spikes).
 
-**Phase C** — Stops the background load (so the observer's sync reaches a stable conclusion rather than chasing a moving tip), then attaches a fresh readonly observer via `Shard.attach_observer()`. Asserts:
-- The observer LFS-syncs to the current LFB (the 5-bonded tip).
-- The observer's view of that block is `isFinalized=True`.
-- The observer's bonds map for that block matches every other node's, exactly (key + stake).
-- After a brief settle (`timeouts.finalization`), the observer's LFB is within one block of V1's — catches the case where the observer LFS-synced to an old LFB but stalled.
-
-This is the production scenario for forward-horizon rspace history sync — every fresh node coming up against a live shard exercises this code path. V4/V5 don't cover it because they joined when the shard was small and quiet.
+This is the production scenario for forward-horizon rspace history sync —
+every fresh node coming up against a live shard exercises this path. V4/V5
+don't cover it because they joined when the shard was small and quiet.
 
 ## Sub-phases (`_bond_lifecycle`)
 
-Both Phase A and Phase B run the same 8-sub-phase helper described below.
+Both Phase A and Phase B run the same 8-sub-phase helper.
 
 ### Sub-phase 1: Pre-bond LFB inspection
 
-Read the LFB on V1, build the current bonds map. Assert the joiner is NOT in the current bonds (precondition for a meaningful bonding test). Logs the LFB block number and existing bond count. The pre-bond bonds map is also captured for use in sub-phase 4's cross-node assertion.
+Read the LFB, build the current bonds map, assert the joiner is NOT in it.
+The pre-bond map is captured for sub-phase 4's assertion. The joiner then
+attaches via `Shard.attach_joiner(...)` and must LFS-sync to the current
+LFB within `timeouts.finalization * 3` — by Phase B the LFB is 50+ blocks
+deep with side-branch history, so the attach window legitimately exceeds
+the plain node-startup budget.
 
-### Sub-phase 2: Joiner attaches as a follower
+### Sub-phase 2: Joiner cannot propose pre-bond
 
-The joiner is added to the shard via `Shard.attach_joiner(identity)` — persistent, included in `_handles` and `_nodes`. Joiner starts as a non-bonded follower, syncs the existing chain, and reaches Running. The joiner deploys a small term and attempts to propose; this must fail (the joiner is not in the active set yet).
+Joiner deploys a small Rholang term and attempts to propose. Must raise
+`F1r3flyClientException` — the joiner is not in the active set yet.
 
-### Sub-phase 3: Verify joiner cannot propose pre-bond
+### Sub-phase 3: Bond deploy
 
-Joiner deploys a small Rholang term and attempts to propose. Must fail because the joiner is not in the active validator set. Logged as "Joiner correctly rejected on propose pre-bond".
+The proposer (V1 for the first bond, V2 for the second) deploys `bond.rho`
+signed with the joiner's private key. Inclusion gets a generous budget
+(`deploy_inclusion * 3`): under heartbeat-only config the latency depends
+on the proposer's next heartbeat round.
 
-### Sub-phase 4: Bond block finalizes cross-node + cross-node bonds-map check
+### Sub-phase 4: Bond deploy finalizes cross-node + bonds-map check
 
-Proposer (V1 for first bond, V2 for second bond) deploys `bond.rho` with the joiner's private key and stake amount. The bond deploy lands in a block, and the framework waits for that block's height to be finalized via LFB advancement, then asserts the **specific block hash** is finalized on **all five nodes** (V1, V2, V3, joiner, readonly).
+**Deploy-centric, not block-centric**: under bg-load contention the FIRST
+containing block can lose fork choice and be orphaned while the bond deploy
+is re-homed into a finalized descendant (observed live). The helper waits
+for the DEPLOY to finalize (`wait_for_deploy_finalized`), anchors every
+downstream assertion to the resolver's canonical inclusion block, and
+asserts that block finalized on all five nodes.
 
-After finalization, the framework asserts:
-- `bonds_post[joiner.public_hex] == _BOND_AMOUNT` on the proposer node
-- `len(bonds_post) == expected_bonds_after`
-- **Cross-node bonds-map consistency** via `assert_bonds_map_consistent_across_nodes(...)`. Every node's view of the bond block must carry the **exact same** bonds map (same keys + same stakes). The original `InvalidBondsCache` bug was a per-node divergence — the bond block validated on the proposer but a peer computed a different bonds map. This assertion is its direct regression detector.
+The bond block's active bonds map is then checked against independently
+computed candidates: off an epoch boundary it must equal the pre-bond set
+(the joiner is sealed but not active); ON a boundary either side of the
+closeBlock transition is accepted (heartbeat + multi-parent processing can
+validly leave the header on pre-activation weights). Activation is never
+waived — sub-phase 5 still requires the exact post-bond map later.
+`assert_bonds_map_consistent_across_nodes` then pins every node to the same
+map — the direct `InvalidBondsCache` regression detector. Finally the
+ledger itself (`pos.get_bonds()` via the readonly node) must report the
+joiner at full stake with the expected total bond count.
 
-### Sub-phase 5: Wait for epoch boundary
+### Sub-phase 5: Epoch boundary activation
 
-LFB must advance past the next epoch boundary (`epoch-length = 4`). Bonded validators are not immediately active — they activate at the next epoch boundary. Logged as "LFB advanced past epoch boundary (#N)".
+Polls until a finalized LFB at or past `bond_block + epoch_length` carries
+exactly the post-bond active map, then asserts that block finalized and its
+bonds map consistent on all five nodes. Phase A stops the background load
+here.
 
-### Sub-phase 6: Joiner produces its first block
+### Sub-phase 6: Joiner produces a block as active proposer
 
-Joiner deploys + proposes (this time successfully — it's now in the active set). The framework polls `_joiner_proposed` for any block where `sender == joiner_pubkey`, then waits for that block to finalize, then asserts the specific block hash is finalized on all 5 nodes. Logged as "Joiner proposed block #N (hash); finalized on all nodes".
+The joiner deploys, and heartbeat produces its block. **Orphan-aware**: an
+individual joiner block can legitimately lose a merge under contention, so
+the helper selects a joiner-authored block that already reports
+`isFinalized` on the joiner, then holds the cross-node assertion to that
+block. On poll timeout, `_dump_block_search_diagnostic` logs what the
+queried nodes' recent blocks actually show (heights, senders,
+justifications) so the failure is diagnosable.
 
-### Sub-phase 7: V1 produces a block justifying the joiner
+### Sub-phase 7: V1 justifies the joiner
 
-The framework polls until V1 produces a block whose justification set includes the joiner's latest block. Then waits for finalization, then asserts the specific V1-block hash is finalized on all 5 nodes. This sub-phase exercises peak DAG contention — V1, V2, V3, joiner all racing at the same height — and would race a "test polls by block_number, asserts by block_hash" mismatch without the polling fix in `assert_block_finalized_on_all_nodes`.
+Same orphan-safety rule: polls for a finalized V1-authored block whose
+justifications cite the joiner, asserts it finalized on all five nodes, and
+dumps the justification diagnostic on timeout (querying both V1 and a peer
+so a node-local API problem is distinguishable from a real justification
+gap).
 
-### Sub-phase 8: Post-bond network liveness
+### Sub-phase 8: Post-bond liveness
 
-For each of V1, V2, V3, joiner: deploy a `liveness-{validator}` term, wait for inclusion, wait for finalization, then `wait_for_block_visible_on_all_nodes` (rides out the gRPC `received but not added yet` window), then `assert_block_finalized_on_all_nodes` on all 5 nodes. Confirms the network is fully healthy after the joiner integrates.
+For each of V1, V2, V3, joiner: deploy, wait for inclusion, then
+`assert_all_deploys_finalized_on_all_nodes` — deploy-centric for the same
+re-homing reason as sub-phase 4. On the Phase A call, every background-load
+deploy must also have finalized (`assert_all_deploys_finalized_on_all_nodes`
+over `bg_load.deploy_ids()`): a deploy that loses fork choice and is never
+re-included within the parent horizon is silently dropped user work.
 
 ## What the tests prove
 
-- PoS `bond.rho` correctly records a new validator's stake in the on-chain bonds map
-- Bond count increases by exactly 1 after each successful bond
-- Bonded validators activate at the next epoch boundary (not immediately)
-- The bond block finalizes consistently on every node — same hash, same `isFinalized=True`, same bonds map (cross-node bonds-map equality is the direct `InvalidBondsCache` regression detector)
-- Joiner's first block produces and finalizes cross-node post-activation
-- V1 (genesis validator) produces blocks that justify the joiner's blocks (justification set wiring)
-- All 4 active validators (incl. joiner) produce blocks that finalize cross-node post-bond (network liveness)
-- Sequential bonds (V4 then V5, via different proposers) compose correctly through the bonds-cache layer
-- A fresh observer can LFS-sync against the live 5-bonded shard with a deep forward-horizon (concurrent producer load throughout Phases A/B), reach the current LFB, and stay in sync with V1 (production scenario for forward-horizon rspace history sync)
-
-## Key assertions
-
-- Pre-bond: `joiner.public_hex not in bonds`
-- Pre-bond propose: raises `F1r3flyClientException`
-- Bond block: `bonds[joiner.public_hex] == stake`, `len(bonds) == expected_bonds_after`
-- Bond block: `isFinalized=True` on **every** node (V1, V2, V3, joiner, readonly)
-- Bond block: bonds map identical on **every** node — `assert_bonds_map_consistent_across_nodes`
-- Joiner first block: `isFinalized=True` on every node
-- V1 justifies-joiner block: `isFinalized=True` on every node
-- Post-bond liveness: each validator's deploy block is visible AND finalized on every node
-- Phase C observer: visible at current LFB, finalized, bonds map matches V1's, LFB lag ≤ 1 block after settle
+- PoS `bond.rho` correctly records a new validator's stake in the on-chain
+  bonds map
+- Bonded validators activate exactly at the next epoch boundary (not
+  immediately), and the activated map finalizes identically on every node
+- The bond block finalizes consistently on every node — same hash, same
+  bonds map (the direct `InvalidBondsCache` regression detector)
+- The joiner proposes post-activation and its block finalizes cross-node
+- Genesis validators justify the joiner's blocks (justification wiring)
+- All active validators (incl. joiner) produce finalizing blocks post-bond
+- Sequential bonds (V4 then V5, via different proposers) compose correctly
+  through the bonds-cache layer
+- Deploys are never silently dropped under fork-choice contention (bg-load
+  finalization sweep)
+- A fresh observer LFS-syncs against the live 5-bonded shard with a deep
+  forward-horizon, reaches the live LFB window, and stays in sync
 
 ## Forbidden-pattern coverage
 
-The autouse `check_node_logs_after_test` fixture scans every node's logs after the test for forbidden patterns defined in `infra/log_events.py`:
-- `InvalidBondsCache`
-- `RecordingInvalidBlock`
-- `DAGStorageMissingHash`
-
-These tests are **not** opted out via `@pytest.mark.allow_forbidden_patterns` — the bond lifecycle is expected to be clean. If the V5 second-bond regression is present, the scanner will fire on `Bonds in proof of stake contract do not match block's bond cache` and `Recording invalid block ... for InvalidBondsCache`. If the forward-horizon sync gap is reintroduced, the bg-load + Phase C combination will surface `UnknownRootError` cascades that the FATAL pattern matcher catches.
+The autouse `check_node_logs_after_test` fixture scans every node's logs
+after the test against `infra/log_events.py`. This test carries no
+`allow_forbidden_patterns` opt-out — the bond lifecycle is expected to be
+clean. A V5 second-bond regression fires `InvalidBondsCache` /
+`BondsCacheMismatch` / `RecordingInvalidBlock`; a reintroduced
+forward-horizon gap surfaces `UnknownRootError` cascades under the bg-load
++ joiner-attach combination.
 
 ## Infrastructure used
 
-- `shared_shard` (session-scoped fixture) — 3-validator shard + readonly with V4/V5 vaults pre-seeded
-- `Shard.attach_joiner(...)` — persistent joiner with validator identity (Phases A, B)
-- `Shard.attach_observer(...)` — persistent readonly observer, no identity, `--heartbeat-disabled` (Phase C)
-- `_BackgroundLoad` (test-local class) — daemon thread issuing round-robin deploys at `_BG_LOAD_INTERVAL`
-- `Node.deploy_rho_file("bond.rho", ...)` — bond contract deployment with substitutions
-- `Node.deploy_string()` / `Node.propose()` / `Node.get_block()` / `Node.last_finalized_block()`
-- `wait_for_block_visible()`, `wait_for_deploy_included()`, `wait_for_finalized()`, `wait_for_block_visible_on_all_nodes()` — all from `infra/polling.py`
-- `assert_block_finalized_on_all_nodes(...)` with `timeout=timeouts.finalization * 3` — rides out FT propagation lag
-- `assert_bonds_map_consistent_across_nodes(...)` — cross-node bonds-map regression detector
-- `poll_until()` for `_joiner_proposed` / `_v1_justifies_joiner` predicates
+- `bonding_shard` (module-scoped dedicated fixture) — 3-validator shard +
+  readonly with V4/V5 vaults pre-seeded, destroyed at teardown
+- `Shard.attach_joiner(...)` (Phases A, B) / `Shard.attach_observer()`
+  (Phase C)
+- `_BackgroundLoad` (test-local) — daemon thread, round-robin deploys at
+  `_BG_LOAD_INTERVAL` (2.0s per producer)
+- `Node.deploy_rho_file("bond.rho", ...)` with substitutions
+- `wait_for_block_visible`, `wait_for_deploy_included`,
+  `wait_for_deploy_finalized`, `poll_until`
+- `assert_block_finalized_on_all_nodes`,
+  `assert_bonds_map_consistent_across_nodes`,
+  `assert_all_deploys_finalized_on_all_nodes`
+- `_dump_block_search_diagnostic` (test-local) — justification/visibility
+  diagnostics on poll timeouts
 
 ## Related
 
