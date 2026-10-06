@@ -210,14 +210,20 @@ in {
      } else if (ethRecipient == "") {
       ret!({"status": "error", "error": "ZeroAddress"})
      } else {
-      new localSystemVaultCh, userVaultCh, balanceCh, transferResultCh in {
+      new localSystemVaultCh, userVaultCh, balanceCh, insufficientCh, transferResultCh in {
        rl!(`rho:vault:system`, *localSystemVaultCh) |
         for (@(_, SystemVault) <- localSystemVaultCh) {
          @SystemVault!("findOrCreate", fromAddr, *userVaultCh) |
           for (@(true, userVault) <- userVaultCh) {
            @userVault!("balance", *balanceCh) |
             for (@bal <- balanceCh) {
-             if (bal < amount) {
+             // A vault balance is Int on older nodes and BigInt on newer ones.
+             match bal {
+              Int => insufficientCh!(bal < amount)
+              _ => insufficientCh!(bal < amount.toBigInt())
+             } |
+             for (@insufficient <- insufficientCh) {
+             if (insufficient) {
               ret!({"status": "error", "error": "InsufficientVaultBalance", "balance": bal})
              } else {
               for (@bridgeVaultAddr <- bridgeVaultAddrCh) {
@@ -262,6 +268,7 @@ in {
                  }
                 }
               }
+             }
              }
             }
           }
