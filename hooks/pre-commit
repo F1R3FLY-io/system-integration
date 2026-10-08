@@ -87,7 +87,9 @@ fi
 
 # --- Ruff format auto-fix ---
 if [[ ${#py_files[@]} -gt 0 && "$SKIP_FORMAT" != "1" ]]; then
-    if command -v poetry &> /dev/null && poetry run ruff format --version &> /dev/null 2>&1; then
+    # Probe `ruff --version`: `ruff format` rejects --version, which made this
+    # check always fail and fall through to whatever `ruff` is on PATH.
+    if command -v poetry &> /dev/null && poetry run ruff --version &> /dev/null; then
         fmt_cmd="poetry run ruff format"
     elif command -v ruff &> /dev/null; then
         fmt_cmd="ruff format"

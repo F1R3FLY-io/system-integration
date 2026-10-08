@@ -126,8 +126,10 @@ Every node compose file sets the same two things:
   [docs/configuration.md](docs/configuration.md#logging-configuration) before leaving a shard
   running.
 - `logging: driver: json-file` with `max-size: 100m`, `max-file: "3"` — 300 MB
-  of stdout per container. The node's own file sink rotates hourly keeping 2
-  files, which is usually the binding limit.
+  of stdout per container. The mounted conf selects `sink = "stdout"`, so this
+  cap is the only log retention for Compose deployments. See
+  [docs/configuration.md](docs/configuration.md#logging-configuration) for the
+  sink each deployment uses.
 
 ---
 
