@@ -264,7 +264,11 @@ def test_bond_status_unknown(shared_shard) -> None:
 
 
 def test_balance_endpoint(shared_shard) -> None:
-    """GET /api/balance/{address} returns balance on readonly."""
+    """GET /api/balance/{address} returns balance on readonly.
+
+    The balance is a JSON int on nodes that hold Int balances and a decimal
+    string on nodes that hold BigInt balances (f1r3node-rust#497).
+    """
     ro = shared_shard.readonly
     v1_key = VALIDATOR1_ID.private_key()
     v1_address = v1_key.get_public_key().get_vault_address()
@@ -272,13 +276,16 @@ def test_balance_endpoint(shared_shard) -> None:
     result = ro.api_get(f"/balance/{v1_address}")
 
     assert result["address"] == v1_address
-    assert isinstance(result["balance"], int) and result["balance"] >= 0, (
-        f"balance should be non-negative int, got {result.get('balance')}"
-    )
+    raw_balance = result["balance"]
+    assert (isinstance(raw_balance, int) and not isinstance(raw_balance, bool)) or (
+        isinstance(raw_balance, str) and raw_balance.isdigit()
+    ), f"balance should be a non-negative int or decimal string, got {raw_balance!r}"
+    balance = int(raw_balance)
+    assert balance >= 0
     assert isinstance(result["blockNumber"], int) and result["blockNumber"] >= 0
     assert isinstance(result["blockHash"], str) and len(result["blockHash"]) > 0
 
-    logging.info("Balance for %s: %d", v1_address[:16], result["balance"])
+    logging.info("Balance for %s: %d", v1_address[:16], balance)
 
 
 # ===========================================================================
