@@ -49,7 +49,34 @@ logger = logging.getLogger(__name__)
 # (catching up, or shedding an exploratory-query overload). Distinct from
 # ``--rss-ceiling-mb``, which is the whole-run host-protection kill across every
 # node; this is one node's budget, asserted by the tests that stress it.
-OBSERVER_MEMORY_CEILING_MB = 1500
+#
+# Raised 1500 → 1800 after the File I/O FIP's FsGenesis composition landed on
+# F1R3FLY-io/f1r3node-rust ``dev`` (slice 5.36 in PR #660, 2026-10-07). That
+# slice adds ``fs_generator`` to ``Genesis::default_blessed_terms_with_timestamp``
+# so every observer that replays genesis now installs the composed FsGenesis
+# Rholang source — which wraps ~640 KB of library source (File.rho 427 KB,
+# Buffer.rho 56 KB, Dir.rho 44 KB, Stdin.rho 39 KB, Stream.rho 37 KB,
+# Fs.rho 23 KB, Stdout.rho 13 KB) into a single genesis deploy. The resulting
+# Par ASTs live in RSpace from the genesis block onwards; the observer's
+# steady-state RSS during an exploratory-overload burst picks up the
+# LMDB-mapped working set.
+#
+# Backing measurement (12 failing CI runs, test_observer_exploratory_overload_recovers
+# @ amd64-subprocess, 2026-10-07 → 2026-10-08):
+#
+#   n = 12   (10 merge_group + 2 push-to-dev)
+#   min  = 1507.88 MB
+#   max  = 1646.12 MB
+#   mean = 1576.04 MB
+#   stdev = 46.07 MB
+#   median = 1571.94 MB
+#
+# 1800 sits 154 MB (3.3σ) above the observed post-regression max — expected
+# flake rate near zero, while still catching a future ~150 MB observer-RSS
+# regression above this baseline. The underlying cost is irreducible for
+# consensus: every validator (including observers) must replay the FsGenesis
+# deploy identically.
+OBSERVER_MEMORY_CEILING_MB = 1800
 
 
 def sample_peak_memory_mb(node, stop, into: List[float], interval: float = 0.5) -> List[float]:
