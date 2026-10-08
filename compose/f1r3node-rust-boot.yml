@@ -1,0 +1,80 @@
+# =================================================================
+# F1R3FLY RUST NODE - BOOTSTRAP / CEREMONY MASTER, one node per host
+# =================================================================
+# Runs the genesis ceremony. NOT a validator: its key signs the ceremony and
+# must not appear in bonds.txt. Deploys sent here are accepted and never
+# included (f1r3node-rust#427).
+#
+#   docker compose --env-file ../.env.shard -f compose/f1r3node-rust-boot.yml up -d
+#
+# Start this host FIRST and alone. Its node id is generated with its TLS
+# certificate, so the other four hosts cannot be configured until it is up:
+#
+#   curl -s http://<this host>:40403/api/status | grep -o '"address":"[^"]*"'
+#
+# That address is the complete rnode:// string the other roles need.
+#
+# There is deliberately no --bootstrap: an empty bootstrap means the node
+# starts its peer table alone, which is what a ceremony master does.
+#
+# No TLS certificate mount. The node generates its identity into its volume on
+# first start. Back up node.certificate.pem and node.key.pem from the volume
+# afterwards and bind-mount them here to restore the identity if the volume is
+# ever lost, because this node id is published in every client's --bootstrap.
+#
+# Roles are separate files because compose interpolates every service in a
+# file, so a combined file would demand the validator keys this host must not
+# hold.
+
+name: f1r3fly-rust-boot
+
+services:
+  boot:
+    image: ${F1R3FLY_NODE_IMAGE:?F1R3FLY_NODE_IMAGE must be set - compose resolves :latest silently otherwise}
+    user: root
+    restart: always
+    container_name: rnode.bootstrap
+    command:
+      - run
+      - --host=${NODE_HOST:?NODE_HOST must be the address the other instances dial}
+      - --network-id=${SHARD_NETWORK_ID:?SHARD_NETWORK_ID must be set - it is what keeps nodes holding an older chain out}
+      - --validator-private-key=${CEREMONY_PRIVATE_KEY:?CEREMONY_PRIVATE_KEY must be set}
+      - --required-signatures
+      - "2"
+      - --ceremony-master-mode
+      - --heartbeat-disabled
+    ports:
+      - "40400:40400"
+      - "40401:40401"
+      # Privileged gRPC (propose, validator operations) - loopback only.
+      - "127.0.0.1:40402:40402"
+      - "40403:40403"
+      - "40404:40404"
+      # Admin HTTP (block-store inspection, internal diagnostics) - loopback only.
+      - "127.0.0.1:40405:40405"
+    volumes:
+      - boot-data:/var/lib/rnode
+      - ../conf/shard.conf:/var/lib/rnode/rnode.conf:z
+      - ${GENESIS_DIR:?GENESIS_DIR must be set - ../genesis is the test shard and its bonds.txt names committed keys}/wallets.txt:/var/lib/rnode/genesis/wallets.txt:z
+      - ${GENESIS_DIR:?GENESIS_DIR must be set}/bonds.txt:/var/lib/rnode/genesis/bonds.txt:z
+    environment:
+      - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
+      # Passed only when set. Setting it overrides conf/shard.conf's filter.
+      - RUST_LOG
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "3"
+    # Container liveness only. This does NOT detect finalization failure: the
+    # previous shard reported healthy for four days with every LFB frozen.
+    # scripts/shard-monitor.sh is what asserts the chain advances.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  boot-data:

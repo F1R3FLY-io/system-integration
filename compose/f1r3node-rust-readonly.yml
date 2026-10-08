@@ -1,0 +1,65 @@
+# =================================================================
+# F1R3FLY RUST NODE - READ-ONLY OBSERVER, one node per host
+# =================================================================
+# Serves client queries and exploratory deploys, which only a read-only node
+# answers. Holds no validator key and never proposes.
+#
+#   docker compose --env-file ../.env.shard -f compose/f1r3node-rust-readonly.yml up -d
+#
+# Distinct from compose/f1r3node-rust-observer.yml, which attaches an observer
+# to a shard sharing one Docker network and reaches peers by container name.
+#
+# Start only after the boot host is up and BOOTSTRAP_NODE_ID is known.
+#
+# Roles are separate files because compose interpolates every service in a
+# file, so a combined file would demand keys this host must not hold.
+
+name: f1r3fly-rust-readonly
+
+services:
+  readonly:
+    image: ${F1R3FLY_NODE_IMAGE:?F1R3FLY_NODE_IMAGE must be set - compose resolves :latest silently otherwise}
+    user: root
+    restart: always
+    container_name: rnode.readonly
+    command:
+      - run
+      - --host=${NODE_HOST:?NODE_HOST must be the address the other instances dial}
+      - --network-id=${SHARD_NETWORK_ID:?SHARD_NETWORK_ID must be set - it must match the rest of the shard exactly}
+      - --bootstrap=rnode://${BOOTSTRAP_NODE_ID:?BOOTSTRAP_NODE_ID must be set - read it from the boot host's /api/status address}@${BOOTSTRAP_HOST:?BOOTSTRAP_HOST must be set}?protocol=40400&discovery=40404
+      - --heartbeat-disabled
+    ports:
+      - "40400:40400"
+      - "40401:40401"
+      # Privileged gRPC (propose, validator operations) - loopback only.
+      - "127.0.0.1:40402:40402"
+      - "40403:40403"
+      - "40404:40404"
+      # Admin HTTP (block-store inspection, internal diagnostics) - loopback only.
+      - "127.0.0.1:40405:40405"
+    volumes:
+      - readonly-data:/var/lib/rnode
+      - ../conf/shard.conf:/var/lib/rnode/rnode.conf:z
+      - ${GENESIS_DIR:?GENESIS_DIR must be set - ../genesis is the test shard and its bonds.txt names committed keys}/wallets.txt:/var/lib/rnode/genesis/wallets.txt:z
+      - ${GENESIS_DIR:?GENESIS_DIR must be set}/bonds.txt:/var/lib/rnode/genesis/bonds.txt:z
+    environment:
+      - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
+      # Passed only when set. Setting it overrides conf/shard.conf's filter.
+      - RUST_LOG
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "3"
+    # Container liveness only. This does NOT detect finalization failure: the
+    # previous shard reported healthy for four days with every LFB frozen.
+    # scripts/shard-monitor.sh is what asserts the chain advances.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:40403/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  readonly-data:
