@@ -1,0 +1,29 @@
+new rl(`rho:registry:lookup`),
+    stdout(`rho:io:stdout`),
+    agentsTeamsCh
+in {
+    stdout!("=== DEBUG: Looking up agents_teams contract ===") |
+
+    rl!(`rho:id:qsd4ygzo961c5ebhpxf1b1ys33mjhghz5945iyc9d19ngh377cd3bt`, *agentsTeamsCh) |
+
+    for(@Nil <- agentsTeamsCh) {
+        stdout!("DEBUG: Registry returned Nil - contract not found!")
+    } |
+
+    for(@(version, agentsTeams) <- agentsTeamsCh) {
+        stdout!(["DEBUG: Got contract, version =", version]) |
+
+        // Try to call create
+        stdout!("DEBUG: Calling agentsTeams create...") |
+        @agentsTeams!("create", "debug-test-id", "debug-test-ver", 1774500000, "Debug Team", "Testing treeHashMapCh", Nil, Nil, Nil) |
+
+        // Also try to call list to see if that works
+        new listRet in {
+            stdout!("DEBUG: Calling agentsTeams list...") |
+            @agentsTeams!("list", "1111AtahZeefej4tvVR6ti9TJtv8yxLebT31SCEVDCKMNikBk5r3g", *listRet) |
+            for(@result <- listRet) {
+                stdout!(["DEBUG: list returned", result.length(), "teams"])
+            }
+        }
+    }
+}
