@@ -86,6 +86,10 @@ mkdir -p "$SUPPRESS_DIR" 2>/dev/null || SUPPRESS_DIR="$STATE_DIR"
 NOW=$(date -u +%s)
 NOW_MS=$((NOW * 1000))
 FAILED=no
+# A real newline, not the two characters backslash-n. post() converts real
+# newlines into the JSON escape; a literal backslash-n would be escaped again
+# and arrive in Discord as visible text.
+NL=$'\n'
 DIGEST=""
 
 # --- delivery ---------------------------------------------------------------
@@ -189,7 +193,7 @@ if [ -n "$C" ]; then
   [ -n "${anon:-}" ] && signal container_anon_high \
     "$([ "$anon" -ge "$CONTAINER_ANON_WARN_MB" ] 2>/dev/null && echo yes || echo no)" \
     "$C anon memory ${anon}MB on $(hostname); a restart is the only reclaim"
-  DIGEST="$DIGEST\n- $(hostname): $C $st/$hl, CPU ${cpu:-?}%, anon ${anon:-?}MB, restarts ${rc:-?}"
+  DIGEST="$DIGEST$NL- $(hostname): $C $st/$hl, CPU ${cpu:-?}%, anon ${anon:-?}MB, restarts ${rc:-?}"
 fi
 
 disk=$(df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9')
@@ -198,7 +202,7 @@ signal disk_low "$([ -n "$disk" ] && [ "$disk" -ge "$DISK_WARN_PCT" ] 2>/dev/nul
 memav=$(free -m 2>/dev/null | awk '/^Mem:/{print $7}')
 signal host_mem_low "$([ -n "$memav" ] && [ "$memav" -lt "$MEM_AVAIL_WARN_MB" ] 2>/dev/null && echo yes || echo no)" \
   "host memory ${memav}MB available at $(hostname)"
-DIGEST="$DIGEST\n- $(hostname): disk ${disk:-?}%, mem ${memav:-?}MB available"
+DIGEST="$DIGEST$NL- $(hostname): disk ${disk:-?}%, mem ${memav:-?}MB available"
 
 # --- chain checks -----------------------------------------------------------
 if [ "$CHAIN" = 1 ]; then
@@ -242,7 +246,7 @@ if [ "$CHAIN" = 1 ]; then
 
     names+=("$n"); lfbs+=("$lfb"); gaps+=("$gap")
     if [ -z "$max_lfb" ] || [ "$lfb" -gt "$max_lfb" ]; then max_lfb="$lfb"; fi
-    DIGEST="$DIGEST\n- $n: finalized $lfb, tip ${tip:-?}, gap $gap, in-flight ${inf:-?}"
+    DIGEST="$DIGEST$NL- $n: finalized $lfb, tip ${tip:-?}, gap $gap, in-flight ${inf:-?}"
   done
 
   signal nodes_unreachable "$(yn ${#down[@]})"  "unreachable: ${down[*]:-}"
@@ -274,7 +278,7 @@ if [ "$CHAIN" = 1 ]; then
       age=$(( (NOW_MS - newest) / 1000 )); [ "$age" -lt 0 ] && age=0
       signal no_recent_block "$([ "$age" -ge "$NO_BLOCK_SECS" ] && echo yes || echo no)" \
         "newest block anywhere is ${age}s old"
-      DIGEST="$DIGEST\n- chain: finalized $max_lfb, newest block ${age}s ago"
+      DIGEST="$DIGEST$NL- chain: finalized $max_lfb, newest block ${age}s ago"
     fi
   else
     signal all_nodes_down yes "no node answered /api/status"
@@ -284,7 +288,8 @@ fi
 # --- nightly digest ---------------------------------------------------------
 if [ "$NIGHTLY" = 1 ]; then
   v=HEALTHY; [ "$FAILED" = yes ] && v=DEGRADED
-  post "**Nightly: $SHARD_NAME — $v**$DIGEST\n_$(date -u '+%Y-%m-%d %H:%M:%S UTC')_"
+  # Braces are required: $NL_ would parse as the variable NL_ and abort under set -u.
+  post "**Nightly: $SHARD_NAME — $v**$DIGEST${NL}_$(date -u '+%Y-%m-%d %H:%M:%S UTC')_"
   exit 0
 fi
 
