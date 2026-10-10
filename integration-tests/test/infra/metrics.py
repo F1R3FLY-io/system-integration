@@ -590,6 +590,44 @@ class DeployResult:
     finalization_time: Optional[float] = None
 
 
+@dataclasses.dataclass
+class UnfinalizedDeploy:
+    """Diagnostics for one deploy that did not finalize in its phase.
+
+    ``block_number`` is None when no sweep observed a containing block,
+    and 0 when one was observed but its number lookup failed.
+    ``outcome`` is the terminal state name (FAILED/EXPIRED) or
+    ``"timed out"`` when the deploy was still pending at the deadline.
+    """
+
+    deploy_id: str
+    submit_time: float
+    block_number: Optional[int]
+    included_at: Optional[float]
+    outcome: str
+
+    @property
+    def category(self) -> str:
+        # Terminal wins over inclusion: a FAILED deploy can still have
+        # a containing block, and the node has already declared it dead.
+        if self.outcome != "timed out":
+            return "terminal"
+        if self.block_number is not None:
+            return "included_not_finalized"
+        return "not_included"
+
+
+UNFINALIZED_CATEGORIES = ("not_included", "included_not_finalized", "terminal")
+
+
+def summarize_unfinalized(entries: List[UnfinalizedDeploy]) -> Dict[str, int]:
+    """Count unfinalized deploys per category (every category present)."""
+    counts = {c: 0 for c in UNFINALIZED_CATEGORIES}
+    for entry in entries:
+        counts[entry.category] += 1
+    return counts
+
+
 class LifecycleTracker:
     """Tracks deploy inclusion and finalization with one batch-poll thread.
 
@@ -933,6 +971,31 @@ class LifecycleTracker:
                     )
                 )
         return results
+
+    def get_unfinalized(self) -> List[UnfinalizedDeploy]:
+        """Return every tracked, non-finalized deploy, oldest submit first.
+
+        Separates the cases ``get_results`` folds together as
+        unfinalized: never included, included but not finalized by the
+        deadline, and terminal (FAILED/EXPIRED).
+        """
+        entries = []
+        with self._lock:
+            for deploy_id, record in self._records.items():
+                if deploy_id in self._finalization:
+                    continue
+                inc = self._inclusion.get(deploy_id)
+                entries.append(
+                    UnfinalizedDeploy(
+                        deploy_id=deploy_id,
+                        submit_time=record.submit_time,
+                        block_number=inc[0] if inc else None,
+                        included_at=inc[1] if inc else None,
+                        outcome=self._terminal.get(deploy_id, "timed out"),
+                    )
+                )
+        entries.sort(key=lambda e: e.submit_time)
+        return entries
 
     def clear(self):
         """Clear all tracked records for a new phase."""
