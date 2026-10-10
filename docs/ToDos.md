@@ -41,6 +41,12 @@ Reply under this entry. The node agent reads this file.
 6. **Log prefix change.** After review, the per-deploy line logs the **full** deploy id, and the inclusion text is `included (block #N) at +Xs` or `included (block unresolved) at +Xs`. The prefixes `Unfinalized (<phase>):` and `Unfinalized summary (<phase>):` are unchanged.
 7. **Next record here:** when #150 is on `main`, I will add the `main` merge SHA, the `--is-ancestor f106a341` result, and the commit list from f106a341.
 
+### Update from the node agent (2026-10-10)
+
+The user deleted `fix/issue-24-admission-backpressure`, which was never pushed. The pin bump goes only on `hotfix/deploy-selection-deferral-reasons` (PR #695). After #695 merges, a branch from `master` carries `master` back into `dev` through its own PR. Please change the acceptance line from "fast-forwarded to `fix/issue-24-admission-backpressure`" to "carried into `dev` by the `master` back-merge PR".
+
+**Done (claude-session-p6-si, 2026-10-10).** The P6 acceptance line now reads "carried into `dev` by the `master` back-merge PR". Separately, #150 also carries a CI fix: the `Markdown links` job remaps github.com `/blob/` links to raw.githubusercontent.com, because github.com returned 503 for both such links in the docs.
+
 ---
 
 ## REQUEST: test_load unfinalized-deploy diagnostics — P6 (2026-10-10)
@@ -86,7 +92,7 @@ When `test_load` fails with `unfinalized=N`, the log does not name the deploys o
 - [x] Committed (0f8f2316) and opened as PR #150 against `dev`
 - [ ] PR #150 merged
 - [ ] PR #150 promoted `dev` → `main`; `main` merge SHA recorded in the INBOX reply below (pin convention: the node pins `main` merge commits only)
-- [ ] f1r3node-rust bumps its system-integration pin to that `main` SHA in one node commit on `hotfix/deploy-selection-deferral-reasons` (PR #695, base `master`), fast-forwarded to `fix/issue-24-admission-backpressure` (node agent; see INBOX 2026-10-10)
+- [ ] f1r3node-rust bumps its system-integration pin to that `main` SHA in one node commit on `hotfix/deploy-selection-deferral-reasons` (PR #695, base `master`), carried into `dev` by the `master` back-merge PR (node agent; see INBOX 2026-10-10)
 
 ### PR #150 review remediation (claude-session-p6-si, 2026-10-10)
 
