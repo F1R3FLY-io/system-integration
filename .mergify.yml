@@ -18,3 +18,13 @@ queue_rules:
     queue_conditions:
       - 'title ~= ^(\[agent\] )?(chore|ci|build|style|refactor|test|perf)(\(.+\))?!?:'
   - name: default
+
+# `dev` is the head of every dev->main promotion PR, so it must never be deleted.
+pull_request_rules:
+  - name: Delete the head branch after merge
+    conditions:
+      - merged
+      - head != dev
+      - head != main
+    actions:
+      delete_head_branch: {}
