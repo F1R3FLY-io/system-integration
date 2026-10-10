@@ -18,7 +18,7 @@ priority: p2
 base_branch: dev
 base_revision: 569ee55d
 branch: feat/test-load-unfinalized-diagnostics
-proposed_pr_title: "feat(test_load): per-deploy diagnostics for unfinalized deploys"
+pr: 150  # https://github.com/F1R3FLY-io/system-integration/pull/150, base dev
 claimed_by: claude-session-p6-si
 claimed_at: 2026-10-10T00:00:00Z
 blocked_by: []
@@ -31,21 +31,33 @@ downstream: f1r3node-rust pins system-integration for the soak (f106a34 today); 
 
 When `test_load` fails with `unfinalized=N`, the log does not name the deploys or say why each one did not finalize. `get_results` counts terminal deploys (FAILED/EXPIRED) as unfinalized, so the 2026-10-10 local run (high phase, 4 unfinalized) could not tell late inclusion from late finalization or from a terminal state.
 
-### Change (implemented, uncommitted)
+### Change (PR #150)
 
 - `integration-tests/test/infra/metrics.py`: `UnfinalizedDeploy` dataclass (deploy id, submit time, inclusion block number + time or none, outcome = FAILED/EXPIRED or `timed out`, `category` property), `LifecycleTracker.get_unfinalized()`, and `summarize_unfinalized()`. Terminal wins over inclusion; a block number of 0 means the deploy was included but the block-number lookup failed, and it counts as included.
-- `integration-tests/test/tests/custom/test_load.py`: `_log_unfinalized()` runs after the existing `Phase %s: … unfinalized=%d` line. It logs one `Unfinalized (<phase>): …` line per deploy and one `Unfinalized summary (<phase>): not_included=… included_not_finalized=… terminal=…` line. It logs nothing when the phase finalized everything. Existing lines and the pass/fail verdict are unchanged.
+- `integration-tests/test/tests/custom/test_load.py`: `_log_unfinalized()` runs after the existing `Phase %s: … unfinalized=%d` line. It logs one `Unfinalized (<phase>): …` line per deploy, with the full deploy id, and one `Unfinalized summary (<phase>): not_included=… included_not_finalized=… terminal=…` line. It logs nothing when the phase finalized everything. Existing lines and the pass/fail verdict are unchanged.
 - `unit-tests/test_lifecycle_tracker.py`: `UnfinalizedDiagnosticsSeparateTheCauses` (6 tests, stub node, no shard).
 
 ### Acceptance criteria
 
-- [x] Every unfinalized deploy is logged with id, submit time, inclusion (block + time, or `not included`), and outcome
+- [x] Every unfinalized deploy is logged with full id, submit time, inclusion (block + time, or `not included`), and outcome
 - [x] Each phase logs a summary with not_included / included_not_finalized / terminal counts
 - [x] Count of `get_unfinalized()` equals the `unfinalized` count derived from `get_results()` (unit-tested)
 - [x] Existing log lines and assertions unchanged
 - [x] Unit tests pass without a node (`unit-tests/`: 364 passed), ruff 0.16.0 (locked) lint + format clean
-- [ ] Committed via `/quick-commit`, PR to `dev` (waiting on the user)
+- [x] Committed (0f8f2316) and opened as PR #150 against `dev`
+- [ ] PR #150 merged
 - [ ] f1r3node-rust bumps its system-integration pin after merge (node agent, next node PR from dev)
+
+### PR #150 review remediation (claude-session-p6-si, 2026-10-10)
+
+The multi-agent review (openai, openrouter, xai; anthropic and bedrock abstained) posted PROVIDE FEEDBACK with no blocking issues. Applied:
+
+- Log the full deploy id instead of the first 16 characters, so the line can be searched in node logs.
+- Guard `included_at` being None in `_log_unfinalized` (major from openrouter and xai). This cannot happen with the current tracker, because block number and time come from one tuple, so the guard is defensive only.
+- Inclusion text is now `included (block #N) at +Xs`, which matches `included (block unresolved) at +Xs`.
+- This entry now points at PR #150 (stale "uncommitted" wording reported by openai).
+
+Not applied: replacing the 0 sentinel, building the list outside the lock, and UTC timestamps. These follow existing tracker conventions or are not significant at test_load scale.
 
 ---
 

@@ -279,17 +279,16 @@ def _log_unfinalized(phase_name, tracker):
     for e in entries:
         if e.block_number is None:
             inclusion = "not included"
-        elif e.block_number == 0:
-            inclusion = "included (block unresolved) at +%.1fs" % (e.included_at - e.submit_time)
         else:
-            inclusion = "included in block #%d at +%.1fs" % (
-                e.block_number,
-                e.included_at - e.submit_time,
-            )
+            block = "block unresolved" if e.block_number == 0 else "block #%d" % e.block_number
+            # Defensive: diagnostics must never raise into the phase loop.
+            offset = "" if e.included_at is None else " at +%.1fs" % (e.included_at - e.submit_time)
+            inclusion = "included (%s)%s" % (block, offset)
         logging.info(
             "  Unfinalized (%s): deploy=%s submitted=%s %s, outcome=%s",
             phase_name,
-            e.deploy_id[:16],
+            # Full id: the point of this line is to grep it in node logs.
+            e.deploy_id,
             time.strftime("%H:%M:%S", time.localtime(e.submit_time)),
             inclusion,
             e.outcome,
