@@ -47,6 +47,26 @@ The user deleted `fix/issue-24-admission-backpressure`, which was never pushed. 
 
 **Done (claude-session-p6-si, 2026-10-10).** The P6 acceptance line now reads "carried into `dev` by the `master` back-merge PR". Separately, #150 also carries a CI fix: the `Markdown links` job remaps github.com `/blob/` links to raw.githubusercontent.com, because github.com returned 503 for both such links in the docs.
 
+### Pin target (claude-session-p6-si, 2026-10-10)
+
+#150 is on `main`. This answers request 3.
+
+- **`main` merge SHA: `37e8c846`** (merge of PR #151, `dev` → `main`). #150 merged into `dev` as c19229b6 at 2026-10-10T15:00:36Z.
+- `git merge-base --is-ancestor f106a341 37e8c846` → **yes**. `c19229b6` is also an ancestor.
+- `origin/main..origin/dev` is empty after the promotion.
+- Non-merge commits `f106a341..37e8c846` (newest first):
+  - 2b707340 ci(links): check github.com blob links on raw.githubusercontent.com (CI only)
+  - 057cb936 docs(todos): PR #150 pin plan (docs only)
+  - 019beb43 fix(test_load): log full deploy ids and guard missing inclusion time (#150)
+  - 0f8f2316 feat(test_load): log each unfinalized deploy and its cause (#150)
+  - 15b6ada3 chore(deps): pin pyf1r3fly to the merged BigInt decode commit (**can change soak behavior**)
+  - a1c850b9 fix(tests): accept BigInt vault balances
+  - 2dca1f08, e7163d57, 0659df9d docs(todos) only
+  - 5ac5280c test(logging): compose sink guard (unit test only)
+  - 39e77252 fix(logging): one node log sink per deployment (**can change soak behavior**)
+
+`metrics.py` at 37e8c846 is the same as in the #150 tree that you checked, so `extend-issue24-metrics.sh` applies. The pin bump on PR #695 is yours.
+
 ---
 
 ## REQUEST: test_load unfinalized-deploy diagnostics — P6 (2026-10-10)
@@ -68,7 +88,7 @@ claimed_by: claude-session-p6-si
 claimed_at: 2026-10-10T00:00:00Z
 blocked_by: []
 upstream_task: f1r3node-rust PR #695 / issue #24
-downstream: f1r3node-rust pins system-integration for the soak (f106a34 today); needs a pin bump in the next node PR from dev
+downstream: f1r3node-rust pins system-integration for the soak (f106a34 today); pin bump to 37e8c846 on PR #695 (node agent)
 ---
 ```
 
@@ -90,8 +110,8 @@ When `test_load` fails with `unfinalized=N`, the log does not name the deploys o
 - [x] Existing log lines and assertions unchanged
 - [x] Unit tests pass without a node (`unit-tests/`: 364 passed), ruff 0.16.0 (locked) lint + format clean
 - [x] Committed (0f8f2316) and opened as PR #150 against `dev`
-- [ ] PR #150 merged
-- [ ] PR #150 promoted `dev` → `main`; `main` merge SHA recorded in the INBOX reply below (pin convention: the node pins `main` merge commits only)
+- [x] PR #150 merged into `dev` (c19229b6, 2026-10-10)
+- [x] PR #150 promoted `dev` → `main` by PR #151 (37e8c846); `main` merge SHA recorded in the INBOX reply below (pin convention: the node pins `main` merge commits only)
 - [ ] f1r3node-rust bumps its system-integration pin to that `main` SHA in one node commit on `hotfix/deploy-selection-deferral-reasons` (PR #695, base `master`), carried into `dev` by the `master` back-merge PR (node agent; see INBOX 2026-10-10)
 
 ### PR #150 review remediation (claude-session-p6-si, 2026-10-10)
