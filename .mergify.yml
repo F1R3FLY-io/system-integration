@@ -1,4 +1,20 @@
+# Merge queues. Mergify queues a PR in the first rule whose
+# queue_conditions match, so the catch-all `default` stays last.
+# The `[agent] ` title prefix is optional; scopes like `feat(test_load):` match.
 queue_rules:
   - name: Large File Change
-    merge_conditions:
+    queue_conditions:
       - "#added-files > 11"
+  - name: feature
+    queue_conditions:
+      - 'title ~= ^(\[agent\] )?feat(\(.+\))?!?:'
+  - name: fix
+    queue_conditions:
+      - 'title ~= ^(\[agent\] )?fix(\(.+\))?!?:'
+  - name: docs
+    queue_conditions:
+      - 'title ~= ^(\[agent\] )?docs(\(.+\))?!?:'
+  - name: chore
+    queue_conditions:
+      - 'title ~= ^(\[agent\] )?(chore|ci|build|style|refactor|test|perf)(\(.+\))?!?:'
+  - name: default
