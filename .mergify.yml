@@ -1,0 +1,4 @@
+queue_rules:
+  - name: Large File Change
+    merge_conditions:
+      - "#added-files > 11"
