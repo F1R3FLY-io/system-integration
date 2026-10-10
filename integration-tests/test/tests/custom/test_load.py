@@ -52,6 +52,7 @@ from ...infra.metrics import (
     format_node_metrics,
     percentiles,
     scrape_metrics,
+    summarize_unfinalized,
 )
 from ...infra.polling import (
     lfb_number,
@@ -263,6 +264,44 @@ def _run_phase(nodes, tracker, phase, start_index, monitor=None):
         phase_duration = time.time() - phase_start
 
     return deploy_count, errors, phase_duration
+
+
+def _log_unfinalized(phase_name, tracker):
+    """Log each unfinalized deploy and a per-category summary.
+
+    Diagnostics only — adds new lines after the phase line the soak
+    parsers read, and never affects the verdict. Silent when the phase
+    finalized everything.
+    """
+    entries = tracker.get_unfinalized()
+    if not entries:
+        return
+    for e in entries:
+        if e.block_number is None:
+            inclusion = "not included"
+        elif e.block_number == 0:
+            inclusion = "included (block unresolved) at +%.1fs" % (e.included_at - e.submit_time)
+        else:
+            inclusion = "included in block #%d at +%.1fs" % (
+                e.block_number,
+                e.included_at - e.submit_time,
+            )
+        logging.info(
+            "  Unfinalized (%s): deploy=%s submitted=%s %s, outcome=%s",
+            phase_name,
+            e.deploy_id[:16],
+            time.strftime("%H:%M:%S", time.localtime(e.submit_time)),
+            inclusion,
+            e.outcome,
+        )
+    counts = summarize_unfinalized(entries)
+    logging.info(
+        "  Unfinalized summary (%s): not_included=%d included_not_finalized=%d terminal=%d",
+        phase_name,
+        counts["not_included"],
+        counts["included_not_finalized"],
+        counts["terminal"],
+    )
 
 
 def _format_report(reports):
@@ -490,6 +529,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
                     lfb_rate,
                     unfinalized,
                 )
+                _log_unfinalized(phase_name, tracker)
                 for v_name, m in node_metrics_by_validator.items():
                     if m:
                         logging.info("  Node internals (%s):\n%s", v_name, format_node_metrics(m))

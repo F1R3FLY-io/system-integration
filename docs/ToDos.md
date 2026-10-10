@@ -4,6 +4,51 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## REQUEST: test_load unfinalized-deploy diagnostics — P6 (2026-10-10)
+
+<!-- claude-session-p6-si in system-integration, from the f1r3node-rust
+     agent's handoff (follow-on to f1r3node-rust PR #695 and issue #24). -->
+
+```yaml
+---
+id: SI-TASK-P6-UNFINALIZED-DIAGNOSTICS
+title: "Name each unfinalized test_load deploy and why it did not finalize"
+status: review
+priority: p2
+base_branch: dev
+base_revision: 569ee55d
+branch: feat/test-load-unfinalized-diagnostics
+proposed_pr_title: "feat(test_load): per-deploy diagnostics for unfinalized deploys"
+claimed_by: claude-session-p6-si
+claimed_at: 2026-10-10T00:00:00Z
+blocked_by: []
+upstream_task: f1r3node-rust PR #695 / issue #24
+downstream: f1r3node-rust pins system-integration for the soak (f106a34 today); needs a pin bump in the next node PR from dev
+---
+```
+
+### What happens
+
+When `test_load` fails with `unfinalized=N`, the log does not name the deploys or say why each one did not finalize. `get_results` counts terminal deploys (FAILED/EXPIRED) as unfinalized, so the 2026-10-10 local run (high phase, 4 unfinalized) could not tell late inclusion from late finalization or from a terminal state.
+
+### Change (implemented, uncommitted)
+
+- `integration-tests/test/infra/metrics.py`: `UnfinalizedDeploy` dataclass (deploy id, submit time, inclusion block number + time or none, outcome = FAILED/EXPIRED or `timed out`, `category` property), `LifecycleTracker.get_unfinalized()`, and `summarize_unfinalized()`. Terminal wins over inclusion; a block number of 0 means the deploy was included but the block-number lookup failed, and it counts as included.
+- `integration-tests/test/tests/custom/test_load.py`: `_log_unfinalized()` runs after the existing `Phase %s: … unfinalized=%d` line. It logs one `Unfinalized (<phase>): …` line per deploy and one `Unfinalized summary (<phase>): not_included=… included_not_finalized=… terminal=…` line. It logs nothing when the phase finalized everything. Existing lines and the pass/fail verdict are unchanged.
+- `unit-tests/test_lifecycle_tracker.py`: `UnfinalizedDiagnosticsSeparateTheCauses` (6 tests, stub node, no shard).
+
+### Acceptance criteria
+
+- [x] Every unfinalized deploy is logged with id, submit time, inclusion (block + time, or `not included`), and outcome
+- [x] Each phase logs a summary with not_included / included_not_finalized / terminal counts
+- [x] Count of `get_unfinalized()` equals the `unfinalized` count derived from `get_results()` (unit-tested)
+- [x] Existing log lines and assertions unchanged
+- [x] Unit tests pass without a node (`unit-tests/`: 364 passed), ruff 0.16.0 (locked) lint + format clean
+- [ ] Committed via `/quick-commit`, PR to `dev` (waiting on the user)
+- [ ] f1r3node-rust bumps its system-integration pin after merge (node agent, next node PR from dev)
+
+---
+
 ## REQUEST: one node log sink per deployment — TASK-020-3 (2026-09-30)
 
 <!-- claude-session-f3cbc961 in f1r3node-rust, handing off to the
