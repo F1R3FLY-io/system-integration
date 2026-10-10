@@ -163,8 +163,12 @@ jobs:
           # Only top-level + framework docs; skip session notes / plans / service subrepos.
           # `--exclude-path` filters input files; `--exclude` filters resolved URLs
           # (needed for file:// links into services/ that aren't checked out in CI).
+          # `--remap` checks github.com /blob/ links on raw.githubusercontent.com:
+          # github.com answers scripted GETs of /blob/ pages with 503 (a token does
+          # not help), and a missing file still fails there with 404.
           args: >-
             --no-progress
+            --remap '^https://github\.com/([^/]+)/([^/]+)/blob/(.+)$ https://raw.githubusercontent.com/$1/$2/$3'
             --exclude-path 'services/**'
             --exclude-path 'docs/session-context-*'
             --exclude-path 'docs/integration-test-framework-plan.md'

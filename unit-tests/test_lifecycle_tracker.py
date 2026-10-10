@@ -257,5 +257,80 @@ class EnrichmentIsPooledPerUniqueBlock(unittest.TestCase):
         self.assertEqual(sum(1 for r in results if r.finalization_time is not None), 40)
 
 
+class UnfinalizedDiagnosticsSeparateTheCauses(unittest.TestCase):
+    """get_unfinalized splits what get_results folds into one count:
+    never included, included but not finalized, and terminal."""
+
+    def _mixed(self, **node_kwargs):
+        statuses = {
+            "fin": _Status(DEPLOY_STATE_FINALIZED, HASH_A),
+            "late": _Status(DEPLOY_STATE_PENDING, HASH_A),
+            "lost": _Status(DEPLOY_STATE_PENDING),
+            "dead": _Status(DEPLOY_STATE_FAILED, HASH_B),
+            "old": _Status(DEPLOY_STATE_EXPIRED),
+        }
+        tracker, node, client = _tracker_with(statuses, **node_kwargs)
+        _run_cycle(tracker, node, client)
+        return tracker
+
+    def test_each_unfinalized_deploy_carries_its_cause(self):
+        tracker = self._mixed()
+        by_id = {e.deploy_id: e for e in tracker.get_unfinalized()}
+        self.assertNotIn("fin", by_id)
+        self.assertEqual(set(by_id), {"late", "lost", "dead", "old"})
+
+        self.assertEqual(by_id["late"].block_number, 7)
+        self.assertIsNotNone(by_id["late"].included_at)
+        self.assertEqual(by_id["late"].outcome, "timed out")
+        self.assertEqual(by_id["late"].category, "included_not_finalized")
+
+        self.assertIsNone(by_id["lost"].block_number)
+        self.assertIsNone(by_id["lost"].included_at)
+        self.assertEqual(by_id["lost"].outcome, "timed out")
+        self.assertEqual(by_id["lost"].category, "not_included")
+
+        # Terminal wins even when a containing block was observed.
+        self.assertEqual(by_id["dead"].block_number, 7)
+        self.assertEqual(by_id["dead"].outcome, "FAILED")
+        self.assertEqual(by_id["dead"].category, "terminal")
+        self.assertEqual(by_id["old"].outcome, "EXPIRED")
+        self.assertEqual(by_id["old"].category, "terminal")
+
+    def test_count_matches_get_results_unfinalized(self):
+        tracker = self._mixed()
+        unfinalized = sum(1 for r in tracker.get_results() if r.finalization_time is None)
+        self.assertEqual(len(tracker.get_unfinalized()), unfinalized)
+
+    def test_summary_counts_every_category(self):
+        tracker = self._mixed()
+        self.assertEqual(
+            metrics.summarize_unfinalized(tracker.get_unfinalized()),
+            {"not_included": 1, "included_not_finalized": 1, "terminal": 2},
+        )
+        self.assertEqual(
+            metrics.summarize_unfinalized([]),
+            {"not_included": 0, "included_not_finalized": 0, "terminal": 0},
+        )
+
+    def test_failed_block_lookup_still_counts_as_included(self):
+        tracker = self._mixed(fail_lookups=True)
+        by_id = {e.deploy_id: e for e in tracker.get_unfinalized()}
+        self.assertEqual(by_id["late"].block_number, 0)
+        self.assertEqual(by_id["late"].category, "included_not_finalized")
+
+    def test_ordered_by_submit_time(self):
+        tracker = metrics.LifecycleTracker({})
+        for deploy_id, submitted in (("b", 2.0), ("c", 3.0), ("a", 1.0)):
+            record = _record(deploy_id)
+            record.submit_time = submitted
+            tracker.track_deploy(record)
+        self.assertEqual([e.deploy_id for e in tracker.get_unfinalized()], ["a", "b", "c"])
+
+    def test_clear_empties_the_diagnostics(self):
+        tracker = self._mixed()
+        tracker.clear()
+        self.assertEqual(tracker.get_unfinalized(), [])
+
+
 if __name__ == "__main__":
     unittest.main()
