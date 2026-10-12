@@ -558,8 +558,16 @@ def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
         # Transfers: omitted on validators (block replay unavailable),
         # present as list on readonly
         if node == shared_shard.readonly:
-            assert "transfers" in detail, (
-                f"{node.name} (readonly): transfers field should be present"
+
+            def _transfers_present(n=node):
+                polled = n.api_get(f"/deploy/{deploy_id}")
+                return polled if "transfers" in polled else None
+
+            detail = poll_until(
+                predicate=_transfers_present,
+                timeout=timeouts.finalization,
+                interval=2.0,
+                description=f"transfers on {node.name} deploy detail",
             )
             assert isinstance(detail["transfers"], list), (
                 f"{node.name} (readonly): transfers should be a list"
@@ -916,9 +924,20 @@ def test_transfers_null_on_validator_http(shared_shard, timeouts) -> None:
         )
 
     # Readonly: transfers should be present as list
-    ro_block = ro.api_get(f"/block/{block_hash}")
-    for deploy in ro_block.get("deploys", []):
-        assert "transfers" in deploy, "readonly: deploy should have transfers field"
+    def _transfers_present():
+        block = ro.api_get(f"/block/{block_hash}")
+        deploys = block.get("deploys", [])
+        if deploys and all("transfers" in deploy for deploy in deploys):
+            return block
+        return None
+
+    ro_block = poll_until(
+        predicate=_transfers_present,
+        timeout=timeouts.finalization,
+        interval=2.0,
+        description=f"transfers on {ro.name} block read",
+    )
+    for deploy in ro_block["deploys"]:
         assert isinstance(deploy["transfers"], list), "readonly: transfers should be a list"
 
     logging.info("Transfer null/populated behavior verified: validator=null, readonly=list")
