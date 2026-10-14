@@ -344,7 +344,7 @@ def _attach_prebond(shard, identity, timeouts):
     before it is bonded. Sub-steps (retired ``_bond_lifecycle`` 1-2):
       1.  pre-bond: joiner not yet in bonds map
       1b. attach node + LFS-sync to current LFB
-      2.  joiner cannot propose pre-bond
+      2.  joiner cannot accept deploys or propose pre-bond
 
     Returns the attached joiner ``Node``.
     """
@@ -360,13 +360,14 @@ def _attach_prebond(shard, identity, timeouts):
         joiner, current_lfb.blockInfo.blockHash, timeout=timeouts.finalization * 3
     )
 
-    joiner.deploy_string(
-        f'@"pre-bond-{identity.name}"!(0)',
-        identity.private_key(),
-        phlo_limit=_BOND_PHLO_LIMIT,
-        phlo_price=_BOND_PHLO_PRICE,
-    )
-    with pytest.raises(F1r3flyClientException):
+    with pytest.raises(F1r3flyClientException, match="validator is not bonded"):
+        joiner.deploy_string(
+            f'@"pre-bond-{identity.name}"!(0)',
+            identity.private_key(),
+            phlo_limit=_BOND_PHLO_LIMIT,
+            phlo_price=_BOND_PHLO_PRICE,
+        )
+    with pytest.raises(F1r3flyClientException, match="validator is not bonded"):
         joiner.propose()
     return joiner
 
