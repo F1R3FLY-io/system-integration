@@ -318,7 +318,7 @@ def _bond_lifecycle(
 
     Phases:
       1. Pre-bond state — confirm joiner not in current bonds map.
-      2. Joiner cannot propose pre-bond.
+      2. Joiner rejects deploys and cannot propose pre-bond.
       3. Bond deploy on `proposer_node` signed by `joiner_identity`.
       4. Bond block finalizes; ledger contains the bonded joiner.
       5. LFB advances past activation; active bonds include the joiner.
@@ -362,16 +362,17 @@ def _bond_lifecycle(
         timeout=timeouts.finalization * 3,
     )
 
-    # ── Phase 2: joiner cannot propose pre-bond ──────────────────
-    joiner.deploy_string(
-        f'@"pre-bond-{joiner_identity.name}"!(0)',
-        joiner_identity.private_key(),
-        phlo_limit=100_000_000,
-        phlo_price=1,
-    )
-    with pytest.raises(F1r3flyClientException):
+    # ── Phase 2: joiner cannot accept deploys or propose pre-bond ──
+    with pytest.raises(F1r3flyClientException, match="validator is not bonded"):
+        joiner.deploy_string(
+            f'@"pre-bond-{joiner_identity.name}"!(0)',
+            joiner_identity.private_key(),
+            phlo_limit=100_000_000,
+            phlo_price=1,
+        )
+    with pytest.raises(F1r3flyClientException, match="validator is not bonded"):
         joiner.propose()
-    logging.info("Joiner %s correctly rejected on propose pre-bond", joiner_identity.name)
+    logging.info("Joiner %s correctly rejected deploy and propose pre-bond", joiner_identity.name)
 
     # ── Phase 3: bond deploy ─────────────────────────────────────
     bond_deploy_id = proposer_node.deploy_rho_file(
