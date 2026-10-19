@@ -344,7 +344,7 @@ def _attach_prebond(shard, identity, timeouts):
     before it is bonded. Sub-steps (retired ``_bond_lifecycle`` 1-2):
       1.  pre-bond: joiner not yet in bonds map
       1b. attach node + LFS-sync to current LFB
-      2.  joiner cannot propose pre-bond
+      2.  joiner cannot accept deploys or propose pre-bond
 
     Returns the attached joiner ``Node``.
     """
@@ -360,13 +360,14 @@ def _attach_prebond(shard, identity, timeouts):
         joiner, current_lfb.blockInfo.blockHash, timeout=timeouts.finalization * 3
     )
 
-    joiner.deploy_string(
-        f'@"pre-bond-{identity.name}"!(0)',
-        identity.private_key(),
-        phlo_limit=_BOND_PHLO_LIMIT,
-        phlo_price=_BOND_PHLO_PRICE,
-    )
-    with pytest.raises(F1r3flyClientException):
+    with pytest.raises(F1r3flyClientException, match="validator is not bonded"):
+        joiner.deploy_string(
+            f'@"pre-bond-{identity.name}"!(0)',
+            identity.private_key(),
+            phlo_limit=_BOND_PHLO_LIMIT,
+            phlo_price=_BOND_PHLO_PRICE,
+        )
+    with pytest.raises(F1r3flyClientException, match="validator is not bonded"):
         joiner.propose()
     return joiner
 
@@ -441,17 +442,23 @@ def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bo
     # 5. Advance past the epoch boundary (activation). Matches retired
     # (finalization * 2): the boundary is multiple blocks out under load.
     epoch_target = bond_block.blockNumber + _EPOCH_LENGTH
+
     # Reaching the epoch boundary is an inherently multi-block wait; with bg off,
     # block production is heartbeat-paced, so use epoch_transition, not finalization * 2.
+    def _joiner_activated():
+        proposer_lfb = proposer.last_finalized_block().blockInfo
+        joiner_lfb = joiner.last_finalized_block().blockInfo
+        if proposer_lfb.blockNumber >= epoch_target and any(
+            bond.validator == pk for bond in joiner_lfb.bonds
+        ):
+            return joiner_lfb
+        return None
+
     poll_until(
-        predicate=lambda: (
-            proposer.last_finalized_block().blockInfo.blockNumber
-            if proposer.last_finalized_block().blockInfo.blockNumber >= epoch_target
-            else None
-        ),
+        predicate=_joiner_activated,
         timeout=timeouts.epoch_transition * 3,
         interval=timeouts.poll_interval,
-        description=f"LFB advances past epoch boundary #{epoch_target} for {identity.name}",
+        description=f"{identity.name} active on joiner after epoch boundary #{epoch_target}",
     )
 
     # 6. Joiner proposes a block that finalizes on all nodes.
@@ -1318,15 +1325,16 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
             )
     logging.info("Phase 6: V4,V5 rewards frozen (withdrawn); V6,genesis accrue (case 3)")
 
-    # ── Phase 7: post-unbond can't-propose ───────────────────────────────────
+    # ── Phase 7: post-unbond deploy and propose are rejected ─────────────────
     j4 = joiners[v4_pk]
-    j4.deploy_string(
-        f'@"postwd-{VALIDATOR4_ID.name}"!(0)',
-        VALIDATOR4_ID.private_key(),
-        phlo_limit=_BOND_PHLO_LIMIT,
-        phlo_price=_BOND_PHLO_PRICE,
-    )
-    with pytest.raises(F1r3flyClientException):
+    with pytest.raises(F1r3flyClientException, match="validator is not bonded"):
+        j4.deploy_string(
+            f'@"postwd-{VALIDATOR4_ID.name}"!(0)',
+            VALIDATOR4_ID.private_key(),
+            phlo_limit=_BOND_PHLO_LIMIT,
+            phlo_price=_BOND_PHLO_PRICE,
+        )
+    with pytest.raises(F1r3flyClientException, match="validator is not bonded"):
         j4.propose()
     v6_live = j6.deploy_string(
         f'@"live-{VALIDATOR6_ID.name}"!(1)',
@@ -1336,7 +1344,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     )
     v6_block = wait_for_deploy_included(j6, v6_live, timeouts.deploy_inclusion * 5)
     wait_for_finalized(j6, v6_block.blockNumber, timeouts.finalization * 5)
-    logging.info("Phase 7: withdrawn V4 cannot propose; active V6 proposes + finalizes")
+    logging.info("Phase 7: withdrawn V4 rejects deploy and propose; active V6 proposes + finalizes")
 
     # ── Phase 8: multi-element quarantine payout (case 4) ─────────────────────
     # withdraw-during-quarantine negative: V4 is in withdrawers (not allBonds) ->
