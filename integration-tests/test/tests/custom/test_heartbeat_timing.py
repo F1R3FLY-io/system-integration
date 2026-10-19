@@ -66,24 +66,27 @@ DEFAULT_REPETITIONS = 20
 
 
 def repetitions_from_env() -> int:
-    """N from HEARTBEAT_TIMING_REPS, default 20. Rejects anything below 1."""
+    """N from HEARTBEAT_TIMING_REPS, default 20. Rejects a non-integer or a value below 1."""
     raw = os.environ.get("HEARTBEAT_TIMING_REPS", "")
     if not raw.strip():
         return DEFAULT_REPETITIONS
-    n = int(raw)
+    try:
+        n = int(raw)
+    except ValueError:
+        raise ValueError(f"HEARTBEAT_TIMING_REPS must be an integer, got {raw!r}") from None
     if n < 1:
         raise ValueError(f"HEARTBEAT_TIMING_REPS must be at least 1, got {n}")
     return n
 
 
-def _drain(shard, tracker, timeouts) -> None:
-    """Finalize the tracked deploys and converge every node's LFB.
+def _converge(shard, timeouts) -> None:
+    """Converge every node's LFB after the tracked deploys finalize.
 
-    A deploy that does not finalize is reported on the phase line, not failed.
-    Convergence that times out is a shard health failure: the next repetition
-    would not start from a drained pool.
+    Call it after ``tracker.wait_for_finalization``. A deploy that does not
+    finalize is reported on the phase line, not failed. Convergence that times
+    out is a shard health failure: the next repetition would not start from a
+    drained pool.
     """
-    tracker.wait_for_finalization(timeout=timeouts.finalization)
     wait_for_lfb_converged(
         shard.all_nodes,
         timeout=timeouts.finalization * 3,
@@ -123,7 +126,8 @@ def test_heartbeat_timing(provider, timeouts, resource_monitor) -> None:
                 nodes, tracker, HIGH_PHASE, deploy_index, resource_monitor
             )
             deploy_index += deploy_count + len(errors)
-            _drain(shard, tracker, timeouts)
+            tracker.wait_for_finalization(timeout=timeouts.finalization)
+            _converge(shard, timeouts)
             _assert_nodes_running(shard)
 
             for rep in range(1, repetitions + 1):
@@ -184,7 +188,7 @@ def test_heartbeat_timing(provider, timeouts, resource_monitor) -> None:
                 assert lfb_end > lfb_start, (
                     f"repetition {rep}: LFB did not advance (#{lfb_start} -> #{lfb_end})"
                 )
-                _drain(shard, tracker, timeouts)
+                _converge(shard, timeouts)
                 _assert_nodes_running(shard)
         finally:
             tracker.shutdown()

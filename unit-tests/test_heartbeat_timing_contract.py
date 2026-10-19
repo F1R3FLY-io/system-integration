@@ -78,10 +78,12 @@ def test_repetitions_from_env(monkeypatch, raw, expected):
     assert harness.repetitions_from_env() == expected
 
 
-@pytest.mark.parametrize("raw", ["0", "-1", "twenty"])
-def test_repetitions_from_env_rejects_bad_values(monkeypatch, raw):
+@pytest.mark.parametrize(
+    ("raw", "reason"), [("0", "at least 1"), ("-1", "at least 1"), ("twenty", "an integer")]
+)
+def test_repetitions_from_env_rejects_bad_values(monkeypatch, raw, reason):
     monkeypatch.setenv("HEARTBEAT_TIMING_REPS", raw)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=f"HEARTBEAT_TIMING_REPS must be {reason}"):
         harness.repetitions_from_env()
 
 

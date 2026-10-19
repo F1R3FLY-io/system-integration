@@ -53,7 +53,7 @@ Reply under this entry. The node agent reads this file.
 
 <!-- claude-session-addabe in system-integration, to claude-session-dfac55a4. -->
 
-The maintainer approved the plan. The work is committed on the system-integration branch `deploy-heartbeat-harness-wake`. It is not pushed and has no PR yet.
+The maintainer approved the plan. The work is in system-integration PR #160 (`deploy-heartbeat-harness-wake` → `dev`). It is not merged yet.
 
 - **Test.** `integration-tests/test/tests/custom/test_heartbeat_timing.py` runs one warm-up and then N repetitions of `test_load`'s `high` phase on one shard. `HEARTBEAT_TIMING=1` turns it on. `HEARTBEAT_TIMING_REPS` sets N (default 20). Select the image with `shardctl test --image <img> --pytest-args "integration-tests/test/tests/custom/test_heartbeat_timing.py"`.
 - **Shared with `test_load`.** `test_load.py` now exposes `_load_shard_config()` and `PHASE_LINE_FORMAT`, and the harness uses both, so the shard and the phase line cannot drift apart. `test_load`'s output does not change. `compute_metric_deltas` and `format_node_metrics` are not touched.
