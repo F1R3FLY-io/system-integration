@@ -90,6 +90,14 @@ PHASES = [
 # far inside the lifespan at any observed block rate.
 VABN_REFRESH_INTERVAL = 5
 
+# The per-phase result line. The node summarizer
+# (f1r3node-rust scripts/bench/summarize-issue24-phases.sh) parses this exact
+# shape, so test_heartbeat_timing prints it through this one constant.
+PHASE_LINE_FORMAT = (
+    "  Phase %s: inclusion p50=%.1fs p95=%.1fs, finalization p50=%.1fs p95=%.1fs, "
+    "LFB #%d->#%d (%.1f blk/min), unfinalized=%d"
+)
+
 VALIDATORS_AND_KEYS = [
     (VALIDATOR1_ID, "validator1"),
     (VALIDATOR2_ID, "validator2"),
@@ -343,9 +351,10 @@ def _get_tip(node) -> int:
 # ---------------------------------------------------------------------------
 
 
-def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor) -> None:
-    """Measure deploy throughput and finalization latency under increasing load."""
-    config = ShardConfig(
+def _load_shard_config() -> ShardConfig:
+    """The load-test shard. Shared with test_heartbeat_timing, which must
+    measure the same high phase on the same shard."""
+    return ShardConfig(
         # 4 genesis validators (6 nodes total with boot + readonly): enough concurrent
         # heartbeat proposers to produce sibling blocks -> multi-parent merges build a real
         # un-finalized cone, WITHOUT the 8-node simultaneous bring-up that froze the host at
@@ -383,6 +392,11 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
             "--max-user-deploys-per-block": "128",
         },
     )
+
+
+def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor) -> None:
+    """Measure deploy throughput and finalization latency under increasing load."""
+    config = _load_shard_config()
     shard = Shard.create(provider, config, timeouts)
     try:
         v1 = shard.node("validator1")
@@ -516,8 +530,7 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
                 all_reports.append(report)
 
                 logging.info(
-                    "  Phase %s: inclusion p50=%.1fs p95=%.1fs, finalization p50=%.1fs p95=%.1fs, "
-                    "LFB #%d->#%d (%.1f blk/min), unfinalized=%d",
+                    PHASE_LINE_FORMAT,
                     phase_name,
                     inc_p50,
                     inc_p95,
