@@ -62,11 +62,7 @@ def test_shard_is_the_load_test_shard():
     config = harness._load_shard_config()
     assert config.heartbeat and config.include_readonly
     assert len(config.bonds) == 4
-    assert config.global_cli_options == {
-        "--heartbeat-self-propose-cooldown": "3seconds",
-        "--heartbeat-advanced-frontier-chase-max-lag": "20",
-        "--max-user-deploys-per-block": "128",
-    }
+    assert config.global_cli_options == {}
 
 
 @pytest.mark.parametrize(("raw", "expected"), [(None, 20), ("", 20), ("3", 3), (" 40 ", 40)])

@@ -188,7 +188,7 @@ not otherwise cover:
 |---|---|---|
 | `casper.heartbeat.check-interval` | 3 seconds | How often the proposer loop evaluates whether to propose |
 | `casper.heartbeat.max-lfb-age` | 3 seconds | LFB age above which stale-recovery may fire |
-| `casper.heartbeat.self-propose-cooldown` | 2 seconds | Minimum gap between a validator's own proposals |
+| `casper.heartbeat.self-propose-cooldown` | 3 seconds | Minimum gap between a validator's own proposals |
 | `casper.max-parent-depth` | 15 | Adjudication horizon; also the deploy-lifecycle citability horizon |
 | `casper.genesis-block-data.epoch-length` | 50 | Bonds, withdrawals and payouts apply only at an epoch boundary |
 | `casper.genesis-block-data.quarantine-length` | 10 | Delay before an unbonded validator's stake is paid out |
