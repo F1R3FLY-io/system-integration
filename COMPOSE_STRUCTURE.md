@@ -16,6 +16,26 @@ Canonical reference for the production compose files in `compose/`. Each file is
 | `compose/f1r3node-rust-observer.yml` | Read-only observer | (joins existing shard) | rust:latest |
 | `compose/f1r3node-rust-validator4.yml` | 4th validator | (joins existing shard) | rust:latest |
 
+### One node per host
+
+For a long-lived shard spread across separate machines, rather than one host
+running every node. One service per file, selected by the host's role:
+
+| File | Topology | Runs | Image default |
+|---|---|---|---|
+| `compose/f1r3node-rust-boot.yml` | Ceremony master | 1 (takes no `--bootstrap`) | **none, required** |
+| `compose/f1r3node-rust-validator.yml` | One bonded validator | 1 (joins via the boot host) | **none, required** |
+| `compose/f1r3node-rust-readonly.yml` | One read-only node | 1 (joins via the boot host) | **none, required** |
+
+**Three files rather than one with three services.** Compose interpolates every
+service in a file regardless of which one is selected, so a combined file would
+demand a validator key from the host running the read-only node. Splitting them
+means each host holds only its own role's secrets.
+
+These files pair with `conf/shard.conf` and a per-host `.env.shard`, not with
+`conf/rust.conf` and `.env.node` — see
+[docs/configuration.md](docs/configuration.md).
+
 ### Service stacks
 
 | File | Purpose | Notes |
@@ -42,6 +62,13 @@ F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust:dev poetry run shardctl up f1r
 
 `F1R3FLY_NODE_IMAGE` is the **same env var** the integration-test framework reads (via `infra/config.py:resolve_node_image`). One variable, one mental model across `shardctl up` and `shardctl test`.
 
+**The one-node-per-host files are the exception: they have no default.** They use
+`${F1R3FLY_NODE_IMAGE:?...}` and refuse to start without it, because the nodes
+are on separate machines and a silent fallback would let hosts drift onto
+different builds. Once that happens the shard is no longer homogeneous and any
+difference between nodes stops being interpretable as a software signal. Pin a
+digest rather than a moving tag for the same reason — `:dev` moves.
+
 ---
 
 ## Project naming and volumes
@@ -55,6 +82,9 @@ Each compose file declares an explicit top-level `name:` so Docker Compose uses 
 | `f1r3node-rust-standalone.yml` | `f1r3fly-rust-standalone` | `f1r3fly-rust-standalone_*-data` |
 | `f1r3node-rust-observer.yml` | `f1r3fly-rust-observer` | `f1r3fly-rust-observer_*-data` |
 | `f1r3node-rust-validator4.yml` | `f1r3fly-rust-validator4` | `f1r3fly-rust-validator4_*-data` |
+| `f1r3node-rust-boot.yml` | `f1r3fly-rust-boot` | `f1r3fly-rust-boot_*-data` |
+| `f1r3node-rust-validator.yml` | `f1r3fly-rust-validator` | `f1r3fly-rust-validator_*-data` |
+| `f1r3node-rust-readonly.yml` | `f1r3fly-rust-readonly` | `f1r3fly-rust-readonly_*-data` |
 
 Cleanup convention: `shardctl reset` (and `shardctl reset --force`) prefix-scan for `f1r3fly-*` volumes and the `f1r3fly` network. Disjoint from integration-test prefixes (`f1r3fly-test-*` networks, `test-*` volumes).
 
@@ -91,6 +121,22 @@ Container names are set by env-var substitution from `.env.node` in the repo roo
 
 Override the env vars in `.env.node` to run multiple parallel topologies (rare; integration tests achieve this differently — see [integration-tests/test/docs/ARCHITECTURE.md](integration-tests/test/docs/ARCHITECTURE.md)).
 
+**The one-node-per-host files do not follow this.** They hardcode the container
+name to their role — `rnode.bootstrap`, `rnode.validator`, `rnode.readonly` —
+because one host runs one node and the name needs to be predictable for `docker
+logs` and the monitor, not configurable.
+
+The consequence is worth stating plainly: **every validator host runs a
+container called `rnode.validator`**, while the node *advertises* a per-host name
+like `rnode.validator3` (that comes from `NODE_HOST`, and is what appears in a
+peer list). So `docker logs rnode.validator3` fails with "No such container" on
+the very host running validator3.
+
+`BOOTSTRAP_HOST` also means something different in these files. In the
+single-host files above it names a **container**; in the one-node-per-host files
+it is the **address other instances dial** for the bootstrap node, which is why
+it appears in the validator and read-only files but not in the boot file.
+
 ---
 
 ## Port map
@@ -113,6 +159,26 @@ internal gRPC port (40402 and its per-node offsets) for deploys and proposes;
 the external gRPC port (40401) exists for clients outside the compose network.
 HTTP (40403) serves the REST API, and exploratory queries — balances, bonds,
 PoS state — are served **only** by `rnode.readonly` on 40453.
+
+### Ports on a one-node-per-host shard
+
+No offsets: one node per machine, so every node publishes the native ports. Two
+of the six are deliberately bound to loopback instead:
+
+| Internal | Role | Published as |
+|---|---|---|
+| 40400 | Protocol | `40400` |
+| 40401 | gRPC ext | `40401` |
+| 40402 | gRPC int | `127.0.0.1:40402` — **loopback only** |
+| 40403 | HTTP | `40403` |
+| 40404 | Discovery | `40404` |
+| 40405 | Admin | `127.0.0.1:40405` — **loopback only** |
+
+The privileged gRPC port grants propose and validator operations, and the admin
+HTTP port exposes block-store internals; neither belongs on a public interface.
+Clients therefore deploy to **40401**, not to the 40402 the single-host files
+and `rust-client`'s own default steer you toward. A client configured with the
+internal port will simply find nothing listening.
 
 ---
 
@@ -157,6 +223,17 @@ Prometheus uses DNS-based service discovery on the Docker network — only nodes
 
 Config files: `monitoring/prometheus.yml`, `monitoring/prometheus-rules.yml`, `monitoring/grafana/provisioning/`.
 
+**For a long-lived shard, `scripts/shard-monitor.sh` is the alerting half.**
+Prometheus and Grafana answer "what are the numbers"; the monitor answers "is
+anyone being told". It is a cron script, one per host, that checks container and
+host conditions locally and — with `--chain`, on one host only — polls every
+node's `/api/status` for finalization progress, lag and network id. It posts to
+a webhook with per-condition exponential backoff and a `RECOVERED` notice, plus
+a once-daily digest under `--nightly`. `--dry-run` prints instead of posting.
+
+A container healthcheck is not a substitute: it is `curl -f /api/status`, which
+reports `healthy` on a node whose `lastFinalizedBlockNumber` is `-1`.
+
 ---
 
 ## Usage
@@ -186,6 +263,36 @@ poetry run shardctl down                # Stop all
 poetry run shardctl down f1r3node-rust  # Stop one
 poetry run shardctl reset -y            # Stop all + wipe blockchain data volumes
 ```
+
+### Starting a one-node-per-host shard
+
+Not driven by `shardctl`, which assumes one host runs the topology. Each machine
+runs compose directly, from the `compose/` directory, with its own `.env.shard`:
+
+```bash
+docker compose --env-file ../.env.shard -f f1r3node-rust-boot.yml      up -d   # boot host
+docker compose --env-file ../.env.shard -f f1r3node-rust-validator.yml up -d   # each validator host
+docker compose --env-file ../.env.shard -f f1r3node-rust-readonly.yml  up -d   # read-only host
+```
+
+**Order matters once, at genesis.** The boot node generates its own TLS identity
+on first start, so its node id does not exist until it has run. Start it alone,
+read the id from its `/api/status` `address` field, put that in the other hosts'
+`BOOTSTRAP_NODE_ID`, then start them. Genesis completes once enough validators
+have approved (`casper.genesis-ceremony.required-signatures` in
+`conf/shard.conf`).
+
+Keys, bonds and wallets are generated, never committed —
+`scripts/shard-setup.sh` writes them to gitignored directories and prints a
+SHA-256 of the genesis pair, because **all hosts must hold a byte-identical
+`bonds.txt`/`wallets.txt`** and git cannot guarantee that five checkouts agree.
+Compare the digest on every host before starting the ceremony. See
+[docs/configuration.md](docs/configuration.md#one-node-per-host).
+
+Restart discipline: stop every node, then start them. A rolling restart
+re-propagates dead peer entries from whichever node stayed up.
+
+---
 
 For the full CLI reference, see [docs/cli-reference.md](docs/cli-reference.md).
 
