@@ -48,15 +48,38 @@ jobs:
       - name: Validate all compose files
         run: |
           FAIL=0
+          # The per-host shard files take no defaults — every secret is
+          # ${VAR:?}, so they cannot be validated against .env.node. These
+          # placeholders exist only to let interpolation resolve; a newly
+          # required variable surfaces here as a failure, which is the point.
+          cat > /tmp/env.shard.ci <<'PLACEHOLDERS'
+          F1R3FLY_NODE_IMAGE=f1r3flyindustries/f1r3fly-rust:dev
+          SHARD_NETWORK_ID=ci-validate-only
+          GENESIS_DIR=./genesis-shard/ci-validate-only
+          NODE_HOST=rnode.ci-validate-only
+          BOOTSTRAP_HOST=rnode.ci-validate-only
+          BOOTSTRAP_NODE_ID=0000000000000000000000000000000000000000
+          CEREMONY_PRIVATE_KEY=00
+          VALIDATOR_PUBLIC_KEY=00
+          VALIDATOR_PRIVATE_KEY=00
+          PLACEHOLDERS
           # Enumerated rather than globbed so that a compose file added without
           # a CI entry is a visible omission, not a silent one.
           for cf in \
             compose/f1r3node-rust.yml compose/f1r3node-rust-standalone.yml \
             compose/f1r3node-rust-observer.yml compose/f1r3node-rust-validator4.yml \
             compose/f1r3node-rust-shard-light.yml compose/embers.yml \
-            compose/f1r3sky.yml compose/monitoring.yml
+            compose/f1r3sky.yml compose/monitoring.yml \
+            compose/f1r3node-rust-boot.yml compose/f1r3node-rust-validator.yml \
+            compose/f1r3node-rust-readonly.yml
           do
-            if docker compose --env-file .env.node -f "$cf" config >/dev/null 2>&1; then
+            case "$cf" in
+              compose/f1r3node-rust-boot.yml|compose/f1r3node-rust-validator.yml|compose/f1r3node-rust-readonly.yml)
+                env_file=/tmp/env.shard.ci ;;
+              *)
+                env_file=.env.node ;;
+            esac
+            if docker compose --env-file "$env_file" -f "$cf" config >/dev/null 2>&1; then
               echo "PASS: $cf"
             else
               echo "FAIL: $cf"
