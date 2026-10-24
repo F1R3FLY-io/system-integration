@@ -76,7 +76,7 @@ Set `LOAD_TEST_SUSTAINED_RATE=<deploys/sec>` to replace the sustained phase's 4/
 
 - **Topology**: 4 validators (100/100/100/100 bonds), boot, and readonly: 6 nodes.
 - **FTT**: From `conf/rust.conf`.
-- **Heartbeat**: Enabled at the cadence in `conf/rust.conf`, with `--heartbeat-advanced-frontier-chase-max-lag=20` and `--max-user-deploys-per-block=128`.
+- **Heartbeat**: Enabled. Cadence, frontier-chase cap and deploys per block come from the node defaults and `conf/rust.conf`; the test sets no node flags of its own.
 
 ## What it proves
 

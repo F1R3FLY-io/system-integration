@@ -415,19 +415,6 @@ def _load_shard_config() -> ShardConfig:
         ],
         heartbeat=True,
         include_readonly=True,
-        # The heartbeat cadence comes from conf/rust.conf. Frontier-chase is
-        # opened here so validators follow each other's blocks under load
-        # instead of accumulating inclusion latency; the resulting sibling
-        # rate breaks tests that follow one blockHash through finalization
-        # (test_wallets, test_web_api), so it stays out of the shared config.
-        global_cli_options={
-            "--heartbeat-advanced-frontier-chase-max-lag": "20",
-            # Larger blocks reduce the propose-per-deploy ratio and the
-            # number of cross-validator races. Default 32 floods the
-            # proposer at 10 d/s; 128 lets a single block absorb a full
-            # second of submission across the four validators.
-            "--max-user-deploys-per-block": "128",
-        },
     )
 
 
