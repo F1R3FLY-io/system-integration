@@ -186,9 +186,9 @@ not otherwise cover:
 
 | Setting | Shipped value | Why it matters |
 |---|---|---|
-| `casper.heartbeat.check-interval` | 5 seconds | How often the proposer loop evaluates whether to propose |
-| `casper.heartbeat.max-lfb-age` | 5 seconds | LFB age above which stale-recovery may fire |
-| `casper.heartbeat.self-propose-cooldown` | 3 seconds | Minimum gap between a validator's own proposals |
+| `casper.heartbeat.check-interval` | 3 seconds | How often the proposer loop evaluates whether to propose |
+| `casper.heartbeat.max-lfb-age` | 3 seconds | LFB age above which stale-recovery may fire |
+| `casper.heartbeat.self-propose-cooldown` | 2 seconds | Minimum gap between a validator's own proposals |
 | `casper.max-parent-depth` | 15 | Adjudication horizon; also the deploy-lifecycle citability horizon |
 | `casper.genesis-block-data.epoch-length` | 50 | Bonds, withdrawals and payouts apply only at an epoch boundary |
 | `casper.genesis-block-data.quarantine-length` | 10 | Delay before an unbonded validator's stake is paid out |
@@ -196,8 +196,8 @@ not otherwise cover:
 ### Changing `check-interval` can stop the node from starting
 
 `casper.heartbeat.stale-recovery-min-interval` is **not** set in
-`conf/rust.conf`, so the node derives it as `check-interval × 1.5` — 7.5
-seconds at the shipped 5-second tick. The node rejects a configuration where
+`conf/rust.conf`, so the node derives it as `check-interval × 1.5` — 4.5
+seconds at the shipped 3-second tick. The node rejects a configuration where
 that interval is at or below `check-interval`, and the rejection is fatal: it
 fails during config validation, before the node starts.
 
