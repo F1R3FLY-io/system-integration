@@ -63,7 +63,6 @@ def test_shard_is_the_load_test_shard():
     assert config.heartbeat and config.include_readonly
     assert len(config.bonds) == 4
     assert config.global_cli_options == {
-        "--heartbeat-self-propose-cooldown": "3seconds",
         "--heartbeat-advanced-frontier-chase-max-lag": "20",
         "--max-user-deploys-per-block": "128",
     }

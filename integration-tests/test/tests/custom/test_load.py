@@ -12,7 +12,9 @@ effective throughput, and the tip-LFB cone depth per phase.
 
 Uses lightweight contracts (@N!(N)) to stress the deploy pipeline (and thereby
 block/cone count) rather than the Rholang interpreter. Submission is distributed
-across 3 validators via ThreadPoolExecutor for rates > 1/sec.
+round-robin across all 4 validators. A deploy counts as finalized only when
+EVERY node (validators, boot, readonly) reports it Finalized; the time the
+first node did is reported alongside, so the cross-node spread is visible.
 
 Per-phase node /metrics deltas attribute block-processing cost across every
 sub-stage — including the parents_post_state breakdown (floor compute / FS seal
@@ -20,13 +22,14 @@ fold / scope walk / mergeable recompute / dag merge), so the O(cone) climber is
 visible. Scraped on EVERY validator (not just v1).
 
 Telemetry-first (measure, not gate) for latency. Hard assertions: zero deploy
-failures; all deploys finalized within timeout; all-node LFB convergence (every
+failures; all deploys finalized on every node within timeout; all-node LFB convergence (every
 node polled to within a spread of 5, not sampled once at drain — nodes are still
 catching up the instant load stops); no node crashes. Set
 LOAD_TEST_TELEMETRY_ONLY=1 to collect the runaway metrics without the
 finalization/convergence gates.
 """
 
+import json
 import logging
 import os
 import time
@@ -92,7 +95,9 @@ VABN_REFRESH_INTERVAL = 5
 
 # The per-phase result line. The node summarizer
 # (f1r3node-rust scripts/bench/summarize-issue24-phases.sh) parses this exact
-# shape, so test_heartbeat_timing prints it through this one constant.
+# shape, so test_heartbeat_timing prints it through this one constant. Its
+# finalization latencies are to the LAST node that reported the deploy
+# Finalized.
 PHASE_LINE_FORMAT = (
     "  Phase %s: inclusion p50=%.1fs p95=%.1fs, finalization p50=%.1fs p95=%.1fs, "
     "LFB #%d->#%d (%.1f blk/min), unfinalized=%d"
@@ -102,6 +107,7 @@ VALIDATORS_AND_KEYS = [
     (VALIDATOR1_ID, "validator1"),
     (VALIDATOR2_ID, "validator2"),
     (VALIDATOR3_ID, "validator3"),
+    (VALIDATOR4_ID, "validator4"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -331,6 +337,47 @@ def _format_report(reports):
     return "\n".join(lines)
 
 
+def _format_late_outcomes(rows, all_settled, cap_seconds):
+    """Per phase: what became of the deploys not finalized on every node in time.
+
+    ``finalized`` counts deploys every node reported Finalized after the window,
+    with the latency from submission to the last node. ``unsettled`` counts
+    node outcomes still open at the cap, by the state each node last reported.
+    """
+    lines = [
+        "",
+        f"LATE OUTCOMES (cap {cap_seconds:.0f}s, "
+        f"{'every node settled' if all_settled else 'cap reached with nodes unsettled'})",
+    ]
+    for phase in [p["name"] for p in PHASES]:
+        phase_rows = [r for r in rows if r["phase"] == phase]
+        if not phase_rows:
+            continue
+        latencies = []
+        terminal = {}
+        unsettled = {}
+        for row in phase_rows:
+            outcomes = row["nodes"].values()
+            if all(o["finalized_at"] is not None for o in outcomes):
+                latencies.append(max(o["finalized_at"] for o in outcomes) - row["submit"])
+            for name, o in row["nodes"].items():
+                if o["terminal"] is not None:
+                    terminal[o["terminal"]] = terminal.get(o["terminal"], 0) + 1
+                elif o["finalized_at"] is None:
+                    key = (name, o["last_state"])
+                    unsettled[key] = unsettled.get(key, 0) + 1
+        p50, p95 = percentiles(latencies, [50, 95])
+        lines.append(
+            f"  {phase}: {len(phase_rows)} late; finalized on every node {len(latencies)} "
+            f"(last-node latency p50={p50:.1f}s p95={p95:.1f}s "
+            f"max={max(latencies, default=0.0):.1f}s); "
+            f"terminal node outcomes {terminal or 'none'}"
+        )
+        for (name, state), count in sorted(unsettled.items()):
+            lines.append(f"    unsettled on {name}: {count} last reported {state}")
+    return "\n".join(lines)
+
+
 def _get_tip(node) -> int:
     """Highest block number the node knows (the DAG tip). ``tip - LFB`` is the
     un-finalized cone depth — the direct finalization-lag / runaway signal.
@@ -368,27 +415,17 @@ def _load_shard_config() -> ShardConfig:
         ],
         heartbeat=True,
         include_readonly=True,
-        # Heartbeat tuning for stress-test load shape. Production defaults
-        # (15s self-propose-cooldown, 0 frontier-chase-max-lag, 12s stale-
-        # recovery-min-interval) are tuned for low-load stability and cap
-        # propose cadence well below what high-phase deploy submission needs.
-        # The values below open the propose cadence so validators can keep
-        # the deploy queue drained instead of accumulating 24s+ inclusion
-        # latency.
-        #
-        # Confirmed UNSAFE for promotion to defaults.conf (2026-05-07
-        # baseline run): the higher propose cadence + frontier-chase
-        # combination raises the sibling-block rate, which breaks any
-        # realistic test that follows a specific blockHash through
-        # finalization (test_wallets, test_web_api).
+        # The heartbeat cadence comes from conf/rust.conf. Frontier-chase is
+        # opened here so validators follow each other's blocks under load
+        # instead of accumulating inclusion latency; the resulting sibling
+        # rate breaks tests that follow one blockHash through finalization
+        # (test_wallets, test_web_api), so it stays out of the shared config.
         global_cli_options={
-            "--heartbeat-self-propose-cooldown": "3seconds",
             "--heartbeat-advanced-frontier-chase-max-lag": "20",
             # Larger blocks reduce the propose-per-deploy ratio and the
             # number of cross-validator races. Default 32 floods the
-            # proposer at 10 d/s — at the new cooldown each validator
-            # produces a block per ~3 deploys. 128 lets a single block
-            # absorb a full second of submission across 3 validators.
+            # proposer at 10 d/s; 128 lets a single block absorb a full
+            # second of submission across the four validators.
             "--max-user-deploys-per-block": "128",
         },
     )
@@ -399,11 +436,8 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
     config = _load_shard_config()
     shard = Shard.create(provider, config, timeouts)
     try:
-        v1 = shard.node("validator1")
-        v2 = shard.node("validator2")
-        v3 = shard.node("validator3")
-
-        nodes = {"validator1": v1, "validator2": v2, "validator3": v3}
+        nodes = {name: shard.node(name) for _, name in VALIDATORS_AND_KEYS}
+        v1 = nodes["validator1"]
 
         # Wait for shard to be healthy
         baseline_lfb = lfb_number(v1)
@@ -422,7 +456,12 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
         inclusion_timeout = timeouts.deploy_inclusion
         finalization_timeout = timeouts.finalization
 
-        tracker = LifecycleTracker(nodes, inclusion_timeout=inclusion_timeout)
+        late_cap = float(os.environ.get("LOAD_TEST_LATE_CAP_SECONDS", "0"))
+        tracker = LifecycleTracker(
+            {node.name: node for node in shard.all_nodes},
+            inclusion_timeout=inclusion_timeout,
+            late_tracking=late_cap > 0,
+        )
         tracker.start_lfb_monitor()
 
         all_reports: List[PhaseReport] = []
@@ -430,8 +469,12 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
         total_unfinalized = 0
         deploy_index = 100_000
 
+        sustained_rate = os.environ.get("LOAD_TEST_SUSTAINED_RATE")
         try:
             for phase in PHASES:
+                if sustained_rate and phase["name"] == "sustained":
+                    phase = {**phase, "rate": float(sustained_rate)}
+                    logging.info("Sustained rate overridden: %.2f deploys/sec", phase["rate"])
                 phase_name = phase["name"]
                 logging.info("--- Phase: %s ---", phase_name)
 
@@ -492,6 +535,11 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
                 phase_total = phase_time_end - phase_time_start
 
                 results = tracker.get_results()
+                dump_path = os.environ.get("LOAD_TEST_DEPLOY_DUMP")
+                if dump_path:
+                    with open(dump_path, "a") as dump:
+                        for row in tracker.deploy_rows():
+                            dump.write(json.dumps({"stage": "window", **row}) + "\n")
                 inclusion_times = [
                     r.inclusion_time for r in results if r.inclusion_time is not None
                 ]
@@ -501,8 +549,15 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
                 unfinalized = sum(1 for r in results if r.finalization_time is None)
                 total_unfinalized += unfinalized
 
+                first_finalization_times = [
+                    r.first_finalization_time
+                    for r in results
+                    if r.first_finalization_time is not None
+                ]
+
                 inc_p50, inc_p95, inc_p99 = percentiles(inclusion_times, [50, 95, 99])
                 fin_p50, fin_p95, fin_p99 = percentiles(finalization_times, [50, 95, 99])
+                first_fin_p50, first_fin_p95 = percentiles(first_finalization_times, [50, 95])
 
                 lfb_advance = lfb_end - lfb_start
                 lfb_rate = (lfb_advance / phase_total * 60) if phase_total > 0 else 0
@@ -541,10 +596,32 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
                     lfb_rate,
                     unfinalized,
                 )
+                logging.info(
+                    "  Phase %s first node: finalization p50=%.1fs p95=%.1fs",
+                    phase_name,
+                    first_fin_p50,
+                    first_fin_p95,
+                )
                 _log_unfinalized(phase_name, tracker)
                 for v_name, m in node_metrics_by_validator.items():
                     if m:
                         logging.info("  Node internals (%s):\n%s", v_name, format_node_metrics(m))
+
+            # Snapshot at drain, for the record only: the state at the instant
+            # load stopped. A later convergence failure is interpretable from how
+            # far behind the shard started.
+            drain_lfbs = {n.name: lfb_number(n) for n in shard.all_nodes}
+
+            if late_cap > 0:
+                tracker.clear()
+                all_settled = tracker.wait_for_late_outcomes(timeout=late_cap)
+                late_rows = tracker.late_rows()
+                logging.info(_format_late_outcomes(late_rows, all_settled, late_cap))
+                dump_path = os.environ.get("LOAD_TEST_DEPLOY_DUMP")
+                if dump_path:
+                    with open(dump_path, "a") as dump:
+                        for row in late_rows:
+                            dump.write(json.dumps({"stage": "late", **row}) + "\n")
 
         finally:
             tracker.shutdown()
@@ -572,12 +649,6 @@ def test_deploy_throughput_and_finalization(provider, timeouts, resource_monitor
         # validators + readonly — should settle within a few blocks of the max
         # LFB. A persistent spread is a node failing to finalize / falling
         # behind (the runaway leaves laggards).
-        #
-        # Snapshot at drain first, for the record only. This is the state at the
-        # instant load stopped: it is what a telemetry-only run wants, and it
-        # makes a later convergence failure interpretable by showing how far
-        # behind the shard started from.
-        drain_lfbs = {n.name: lfb_number(n) for n in shard.all_nodes}
         drain_spread = max(drain_lfbs.values()) - min(drain_lfbs.values())
         logging.info("All-node LFBs at drain: %s (spread %d blocks)", drain_lfbs, drain_spread)
         emit_lfb_spread_metric(drain_spread)
