@@ -415,6 +415,12 @@ def _load_shard_config() -> ShardConfig:
         ],
         heartbeat=True,
         include_readonly=True,
+        extra_wallets=[
+            (
+                VALIDATOR4_ID.private_key().get_public_key().get_vault_address(),
+                50_000_000_000_000_000,
+            )
+        ],
     )
 
 
