@@ -25,7 +25,13 @@ os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 import pytest  # type: ignore[import-not-found]
 
 from .infra.cleanup import DockerCleanupRegistry
-from .infra.config import NodeConf, ResourcePaths, ShardConfig, TimeoutConfig
+from .infra.config import (
+    SHORT_EPOCH_CLI_OPTIONS,
+    NodeConf,
+    ResourcePaths,
+    ShardConfig,
+    TimeoutConfig,
+)
 from .infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from .infra.node import Node
 from .infra.node_capabilities import (
@@ -424,9 +430,8 @@ def shared_shard(request, provider, timeouts) -> Iterator[Shard]:
         # Bonding tests on this shard wait for a joiner to activate at an epoch
         # boundary, so the shard needs a short epoch. conf/rust.conf carries a
         # longer one for the suites that never bond, where a PoS closeBlock
-        # every few blocks is pure overhead — set it explicitly here rather
-        # than inheriting, so the two cannot drift.
-        global_cli_options={"--epoch-length": "4", "--quarantine-length": "10"},
+        # every few blocks is pure overhead.
+        global_cli_options=dict(SHORT_EPOCH_CLI_OPTIONS),
     )
 
     if request.config.getoption("--skip-setup"):

@@ -61,7 +61,7 @@ from ...infra.assertions import (
     assert_block_finalized_on_all_nodes,
     assert_bonds_map_consistent_across_nodes,
 )
-from ...infra.config import ShardConfig
+from ...infra.config import SHORT_EPOCH_CLI_OPTIONS, SHORT_EPOCH_LENGTH, ShardConfig
 from ...infra.keys import (
     VALIDATOR1_ID,
     VALIDATOR2_ID,
@@ -84,10 +84,7 @@ pytestmark = [
 
 _BOND_AMOUNT = 100
 
-# Matches the epoch `bonding_shard` boots with (the fixture passes
-# --epoch-length explicitly; conf/rust.conf carries a longer one for suites
-# that never bond).
-_EPOCH_LENGTH = 4
+_EPOCH_LENGTH = SHORT_EPOCH_LENGTH
 
 # Background-load knobs. Interval is per-producer; with 3 producers
 # rotating round-robin, effective shard-wide cadence is ~3× this.
@@ -130,10 +127,8 @@ def bonding_shard(provider, timeouts):
         include_readonly=True,
         extra_wallets=extra_wallets,
         # This suite waits for a joiner to activate at an epoch boundary, so
-        # the shard needs a short epoch. Set explicitly rather than inherited
-        # from conf/rust.conf (which carries a long epoch for suites that
-        # never bond), so the two cannot drift — matches `_EPOCH_LENGTH`.
-        global_cli_options={"--epoch-length": "4", "--quarantine-length": "10"},
+        # the shard needs a short epoch.
+        global_cli_options=dict(SHORT_EPOCH_CLI_OPTIONS),
     )
     shard = Shard.create(provider, config, timeouts)
     try:

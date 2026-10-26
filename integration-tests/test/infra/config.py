@@ -117,14 +117,29 @@ class TimeoutConfig:
     finalization: int = 45
     command: int = 60
     port_release: int = 30
-    # Budget for an inherently multi-block consensus transition to complete:
-    # an epoch boundary moving pending withdrawers out of the active set, and a
-    # quarantine elapsing so withdrawn validators are paid out. These span
-    # ~quarantine-length + epoch-length blocks by construction (not contention),
-    # so they need a budget larger than a single finalization. Used unscaled.
+    # Budget for an epoch boundary to move pending withdrawers out of the active
+    # set: a few short epochs of blocks by construction (not contention), so it
+    # needs more than a single finalization.
     epoch_transition: int = 90
+    # Budget per block for waits counted in blocks, such as a quarantine
+    # elapsing. About twice the ~5 s a block takes on a lightly loaded
+    # short-epoch shard.
+    block_interval: float = 10.0
     poll_interval: float = 2.0
     scale: float = 1.0
+
+
+# A short epoch for suites that wait on epoch boundaries (bond activation,
+# withdrawal moves). The quarantine is the shortest the node accepts for it
+# under conf/rust.conf's max-parent-depth (25) and deploy-lifespan (50): two
+# epochs of ejection grace, plus the retention window (25 + max(50, 4)), plus an
+# epoch. Genesis refuses anything shorter.
+SHORT_EPOCH_LENGTH = 4
+SHORT_EPOCH_QUARANTINE_LENGTH = 87
+SHORT_EPOCH_CLI_OPTIONS: Dict[str, str] = {
+    "--epoch-length": str(SHORT_EPOCH_LENGTH),
+    "--quarantine-length": str(SHORT_EPOCH_QUARANTINE_LENGTH),
+}
 
 
 @dataclasses.dataclass(frozen=True)

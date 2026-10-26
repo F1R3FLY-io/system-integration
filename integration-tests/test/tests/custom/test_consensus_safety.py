@@ -14,7 +14,7 @@ import time
 import pytest
 
 from ...infra.assertions import assert_all_nodes_agree_on_block
-from ...infra.config import ShardConfig
+from ...infra.config import SHORT_EPOCH_CLI_OPTIONS, ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID, VALIDATOR4_ID
 from ...infra.polling import (
     lfb_number,
@@ -500,8 +500,7 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
         heartbeat=True,
         include_readonly=True,
         global_cli_options={
-            "--epoch-length": "4",
-            "--quarantine-length": "20",
+            **SHORT_EPOCH_CLI_OPTIONS,
             "--synchrony-constraint-threshold": "0",
         },
         extra_wallets=[(joiner_vault, 50_000_000_000_000_000)],
@@ -553,8 +552,7 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
         with shard.add_joiner(
             VALIDATOR4_ID,
             cli_options={
-                "--epoch-length": "4",
-                "--quarantine-length": "20",
+                **SHORT_EPOCH_CLI_OPTIONS,
                 "--synchrony-constraint-threshold": "0",
             },
         ) as joiner:

@@ -192,7 +192,7 @@ not otherwise cover:
 | `casper.max-parent-depth` | 25 | Adjudication horizon; also the deploy-lifecycle citability horizon. Times `check-interval` it must cover the node's 58s block re-request span |
 | `protocol-client.network-timeout` | 3 seconds | Kept at or below `check-interval` so one unreachable peer costs a proposal round at most one timeout |
 | `casper.genesis-block-data.epoch-length` | 50 | Bonds, withdrawals and payouts apply only at an epoch boundary |
-| `casper.genesis-block-data.quarantine-length` | 10 | Delay before an unbonded validator's stake is paid out |
+| `casper.genesis-block-data.quarantine-length` | 225 | Delay before an unbonded validator's stake is paid out. The node refuses less than two epochs plus the retention window (`max-parent-depth + max(deploy-lifespan, epoch-length)`) plus an epoch, so 225 at these values. Suites with a short epoch take theirs from `SHORT_EPOCH_CLI_OPTIONS` (epoch 4, quarantine 87) |
 
 ### Changing `check-interval` can stop the node from starting
 

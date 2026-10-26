@@ -25,8 +25,8 @@ exploratory deploy unless dev-mode (block_api.rs:1563), and the integration
 shard runs dev-mode=false. Finalization waits use the retired bonding test's
 per-wait load multipliers (finalization * 2/3/5, deploy_inclusion * 3/5) to
 absorb the lumpy, batched finalization that always-on bg_load produces, plus
-the epoch_transition budget for the inherently multi-block epoch-move and
-quarantine polls.
+the epoch_transition budget for the inherently multi-block epoch-move polls
+and a budget counted in blocks for the quarantine payout.
 """
 
 import logging
@@ -52,7 +52,12 @@ from ...infra.assertions import (
     lowest_lfb_number,
     resolve_deploy_verdicts,
 )
-from ...infra.config import ShardConfig
+from ...infra.config import (
+    SHORT_EPOCH_CLI_OPTIONS,
+    SHORT_EPOCH_LENGTH,
+    SHORT_EPOCH_QUARANTINE_LENGTH,
+    ShardConfig,
+)
 from ...infra.keys import (
     VALIDATOR1_ID,
     VALIDATOR2_ID,
@@ -83,12 +88,8 @@ _JOINER_STAKE = {
 }
 _BOND_MINIMUM = 100
 _BOND_MAXIMUM = 1000
-# This suite's epoch/quarantine geometry. These are passed to the shard as CLI
-# flags (see _GENESIS_CLI) and used for the quarantine/epoch poll-budget math,
-# so the two can never drift: conf/rust.conf carries a longer epoch for suites
-# that do not bond.
-_EPOCH_LENGTH = 4
-_QUARANTINE_LENGTH = 10
+_EPOCH_LENGTH = SHORT_EPOCH_LENGTH
+_QUARANTINE_LENGTH = SHORT_EPOCH_QUARANTINE_LENGTH
 
 _WALLET_BALANCE = 50_000_000_000_000_000  # joiners: cover phlo + stake
 _BOND_PHLO_LIMIT = 100_000_000
@@ -97,18 +98,12 @@ _BOND_PHLO_PRICE = 1
 # bond contract to completion, so the deploy runs out of phlo mid-execution and errors.
 _MODE_A_PHLO_LIMIT = 50_000
 
-# Bond bounds deviate from node defaults; epoch and quarantine length are set
-# here because this suite depends on them and conf/rust.conf no longer carries
-# a short epoch.
+# Bond bounds deviate from node defaults. This suite is epoch-driven
+# (activation, epoch-move, quarantine), so it takes the short epoch.
 _GENESIS_CLI = {
     "--bond-minimum": str(_BOND_MINIMUM),
     "--bond-maximum": str(_BOND_MAXIMUM),
-    # This suite is epoch-driven (activation, epoch-move, quarantine), so it
-    # sets the short epoch it needs rather than inheriting it. conf/rust.conf
-    # carries a longer epoch for the suites that never bond, where frequent
-    # PoS closeBlock transitions are pure overhead.
-    "--epoch-length": str(_EPOCH_LENGTH),
-    "--quarantine-length": str(_QUARANTINE_LENGTH),
+    **SHORT_EPOCH_CLI_OPTIONS,
 }
 
 # ── Background load: same-vault transfer contention ──────────────────────────
@@ -920,6 +915,9 @@ def lifecycle_shard(provider, timeouts):
         shard.destroy()
 
 
+# About 17 minutes unloaded, seven of them waiting out the quarantine, so the
+# suite-wide 1200 s limit is too close.
+@pytest.mark.timeout(2400)
 @pytest.mark.allow_forbidden_patterns("ComputationOutOfPhlogistons")
 def test_validator_lifecycle(lifecycle_shard, timeouts) -> None:
     shard = lifecycle_shard
@@ -1361,9 +1359,10 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # same vault; the frozen amount the payout carries can only be >= that.
     v4_owed = _JOINER_STAKE["validator4"] + prewd_v4_reward - v4_fees
     v5_owed = _JOINER_STAKE["validator5"] + prewd_v5_reward - v5_fees
-    quarantine_budget = timeouts.epoch_transition * 6  # multi-epoch (quarantine spans epochs)
-    # Quarantine spans several epochs, so this is the longest wait in the test
-    # and the one where a stall costs the most before it is noticed.
+    # A withdrawal is paid once its quarantine elapses after the epoch move,
+    # which can itself wait up to two epochs. This is the longest wait in the
+    # test and the one where a stall costs the most before it is noticed.
+    quarantine_budget = timeouts.blocks(_QUARANTINE_LENGTH + 2 * _EPOCH_LENGTH)
     lfb0 = lowest_lfb_number(shard.all_nodes)
     assert_chain_advances(
         shard.all_nodes, lfb0, timeouts.epoch_transition * 2, label="phase8-quarantine"
