@@ -102,9 +102,9 @@ def _tracker_with(statuses, **node_kwargs):
     return tracker, node, client
 
 
-def _run_cycle(tracker, node, client):
+def _run_cycle(tracker, node, client, name="v1"):
     with ThreadPoolExecutor(max_workers=tracker._SWEEP_WORKERS) as pool:
-        return tracker._sweep_cycle(pool, node, client, DEPLOY_STATE_FINALIZED, TERMINAL)
+        return tracker._sweep_cycle(pool, name, node, client, DEPLOY_STATE_FINALIZED, TERMINAL)
 
 
 class SweepScalesPastWorkerCount(unittest.TestCase):
@@ -183,6 +183,7 @@ class ClearDuringSweepLeavesNothingStale(unittest.TestCase):
         # arrived after was gated out. Nothing may leak into the next
         # phase's bookkeeping.
         self.assertEqual(tracker._finalization, {})
+        self.assertEqual(tracker._node_finalization, {})
         self.assertEqual(tracker._inclusion, {})
         self.assertEqual(tracker._terminal, {})
         self.assertEqual(tracker.get_results(), [])
@@ -255,6 +256,202 @@ class EnrichmentIsPooledPerUniqueBlock(unittest.TestCase):
         self.assertEqual(node.get_block_calls, 20)  # one per unique block, not 40
         results = tracker.get_results()
         self.assertEqual(sum(1 for r in results if r.finalization_time is not None), 40)
+
+
+def _two_node_tracker(statuses_a, statuses_b, **tracker_kwargs):
+    client_a, client_b = _StubClient(statuses_a), _StubClient(statuses_b)
+    node_a, node_b = _StubNode(client_a), _StubNode(client_b)
+    tracker = metrics.LifecycleTracker({"a": node_a, "b": node_b}, **tracker_kwargs)
+    for deploy_id in statuses_a:
+        tracker.track_deploy(_record(deploy_id))
+    return tracker, (node_a, client_a), (node_b, client_b)
+
+
+class FinalizationRequiresEveryNode(unittest.TestCase):
+    def test_one_node_reporting_is_not_finalization(self):
+        tracker, (node_a, client_a), (node_b, client_b) = _two_node_tracker(
+            {"d0": _Status(DEPLOY_STATE_FINALIZED, HASH_A)},
+            {"d0": _Status(DEPLOY_STATE_PENDING, HASH_A)},
+        )
+        _run_cycle(tracker, node_a, client_a, name="a")
+        _run_cycle(tracker, node_b, client_b, name="b")
+        (result,) = tracker.get_results()
+        self.assertIsNone(result.finalization_time)
+        self.assertIsNotNone(result.first_finalization_time)
+        self.assertFalse(tracker.wait_for_finalization(timeout=0))
+
+        client_b.statuses["d0"] = _Status(DEPLOY_STATE_FINALIZED, HASH_A)
+        _run_cycle(tracker, node_b, client_b, name="b")
+        (result,) = tracker.get_results()
+        self.assertIsNotNone(result.finalization_time)
+        self.assertGreaterEqual(result.finalization_time, result.first_finalization_time)
+        self.assertTrue(tracker.wait_for_finalization(timeout=0))
+
+    def test_a_node_stops_polling_what_it_has_reported(self):
+        tracker, (node_a, client_a), (node_b, client_b) = _two_node_tracker(
+            {"d0": _Status(DEPLOY_STATE_FINALIZED, HASH_A)},
+            {"d0": _Status(DEPLOY_STATE_PENDING, HASH_A)},
+        )
+        self.assertEqual(_run_cycle(tracker, node_a, client_a, name="a"), (1, 0))
+        self.assertEqual(_run_cycle(tracker, node_a, client_a, name="a"), (0, 0))
+        self.assertEqual(_run_cycle(tracker, node_b, client_b, name="b"), (1, 0))
+
+    def test_terminal_on_any_node_settles_unfinalized(self):
+        tracker, (node_a, client_a), (node_b, client_b) = _two_node_tracker(
+            {"d0": _Status(DEPLOY_STATE_FINALIZED, HASH_A)},
+            {"d0": _Status(DEPLOY_STATE_EXPIRED)},
+        )
+        _run_cycle(tracker, node_a, client_a, name="a")
+        _run_cycle(tracker, node_b, client_b, name="b")
+        self.assertEqual(tracker._terminal, {"d0": "EXPIRED"})
+        self.assertEqual(_run_cycle(tracker, node_b, client_b, name="b"), (0, 0))
+        (result,) = tracker.get_results()
+        self.assertIsNone(result.finalization_time)
+        self.assertTrue(tracker.wait_for_finalization(timeout=0))
+
+
+class LateTrackingFollowsUnsettledDeploys(unittest.TestCase):
+    def _half_finalized(self, **tracker_kwargs):
+        tracker, a, b = _two_node_tracker(
+            {"d0": _Status(DEPLOY_STATE_FINALIZED, HASH_A)},
+            {"d0": _Status(DEPLOY_STATE_PENDING)},
+            late_tracking=True,
+            late_poll_interval=0.0,
+            **tracker_kwargs,
+        )
+        _run_cycle(tracker, *a, name="a")
+        _run_cycle(tracker, *b, name="b")
+        tracker.clear()
+        return tracker, a, b
+
+    def test_clear_keeps_the_deploy_and_the_finalized_reports_received(self):
+        tracker, a, b = self._half_finalized()
+        self.assertEqual(tracker.get_results(), [])
+        self.assertEqual(_run_cycle(tracker, *a, name="a"), (0, 0))
+        b[1].statuses["d0"] = _Status(DEPLOY_STATE_FINALIZED, HASH_A)
+        self.assertEqual(_run_cycle(tracker, *b, name="b"), (1, 0))
+        self.assertTrue(tracker.wait_for_late_outcomes(timeout=0))
+        (row,) = tracker.late_rows()
+        self.assertEqual(row["phase"], "unit")
+        self.assertTrue(all(o["finalized_at"] is not None for o in row["nodes"].values()))
+
+    def test_a_node_that_never_settles_keeps_its_last_answer(self):
+        tracker, _, b = self._half_finalized()
+        b[1].statuses["d0"] = _Status(DEPLOY_STATE_PENDING, HASH_B)
+        _run_cycle(tracker, *b, name="b")
+        self.assertFalse(tracker.wait_for_late_outcomes(timeout=0))
+        outcome = tracker.late_rows()[0]["nodes"]["b"]
+        self.assertIsNone(outcome["finalized_at"])
+        self.assertEqual(outcome["last_state"], "DEPLOY_STATE_PENDING")
+        self.assertEqual(outcome["last_block"], HASH_B.hex())
+
+    def test_a_terminal_answer_settles_only_that_node(self):
+        tracker, _, b = self._half_finalized()
+        b[1].statuses["d0"] = _Status(DEPLOY_STATE_EXPIRED)
+        _run_cycle(tracker, *b, name="b")
+        self.assertTrue(tracker.wait_for_late_outcomes(timeout=0))
+        nodes = tracker.late_rows()[0]["nodes"]
+        self.assertEqual(nodes["b"]["terminal"], "EXPIRED")
+        self.assertIsNotNone(nodes["a"]["finalized_at"])
+
+    def test_late_deploys_are_polled_at_most_once_per_interval(self):
+        tracker, _, b = self._half_finalized()
+        tracker._late_poll_interval = 3600.0
+        self.assertEqual(_run_cycle(tracker, *b, name="b"), (1, 0))
+        self.assertEqual(_run_cycle(tracker, *b, name="b"), (0, 0))
+
+    def test_late_deploys_cost_no_block_lookups(self):
+        tracker, _, b = self._half_finalized()
+        b[1].statuses["d0"] = _Status(DEPLOY_STATE_PENDING, HASH_B)
+        calls_before = b[0].get_block_calls
+        _run_cycle(tracker, *b, name="b")
+        self.assertEqual(b[0].get_block_calls, calls_before)
+
+    def test_without_late_tracking_clear_drops_unsettled_deploys(self):
+        tracker, a, b = _two_node_tracker(
+            {"d0": _Status(DEPLOY_STATE_FINALIZED, HASH_A)},
+            {"d0": _Status(DEPLOY_STATE_PENDING)},
+        )
+        _run_cycle(tracker, *a, name="a")
+        tracker.clear()
+        self.assertEqual(tracker.late_rows(), [])
+        self.assertEqual(_run_cycle(tracker, *b, name="b"), (0, 0))
+        self.assertTrue(tracker.wait_for_late_outcomes(timeout=0))
+
+
+class UnfinalizedDiagnosticsSeparateTheCauses(unittest.TestCase):
+    """get_unfinalized splits what get_results folds into one count:
+    never included, included but not finalized, and terminal."""
+
+    def _mixed(self, **node_kwargs):
+        statuses = {
+            "fin": _Status(DEPLOY_STATE_FINALIZED, HASH_A),
+            "late": _Status(DEPLOY_STATE_PENDING, HASH_A),
+            "lost": _Status(DEPLOY_STATE_PENDING),
+            "dead": _Status(DEPLOY_STATE_FAILED, HASH_B),
+            "old": _Status(DEPLOY_STATE_EXPIRED),
+        }
+        tracker, node, client = _tracker_with(statuses, **node_kwargs)
+        _run_cycle(tracker, node, client)
+        return tracker
+
+    def test_each_unfinalized_deploy_carries_its_cause(self):
+        tracker = self._mixed()
+        by_id = {e.deploy_id: e for e in tracker.get_unfinalized()}
+        self.assertNotIn("fin", by_id)
+        self.assertEqual(set(by_id), {"late", "lost", "dead", "old"})
+
+        self.assertEqual(by_id["late"].block_number, 7)
+        self.assertIsNotNone(by_id["late"].included_at)
+        self.assertEqual(by_id["late"].outcome, "timed out")
+        self.assertEqual(by_id["late"].category, "included_not_finalized")
+
+        self.assertIsNone(by_id["lost"].block_number)
+        self.assertIsNone(by_id["lost"].included_at)
+        self.assertEqual(by_id["lost"].outcome, "timed out")
+        self.assertEqual(by_id["lost"].category, "not_included")
+
+        # Terminal wins even when a containing block was observed.
+        self.assertEqual(by_id["dead"].block_number, 7)
+        self.assertEqual(by_id["dead"].outcome, "FAILED")
+        self.assertEqual(by_id["dead"].category, "terminal")
+        self.assertEqual(by_id["old"].outcome, "EXPIRED")
+        self.assertEqual(by_id["old"].category, "terminal")
+
+    def test_count_matches_get_results_unfinalized(self):
+        tracker = self._mixed()
+        unfinalized = sum(1 for r in tracker.get_results() if r.finalization_time is None)
+        self.assertEqual(len(tracker.get_unfinalized()), unfinalized)
+
+    def test_summary_counts_every_category(self):
+        tracker = self._mixed()
+        self.assertEqual(
+            metrics.summarize_unfinalized(tracker.get_unfinalized()),
+            {"not_included": 1, "included_not_finalized": 1, "terminal": 2},
+        )
+        self.assertEqual(
+            metrics.summarize_unfinalized([]),
+            {"not_included": 0, "included_not_finalized": 0, "terminal": 0},
+        )
+
+    def test_failed_block_lookup_still_counts_as_included(self):
+        tracker = self._mixed(fail_lookups=True)
+        by_id = {e.deploy_id: e for e in tracker.get_unfinalized()}
+        self.assertEqual(by_id["late"].block_number, 0)
+        self.assertEqual(by_id["late"].category, "included_not_finalized")
+
+    def test_ordered_by_submit_time(self):
+        tracker = metrics.LifecycleTracker({})
+        for deploy_id, submitted in (("b", 2.0), ("c", 3.0), ("a", 1.0)):
+            record = _record(deploy_id)
+            record.submit_time = submitted
+            tracker.track_deploy(record)
+        self.assertEqual([e.deploy_id for e in tracker.get_unfinalized()], ["a", "b", "c"])
+
+    def test_clear_empties_the_diagnostics(self):
+        tracker = self._mixed()
+        tracker.clear()
+        self.assertEqual(tracker.get_unfinalized(), [])
 
 
 if __name__ == "__main__":

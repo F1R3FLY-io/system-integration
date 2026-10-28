@@ -45,7 +45,7 @@ The nodes in a shard are not interchangeable, and sending a request to the wrong
 
 Two rules are worth knowing before the first deploy:
 
-- **`rnode.bootstrap` is not a validator.** It runs the genesis ceremony and is absent from `genesis/bonds.txt`, and it starts with `--heartbeat-disabled`. It accepts a deploy, returns a deploy ID, and never includes it in a block — deploy queues are node-local and deploys do not gossip. Nothing reports an error; the deploy simply never lands.
+- **`rnode.bootstrap` is not a validator.** It runs the genesis ceremony and is absent from `genesis/bonds.txt`. It rejects deploy submissions because it is unbonded. Send deploys to a bonded validator.
 - **Only `rnode.readonly` serves exploratory deploys.** Balance, bonds and PoS queries are built on them, and every other node answers `Exploratory deploy can only be executed on read-only node`.
 
 ### 3. Stop

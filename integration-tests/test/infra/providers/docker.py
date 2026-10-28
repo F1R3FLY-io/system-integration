@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from ..cleanup import DockerCleanupRegistry
-from ..compose import generate_compose
+from ..compose import NODE_LOG_SINK_ARGS, generate_compose
 from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_image
 from ..genesis import generate_genesis
 from ..keys import BOOTSTRAP_NODE_ID
@@ -464,7 +464,7 @@ class DockerNodeHandle:
         """Return the node's log content.
 
         Reads the rotated files written by the node's file sink
-        (``--log-sink=both``), oldest-first so the result is chronological.
+        (``NODE_LOG_SINK_ARGS``: ``--log-sink=file``), oldest-first so the result is chronological.
         Falls back to ``docker logs`` (stdout/stderr buffer) only when no log
         file exists — the startup-failure case where the node crashed before
         the file sink opened.
@@ -1154,6 +1154,7 @@ class DockerProvider:
                 "-p",
                 f"{ports.admin}:40405",
                 image,
+                *NODE_LOG_SINK_ARGS,
                 "run",
                 "-s",
                 f"--host={container_name}",
@@ -1261,6 +1262,7 @@ class DockerProvider:
             "-p",
             f"{ports.admin}:40405",
             image,
+            *NODE_LOG_SINK_ARGS,
             "run",
             "-s",
             f"--host={container_name}",
@@ -1407,6 +1409,7 @@ class DockerProvider:
             "-p",
             f"{ports.admin}:40405",
             image,
+            *NODE_LOG_SINK_ARGS,
             *cmd,
         ]
 
