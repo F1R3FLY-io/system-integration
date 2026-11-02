@@ -40,7 +40,10 @@ services:
       - --network-id=${SHARD_NETWORK_ID:?SHARD_NETWORK_ID must be set - it is what keeps nodes holding an older chain out}
       - --validator-private-key=${CEREMONY_PRIVATE_KEY:?CEREMONY_PRIVATE_KEY must be set}
       - --required-signatures
-      - "2"
+      # Overrides conf/shard.conf's value, so the two must agree. Must be less
+      # than the bonded validator count: approve_block_protocol rejects
+      # bonds.len() <= required_sigs and the ceremony never starts.
+      - "${REQUIRED_SIGNATURES:?REQUIRED_SIGNATURES must be set - a wrong value makes the ceremony wait silently for the wrong number of approvals}"
       - --ceremony-master-mode
       - --heartbeat-disabled
     ports:
@@ -54,13 +57,17 @@ services:
       - "127.0.0.1:40405:40405"
     volumes:
       - boot-data:/var/lib/rnode
-      - ../conf/shard.conf:/var/lib/rnode/rnode.conf:z
+      - ../conf/shard.conf:/var/lib/rnode/f1r3fly.conf:z
       - ${GENESIS_DIR:?GENESIS_DIR must be set - ../genesis is the test shard and its bonds.txt names committed keys}/wallets.txt:/var/lib/rnode/genesis/wallets.txt:z
       - ${GENESIS_DIR:?GENESIS_DIR must be set}/bonds.txt:/var/lib/rnode/genesis/bonds.txt:z
     environment:
       - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
       # Passed only when set. Setting it overrides conf/shard.conf's filter.
       - RUST_LOG
+      # Tokio worker threads otherwise run on the 2 MB default, which the
+      # genesis ceremony's rholang recursion overflows, aborting the process.
+      # Images carrying their own ENV need no value here; this covers older ones.
+      - RUST_MIN_STACK=${RUST_MIN_STACK:-67108864}
     logging:
       driver: json-file
       options:
