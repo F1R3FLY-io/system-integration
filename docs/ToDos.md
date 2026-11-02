@@ -4,6 +4,114 @@ Stigmergic task tracking. See global CLAUDE.md conventions for claim format.
 
 ---
 
+## EPIC-002: Manage OCI infrastructure with OpenTofu
+
+This epic implements [US-002](UserStories.md#us-002-manage-oci-infrastructure-with-opentofu).
+OpenTofu will manage Oracle Cloud Infrastructure (OCI) resources for CI runners and long-lived shard hosts.
+The existing OCI scripts and cloud-init provide the starting point.
+
+**Status:** Pending. This entry defines planned work. No infrastructure changes have started.
+
+```yaml
+---
+epic_id: EPIC-002
+title: "Manage OCI infrastructure with OpenTofu"
+status: pending
+priority: p2
+created_at: 2026-11-02
+claimed_by: null
+claimed_at: null
+blocked_by: []
+user_story: US-002
+tasks:
+  - id: TASK-002-1
+    title: "Define resource ownership and migration boundaries"
+    status: pending
+    blocked_by: []
+    acceptance:
+      - "Inventory existing networking, access policies, images, and compute resources."
+      - "Assign one owner to each resource across OpenTofu and existing scripts."
+      - "Define separate state boundaries for shared resources, CI runners, and shard hosts."
+      - "Record the dependency on feat/shard-per-host-deployment and its integration requirements."
+
+  - id: TASK-002-2
+    title: "Configure versions and remote state"
+    status: pending
+    blocked_by: [TASK-002-1]
+    acceptance:
+      - "Set OpenTofu and provider version constraints and commit dependency locks."
+      - "Configure encrypted remote state with access controls and concurrent-write protection."
+      - "Document initial state setup and credential delivery without committed secrets."
+      - "Define backup and recovery checks for TASK-002-8."
+
+  - id: TASK-002-3
+    title: "Define OCI modules and environment inputs"
+    status: pending
+    blocked_by: [TASK-002-2]
+    acceptance:
+      - "Define networking, access policies, and compute resources within the agreed ownership boundaries."
+      - "Provide separate environment configurations for CI runners and shard hosts."
+      - "Inputs select architecture, shape, memory, image, and node count."
+      - "Outputs provide resource identifiers and host addresses for deployment tools."
+
+  - id: TASK-002-4
+    title: "Import existing shared resources"
+    status: pending
+    blocked_by: [TASK-002-3, TASK-002-7]
+    acceptance:
+      - "Document resource addresses and imports for existing shared infrastructure."
+      - "The first migration plan contains no resource replacements or deletions."
+      - "Document migration order and recovery steps without interrupting active CI jobs."
+
+  - id: TASK-002-5
+    title: "Integrate ephemeral CI runner provisioning"
+    status: pending
+    blocked_by: [TASK-002-3]
+    acceptance:
+      - "Connect runner scripts to managed infrastructure through the defined outputs."
+      - "Preserve registration, exclusive labels, memory overrides, watchdogs, diagnostics, and termination."
+      - "Document ownership of short-lived VMs and golden images without duplicate resource management."
+      - "Record consumer workflow and system-integration pin updates required in f1r3node-rust."
+
+  - id: TASK-002-6
+    title: "Connect shard hosts to the deployment workflow"
+    status: pending
+    blocked_by: [TASK-002-3]
+    acceptance:
+      - "Resolve the dependency on feat/shard-per-host-deployment before the shard deployment test."
+      - "Supply host addresses and configuration inputs to the per-host workflow."
+      - "Keep validator keys and generated genesis material outside version control."
+      - "Shard teardown cannot delete shared CI resources."
+
+  - id: TASK-002-7
+    title: "Add CI checks and reviewed deployment plans"
+    status: pending
+    blocked_by: [TASK-002-3]
+    acceptance:
+      - "Pull request checks run formatting, validation, and plan review."
+      - "Untrusted contributions receive no cloud credentials."
+      - "Deployment applies the reviewed plan through an environment approval gate."
+      - "Protect sensitive state and plan artifacts with access and retention controls."
+
+  - id: TASK-002-8
+    title: "Verify deployment and document operations"
+    status: pending
+    blocked_by: [TASK-002-4, TASK-002-5, TASK-002-6, TASK-002-7]
+    acceptance:
+      - "An isolated runner registers, completes one job, and terminates with cleanup evidence."
+      - "A separate shard test demonstrates node connectivity and finalization."
+      - "A repeated plan reports no changes after deployment."
+      - "A controlled external change demonstrates drift detection without automatic resource deletion."
+      - "A recovery exercise restores state from backup without duplicate resources."
+      - "Document imports, deployment, image updates, rollback limits, recovery, cleanup, and resource costs."
+---
+```
+
+**Completion:** Verify all US-002 acceptance criteria before marking the story complete.
+Link test evidence and the consumer workflow revisions in this epic.
+
+---
+
 ## INBOX: short heartbeat-timing harness for issue #24 from the f1r3node-rust agent (2026-10-19)
 
 <!-- claude-session-dfac55a4 in f1r3node-rust, to the system-integration agent. -->

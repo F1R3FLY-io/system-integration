@@ -1,7 +1,7 @@
 ---
 doc_type: user_stories
 version: "1.0"
-last_updated: "[DATE]"
+last_updated: "2026-11-02"
 ---
 
 # User Stories
@@ -75,6 +75,34 @@ breakage in callers this repo cannot see.
 **Completed:** 2026-07-31 (partial — two criteria deliberately superseded, two unverified)
 
 **Migration plan:** [docs/migration-to-rust-node.md](migration-to-rust-node.md)
+
+---
+
+#### US-002: Manage OCI infrastructure with OpenTofu
+
+> As a **platform operator**, I want **to manage OCI resources with OpenTofu** so that **I can reproduce environments and review changes before deployment**.
+
+**Implemented in:** EPIC-002
+
+**Status:** In Progress
+
+**Scope:** Oracle Cloud Infrastructure (OCI), including CI runners and long-lived shard hosts.
+
+**Acceptance Criteria:**
+- [ ] Versioned OpenTofu configurations define networking, access policies, and compute resources, with separate environments for CI runners and long-lived shards.
+- [ ] Documented imports adopt existing shared resources. The first migration plan contains no resource replacements or deletions.
+- [ ] Remote state has encryption, access controls, concurrent-write protection, and a tested backup and recovery procedure.
+- [ ] Inputs select architecture, shape, memory, image, and node count. OpenTofu and provider versions have explicit constraints and committed dependency locks.
+- [ ] Ephemeral runners retain registration, job isolation, watchdogs, diagnostics, and termination. Each resource has one owner across OpenTofu and existing scripts.
+- [ ] Shard host outputs supply addresses and configuration inputs for the per-host deployment workflow. The plan identifies dependencies on the deployment branch.
+- [ ] Credentials and private keys stay outside version control. Documentation explains secure credential delivery and protects sensitive state and plan artifacts.
+- [ ] Pull request checks run formatting, validation, and plan review. Checks do not grant cloud credentials to untrusted contributions.
+- [ ] Deployment applies the reviewed plan through an approval gate. Environment boundaries prevent shard teardown from deleting shared CI infrastructure.
+- [ ] An isolated environment demonstrates runner registration, one completed job, and cleanup. A separate shard test demonstrates node connectivity and finalization.
+- [ ] A repeated plan reports no changes after deployment. A controlled external change demonstrates drift detection without automatic resource deletion.
+- [ ] Operator documentation covers state setup, imports, deployment, image updates, rollback limits, recovery, cleanup, and resource costs.
+
+**Completed:** Planned
 
 ---
 
