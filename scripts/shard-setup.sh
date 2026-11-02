@@ -21,13 +21,20 @@ OUT_DIR=""
 STAKE=1000
 FORCE=no
 NODE_CLI=""
+VALIDATORS=3
+OBSERVERS=1
+FAUCETS=0
+DEV_WALLETS=0
 
 # Genesis balances. The operator vault is the faucet that funds joiners, since
 # genesis funds no joiner key; the rest cover their own deploy costs. Bonding
-# costs 5,000,000,000 phlo plus the stake, so these are generous on purpose.
+# pre-charges 5,000,000,000 phlo before executing, so these are generous on
+# purpose: a vault below that fails at cost 0 having never run.
 BAL_OPERATOR=500000000000000000
 BAL_CEREMONY=50000000000000000
 BAL_VALIDATOR=50000000000000000
+BAL_FAUCET=10000000000000000
+BAL_DEV=1000000000000000
 
 die() { printf 'shard-setup: %s\n' "$1" >&2; exit 1; }
 
@@ -39,6 +46,10 @@ while [ $# -gt 0 ]; do
     --out)        OUT_DIR="${2:-}"; shift 2 ;;
     --stake)      STAKE="${2:-}"; shift 2 ;;
     --node-cli)   NODE_CLI="${2:-}"; shift 2 ;;
+    --validators)   VALIDATORS="${2:-}"; shift 2 ;;
+    --observers)    OBSERVERS="${2:-}"; shift 2 ;;
+    --faucets)      FAUCETS="${2:-}"; shift 2 ;;
+    --dev-wallets)  DEV_WALLETS="${2:-}"; shift 2 ;;
     --force)      FORCE=yes; shift ;;
     -h|--help)    sed -n '2,14p' "$0"; exit 0 ;;
     *)            die "unknown argument: $1" ;;
@@ -47,6 +58,16 @@ done
 
 [ -n "$SHARD" ]      || die "--shard is required, e.g. --shard shard02"
 [ -n "$NETWORK_ID" ] || die "--network-id is required and must differ from every shard that has run before"
+
+for n in "$VALIDATORS" "$OBSERVERS" "$FAUCETS" "$DEV_WALLETS"; do
+  case "$n" in ''|*[!0-9]*) die "counts must be non-negative integers, got: $n" ;; esac
+done
+[ "$VALIDATORS" -ge 1 ] || die "--validators must be at least 1"
+
+# approve_block_protocol rejects bonds.len() <= required_sigs, so the ceremony
+# can never require every validator. The caller sets required-signatures in
+# conf and on the boot command line; this is the ceiling it must respect.
+MAX_SIGS=$((VALIDATORS - 1))
 
 # Both trees live in the repo and are gitignored: keeping them beside the
 # compose files that read them avoids a second location to keep in step, and
@@ -58,16 +79,21 @@ REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 [ -x "$NODE_CLI" ] || die "node_cli not found at $NODE_CLI (build it: cargo build --release --bin node_cli in services/rust-client)"
 
-ROLES="ceremony validator1 validator2 validator3 operator"
-# Advertised hostnames. Each host resolves all five via /etc/hosts; an external
-# joiner maps the same names to public IPs with --add-host.
+# Key-holding roles. Observers hold none, so they are absent here and appear
+# only in the per-host env files.
+ROLES="ceremony operator"
+for i in $(seq 1 "$VALIDATORS"); do ROLES="$ROLES validator$i"; done
+for i in $(seq 1 "$FAUCETS"); do ROLES="$ROLES faucet$i"; done
+for i in $(seq 1 "$DEV_WALLETS"); do ROLES="$ROLES dev$i"; done
+
+# Advertised hostnames. Each host resolves every name via /etc/hosts; an
+# external joiner maps the same names to public IPs with --add-host.
 host_for() {
   case "$1" in
-    ceremony)   printf 'rnode.bootstrap' ;;
-    validator1) printf 'rnode.validator1' ;;
-    validator2) printf 'rnode.validator2' ;;
-    validator3) printf 'rnode.validator3' ;;
-    readonly)   printf 'rnode.readonly' ;;
+    ceremony)    printf 'rnode.bootstrap' ;;
+    validator*)  printf 'rnode.%s' "$1" ;;
+    observer*)   printf 'rnode.readonly%s' "${1#observer}" ;;
+    *)           printf '' ;;
   esac
 }
 
@@ -99,18 +125,35 @@ vault_for() {
 }
 
 : > "$OUT_DIR/bonds.txt"
-for r in validator1 validator2 validator3; do
-  printf '%s %s\n' "$(cat "$KEYS_DIR/$r/public_key.hex")" "$STAKE" >> "$OUT_DIR/bonds.txt"
+for i in $(seq 1 "$VALIDATORS"); do
+  printf '%s %s\n' "$(cat "$KEYS_DIR/validator$i/public_key.hex")" "$STAKE" >> "$OUT_DIR/bonds.txt"
 done
 
 : > "$OUT_DIR/wallets.txt"
 printf '%s,%s\n' "$(vault_for ceremony)" "$BAL_CEREMONY" >> "$OUT_DIR/wallets.txt"
 printf '%s,%s\n' "$(vault_for operator)" "$BAL_OPERATOR" >> "$OUT_DIR/wallets.txt"
-for r in validator1 validator2 validator3; do
-  printf '%s,%s\n' "$(vault_for "$r")" "$BAL_VALIDATOR" >> "$OUT_DIR/wallets.txt"
+for i in $(seq 1 "$VALIDATORS"); do
+  printf '%s,%s\n' "$(vault_for "validator$i")" "$BAL_VALIDATOR" >> "$OUT_DIR/wallets.txt"
+done
+for i in $(seq 1 "$FAUCETS"); do
+  printf '%s,%s\n' "$(vault_for "faucet$i")" "$BAL_FAUCET" >> "$OUT_DIR/wallets.txt"
+done
+for i in $(seq 1 "$DEV_WALLETS"); do
+  printf '%s,%s\n' "$(vault_for "dev$i")" "$BAL_DEV" >> "$OUT_DIR/wallets.txt"
 done
 
 grep -q '^1111' "$OUT_DIR/wallets.txt" || die "vault derivation produced no addresses; check node_cli generate-vault-address"
+
+# Genesis rejects duplicate wallets (node #164), so a reused or empty vault is
+# a hard failure at the ceremony rather than a silent merge.
+wallet_lines=$(wc -l < "$OUT_DIR/wallets.txt" | tr -d ' ')
+wallet_uniq=$(cut -d, -f1 "$OUT_DIR/wallets.txt" | sort -u | wc -l | tr -d ' ')
+[ "$wallet_lines" = "$wallet_uniq" ] \
+  || die "wallets.txt has $wallet_lines entries but only $wallet_uniq distinct vaults"
+bond_lines=$(wc -l < "$OUT_DIR/bonds.txt" | tr -d ' ')
+bond_uniq=$(cut -d' ' -f1 "$OUT_DIR/bonds.txt" | sort -u | wc -l | tr -d ' ')
+[ "$bond_lines" = "$bond_uniq" ] \
+  || die "bonds.txt has $bond_lines entries but only $bond_uniq distinct keys"
 
 printf '\n=== genesis (%s)\n' "$OUT_DIR"
 printf 'bonds.txt    %s validators at stake %s\n' "$(wc -l < "$OUT_DIR/bonds.txt" | tr -d ' ')" "$STAKE"
@@ -137,6 +180,8 @@ emit_env() { # emit_env <role> <node-host> <key-role-or-none>
     printf '\n# Pin explicitly: compose resolves :latest silently otherwise.\n'
     printf 'F1R3FLY_NODE_IMAGE=\n'
     if [ "$role" = boot ]; then
+      printf '\n# Must match conf/shard.conf; the flag overrides it.\n'
+      printf 'REQUIRED_SIGNATURES=%s\n' "$MAX_SIGS"
       printf '\n# A ceremony master takes no bootstrap peer.\n'
       printf 'CEREMONY_PRIVATE_KEY=%s\n' "$(cat "$KEYS_DIR/$keyrole/private_key.hex")"
     else
@@ -155,20 +200,41 @@ emit_env() { # emit_env <role> <node-host> <key-role-or-none>
 }
 
 printf '\n=== per-host env (%s)\n' "$ENV_DIR"
-emit_env boot       "$(host_for ceremony)"   ceremony
-emit_env validator1 "$(host_for validator1)" validator1
-emit_env validator2 "$(host_for validator2)" validator2
-emit_env validator3 "$(host_for validator3)" validator3
-emit_env readonly   "$(host_for readonly)"   none
+emit_env boot "$(host_for ceremony)" ceremony
+for i in $(seq 1 "$VALIDATORS"); do
+  emit_env "validator$i" "$(host_for "validator$i")" "validator$i"
+done
+for i in $(seq 1 "$OBSERVERS"); do
+  emit_env "readonly$i" "$(host_for "observer$i")" none
+done
+
+TOTAL_HOSTS=$((1 + VALIDATORS + OBSERVERS))
+
+printf '\n=== client vaults (keys stay out of every .env.shard)\n'
+printf '%-11s %s\n' operator "$(vault_for operator)"
+for i in $(seq 1 "$FAUCETS"); do
+  printf '%-11s %s\n' "faucet$i" "$(vault_for "faucet$i")"
+done
+for i in $(seq 1 "$DEV_WALLETS"); do
+  printf '%-11s %s\n' "dev$i" "$(vault_for "dev$i")"
+done
+
+printf '\n=== advertised names for the /etc/hosts block\n'
+printf '  %s\n' "$(host_for ceremony)"
+for i in $(seq 1 "$VALIDATORS"); do printf '  %s\n' "$(host_for "validator$i")"; done
+for i in $(seq 1 "$OBSERVERS"); do printf '  %s\n' "$(host_for "observer$i")"; done
 
 cat <<EOF
 
 === remaining, by hand
-  1. Set F1R3FLY_NODE_IMAGE in each env file.
-  2. Install an /etc/hosts block on all five hosts mapping the five rnode.*
-     names to their private IPs.
+  1. Set F1R3FLY_NODE_IMAGE in each env file. Pin the manifest-list digest, not
+     a per-arch one, or hosts of the other architecture cannot pull it.
+  2. Install an /etc/hosts block on all $TOTAL_HOSTS hosts mapping the names
+     above to their private IPs.
   3. Copy genesis-shard/ to every host and confirm the sha256 above matches.
   4. Start the boot host alone, read BOOTSTRAP_NODE_ID from its /api/status
-     address field, then fill it into the other four env files.
-  5. Operator faucet vault: $(vault_for operator)
+     address field, then fill it into the other $((TOTAL_HOSTS - 1)) env files.
+  5. conf/shard.conf's required-signatures must equal the REQUIRED_SIGNATURES
+     written into the boot env file ($MAX_SIGS). The flag wins, and a value at
+     or above the bonded count refuses to start.
 EOF
