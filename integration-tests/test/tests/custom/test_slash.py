@@ -62,7 +62,7 @@ from contextlib import contextmanager
 from typing import Dict, Generator, Optional, Tuple
 
 import pytest
-from f1r3fly.crypto import PrivateKey
+from f1r3fly.crypto import PrivateKey, gen_block_hash_from_block
 from f1r3fly.pb.CasperMessage_pb2 import (  # pylint: disable=no-name-in-module
     BlockMessageProto as BlockMessage,
     JustificationProto as Justification,
@@ -80,8 +80,8 @@ from ...infra.p2p_client import (
     generate_block_hash,
     is_exist_slash_deploy,
     p2p_protocol_client,
-    rust_block_hash,
 )
+from ...infra.providers.docker import DockerProvider
 from ...infra.polling import wait_for_block_visible, wait_for_log_match
 from ...infra.shard import Shard
 
@@ -127,6 +127,8 @@ def _slash_shard(
     ``--epoch-length`` (and reach the second epoch in 3 proposes instead
     of 10) without forking the helper.
     """
+    if isinstance(provider, DockerProvider) and sys.platform != "linux":
+        pytest.skip("Docker containers reach the test process only with native Linux networking")
     bonds = [(VALIDATOR1_ID, 100), (VALIDATOR2_ID, 100)]
     if three_validators:
         bonds.append((VALIDATOR3_ID, 100))
@@ -141,26 +143,19 @@ def _slash_shard(
         v1 = shard.node("validator1")
         v2 = shard.node("validator2")
         with p2p_protocol_client(
-            shard.network_name, receive_timeout=float(timeouts.command)
+            shard.boot.p2p_reply_host, receive_timeout=float(timeouts.command)
         ) as client:
             yield (shard, v1, v2, client)
     finally:
         shard.destroy()
 
 
-_SKIP_ON_NON_LINUX = pytest.mark.skipif(
-    sys.platform in ("win32", "cygwin", "darwin"),
-    reason="NodeClient requires native Linux Docker bridge routing for host-to-container traffic.",
-)
-
-
-
-
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_invalid_block_hash(provider, timeouts) -> None:
-    """v1 re-signs a valid block with a tampered hash; v2 records
-    :class:`InvalidBlockHash` and slashes v1.
+    """v1 sends a block whose declared hash does not match its content. v2
+    ignores it without recording a verdict, and v1 keeps its stake: a
+    signature over a hash the content does not produce pins nothing on its
+    signer.
     """
     with _slash_shard(provider, timeouts) as (_shard, validator1, validator2, client):
         validator1.deploy_string(HELLO_CONTRACT, BONDED_VALIDATOR_KEY_1)
@@ -168,16 +163,9 @@ def test_slash_invalid_block_hash(provider, timeouts) -> None:
 
         wait_for_block_visible(validator2, blockhash, timeouts.node_startup)
 
-        block_info = validator1.get_block(blockhash)
-        block_msg = client.block_request(block_info.blockInfo.blockHash, validator1)
-
-        # Foundational invariant: the Python hash shim must agree with the
-        # Rust node's hash on every unmodified block. If this fails, the
-        # Rust hash_block algorithm has changed and the shim needs to be
-        # updated — see module docstring.
-        assert rust_block_hash(block_msg) == block_msg.blockHash, (
-            "rust_block_hash() shim diverged from Rust hash_block(); "
-            "see casper/src/rust/util/proto_util.rs:380 in f1r3node-rust."
+        block_msg = client.block_request(blockhash, validator1)
+        assert gen_block_hash_from_block(block_msg) == block_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         evil_block_hash = generate_block_hash()
@@ -187,20 +175,21 @@ def test_slash_invalid_block_hash(provider, timeouts) -> None:
 
         client.send_block(block_msg, validator2)
 
-        record_invalid = re.compile(
-            rf"Recording invalid block {evil_block_hash.hex()[:10]}\.\.\. for InvalidBlockHash\."
+        ignored = re.compile(
+            rf"Ignoring block {evil_block_hash.hex()[:10]}\.\.\. because block hash "
+            rf"{evil_block_hash.hex()[:10]}\.\.\. does not match"
         )
-        wait_for_log_match(validator2, record_invalid, timeouts.command)
+        wait_for_log_match(validator2, ignored, timeouts.command)
 
         validator2.deploy_string(HELLO_CONTRACT, BONDED_VALIDATOR_KEY_2)
-        slashed_block_hash = validator2.propose()
+        next_block_hash = validator2.propose()
 
-        slashed_block_info = validator2.get_block(slashed_block_hash)
-        bonds_validators = {b.validator: b.stake for b in slashed_block_info.blockInfo.bonds}
-        assert bonds_validators[BONDED_VALIDATOR_KEY_1.get_public_key().to_hex()] == 0
+        next_block = client.block_request(next_block_hash, validator2)
+        assert not is_exist_slash_deploy(next_block)
+        bonds = {b.validator.hex(): b.stake for b in next_block.body.state.bonds}
+        assert bonds[BONDED_VALIDATOR_KEY_1.get_public_key().to_hex()] == 100
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_invalid_block_number(provider, timeouts) -> None:
     """v1 ships a block whose ``blockNumber`` is not ``max(parents)+1``; v2
@@ -214,8 +203,8 @@ def test_slash_invalid_block_number(provider, timeouts) -> None:
 
         block_info = validator1.get_block(blockhash)
         block_msg = client.block_request(block_info.blockInfo.blockHash, validator1)
-        assert rust_block_hash(block_msg) == block_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(block_msg) == block_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         invalid = BlockMessage()
@@ -234,7 +223,7 @@ def test_slash_invalid_block_number(provider, timeouts) -> None:
         # `authorized_slash_candidates` and producing no slash deploy.
         invalid.body.state.blockNumber = 5  # pylint: disable=maybe-no-member
         invalid.header.timestamp = block_msg.header.timestamp + 1  # pylint: disable=maybe-no-member
-        invalid_block_hash = rust_block_hash(invalid)
+        invalid_block_hash = gen_block_hash_from_block(invalid)
         invalid.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(invalid_block_hash)
         invalid.blockHash = invalid_block_hash
 
@@ -254,7 +243,6 @@ def test_slash_invalid_block_number(provider, timeouts) -> None:
         assert bonds_validators[BONDED_VALIDATOR_KEY_1.get_public_key().to_hex()] == 0
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_invalid_block_seq(provider, timeouts) -> None:
     """v1 ships a block whose ``seqNum`` is not its previous +1; v2 records
@@ -268,15 +256,15 @@ def test_slash_invalid_block_seq(provider, timeouts) -> None:
 
         block_info = validator1.get_block(blockhash)
         block_msg = client.block_request(block_info.blockInfo.blockHash, validator1)
-        assert rust_block_hash(block_msg) == block_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(block_msg) == block_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         invalid = BlockMessage()
         invalid.CopyFrom(block_msg)
         invalid.seqNum = 1000
         invalid.header.timestamp = block_msg.header.timestamp + 1  # pylint: disable=maybe-no-member
-        invalid_block_hash = rust_block_hash(invalid)
+        invalid_block_hash = gen_block_hash_from_block(invalid)
         invalid.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(invalid_block_hash)
         invalid.blockHash = invalid_block_hash
 
@@ -296,7 +284,6 @@ def test_slash_invalid_block_seq(provider, timeouts) -> None:
         assert bonds_validators[BONDED_VALIDATOR_KEY_1.get_public_key().to_hex()] == 0
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_justification_not_correct(provider, timeouts) -> None:
     """v1 ships a block with an extra justification entry from an unknown
@@ -315,8 +302,8 @@ def test_slash_justification_not_correct(provider, timeouts) -> None:
 
         block_info = validator1.get_block(blockhash)
         block_msg = client.block_request(block_info.blockInfo.blockHash, validator1)
-        assert rust_block_hash(block_msg) == block_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(block_msg) == block_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         invalid = BlockMessage()
@@ -327,7 +314,7 @@ def test_slash_justification_not_correct(provider, timeouts) -> None:
         )
         invalid.justifications.append(error_justification)  # pylint: disable=maybe-no-member
         invalid.header.timestamp = block_msg.header.timestamp + 1  # pylint: disable=maybe-no-member
-        invalid_block_hash = rust_block_hash(invalid)
+        invalid_block_hash = gen_block_hash_from_block(invalid)
         invalid.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(invalid_block_hash)
         invalid.blockHash = invalid_block_hash
 
@@ -346,7 +333,6 @@ def test_slash_justification_not_correct(provider, timeouts) -> None:
         assert bonds_validators[BONDED_VALIDATOR_KEY_1.get_public_key().to_hex()] == 0
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_unauthorized_slash_deploy(provider, timeouts) -> None:
     """v2 proposes a block carrying a forged ``SlashSystemDeploy`` that
@@ -401,8 +387,8 @@ def test_slash_unauthorized_slash_deploy(provider, timeouts) -> None:
 
         v2_block_info = validator2.get_block(v2_blockhash)
         v2_block_msg = client.block_request(v2_block_info.blockInfo.blockHash, validator2)
-        assert rust_block_hash(v2_block_msg) == v2_block_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(v2_block_msg) == v2_block_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         # Forge: a SlashSystemDeploy citing an invalid_block_hash that
@@ -436,7 +422,7 @@ def test_slash_unauthorized_slash_deploy(provider, timeouts) -> None:
         forged_block.CopyFrom(v2_block_msg)
         forged_block.body.systemDeploys.append(forged_slash)  # pylint: disable=maybe-no-member
         forged_block.header.timestamp = v2_block_msg.header.timestamp + 1  # pylint: disable=maybe-no-member
-        forged_block_hash = rust_block_hash(forged_block)
+        forged_block_hash = gen_block_hash_from_block(forged_block)
         forged_block.sig = BONDED_VALIDATOR_KEY_2.sign_block_hash(forged_block_hash)
         forged_block.blockHash = forged_block_hash
 
@@ -464,7 +450,6 @@ def test_slash_unauthorized_slash_deploy(provider, timeouts) -> None:
         )
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_references_valid_block(provider, timeouts) -> None:
     """v2 proposes a block carrying a ``SlashSystemDeploy`` whose
@@ -527,8 +512,8 @@ def test_slash_references_valid_block(provider, timeouts) -> None:
 
         v2_block_info = validator2.get_block(v2_blockhash)
         v2_block_msg = client.block_request(v2_block_info.blockInfo.blockHash, validator2)
-        assert rust_block_hash(v2_block_msg) == v2_block_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(v2_block_msg) == v2_block_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         # The slash references v1's *valid* first block. The DAG has it
@@ -552,7 +537,7 @@ def test_slash_references_valid_block(provider, timeouts) -> None:
         forged_block.CopyFrom(v2_block_msg)
         forged_block.body.systemDeploys.append(forged_slash)  # pylint: disable=maybe-no-member
         forged_block.header.timestamp = v2_block_msg.header.timestamp + 1  # pylint: disable=maybe-no-member
-        forged_block_hash = rust_block_hash(forged_block)
+        forged_block_hash = gen_block_hash_from_block(forged_block)
         forged_block.sig = BONDED_VALIDATOR_KEY_2.sign_block_hash(forged_block_hash)
         forged_block.blockHash = forged_block_hash
 
@@ -576,7 +561,6 @@ def test_slash_references_valid_block(provider, timeouts) -> None:
         )
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_self_regression(provider, timeouts) -> None:
     """v1 proposes block A then block B; v1 then forges a third block
@@ -634,8 +618,8 @@ def test_slash_self_regression(provider, timeouts) -> None:
         # ``cur_lms[V1] = block A`` (read from block B's justifications).
         v1_block_info_a = validator1.get_block(v1_blockhash_a)
         block_msg_a = client.block_request(v1_block_info_a.blockInfo.blockHash, validator1)
-        assert rust_block_hash(block_msg_a) == block_msg_a.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(block_msg_a) == block_msg_a.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         # Forge a NEW V1-signed block claiming seq=1 (NOT seq=3) with
@@ -678,7 +662,7 @@ def test_slash_self_regression(provider, timeouts) -> None:
         # justification_regressions fires in block_summary before
         # validate_block_checkpoint).
         forged.extraBytes = block_msg_a.extraBytes + b'\x00'  # pylint: disable=maybe-no-member
-        forged_hash = rust_block_hash(forged)
+        forged_hash = gen_block_hash_from_block(forged)
         forged.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(forged_hash)
         forged.blockHash = forged_hash
 
@@ -696,7 +680,6 @@ def test_slash_self_regression(provider, timeouts) -> None:
         assert bonds_validators[BONDED_VALIDATOR_KEY_1.get_public_key().to_hex()] == 0
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_invalid_bonds_cache(provider, timeouts) -> None:
     """v1 proposes a valid block; v1 then mutates the block's
@@ -732,8 +715,8 @@ def test_slash_invalid_bonds_cache(provider, timeouts) -> None:
 
         v1_block_info = validator1.get_block(v1_blockhash)
         block_msg = client.block_request(v1_block_info.blockInfo.blockHash, validator1)
-        assert rust_block_hash(block_msg) == block_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(block_msg) == block_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         # Forge: halve v1's stake in the bonds cache. The post-state
@@ -755,7 +738,7 @@ def test_slash_invalid_bonds_cache(provider, timeouts) -> None:
         # any change makes the replay's events diverge from the
         # deployLog and the variant fires as InvalidTransaction
         # instead of InvalidBondsCache.
-        forged_hash = rust_block_hash(forged)
+        forged_hash = gen_block_hash_from_block(forged)
         forged.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(forged_hash)
         forged.blockHash = forged_hash
 
@@ -773,7 +756,6 @@ def test_slash_invalid_bonds_cache(provider, timeouts) -> None:
         assert bonds_validators[BONDED_VALIDATOR_KEY_1.get_public_key().to_hex()] == 0
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_invalid_repeat_deploy(provider, timeouts) -> None:
     """v1 proposes a block; v1 then forges a second block at the next
@@ -803,8 +785,8 @@ def test_slash_invalid_repeat_deploy(provider, timeouts) -> None:
 
         v1_block_info = validator1.get_block(v1_blockhash)
         block_msg = client.block_request(v1_block_info.blockInfo.blockHash, validator1)
-        assert rust_block_hash(block_msg) == block_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(block_msg) == block_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         # Forge a successor block carrying the same deploy.
@@ -815,7 +797,7 @@ def test_slash_invalid_repeat_deploy(provider, timeouts) -> None:
         forged.header.timestamp = int(time.time() * 1000)  # pylint: disable=maybe-no-member
         forged.header.ClearField("parentsHashList")  # pylint: disable=maybe-no-member
         forged.header.parentsHashList.append(bytes.fromhex(v1_blockhash))  # pylint: disable=maybe-no-member
-        forged_hash = rust_block_hash(forged)
+        forged_hash = gen_block_hash_from_block(forged)
         forged.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(forged_hash)
         forged.blockHash = forged_hash
 
@@ -833,7 +815,6 @@ def test_slash_invalid_repeat_deploy(provider, timeouts) -> None:
         assert bonds_validators[BONDED_VALIDATOR_KEY_1.get_public_key().to_hex()] == 0
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_invalid_validator_approve_evil_block(provider, timeouts) -> None:
     """v1 ships a hash-tampered block to v2; v2 builds on it without
@@ -880,8 +861,8 @@ def test_slash_invalid_validator_approve_evil_block(provider, timeouts) -> None:
 
         block_info = validator1.get_block(blockhash)
         block_msg = client.block_request(block_info.blockInfo.blockHash, validator1)
-        assert rust_block_hash(block_msg) == block_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(block_msg) == block_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         evil_block_hash = generate_block_hash()
@@ -946,7 +927,7 @@ def test_slash_invalid_validator_approve_evil_block(provider, timeouts) -> None:
             genesis_hash_bytes
         )
         block_not_slash.header.timestamp = int(time.time() * 1000)  # pylint: disable=maybe-no-member
-        invalid_block_hash = rust_block_hash(block_not_slash)
+        invalid_block_hash = gen_block_hash_from_block(block_not_slash)
         block_not_slash.sig = BONDED_VALIDATOR_KEY_2.sign_block_hash(invalid_block_hash)
         block_not_slash.blockHash = invalid_block_hash
 
@@ -977,7 +958,6 @@ def test_slash_invalid_validator_approve_evil_block(provider, timeouts) -> None:
         assert bonds_validators[BONDED_VALIDATOR_KEY_2.get_public_key().to_hex()] == 0
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_GHOST_disobeyed(provider, timeouts) -> None:
     """v1 ships a block that mutates parents away from the GHOST winner
@@ -1038,8 +1018,8 @@ def test_slash_GHOST_disobeyed(provider, timeouts) -> None:
         block_info1 = validator1.get_block(blockhash1)
         block_info3 = validator1.get_block(blockhash3)
         block_msg3 = client.block_request(block_info3.blockInfo.blockHash, validator1)
-        assert rust_block_hash(block_msg3) == block_msg3.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(block_msg3) == block_msg3.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         invalid = BlockMessage()
@@ -1059,7 +1039,7 @@ def test_slash_GHOST_disobeyed(provider, timeouts) -> None:
             BONDED_VALIDATOR_KEY_2, HELLO_CONTRACT, 1, 1000000, shard_id='root',
         )
         invalid.body.deploys[0].deploy.CopyFrom(deploy_data)  # pylint: disable=maybe-no-member
-        invalid_block_hash = rust_block_hash(invalid)
+        invalid_block_hash = gen_block_hash_from_block(invalid)
         invalid.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(invalid_block_hash)
         invalid.blockHash = invalid_block_hash
 
@@ -1084,7 +1064,6 @@ def test_slash_GHOST_disobeyed(provider, timeouts) -> None:
         assert bonds_validators[BONDED_VALIDATOR_KEY_1.get_public_key().to_hex()] == 0
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_node_working_right_after_slashing(provider, timeouts) -> None:
     """After slashing v1 for :class:`InvalidBlockHash`, v2 must keep
@@ -1099,8 +1078,8 @@ def test_node_working_right_after_slashing(provider, timeouts) -> None:
 
         block_info = validator1.get_block(blockhash)
         block_msg = client.block_request(block_info.blockInfo.blockHash, validator1)
-        assert rust_block_hash(block_msg) == block_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(block_msg) == block_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         evil_block_hash = generate_block_hash()
@@ -1135,7 +1114,6 @@ def test_node_working_right_after_slashing(provider, timeouts) -> None:
             "slash deploy should be emitted only once per offense"
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_ignorable_equivocation(provider, timeouts) -> None:
     """v1 ships two distinct blocks at the same ``(sender, seqNum,
@@ -1201,8 +1179,8 @@ def test_slash_ignorable_equivocation(provider, timeouts) -> None:
 
         b1_block_info = validator1.get_block(b1_hash)
         b1_msg = client.block_request(b1_block_info.blockInfo.blockHash, validator1)
-        assert rust_block_hash(b1_msg) == b1_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(b1_msg) == b1_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         # Sibling b1p: same body, +1 byte in block.extraBytes, V1-signed.
@@ -1220,7 +1198,7 @@ def test_slash_ignorable_equivocation(provider, timeouts) -> None:
         b1p = BlockMessage()
         b1p.CopyFrom(b1_msg)
         b1p.extraBytes = b1_msg.extraBytes + b'\x00'  # pylint: disable=maybe-no-member
-        b1p_hash = rust_block_hash(b1p)
+        b1p_hash = gen_block_hash_from_block(b1p)
         b1p.blockHash = b1p_hash
         b1p.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(b1p_hash)
 
@@ -1239,7 +1217,6 @@ def test_slash_ignorable_equivocation(provider, timeouts) -> None:
         )
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_admissible_equivocation(provider, timeouts) -> None:
     """v1 ships two distinct blocks at the same ``(sender, seqNum,
@@ -1297,8 +1274,8 @@ def test_slash_admissible_equivocation(provider, timeouts) -> None:
 
         b1_block_info = validator1.get_block(b1_hash)
         b1_msg = client.block_request(b1_block_info.blockInfo.blockHash, validator1)
-        assert rust_block_hash(b1_msg) == b1_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(b1_msg) == b1_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         # Sibling b1p: same body, +1 byte in block.extraBytes, V1-signed.
@@ -1310,7 +1287,7 @@ def test_slash_admissible_equivocation(provider, timeouts) -> None:
         b1p = BlockMessage()
         b1p.CopyFrom(b1_msg)
         b1p.extraBytes = b1_msg.extraBytes + b'\x00'  # pylint: disable=maybe-no-member
-        b1p_hash = rust_block_hash(b1p)
+        b1p_hash = gen_block_hash_from_block(b1p)
         b1p.blockHash = b1p_hash
         b1p.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(b1p_hash)
 
@@ -1340,7 +1317,7 @@ def test_slash_admissible_equivocation(provider, timeouts) -> None:
         child.header.ClearField("parentsHashList")  # pylint: disable=maybe-no-member
         child.header.parentsHashList.append(b1p_hash)  # pylint: disable=maybe-no-member
         child.header.timestamp = b1_msg.header.timestamp + 2  # pylint: disable=maybe-no-member
-        child_hash = rust_block_hash(child)
+        child_hash = gen_block_hash_from_block(child)
         child.sig = BONDED_VALIDATOR_KEY_2.sign_block_hash(child_hash)
         child.blockHash = child_hash
 
@@ -1377,7 +1354,6 @@ def test_slash_admissible_equivocation(provider, timeouts) -> None:
         )
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_neglected_equivocation(provider, timeouts) -> None:
     """v1 equivocates (b1 / b1p). v2 builds a block citing b1p in
@@ -1436,8 +1412,8 @@ def test_slash_neglected_equivocation(provider, timeouts) -> None:
 
         b1_block_info = validator1.get_block(b1_hash)
         b1_msg = client.block_request(b1_block_info.blockInfo.blockHash, validator1)
-        assert rust_block_hash(b1_msg) == b1_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(b1_msg) == b1_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         # Sibling b1p (V1-signed equivocation). Mutate block.extraBytes
@@ -1447,7 +1423,7 @@ def test_slash_neglected_equivocation(provider, timeouts) -> None:
         b1p = BlockMessage()
         b1p.CopyFrom(b1_msg)
         b1p.extraBytes = b1_msg.extraBytes + b'\x00'  # pylint: disable=maybe-no-member
-        b1p_hash = rust_block_hash(b1p)
+        b1p_hash = gen_block_hash_from_block(b1p)
         b1p.blockHash = b1p_hash
         b1p.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(b1p_hash)
 
@@ -1496,7 +1472,7 @@ def test_slash_neglected_equivocation(provider, timeouts) -> None:
         neglect.header.ClearField("parentsHashList")  # pylint: disable=maybe-no-member
         neglect.header.parentsHashList.append(bytes.fromhex(b1_hash))  # pylint: disable=maybe-no-member
         neglect.header.timestamp = b1_msg.header.timestamp + 2  # pylint: disable=maybe-no-member
-        neglect_hash = rust_block_hash(neglect)
+        neglect_hash = gen_block_hash_from_block(neglect)
         neglect.sig = BONDED_VALIDATOR_KEY_2.sign_block_hash(neglect_hash)
         neglect.blockHash = neglect_hash
 
@@ -1522,7 +1498,6 @@ def test_slash_neglected_equivocation(provider, timeouts) -> None:
         )
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_late_released_equivocation(provider, timeouts) -> None:
     """v1 proposes b1, withholds the equivocating sibling b1p. v2
@@ -1574,8 +1549,8 @@ def test_slash_late_released_equivocation(provider, timeouts) -> None:
 
         b1_block_info = validator1.get_block(b1_hash)
         b1_msg = client.block_request(b1_block_info.blockInfo.blockHash, validator1)
-        assert rust_block_hash(b1_msg) == b1_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(b1_msg) == b1_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         # Pre-build b1p; DO NOT release yet. Mutate block.extraBytes
@@ -1585,7 +1560,7 @@ def test_slash_late_released_equivocation(provider, timeouts) -> None:
         b1p = BlockMessage()
         b1p.CopyFrom(b1_msg)
         b1p.extraBytes = b1_msg.extraBytes + b'\x00'  # pylint: disable=maybe-no-member
-        b1p_hash = rust_block_hash(b1p)
+        b1p_hash = gen_block_hash_from_block(b1p)
         b1p.blockHash = b1p_hash
         b1p.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(b1p_hash)
 
@@ -1614,7 +1589,6 @@ def test_slash_late_released_equivocation(provider, timeouts) -> None:
         )
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_stale_evidence_rebond(provider, timeouts) -> None:
     """v2 attempts to slash v1 in the current epoch using evidence from
@@ -1687,15 +1661,15 @@ def test_slash_stale_evidence_rebond(provider, timeouts) -> None:
 
         v1_a_block_info = validator1.get_block(v1_a_hash)
         v1_a_msg = client.block_request(v1_a_block_info.blockInfo.blockHash, validator1)
-        assert rust_block_hash(v1_a_msg) == v1_a_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(v1_a_msg) == v1_a_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         evil = BlockMessage()
         evil.CopyFrom(v1_a_msg)
         evil.body.state.blockNumber = 0  # pylint: disable=maybe-no-member
         evil.header.timestamp = v1_a_msg.header.timestamp + 1  # pylint: disable=maybe-no-member
-        evil_hash = rust_block_hash(evil)
+        evil_hash = gen_block_hash_from_block(evil)
         evil.sig = BONDED_VALIDATOR_KEY_1.sign_block_hash(evil_hash)
         evil.blockHash = evil_hash
         client.send_block(evil, validator2)
@@ -1725,8 +1699,8 @@ def test_slash_stale_evidence_rebond(provider, timeouts) -> None:
         wait_for_block_visible(validator3, v2_b_hash, timeouts.node_startup)
         v2_b_block_info = validator2.get_block(v2_b_hash)
         v2_b_msg = client.block_request(v2_b_block_info.blockInfo.blockHash, validator2)
-        assert rust_block_hash(v2_b_msg) == v2_b_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(v2_b_msg) == v2_b_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         forged_slash = ProcessedSystemDeployProto(
@@ -1750,7 +1724,7 @@ def test_slash_stale_evidence_rebond(provider, timeouts) -> None:
         forged.CopyFrom(v2_b_msg)
         forged.body.systemDeploys.append(forged_slash)  # pylint: disable=maybe-no-member
         forged.header.timestamp = v2_b_msg.header.timestamp + 1  # pylint: disable=maybe-no-member
-        forged_hash = rust_block_hash(forged)
+        forged_hash = gen_block_hash_from_block(forged)
         forged.sig = BONDED_VALIDATOR_KEY_2.sign_block_hash(forged_hash)
         forged.blockHash = forged_hash
 
@@ -1772,7 +1746,6 @@ def test_slash_stale_evidence_rebond(provider, timeouts) -> None:
         )
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_slash_self_correcting_block_admitted(provider, timeouts) -> None:
     """v1 ships an invalid block; v2's natural propose response
@@ -1837,8 +1810,8 @@ def test_slash_self_correcting_block_admitted(provider, timeouts) -> None:
 
         v1_block_info = validator1.get_block(v1_hash)
         block_msg = client.block_request(v1_block_info.blockInfo.blockHash, validator1)
-        assert rust_block_hash(block_msg) == block_msg.blockHash, (
-            "rust_block_hash() shim diverged; see module docstring."
+        assert gen_block_hash_from_block(block_msg) == block_msg.blockHash, (
+            "pyf1r3fly's block hash diverged from the node's"
         )
 
         evil_hash = generate_block_hash()
@@ -1894,7 +1867,6 @@ def test_slash_self_correcting_block_admitted(provider, timeouts) -> None:
         )
 
 
-@_SKIP_ON_NON_LINUX
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_no_false_positive_slash_on_propose_imbalance(provider, timeouts) -> None:
     """Regression test for the *safety arm* of T-12PF (proposer

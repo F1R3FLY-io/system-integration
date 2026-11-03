@@ -11,7 +11,7 @@ not a ``docker.Container``.
 from __future__ import annotations
 
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from f1r3fly.client import F1r3flyClient
 from f1r3fly.const import DEFAULT_PHLO_LIMIT, DEFAULT_PHLO_PRICE
@@ -108,46 +108,15 @@ class Node:
         session directory."""
         return getattr(self._handle, "data_dir", None)
 
-    def peer_ip(self, network: str) -> str:
-        """Container IP on the given Docker network. Docker provider only.
+    def p2p_address(self) -> Tuple[str, int]:
+        return self._handle.p2p_address()
 
-        Used by ``infra.p2p_client`` to open a host-side raw TCP socket
-        to the node's transport-layer port (40400). Requires native
-        Linux Docker bridge routing — callers must apply their own
-        platform skip.
-        """
-        if not hasattr(self._handle, "container_ip"):
-            raise RuntimeError(
-                f"peer_ip requires a Docker-style handle exposing container_ip(); "
-                f"got {type(self._handle).__name__}"
-            )
-        return self._handle.container_ip(network)
+    def tls_certificate(self) -> bytes:
+        return self._handle.tls_certificate()
 
-    def peer_cert(self) -> bytes:
-        """Read this node's TLS server certificate from inside its container.
-
-        Docker provider only. Used by ``infra.p2p_client.NodeClient`` to
-        construct mTLS channel credentials when injecting forged blocks.
-        """
-        if not hasattr(self._handle, "peer_cert"):
-            raise RuntimeError(
-                f"peer_cert requires a Docker-style handle exposing peer_cert(); "
-                f"got {type(self._handle).__name__}"
-            )
-        return self._handle.peer_cert()
-
-    def peer_key(self) -> bytes:
-        """Read this node's TLS private key from inside its container.
-
-        Docker provider only. Used by ``infra.p2p_client.NodeClient`` to
-        compute the node ID for ``ssl_target_name_override``.
-        """
-        if not hasattr(self._handle, "peer_key"):
-            raise RuntimeError(
-                f"peer_key requires a Docker-style handle exposing peer_key(); "
-                f"got {type(self._handle).__name__}"
-            )
-        return self._handle.peer_key()
+    @property
+    def p2p_reply_host(self) -> str:
+        return self._handle.p2p_reply_host
 
     # ── HTTP API helpers ──
 

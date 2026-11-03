@@ -13,7 +13,7 @@ import logging
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from ..cleanup import DockerCleanupRegistry
 from ..compose import NODE_LOG_SINK_ARGS, generate_compose
@@ -534,48 +534,12 @@ class DockerNodeHandle:
             return False
         return (result.stdout or "").strip() == "running"
 
-    def container_ip(self, network: str) -> str:
-        """IPv4 address of this container on ``network`` (substring match).
+    def p2p_address(self) -> Tuple[str, int]:
+        return ("127.0.0.1", self._ports.protocol)
 
-        Used by the raw-P2P slashing client to open a host-side TCP
-        socket to the container's transport port 40400. Requires native
-        Linux Docker bridge routing — caller is responsible for the
-        platform skip (Linux-only). Substring match so callers can pass
-        either the full ``<project>_<network>`` name or just the bare
-        suffix.
-        """
-        import json
-        result = _docker("inspect", self._name)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"docker inspect {self._name} failed: {result.stderr.strip()}"
-            )
-        try:
-            payload = json.loads(result.stdout)
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"docker inspect {self._name} returned non-JSON: {e}")
-        if not payload:
-            raise RuntimeError(f"docker inspect {self._name} returned empty payload")
-        networks = payload[0].get("NetworkSettings", {}).get("Networks", {})
-        for name, cfg in networks.items():
-            if network in name:
-                ip = cfg.get("IPAddress")
-                if ip:
-                    return ip
-        raise RuntimeError(
-            f"container {self._name} not connected to a network matching "
-            f"{network!r}; available: {list(networks)}"
-        )
-
-    def exec(self, *cmd: str) -> bytes:
-        """Run a command in the container and return raw stdout bytes.
-
-        Used by the raw-P2P slashing client to read the node's PEM cert
-        and key files for mTLS handshakes. Raises ``RuntimeError`` if
-        ``docker exec`` returns non-zero.
-        """
+    def tls_certificate(self) -> bytes:
         result = subprocess.run(
-            ["docker", "exec", self._name, *cmd],
+            ["docker", "exec", self._name, "cat", "/var/lib/rnode/node.certificate.pem"],
             capture_output=True,
             check=False,
             timeout=30,
@@ -583,18 +547,26 @@ class DockerNodeHandle:
         if result.returncode != 0:
             stderr = (result.stderr or b"").decode("utf-8", errors="replace").strip()
             raise RuntimeError(
-                f"docker exec {self._name} {' '.join(cmd)} failed "
+                f"reading the TLS certificate of {self._name} failed "
                 f"(rc={result.returncode}): {stderr}"
             )
         return result.stdout
 
-    def peer_cert(self) -> bytes:
-        """Read /var/lib/rnode/node.certificate.pem from inside the container."""
-        return self.exec("cat", "/var/lib/rnode/node.certificate.pem")
-
-    def peer_key(self) -> bytes:
-        """Read /var/lib/rnode/node.key.pem from inside the container."""
-        return self.exec("cat", "/var/lib/rnode/node.key.pem")
+    @property
+    def p2p_reply_host(self) -> str:
+        # The host is reachable from a container at its network's gateway
+        # only with native Linux Docker networking.
+        result = _docker(
+            "network", "inspect", "-f", "{{range .IPAM.Config}}{{.Gateway}} {{end}}", self._network
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"docker network inspect {self._network} failed: {(result.stderr or '').strip()}"
+            )
+        gateways = (result.stdout or "").split()
+        if not gateways:
+            raise RuntimeError(f"docker network {self._network} has no IPAM gateway")
+        return gateways[0]
 
     def restart(self) -> None:
         _docker("restart", self._name, check=True)
