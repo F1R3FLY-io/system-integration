@@ -119,6 +119,8 @@ def test_observer_retries_missing_block_after_peer_returns(active_shard, timeout
                 for key in (
                     "BlockRequestResend",
                     "FloorCacheReAsked",
+                    "FloorCacheRequestFailedRetry",
+                    "FloorCacheResponseTimeoutRetry",
                     "FloorCacheDegraded",
                     "TransitionedToRunning",
                 ):

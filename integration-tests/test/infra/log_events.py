@@ -88,6 +88,8 @@ SYNC_MARKERS: Dict[str, str] = {
     # request it had already moved past — evidence the loop kept asking
     # through peer silence rather than wedging.
     "FloorCacheReAsked": "floor-cache channel full or closed",
+    "FloorCacheRequestFailedRetry": "floor-cache request failed; retrying",
+    "FloorCacheResponseTimeoutRetry": "floor-cache request timed out; retrying",
     # The floor-cache request went unanswered through its retry budget and
     # the restore degraded to local derivation — loud, never a wedge.
     "FloorCacheDegraded": "Proceeding without the shipped floor cache",
