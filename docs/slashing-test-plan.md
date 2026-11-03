@@ -158,18 +158,17 @@ Priority for new tests should be based on attack surface and production risk.
 
 ---
 
-## Status (2026-05-22) — All planned tests implemented; ported onto v2 framework
+## Status — all 19 tests implemented, judged against the current slashing rule
 
-This plan is historical. The 6-test revival landed first, then an expansion phase added 13 more tests covering the H1–H5 / M1–M6 / B1 threat coverage gaps (19 total). The suite was subsequently ported onto the v2 integration test framework (`infra/` + `tests/{shared,custom,standalone}/` layout, introduced by PR #55) — the legacy framework files (`node_client.py`, `rnode.py`, `test_slash.py` at the old location, `TEST_CASES.md`) are gone. Current locations:
+This plan is historical. The 6-test revival landed first, then an expansion phase added 13 more tests covering the H1–H5 / M1–M6 / B1 threat coverage gaps (19 total), ported onto the v2 integration test framework.
 
-- `integration-tests/test/tests/custom/test_slash.py` — 19 tests, module docstring + per-test docstrings (Linux-only)
-- `integration-tests/test/infra/p2p_client.py` — `NodeClient`, `p2p_protocol_client`, `_generate_fresh_p2p_credentials`, `rust_block_hash`, `is_exist_slash_deploy`, `TransportServer`
-- `integration-tests/test/infra/providers/docker.py` — `DockerNodeHandle.container_ip` / `.peer_cert` / `.peer_key`
-- `integration-tests/test/infra/node.py` — `Node.peer_ip` / `.peer_cert` / `.peer_key` (Docker-provider only)
-- `integration-tests/test/infra/polling.py` — `wait_for_log_match` (generic log-regex polling)
-- `integration-tests/test/docs/test_slash.md` — per-test docs (migrated from the deleted TEST_CASES.md)
-- `f1r3node-rust/docs/theory/slashing/slashing-threat-model.md` §3.1 — Docker / wire-protocol coverage table mapping each threat class to its Docker test
-- `f1r3node-rust/docs/theory/slashing/slashing-specification.md` §13 — `End-to-end shard reproduction of equivocation` row flipped from "Out" → "In" with cross-references
+The node now slashes only equivocation: every other offence is judged against the receiving node's own state, so the block is rejected and its sender keeps its stake. The tests assert that. They run under any provider, read stake from PoS state rather than a block's `bonds` field, and three of them are expected failures naming node behaviour still to be fixed. See [test_slash.md](../integration-tests/test/docs/test_slash.md).
+
+- `integration-tests/test/tests/custom/test_slash.py` — the 19 tests
+- `integration-tests/test/infra/p2p_client.py` — `NodeClient`, `p2p_protocol_client`, `generate_block_hash`, `is_exist_slash_deploy`
+- `Node.p2p_address()` / `.tls_certificate()` / `.p2p_reply_host` — implemented by each provider
+- `integration-tests/test/infra/polling.py` — `wait_for_log_match`
+- `integration-tests/test/docs/test_slash.md` — per-test docs
 
 M7 (`test_slash_censoring_proposer_eventually_slashes`, T-37 / T-12PF) is deferred — the Rust binary has no runtime proposer-fairness detector and the threat model classifies T-12PF as a *boundary assumption* (per `slashing-traceability.md` finding 88 = `model_boundary`, "No source bug confirmed"). The deferral is documented in the `test_slash.py` module docstring.
 

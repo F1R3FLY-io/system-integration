@@ -50,6 +50,7 @@ Each test builds its own `ShardConfig` and calls `provider.create_shard(...)`. U
 | 1 | [test_observer_overload](test_observer_overload.md) | Observer rejects excess exploratory deploys with bounded memory and recovers API capacity |
 | 1 | [test_readonly_catchup_bounded](test_readonly_catchup_bounded.md) | Readonly catch-up keeps API latency and memory bounded while converging to canonical state |
 | 1 | [test_shard_degradation](test_shard_degradation.md) | Production-readiness gate: 150 deploys, sustained load |
+| 19 | [test_slash](test_slash.md) | Forged blocks injected over P2P: rejected-not-slashed offences, slashed equivocations, slash authorization, no slashing for uneven proposing |
 | 1 | [test_slow_peer_notification](test_slow_peer_notification.md) | A slow low-stake peer does not block deploy finalization while quorum remains available |
 | 1 | [test_joiner_self_proposes_at_epoch_boundary](test_joiner_self_proposes_at_epoch_boundary.md) | Negative-control for the joiner-bond-drop bug: deterministic single-node propose does NOT reproduce it; rules out architectural-shape-alone hypothesis |
 | 1 | [test_synchrony_constraint](test_synchrony_constraint.md) | Per-validator synchrony constraint threshold enforcement |
@@ -57,7 +58,7 @@ Each test builds its own `ShardConfig` and calls `provider.create_shard(...)`. U
 | 1 | [test_trim_state](test_trim_state.md) | Joiner syncs from Last Finalized State instead of replaying genesis |
 | 6 | [test_websocket](test_websocket.md) | `/ws/events` block, genesis, transfer, lifecycle events + startup replay |
 
-**Total: 41 tests across 19 files.**
+**Total: 60 tests across 20 files.**
 
 ---
 
