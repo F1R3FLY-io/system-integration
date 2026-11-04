@@ -108,9 +108,10 @@ def test_observer_retries_missing_block_after_peer_returns(active_shard, timeout
             # the observer keeps asking or degrades loudly, and never wedges:
             #   - BlockRequestResend: block requests re-issued (download was
             #     still in flight when the sources went silent)
-            #   - FloorCacheReAsked / FloorCacheDegraded: the floor-cache loop
-            #     re-asked through the silence, or exhausted its budget and
-            #     proceeded on local derivation
+            #   - FloorCacheSendRetried / FloorCacheResponseRetried /
+            #     FloorCacheDegraded: the floor-cache loop re-asked through the
+            #     silence, or exhausted its budget and proceeded on local
+            #     derivation
             #   - TransitionedToRunning: the restore completed before the
             #     pause landed; the starvation scenario did not occur and the
             #     recovery + state-parity assertions below carry the test
@@ -118,7 +119,8 @@ def test_observer_retries_missing_block_after_peer_returns(active_shard, timeout
                 logs = observer.logs()
                 for key in (
                     "BlockRequestResend",
-                    "FloorCacheReAsked",
+                    "FloorCacheSendRetried",
+                    "FloorCacheResponseRetried",
                     "FloorCacheDegraded",
                     "TransitionedToRunning",
                 ):
