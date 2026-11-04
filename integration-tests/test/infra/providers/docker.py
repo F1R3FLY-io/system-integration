@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from ..cleanup import DockerCleanupRegistry
+from ..cleanup import DockerCleanupRegistry, session_patterns
 from ..compose import NODE_LOG_SINK_ARGS, generate_compose
 from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_image
 from ..genesis import generate_genesis
@@ -1495,23 +1495,38 @@ class DockerProvider:
     def adopt_session(self, session_id: str) -> List[DockerNodeHandle]:
         """Find and wrap containers from a previous session.
 
-        Scans ``docker ps -a --filter name=rnode.test.{session_id}.``,
-        builds a ``DockerNodeHandle`` per container, and returns them
-        in canonical role order (bootstrap, validator1..N, readonly).
+        Adopts the running containers of one shard of the session — names
+        ``rnode.test.<session_id>-s<n>.*`` (or a standalone's
+        ``rnode.test.<session_id>.*``) — and returns them in canonical role
+        order (bootstrap, validator1..N, readonly). ``session_id`` may be a
+        shard scope (``<session_id>-s<n>``); it must be when the session
+        has more than one running shard.
         """
-        prefix = f"rnode.test.{session_id}."
+        container_re = session_patterns(session_id).container
         # Only adopt running containers — stopped ones can't serve requests.
-        result = _docker("ps", "--filter", f"name={prefix}", "--format", "{{.Names}}")
+        result = _docker(
+            "ps", "--filter", f"name=rnode.test.{session_id}", "--format", "{{.Names}}"
+        )
         if result.returncode != 0:
             raise RuntimeError(
                 f"docker ps failed while adopting session {session_id!r}: {result.stderr.strip()}"
             )
-        names = sorted((result.stdout or "").strip().splitlines())
-        if not names:
+        by_scope: Dict[str, List[str]] = {}
+        for name in (result.stdout or "").strip().splitlines():
+            match = container_re.match(name)
+            if match:
+                by_scope.setdefault(match.group("scope"), []).append(name)
+        if not by_scope:
             raise ValueError(
                 f"no running containers found for session_id={session_id!r}. "
-                f"Expected names matching {prefix}* (was the session torn down?)"
+                f"Expected names matching {container_re.pattern} (was the session torn down?)"
             )
+        if len(by_scope) > 1:
+            raise ValueError(
+                f"session_id={session_id!r} has {len(by_scope)} running shards "
+                f"({', '.join(sorted(by_scope))}); pass one of them as --session-id"
+            )
+        (names,) = by_scope.values()
 
         # Sort so bootstrap comes first, then validators by number, then readonly.
         def _sort_key(name: str) -> tuple:
