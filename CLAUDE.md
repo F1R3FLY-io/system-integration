@@ -59,6 +59,7 @@ poetry run shardctl down
 ├── shardctl/                   # CLI tool package
 ├── compose/                    # Docker Compose files (one per service)
 │   ├── f1r3node-rust.yml       # Rust shard (default)
+│   ├── f1r3node-rust-{boot,validator,readonly}.yml  # One node per host
 │   ├── embers.yml              # Embers API + frontend
 │   ├── f1r3sky.yml             # F1R3Sky AT Protocol services
 │   └── monitoring.yml          # Prometheus + Grafana
@@ -72,9 +73,14 @@ poetry run shardctl down
 │   ├── slashing-mechanism.md   # Slashing summary
 │   ├── slashing-test-plan.md   # Slashing test rewrite plan
 │   └── f1r3drive-guide.md      # F1R3Drive FUSE app
+├── scripts/                    # Operational scripts
+│   ├── shard-setup.sh          # Generate keys, genesis and per-host .env for a long-lived shard
+│   ├── shard-monitor.sh        # Cron health monitor + webhook alerting for a long-lived shard
+│   └── setup-hooks.sh          # Install the pre-commit / pre-push hooks
 ├── COMPOSE_STRUCTURE.md        # Canonical compose reference
 ├── services.yml                # Service repository URLs and branches
 ├── .env.node                   # Node container hostnames + validator keys
+├── .env.shard.example          # Template for a one-node-per-host shard (.env.shard is gitignored)
 ├── .env.embers                 # Embers configuration
 ├── .env.f1r3sky                # F1R3Sky configuration
 └── README.md                   # Welcome + Quick Start + pointers
@@ -104,8 +110,15 @@ Opt-in (`enabled: false`; clone with `--include-disabled` or by name):
    - `compose/embers.yml` - Embers API and frontend
    - `compose/f1r3sky.yml` - F1R3Sky AT Protocol services
    - `compose/monitoring.yml` - Prometheus + Grafana
+   - `compose/f1r3node-rust-{boot,validator,readonly}.yml` - one node per host, for a long-lived shard across separate machines
 
    See [COMPOSE_STRUCTURE.md](COMPOSE_STRUCTURE.md) for the full list (standalone, observer, validator4 variants).
+
+   The one-node-per-host files are **not** driven by `shardctl` and do not use
+   `.env.node` or `conf/rust.conf` — each host runs `docker compose` directly
+   with its own gitignored `.env.shard` and `conf/shard.conf`. They require
+   `F1R3FLY_NODE_IMAGE` rather than defaulting it, and bind the privileged gRPC
+   and admin ports to loopback, so clients deploy to **40401**.
 4. **Services communicate via Docker network** - `f1r3fly` network
 5. **Always use shardctl commands** - Don't run builds manually (cargo, sbt, etc.). Use:
    - `poetry run shardctl build-service <service>` for full builds (source + Docker)
