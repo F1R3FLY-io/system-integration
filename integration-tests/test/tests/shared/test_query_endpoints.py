@@ -13,6 +13,7 @@ import logging
 
 import pytest
 
+from ...infra.api_integer import api_integer
 from ...infra.keys import ALL_IDENTITIES, VALIDATOR1_ID
 from ...infra.polling import wait_for_deploy_finalized
 
@@ -66,12 +67,13 @@ def test_validators_endpoint(shared_shard, node_conf) -> None:
     )
 
     for v in validators:
-        assert v["stake"] == expected_stakes[v["publicKey"]], (
+        assert api_integer(v["stake"]) == expected_stakes[v["publicKey"]], (
             f"stake mismatch for {v['publicKey'][:24]}"
         )
 
     expected_total = sum(expected_stakes.values())
-    assert result["totalStake"] == expected_total, (
+    total_stake = api_integer(result["totalStake"])
+    assert total_stake == expected_total, (
         f"totalStake {result['totalStake']} != expected {expected_total}"
     )
     assert isinstance(result["blockNumber"], int) and result["blockNumber"] >= 0
@@ -80,7 +82,7 @@ def test_validators_endpoint(shared_shard, node_conf) -> None:
     logging.info(
         "Validators endpoint: %d validators, totalStake=%d",
         len(validators),
-        result["totalStake"],
+        total_stake,
     )
 
 
@@ -93,11 +95,12 @@ def test_validator_bonded(shared_shard) -> None:
 
     assert result["publicKey"] == pubkey
     assert result["isBonded"] is True
-    assert isinstance(result["stake"], int) and result["stake"] > 0
+    stake = api_integer(result["stake"])
+    assert stake > 0
     assert isinstance(result["blockNumber"], int) and result["blockNumber"] >= 0
     assert isinstance(result["blockHash"], str) and len(result["blockHash"]) > 0
 
-    logging.info("Validator %s: bonded, stake=%d", pubkey[:24], result["stake"])
+    logging.info("Validator %s: bonded, stake=%d", pubkey[:24], stake)
 
 
 def test_validator_unknown(shared_shard) -> None:
