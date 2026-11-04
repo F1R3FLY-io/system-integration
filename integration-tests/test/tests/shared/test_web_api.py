@@ -28,6 +28,7 @@ import pytest
 from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto
 from f1r3fly.util import sign_deploy_data
 
+from ...infra.api_integer import api_integer
 from ...infra.keys import VALIDATOR1_ID
 from ...infra.polling import (
     lfb_number,
@@ -172,7 +173,7 @@ def _assert_light_block_info(block, expect, context=""):
         assert validator in expect["stakes"], (
             f"{context}: unknown validator in bonds: {validator[:24]}..."
         )
-        assert bond["stake"] == expect["stakes"][validator], (
+        assert api_integer(bond["stake"]) == expect["stakes"][validator], (
             f"{context}: stake for {validator[:24]}... is {bond['stake']}, "
             f"expected {expect['stakes'][validator]}"
         )
