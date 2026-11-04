@@ -84,10 +84,16 @@ SYNC_MARKERS: Dict[str, str] = {
     # Requested blocks went unanswered within the requester's window and are
     # being re-requested. The retry path, not an error.
     "BlockRequestResend": "No responses for",
-    # The floor-cache request loop re-asked after a response arrived for a
-    # request it had already moved past — evidence the loop kept asking
-    # through peer silence rather than wedging.
+    # A floor-cache response arrived after the request loop had moved past it
+    # and was dropped; the loop asks again. Needs a responding peer, so it
+    # does not fire while every source is silent.
     "FloorCacheReAsked": "floor-cache channel full or closed",
+    # The floor-cache request could not reach the bootstrap; the loop waits
+    # and asks again.
+    "FloorCacheRequestFailedRetry": "floor-cache request failed; retrying",
+    # The bootstrap did not answer the floor-cache request within the response
+    # window; the loop asks again.
+    "FloorCacheResponseTimeoutRetry": "floor-cache request timed out; retrying",
     # The floor-cache request went unanswered through its retry budget and
     # the restore degraded to local derivation — loud, never a wedge.
     "FloorCacheDegraded": "Proceeding without the shipped floor cache",
