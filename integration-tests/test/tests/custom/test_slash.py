@@ -1,28 +1,26 @@
-"""Wire-level tests of how nodes judge and punish misbehaving validators.
+"""How a live shard judges and punishes misbehaving validators.
 
-Each test builds a block a validator must not produce, sends it to a node
-over the P2P transport as that validator, and checks the node's verdict and
-its consequence. Only equivocation is slashable: every other offence is judged
-against the receiving node's own state, so the block is rejected and its
-sender keeps its stake.
+Each test runs a shard as it runs in production: heartbeat on, the shard's
+fault-tolerance threshold, four validators of distinct stake and a read-only
+observer. Misbehaviour is injected over the P2P transport as blocks signed
+with a validator's key, built from blocks that validator really produced.
 
-A block's ``bonds`` field records the committee at its finalized floor, not
-the stake after the block's own system deploys, so stake is read from PoS
-state at a block through the shard's read-only node.
-
-Proposer fairness is not tested for its liveness: deploys are not gossiped, so
-a proposer cannot withhold another validator's deploys, and there is nothing
-to detect. ``test_no_false_positive_slash_on_propose_imbalance`` covers its
-safety: uneven proposing is never punished.
+Only equivocation is slashable. Every other offence is judged against the
+receiving node's own state, so the block is rejected and its sender keeps its
+stake. Each test checks the outcome the way the network must agree on it:
+every receiving node reaches the verdict, a slash finalizes on every node,
+finalized stake and the committee are identical everywhere, and the chain
+keeps finalizing.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 import sys
 import time
 from contextlib import contextmanager
-from typing import Dict, Generator, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 import pytest
 from f1r3fly.client import F1r3flyClientException
@@ -36,61 +34,78 @@ from f1r3fly.pb.CasperMessage_pb2 import (
 )
 from f1r3fly.util import create_deploy_data
 
+from ...infra.assertions import (
+    assert_block_finalized_on_all_nodes,
+    assert_chain_advances,
+    assert_deploy_block_finalized_on_all_nodes,
+    collect_forensics,
+    common_finalized_anchor,
+)
 from ...infra.config import ShardConfig
-from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID, VALIDATOR4_ID
 from ...infra.node import Node
 from ...infra.p2p_client import (
     NodeClient,
     generate_block_hash,
-    is_exist_slash_deploy,
     p2p_protocol_client,
+    slash_evidence,
 )
-from ...infra.polling import wait_for_block_visible, wait_for_log_match
+from ...infra.polling import poll_until, wait_for_block_visible, wait_for_log_match
 from ...infra.providers.docker import DockerProvider
 from ...infra.shard import Shard
 
 pytestmark = pytest.mark.xdist_group("custom")
 
-KEY_1: PrivateKey = VALIDATOR1_ID.private_key()
-KEY_2: PrivateKey = VALIDATOR2_ID.private_key()
-KEY_3: PrivateKey = VALIDATOR3_ID.private_key()
+_BONDS = [(VALIDATOR1_ID, 100), (VALIDATOR2_ID, 200), (VALIDATOR3_ID, 300), (VALIDATOR4_ID, 400)]
+_GENESIS_BONDS = {identity.public_hex: stake for identity, stake in _BONDS}
+# The default genesis wallets fund validators 1-3 only; every validator here
+# signs its own deploys.
+_EXTRA_WALLETS = [
+    (VALIDATOR4_ID.private_key().get_public_key().get_vault_address(), 50_000_000_000_000_000)
+]
 
-STAKE = 100
+_HELLO = "new x in { x!(1) }"
 
-HELLO_CONTRACT = "new x in { x!(1) }"
+# Blocks an equivocation needs from its sibling to a finalized slash: the
+# equivocator's pause, delivery, and the next honest proposals.
+_SLASH_ROOM = 20
 
 
 @contextmanager
-def _slash_shard(
-    provider,
-    timeouts,
-    *,
-    three_validators: bool = False,
-    global_cli_options: Optional[Dict[str, str]] = None,
-) -> Generator[Tuple[Shard, Node, Node, NodeClient], None, None]:
-    """A shard whose validators propose only when a test asks, with a
-    read-only node for PoS reads. Yields ``(shard, validator1, validator2,
-    client)``."""
+def _live_shard(
+    provider, timeouts, label: str, attackers: Sequence[str] = ()
+) -> Iterator[Tuple[Shard, NodeClient]]:
+    """A production-configured shard and a P2P client; a failure carries the
+    shard's state at that moment.
+
+    An attacker validator (named by role) proposes only when the test tells
+    it to, so a block it is about to forge from is still its latest.
+    """
     if isinstance(provider, DockerProvider) and sys.platform != "linux":
         pytest.skip("Docker containers reach the test process only with native Linux networking")
-    bonds = [(VALIDATOR1_ID, STAKE), (VALIDATOR2_ID, STAKE)]
-    if three_validators:
-        bonds.append((VALIDATOR3_ID, STAKE))
     config = ShardConfig(
-        bonds=bonds,
-        ftt=-1.0,
-        heartbeat=False,
+        bonds=_BONDS,
+        heartbeat=True,
         include_readonly=True,
-        global_cli_options=global_cli_options or {},
+        extra_wallets=_EXTRA_WALLETS,
+        per_node_cli_options={role: {"--heartbeat-disabled": ""} for role in attackers},
     )
     shard = Shard.create(provider, config, timeouts)
     try:
-        with p2p_protocol_client(
-            shard.boot.p2p_reply_host, receive_timeout=float(timeouts.command)
-        ) as client:
-            yield (shard, shard.node("validator1"), shard.node("validator2"), client)
+        with p2p_protocol_client(shard.boot.p2p_reply_host, float(timeouts.command)) as client:
+            try:
+                yield shard, client
+            except Exception as exc:
+                try:
+                    forensics = collect_forensics(shard.all_nodes, label=label)
+                except Exception as probe_exc:  # noqa: BLE001 — never mask the failure
+                    forensics = f"(forensics unavailable: {type(probe_exc).__name__}: {probe_exc})"
+                raise AssertionError(f"{exc}\n{forensics}") from exc
     finally:
         shard.destroy()
+
+
+# ── Blocks ─────────────────────────────────────────────────────────────────
 
 
 def _fetch(client: NodeClient, block_hash: str, node: Node) -> BlockMessage:
@@ -101,726 +116,584 @@ def _fetch(client: NodeClient, block_hash: str, node: Node) -> BlockMessage:
     return block
 
 
-def _seal(block: BlockMessage, key: PrivateKey) -> bytes:
-    """Re-hash ``block`` and sign it with ``key``; returns the new hash."""
+def _attacker_block(client: NodeClient, node: Node, identity, nodes: Sequence[Node], timeouts):
+    """A block the attacker ``identity`` proposes with a fresh deploy, finalized
+    on every node in ``nodes``: its latest block until it proposes again."""
+    node.deploy_string(_HELLO, identity.private_key())
+    block_hash = node.propose()
+    for peer in nodes:
+        wait_for_block_visible(peer, block_hash, timeouts.finalization)
+    assert_block_finalized_on_all_nodes(nodes, block_hash, timeout=timeouts.finalization * 5)
+    return _fetch(client, block_hash, node)
+
+
+def _silence(client: NodeClient, node: Node, identity, ro: Node, running, timeouts):
+    """Pause ``identity``'s node and return its latest block once every running
+    node holds it."""
+    node.pause()
+    time.sleep(timeouts.blocks(2))
+
+    def _latest():
+        own = [b for b in ro.get_blocks(10) if b.sender == identity.public_hex]
+        return max(own, key=lambda b: b.seqNum) if own else None
+
+    latest = poll_until(
+        predicate=_latest,
+        timeout=timeouts.finalization,
+        interval=timeouts.poll_interval,
+        description=f"{identity.name}'s latest block on the observer",
+    )
+    for peer in running:
+        wait_for_block_visible(peer, latest.blockHash, timeouts.finalization)
+    return _fetch(client, latest.blockHash, ro)
+
+
+def _copy(block: BlockMessage) -> BlockMessage:
+    forged = BlockMessage()
+    forged.CopyFrom(block)
+    return forged
+
+
+def _seal(block: BlockMessage, identity) -> bytes:
+    """Re-hash ``block`` and sign it as ``identity``; returns the new hash."""
     block_hash = gen_block_hash_from_block(block)
     block.blockHash = block_hash
-    block.sig = key.sign_block_hash(block_hash)
+    block.sig = identity.private_key().sign_block_hash(block_hash)
     return block_hash
 
 
-def _sibling(block: BlockMessage, key: PrivateKey) -> BlockMessage:
-    """An equivocating sibling of ``block``: its content, one extra byte in
-    ``extraBytes``, which no system deploy or replay reads."""
-    sibling = BlockMessage()
-    sibling.CopyFrom(block)
-    sibling.extraBytes = block.extraBytes + b"\x00"
-    _seal(sibling, key)
-    return sibling
-
-
-def _wait_recorded(node: Node, block_hash: bytes, verdict: str, timeouts) -> None:
-    wait_for_log_match(
-        node,
-        re.compile(rf"Recording invalid block {block_hash.hex()[:10]}\.\.\. for (?:{verdict})\."),
-        timeouts.command,
-    )
-
-
-def _propose(node: Node, key: PrivateKey) -> str:
-    node.deploy_string(HELLO_CONTRACT, key)
-    return node.propose()
-
-
-def _stake(shard: Shard, block_hash: str, key: PrivateKey, timeouts) -> int:
-    """``key``'s stake in PoS state after ``block_hash``."""
-    readonly = shard.readonly
-    wait_for_block_visible(readonly, block_hash, timeouts.node_startup)
-    return readonly.pos.get_bonds(block_hash)[key.get_public_key().to_hex()]
-
-
-def _assert_rejected_without_slash(
-    shard: Shard, client: NodeClient, judge: Node, judge_key: PrivateKey, timeouts
-) -> None:
-    """``judge``'s next block carries no slash and every validator keeps its
-    stake."""
-    next_hash = _propose(judge, judge_key)
-    assert not is_exist_slash_deploy(_fetch(client, next_hash, judge))
-    for key in [KEY_1, KEY_2, KEY_3][: len(shard.validators)]:
-        assert _stake(shard, next_hash, key, timeouts) == STAKE
-
-
-# ── Offences judged against the receiver's own state: rejected, not slashed ──
-
-
-@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
-def test_slash_invalid_block_hash(provider, timeouts) -> None:
-    """v1 sends a block whose declared hash does not match its content. v2
-    ignores it without recording a verdict, and v1 keeps its stake: a
-    signature over a hash the content does not produce pins nothing on its
-    signer.
-    """
-    with _slash_shard(provider, timeouts) as (shard, validator1, validator2, client):
-        blockhash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, blockhash, timeouts.node_startup)
-        block = _fetch(client, blockhash, validator1)
-
-        evil_block_hash = generate_block_hash()
-        block.blockHash = evil_block_hash
-        block.sig = KEY_1.sign_block_hash(evil_block_hash)
-        block.header.timestamp = int(time.time() * 1000)
-        client.send_block(block, validator2)
-
-        wait_for_log_match(
-            validator2,
-            re.compile(
-                rf"Ignoring block {evil_block_hash.hex()[:10]}\.\.\. because block hash "
-                rf"{evil_block_hash.hex()[:10]}\.\.\. does not match"
-            ),
-            timeouts.command,
-        )
-        _assert_rejected_without_slash(shard, client, validator2, KEY_2, timeouts)
-
-
-@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
-def test_slash_invalid_block_number(provider, timeouts) -> None:
-    """v1 sends a block whose number is not one above its parents'. v2
-    records :class:`InvalidBlockNumber` and drops it; v1 keeps its stake."""
-    with _slash_shard(provider, timeouts) as (shard, validator1, validator2, client):
-        blockhash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, blockhash, timeouts.node_startup)
-        block = _fetch(client, blockhash, validator1)
-
-        invalid = BlockMessage()
-        invalid.CopyFrom(block)
-        invalid.body.state.blockNumber = 5
-        invalid.header.timestamp = block.header.timestamp + 1
-        invalid_hash = _seal(invalid, KEY_1)
-        client.send_block(invalid, validator2)
-
-        _wait_recorded(validator2, invalid_hash, "InvalidBlockNumber", timeouts)
-        _assert_rejected_without_slash(shard, client, validator2, KEY_2, timeouts)
-
-
-@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
-def test_slash_invalid_block_seq(provider, timeouts) -> None:
-    """v1 sends a block whose sequence number is not one above its previous
-    block's. v2 records :class:`InvalidSequenceNumber` and drops it; v1 keeps
-    its stake."""
-    with _slash_shard(provider, timeouts) as (shard, validator1, validator2, client):
-        blockhash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, blockhash, timeouts.node_startup)
-        block = _fetch(client, blockhash, validator1)
-
-        invalid = BlockMessage()
-        invalid.CopyFrom(block)
-        invalid.seqNum = 1000
-        invalid.header.timestamp = block.header.timestamp + 1
-        invalid_hash = _seal(invalid, KEY_1)
-        client.send_block(invalid, validator2)
-
-        _wait_recorded(validator2, invalid_hash, "InvalidSequenceNumber", timeouts)
-        _assert_rejected_without_slash(shard, client, validator2, KEY_2, timeouts)
-
-
-@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
-def test_slash_justification_not_correct(provider, timeouts) -> None:
-    """v1 sends a block with an extra justification from a key that is not
-    bonded. v2 records :class:`InvalidFollows` and drops it; v1 keeps its
-    stake. Three validators, so every other justification is well-formed."""
-    with _slash_shard(provider, timeouts, three_validators=True) as (
-        shard,
-        validator1,
-        validator2,
-        client,
-    ):
-        blockhash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, blockhash, timeouts.node_startup)
-        block = _fetch(client, blockhash, validator1)
-
-        invalid = BlockMessage()
-        invalid.CopyFrom(block)
-        invalid.justifications.append(
-            Justification(
-                validator=PrivateKey.generate().to_bytes(), latestBlockHash=block.blockHash
-            )
-        )
-        invalid.header.timestamp = block.header.timestamp + 1
-        invalid_hash = _seal(invalid, KEY_1)
-        client.send_block(invalid, validator2)
-
-        _wait_recorded(validator2, invalid_hash, "InvalidFollows", timeouts)
-        _assert_rejected_without_slash(shard, client, validator2, KEY_2, timeouts)
-
-
-def _forged_slash(invalid_block_hash: bytes, issuer: PrivateKey) -> ProcessedSystemDeployProto:
+def _slash_deploy(evidence: bytes, issuer, epoch: int) -> ProcessedSystemDeployProto:
     return ProcessedSystemDeployProto(
         systemDeploy=SystemDeployDataProto(
             slashSystemDeploy=SlashSystemDeployDataProto(
-                invalidBlockHash=invalid_block_hash,
-                issuerPublicKey=issuer.get_public_key().to_bytes(),
-                targetActivationEpoch=0,
+                invalidBlockHash=evidence,
+                issuerPublicKey=bytes.fromhex(issuer.public_hex),
+                targetActivationEpoch=epoch,
             )
         ),
     )
 
 
-@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
-def test_slash_unauthorized_slash_deploy(provider, timeouts) -> None:
-    """v2 sends a block carrying a slash of v1 whose evidence is a block no
-    node holds. v3 records :class:`UnauthorizedSlashDeploy` and drops it;
-    v1, the target of the fabricated evidence, and v2 keep their stake."""
-    with _slash_shard(provider, timeouts, three_validators=True) as (
-        shard,
-        validator1,
-        validator2,
-        client,
-    ):
-        validator3 = shard.node("validator3")
-        v1_hash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, v1_hash, timeouts.node_startup)
-        wait_for_block_visible(validator3, v1_hash, timeouts.node_startup)
-        v2_hash = _propose(validator2, KEY_2)
-        wait_for_block_visible(validator3, v2_hash, timeouts.node_startup)
-        v2_block = _fetch(client, v2_hash, validator2)
-
-        forged = BlockMessage()
-        forged.CopyFrom(v2_block)
-        forged.body.systemDeploys.append(_forged_slash(b"\xde" * 32, KEY_2))
-        forged.header.timestamp = v2_block.header.timestamp + 1
-        forged_hash = _seal(forged, KEY_2)
-        client.send_block(forged, validator3)
-
-        _wait_recorded(validator3, forged_hash, "UnauthorizedSlashDeploy", timeouts)
-        _assert_rejected_without_slash(shard, client, validator3, KEY_3, timeouts)
+def _await_epoch_room(ro: Node, epoch_length: int, room: int, timeouts) -> None:
+    """Wait until the tip is at least ``room`` blocks before the next epoch
+    boundary: a slash is authorized only in its evidence's epoch."""
+    assert room < epoch_length, f"an epoch of {epoch_length} blocks never has {room} to spare"
+    poll_until(
+        predicate=lambda: (
+            True if ro.get_blocks(1)[0].blockNumber % epoch_length <= epoch_length - room else None
+        ),
+        timeout=timeouts.blocks(epoch_length),
+        interval=timeouts.poll_interval,
+        description=f"{room} blocks left in the current epoch",
+    )
 
 
-@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
-def test_slash_references_valid_block(provider, timeouts) -> None:
-    """v2 sends a block carrying a slash of v1 whose evidence is v1's valid
-    block. v3 records :class:`UnauthorizedSlashDeploy` and drops it; nobody
-    is slashed."""
-    with _slash_shard(provider, timeouts, three_validators=True) as (
-        shard,
-        validator1,
-        validator2,
-        client,
-    ):
-        validator3 = shard.node("validator3")
-        v1_hash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, v1_hash, timeouts.node_startup)
-        wait_for_block_visible(validator3, v1_hash, timeouts.node_startup)
-        v2_hash = _propose(validator2, KEY_2)
-        wait_for_block_visible(validator3, v2_hash, timeouts.node_startup)
-        v2_block = _fetch(client, v2_hash, validator2)
-
-        forged = BlockMessage()
-        forged.CopyFrom(v2_block)
-        forged.body.systemDeploys.append(_forged_slash(bytes.fromhex(v1_hash), KEY_2))
-        forged.header.timestamp = v2_block.header.timestamp + 1
-        forged_hash = _seal(forged, KEY_2)
-        client.send_block(forged, validator3)
-
-        _wait_recorded(validator3, forged_hash, "UnauthorizedSlashDeploy", timeouts)
-        _assert_rejected_without_slash(shard, client, validator3, KEY_3, timeouts)
+def _equivocate(client: NodeClient, node: Node, identity, ro: Node, running, timeouts):
+    """Silence ``identity``'s node after its latest block and return a sibling
+    of that block it signed: an equivocator that signs twice and goes quiet."""
+    sibling = _copy(_silence(client, node, identity, ro, running, timeouts))
+    sibling.extraBytes = sibling.extraBytes + b"\x00"
+    _seal(sibling, identity)
+    return sibling
 
 
-@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
-def test_slash_self_regression(provider, timeouts) -> None:
-    """v1 proposes blocks A and B, then sends a block whose own justification
-    points back behind A. v2 records :class:`JustificationRegression` and
-    drops it; v1 keeps its stake.
+# ── Verdicts ───────────────────────────────────────────────────────────────
 
-    The forgery takes A as its template, so its sequence number, number,
-    parents and justifications (all at genesis) are consistent and only the
-    regression is wrong. It needs a fresh deploy so A's deploy is not
-    repeated, and an extra byte so its hash differs from A's.
-    """
-    with _slash_shard(provider, timeouts) as (shard, validator1, validator2, client):
-        a_hash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, a_hash, timeouts.node_startup)
-        b_hash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, b_hash, timeouts.node_startup)
-        block_a = _fetch(client, a_hash, validator1)
 
-        forged = BlockMessage()
-        forged.CopyFrom(block_a)
-        forged.body.deploys[0].deploy.CopyFrom(
-            create_deploy_data(KEY_1, HELLO_CONTRACT, 999, 1000000, shard_id="root")
+def _recorded(block_hash: bytes, verdict: str) -> re.Pattern:
+    return re.compile(rf"Recording invalid block {block_hash.hex()[:10]}\.\.\. for (?:{verdict})\.")
+
+
+def _hash_ignored(block_hash: bytes) -> re.Pattern:
+    return re.compile(rf"Ignoring block {block_hash.hex()[:10]}\.\.\. because block hash")
+
+
+def _parked(block_hash: bytes) -> re.Pattern:
+    return re.compile(rf"Block {block_hash.hex()[:10]}\.\.\. delayed: missing dependencies\.")
+
+
+def _inject(client: NodeClient, block: BlockMessage, receivers, verdict: re.Pattern, timeouts):
+    """Send ``block`` to every receiver and wait for each to reach ``verdict``."""
+    for node in receivers:
+        client.send_block(block, node)
+    for node in receivers:
+        wait_for_log_match(node, verdict, timeouts.command)
+
+
+def _assert_never_finalized(nodes: Sequence[Node], block_hash: bytes) -> None:
+    for node in nodes:
+        try:
+            info = node.get_block(block_hash.hex()).blockInfo
+        except F1r3flyClientException:
+            continue
+        assert not info.isFinalized, f"{node.name} finalized forged block {block_hash.hex()[:10]}"
+
+
+# ── Finalized state ────────────────────────────────────────────────────────
+
+
+def _finalized_slashes(client: NodeClient, ro: Node, since: int) -> Dict[bytes, List[str]]:
+    """Every slash in a block finalized above height ``since``, by the evidence
+    it cites."""
+    lfb = ro.last_finalized_block().blockInfo.blockNumber
+    slashes: Dict[bytes, List[str]] = {}
+    for info in ro.get_blocks(lfb - since + 20):
+        if info.blockNumber <= since or not ro.is_finalized(info.blockHash):
+            continue
+        for evidence in slash_evidence(_fetch(client, info.blockHash, ro)):
+            slashes.setdefault(evidence, []).append(info.blockHash)
+    return slashes
+
+
+def _await_finalized_stake(ro: Node, expected: Dict[str, int], timeouts, label: str) -> None:
+    poll_until(
+        predicate=lambda: True if ro.pos.get_bonds() == expected else None,
+        timeout=timeouts.finalization * 5,
+        interval=timeouts.poll_interval,
+        description=f"finalized stake {label}",
+    )
+
+
+def _assert_committee_agreed(nodes: Sequence[Node], expected: Dict[str, int], timeouts) -> None:
+    """The committee recorded in a block every node finalized converges to
+    ``expected``, identically on every node."""
+
+    def _agreed():
+        anchor = common_finalized_anchor(nodes, timeouts.finalization)
+        views = {
+            node.name: {
+                bond.validator: bond.stake
+                for bond in node.get_block(anchor).blockInfo.bonds
+                if bond.stake > 0
+            }
+            for node in nodes
+        }
+        assert len({tuple(sorted(view.items())) for view in views.values()}) == 1, (
+            f"nodes disagree on the committee of finalized block {anchor[:10]}: {views}"
         )
-        forged.extraBytes = block_a.extraBytes + b"\x00"
-        forged_hash = _seal(forged, KEY_1)
-        client.send_block(forged, validator2)
+        return True if next(iter(views.values())) == expected else None
 
-        _wait_recorded(validator2, forged_hash, "JustificationRegression", timeouts)
-        _assert_rejected_without_slash(shard, client, validator2, KEY_2, timeouts)
+    poll_until(
+        predicate=_agreed,
+        timeout=timeouts.finalization * 5,
+        interval=timeouts.poll_interval,
+        description=f"committee {expected} on every node",
+    )
 
 
+def _assert_validators_live(
+    validators, nodes: Sequence[Node], timeouts, attackers: Sequence[Node] = ()
+) -> None:
+    """Every listed validator still gets a block finalized on every node; an
+    attacker is told to propose."""
+    for node, identity in validators:
+        deploy_id = node.deploy_string(_HELLO, identity.private_key())
+        if node in attackers:
+            node.propose()
+        assert_deploy_block_finalized_on_all_nodes(
+            node, deploy_id, nodes, timeouts.finalization * 5
+        )
+
+
+def _assert_slashed_once_everywhere(
+    client: NodeClient,
+    ro: Node,
+    nodes: Sequence[Node],
+    offender,
+    evidence: bytes,
+    expected_stake: Dict[str, int],
+    since: int,
+    timeouts,
+) -> None:
+    """The offender's slash finalizes on every node and takes effect once;
+    finalized stake and the committee then agree everywhere.
+
+    Honest proposers that each see the evidence first slash in parallel
+    blocks, and the merge keeps one; no block may slash again on top of a
+    block that already did."""
+    blocks = poll_until(
+        predicate=lambda: _finalized_slashes(client, ro, since).get(evidence),
+        timeout=timeouts.finalization * 5,
+        interval=timeouts.poll_interval,
+        description=f"a finalized block slashing {offender.name}",
+    )
+    for block_hash in blocks:
+        assert_block_finalized_on_all_nodes(nodes, block_hash, timeout=timeouts.finalization * 5)
+    _await_finalized_stake(ro, expected_stake, timeouts, f"after slashing {offender.name}")
+    _assert_committee_agreed(nodes, {k: v for k, v in expected_stake.items() if v > 0}, timeouts)
+    settled = assert_chain_advances(
+        nodes,
+        ro.last_finalized_block().blockInfo.blockNumber + 10,
+        timeouts.blocks(30),
+        label=f"after slashing {offender.name}",
+    )
+    slashing_blocks = _finalized_slashes(client, ro, since).get(evidence, [])
+    for block_hash in slashing_blocks:
+        repeated = _slashing_ancestor(client, ro, block_hash, set(slashing_blocks) - {block_hash})
+        assert repeated is None, (
+            f"{offender.name} was slashed again in {block_hash[:10]} on top of "
+            f"{repeated[:10]}, finalized up to #{settled}"
+        )
+
+
+def _slashing_ancestor(
+    client: NodeClient, ro: Node, block_hash: str, slashing: Set[str]
+) -> Optional[str]:
+    """A block of ``slashing`` among ``block_hash``'s ancestors, walking no
+    lower than the lowest of them."""
+    if not slashing:
+        return None
+    floor = min(_fetch(client, other, ro).body.state.blockNumber for other in slashing)
+    seen = set()
+    frontier = [block_hash]
+    while frontier:
+        for parent in _fetch(client, frontier.pop(), ro).header.parentsHashList:
+            parent_hash = parent.hex()
+            if parent_hash in slashing:
+                return parent_hash
+            if parent_hash in seen:
+                continue
+            seen.add(parent_hash)
+            if _fetch(client, parent_hash, ro).body.state.blockNumber > floor:
+                frontier.append(parent_hash)
+    return None
+
+
+# ── Tests ──────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.timeout(2400)
 @pytest.mark.allow_forbidden_patterns(
-    "RecordingInvalidBlock", "InvalidBondsCache", "BondsCacheMismatch"
+    "RecordingInvalidBlock",
+    "InvalidBondsCache",
+    "BondsCacheMismatch",
+    "InvalidRepeatDeploy",
+    "InvalidTransaction",
+    "ComputedPreStateMismatch",
+    "ConsumeFailedReplayDivergence",
+    "UnableToConsumeSystemDeploy",
+    "ObserverReporterUnusedCOMM",
 )
-def test_slash_invalid_bonds_cache(provider, timeouts) -> None:
-    """v1 sends a block whose bonds field halves its own stake. v2 records
-    :class:`InvalidBondsCache` and drops it; v1 keeps its stake.
+def test_rejected_offences_do_not_punish(provider, timeouts) -> None:
+    """Every offence that is not an equivocation, sent to every honest node
+    while the shard runs: each node reaches the same verdict, no forged block
+    finalizes, no slash finalizes, and stake and the committee stay as they
+    were on every node."""
+    with _live_shard(
+        provider, timeouts, "rejected-offences", attackers=("validator1", "validator2")
+    ) as (shard, client):
+        v1, v2 = shard.node("validator1"), shard.node("validator2")
+        v3, v4 = shard.node("validator3"), shard.node("validator4")
+        ro, nodes = shard.readonly, shard.all_nodes
+        start = ro.last_finalized_block().blockInfo.blockNumber
+        epoch_length = ro.pos.get_epoch_length()
 
-    Only the bonds field changes: the header timestamp is part of what the
-    close-block deploy reads, so changing it would fail replay first.
-    """
-    with _slash_shard(provider, timeouts) as (shard, validator1, validator2, client):
-        blockhash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, blockhash, timeouts.node_startup)
-        block = _fetch(client, blockhash, validator1)
+        t1 = _attacker_block(client, v1, VALIDATOR1_ID, nodes, timeouts)
+        t2 = _attacker_block(client, v2, VALIDATOR2_ID, nodes, timeouts)
+        v1_judges, v2_judges = [v2, v3, v4, ro], [v1, v3, v4, ro]
+        forged_hashes: List[bytes] = []
 
-        forged = BlockMessage()
-        forged.CopyFrom(block)
-        v1_pubkey = KEY_1.get_public_key().to_bytes()
-        for bond in forged.body.state.bonds:
-            if bond.validator == v1_pubkey:
+        def offence(name: str, block: BlockMessage, sender, judges, verdict) -> bytes:
+            block_hash = _seal(block, sender)
+            logging.info("offence %s: %s", name, block_hash.hex()[:10])
+            _inject(client, block, judges, verdict(block_hash), timeouts)
+            forged_hashes.append(block_hash)
+            return block_hash
+
+        wrong_hash = _copy(t1)
+        wrong_hash.header.timestamp = t1.header.timestamp + 1
+        evil = generate_block_hash()
+        wrong_hash.blockHash = evil
+        wrong_hash.sig = VALIDATOR1_ID.private_key().sign_block_hash(evil)
+        _inject(client, wrong_hash, v1_judges, _hash_ignored(evil), timeouts)
+        forged_hashes.append(evil)
+
+        wrong_number = _copy(t1)
+        wrong_number.body.state.blockNumber = t1.body.state.blockNumber + 7
+        wrong_number.header.timestamp = t1.header.timestamp + 1
+        rejected = offence(
+            "block number",
+            wrong_number,
+            VALIDATOR1_ID,
+            v1_judges,
+            lambda h: _recorded(h, "InvalidBlockNumber"),
+        )
+
+        wrong_seq = _copy(t1)
+        wrong_seq.seqNum = t1.seqNum + 1000
+        wrong_seq.header.timestamp = t1.header.timestamp + 1
+        offence(
+            "sequence number",
+            wrong_seq,
+            VALIDATOR1_ID,
+            v1_judges,
+            lambda h: _recorded(h, "InvalidSequenceNumber"),
+        )
+
+        unbonded_justification = _copy(t1)
+        unbonded_justification.justifications.append(
+            Justification(validator=PrivateKey.generate().to_bytes(), latestBlockHash=t1.blockHash)
+        )
+        unbonded_justification.header.timestamp = t1.header.timestamp + 1
+        offence(
+            "justification from an unbonded key",
+            unbonded_justification,
+            VALIDATOR1_ID,
+            v1_judges,
+            lambda h: _recorded(h, "InvalidFollows"),
+        )
+
+        halved_bond = _copy(t1)
+        for bond in halved_bond.body.state.bonds:
+            if bond.validator.hex() == VALIDATOR1_ID.public_hex:
                 bond.stake //= 2
-        forged_hash = _seal(forged, KEY_1)
-        client.send_block(forged, validator2)
+        offence(
+            "bonds field",
+            halved_bond,
+            VALIDATOR1_ID,
+            v1_judges,
+            lambda h: _recorded(h, "InvalidBondsCache"),
+        )
 
-        _wait_recorded(validator2, forged_hash, "InvalidBondsCache", timeouts)
-        _assert_rejected_without_slash(shard, client, validator2, KEY_2, timeouts)
+        repeated_deploy = _copy(t1)
+        repeated_deploy.seqNum = t1.seqNum + 1
+        repeated_deploy.body.state.blockNumber = t1.body.state.blockNumber + 1
+        repeated_deploy.header.ClearField("parentsHashList")
+        repeated_deploy.header.parentsHashList.append(t1.blockHash)
+        repeated_deploy.header.timestamp = int(time.time() * 1000)
+        offence(
+            "repeated deploy",
+            repeated_deploy,
+            VALIDATOR1_ID,
+            v1_judges,
+            lambda h: _recorded(h, "InvalidRepeatDeploy"),
+        )
+
+        grandparent = _fetch(
+            client,
+            _fetch(client, t1.header.parentsHashList[0].hex(), ro).header.parentsHashList[0].hex(),
+            ro,
+        )
+        skipped_parents = _copy(t1)
+        skipped_parents.header.ClearField("parentsHashList")
+        skipped_parents.header.parentsHashList.append(grandparent.blockHash)
+        skipped_parents.body.state.blockNumber = grandparent.body.state.blockNumber + 1
+        skipped_parents.header.timestamp = int(time.time() * 1000)
+        skipped_parents.body.deploys[0].deploy.CopyFrom(
+            create_deploy_data(VALIDATOR1_ID.private_key(), _HELLO, 998, 1000000, shard_id="root")
+        )
+        offence(
+            "parents skipping the fork-choice winner",
+            skipped_parents,
+            VALIDATOR1_ID,
+            v1_judges,
+            lambda h: _recorded(h, "InvalidTransaction"),
+        )
+
+        t2_epoch = t2.body.state.blockNumber // epoch_length
+        fabricated = _copy(t2)
+        fabricated.body.systemDeploys.append(_slash_deploy(b"\xde" * 32, VALIDATOR2_ID, t2_epoch))
+        fabricated.header.timestamp = t2.header.timestamp + 1
+        offence(
+            "slash on fabricated evidence",
+            fabricated,
+            VALIDATOR2_ID,
+            v2_judges,
+            lambda h: _recorded(h, "UnauthorizedSlashDeploy"),
+        )
+
+        framing = _copy(t2)
+        framing.body.systemDeploys.append(_slash_deploy(t1.blockHash, VALIDATOR2_ID, t2_epoch))
+        framing.header.timestamp = t2.header.timestamp + 1
+        offence(
+            "slash citing a valid block",
+            framing,
+            VALIDATOR2_ID,
+            v2_judges,
+            lambda h: _recorded(h, "UnauthorizedSlashDeploy"),
+        )
+
+        builds_on_rejected = _copy(t2)
+        for justification in builds_on_rejected.justifications:
+            if justification.validator.hex() == VALIDATOR1_ID.public_hex:
+                justification.latestBlockHash = rejected
+        builds_on_rejected.header.timestamp = t2.header.timestamp + 1
+        offence(
+            "building on a rejected block", builds_on_rejected, VALIDATOR2_ID, v2_judges, _parked
+        )
+
+        # v1 moves on, so a block reusing t1's justifications now regresses them.
+        _attacker_block(client, v1, VALIDATOR1_ID, nodes, timeouts)
+        regressed = _copy(t1)
+        regressed.body.deploys[0].deploy.CopyFrom(
+            create_deploy_data(VALIDATOR1_ID.private_key(), _HELLO, 999, 1000000, shard_id="root")
+        )
+        regressed.extraBytes = t1.extraBytes + b"\x00"
+        offence(
+            "justification regression",
+            regressed,
+            VALIDATOR1_ID,
+            v1_judges,
+            lambda h: _recorded(h, "JustificationRegression"),
+        )
+
+        assert_chain_advances(
+            nodes,
+            ro.last_finalized_block().blockInfo.blockNumber + 5,
+            timeouts.blocks(30),
+            label="after the offences",
+        )
+        for block_hash in forged_hashes:
+            _assert_never_finalized(nodes, block_hash)
+        assert _finalized_slashes(client, ro, start) == {}
+        _await_finalized_stake(ro, _GENESIS_BONDS, timeouts, "unchanged")
+        _assert_committee_agreed(nodes, _GENESIS_BONDS, timeouts)
+        _assert_validators_live(
+            [(v1, VALIDATOR1_ID), (v2, VALIDATOR2_ID), (v3, VALIDATOR3_ID), (v4, VALIDATOR4_ID)],
+            nodes,
+            timeouts,
+            attackers=[v1, v2],
+        )
 
 
-@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock", "InvalidRepeatDeploy")
-def test_slash_invalid_repeat_deploy(provider, timeouts) -> None:
-    """v1 sends a successor of its block carrying the same deploy again. v2
-    records :class:`InvalidRepeatDeploy` and drops it; v1 keeps its stake."""
-    with _slash_shard(provider, timeouts) as (shard, validator1, validator2, client):
-        blockhash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, blockhash, timeouts.node_startup)
-        block = _fetch(client, blockhash, validator1)
-
-        forged = BlockMessage()
-        forged.CopyFrom(block)
-        forged.seqNum = block.seqNum + 1
-        forged.body.state.blockNumber = block.body.state.blockNumber + 1
-        forged.header.timestamp = int(time.time() * 1000)
-        forged.header.ClearField("parentsHashList")
-        forged.header.parentsHashList.append(bytes.fromhex(blockhash))
-        forged_hash = _seal(forged, KEY_1)
-        client.send_block(forged, validator2)
-
-        _wait_recorded(validator2, forged_hash, "InvalidRepeatDeploy", timeouts)
-        _assert_rejected_without_slash(shard, client, validator2, KEY_2, timeouts)
-
-
+@pytest.mark.timeout(2400)
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
-def test_slash_invalid_validator_approve_evil_block(provider, timeouts) -> None:
-    """v1 sends v2 and v3 a block with a wrong number, which both record as
-    invalid. v2 then sends v3 a block citing it without slashing. v3 never
-    admits v2's block, and nobody is slashed: neither the invalid block nor
-    building on it is provable outside the receiver's own records.
+def test_equivocation_is_slashed_network_wide(provider, timeouts) -> None:
+    """Equivocators are slashed once, on every node, whichever node first
+    holds the evidence.
 
-    A rejected block is not held as a dependency, so v3 parks v2's block on
-    it rather than judging it.
+    A slash is authorized only in its evidence's epoch, so each equivocation
+    starts with room left in the shard's epoch.
+
+    1. v1 signs a sibling of its latest block and goes quiet; only v2 receives
+       the sibling.
+    2. v2 does the same; v3 first receives a block built on the sibling, asks
+       for the sibling as a dependency, then receives it.
+    3. A later epoch's block re-citing v1's evidence is rejected.
+
+    After each slash: it finalizes on every running node, once; finalized
+    stake and the committee agree everywhere; every honest validator still
+    gets blocks finalized.
     """
-    with _slash_shard(provider, timeouts, three_validators=True) as (
-        shard,
-        validator1,
-        validator2,
-        client,
-    ):
-        validator3 = shard.node("validator3")
-        blockhash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, blockhash, timeouts.node_startup)
-        wait_for_block_visible(validator3, blockhash, timeouts.node_startup)
-        block = _fetch(client, blockhash, validator1)
-        genesis_hash = block.header.parentsHashList[0]
+    with _live_shard(provider, timeouts, "equivocation") as (shard, client):
+        v1, v2 = shard.node("validator1"), shard.node("validator2")
+        v3, v4 = shard.node("validator3"), shard.node("validator4")
+        ro = shard.readonly
+        start = ro.last_finalized_block().blockInfo.blockNumber
+        epoch_length = ro.pos.get_epoch_length()
+        try:
+            running = [v2, v3, v4, ro, shard.boot]
+            _await_epoch_room(ro, epoch_length, _SLASH_ROOM, timeouts)
+            sibling1 = _equivocate(client, v1, VALIDATOR1_ID, ro, running, timeouts)
+            _inject(
+                client,
+                sibling1,
+                [v2],
+                _recorded(sibling1.blockHash, "IgnorableEquivocation"),
+                timeouts,
+            )
+            stake = dict(_GENESIS_BONDS, **{VALIDATOR1_ID.public_hex: 0})
+            _assert_slashed_once_everywhere(
+                client, ro, running, VALIDATOR1_ID, sibling1.blockHash, stake, start, timeouts
+            )
+            _assert_validators_live(
+                [(v2, VALIDATOR2_ID), (v3, VALIDATOR3_ID), (v4, VALIDATOR4_ID)], running, timeouts
+            )
 
-        invalid = BlockMessage()
-        invalid.CopyFrom(block)
-        invalid.body.state.blockNumber = 5
-        invalid.header.timestamp = block.header.timestamp + 1
-        invalid_hash = _seal(invalid, KEY_1)
-        for node in (validator2, validator3):
-            client.send_block(invalid, node)
-            _wait_recorded(node, invalid_hash, "InvalidBlockNumber", timeouts)
-
-        neglect = BlockMessage()
-        neglect.CopyFrom(block)
-        neglect.sender = KEY_2.get_public_key().to_bytes()
-        neglect.seqNum = 1
-        neglect.ClearField("justifications")
-        neglect.justifications.extend(
-            [
-                Justification(
-                    validator=KEY_1.get_public_key().to_bytes(), latestBlockHash=invalid_hash
+            running = [v3, v4, ro, shard.boot]
+            _await_epoch_room(ro, epoch_length, _SLASH_ROOM, timeouts)
+            sibling2 = _equivocate(client, v2, VALIDATOR2_ID, ro, running, timeouts)
+            child = _copy(sibling2)
+            child.seqNum = sibling2.seqNum + 1
+            child.body.state.blockNumber = sibling2.body.state.blockNumber + 1
+            child.header.ClearField("parentsHashList")
+            child.header.parentsHashList.append(sibling2.blockHash)
+            for justification in child.justifications:
+                if justification.validator.hex() == VALIDATOR2_ID.public_hex:
+                    justification.latestBlockHash = sibling2.blockHash
+            child.header.timestamp = sibling2.header.timestamp + 1
+            _seal(child, VALIDATOR2_ID)
+            client.send_block(child, v3)
+            wait_for_log_match(
+                v3,
+                re.compile(
+                    rf"Adding {sibling2.blockHash.hex()[:10]}.*hash to RequestedBlocks "
+                    rf"because of MissingDependencyRequested"
                 ),
-                Justification(
-                    validator=KEY_2.get_public_key().to_bytes(), latestBlockHash=genesis_hash
+                timeouts.command,
+            )
+            _inject(
+                client,
+                sibling2,
+                [v3],
+                _recorded(sibling2.blockHash, "AdmissibleEquivocation"),
+                timeouts,
+            )
+            stake[VALIDATOR2_ID.public_hex] = 0
+            _assert_slashed_once_everywhere(
+                client, ro, running, VALIDATOR2_ID, sibling2.blockHash, stake, start, timeouts
+            )
+            _assert_validators_live([(v3, VALIDATOR3_ID), (v4, VALIDATOR4_ID)], running, timeouts)
+
+            evidence_epoch = sibling1.body.state.blockNumber // epoch_length
+            poll_until(
+                predicate=lambda: (
+                    True
+                    if ro.last_finalized_block().blockInfo.blockNumber // epoch_length
+                    > evidence_epoch
+                    else None
                 ),
-                Justification(
-                    validator=KEY_3.get_public_key().to_bytes(), latestBlockHash=genesis_hash
-                ),
-            ]
-        )
-        neglect.body.deploys[0].deploy.CopyFrom(
-            create_deploy_data(KEY_2, HELLO_CONTRACT, 1, 1000000, shard_id="root")
-        )
-        neglect.header.timestamp = int(time.time() * 1000)
-        neglect_hash = _seal(neglect, KEY_2)
-        client.send_block(neglect, validator3)
-
-        wait_for_log_match(
-            validator3,
-            re.compile(rf"Block {neglect_hash.hex()[:10]}\.\.\. delayed: missing dependencies\."),
-            timeouts.command,
-        )
-        _assert_rejected_without_slash(shard, client, validator3, KEY_3, timeouts)
-        assert f"Block {neglect_hash.hex()[:10]}... validated" not in validator3.logs()
-
-
-@pytest.mark.allow_forbidden_patterns(
-    "RecordingInvalidBlock", "InvalidTransaction", "ComputedPreStateMismatch"
-)
-def test_slash_ghost_disobeyed(provider, timeouts) -> None:
-    """v1 sends a block whose parents skip the fork-choice winner and whose
-    deploy is replaced. v2's replay diverges from the declared post-state, it
-    records :class:`InvalidTransaction` and drops the block; v1 keeps its
-    stake.
-
-    A wire forgery cannot carry a post-state consistent with mutated parents,
-    so replay fails before the parent check: the parent rule itself is
-    covered in-process by the node's slashing tests.
-    """
-    with _slash_shard(provider, timeouts, three_validators=True) as (
-        shard,
-        validator1,
-        validator2,
-        client,
-    ):
-        validator3 = shard.node("validator3")
-        hash1 = _propose(validator3, KEY_3)
-        wait_for_block_visible(validator1, hash1, timeouts.node_startup)
-        wait_for_block_visible(validator2, hash1, timeouts.node_startup)
-        hash2 = _propose(validator2, KEY_2)
-        wait_for_block_visible(validator1, hash2, timeouts.node_startup)
-        wait_for_block_visible(validator3, hash2, timeouts.node_startup)
-        hash3 = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, hash3, timeouts.node_startup)
-        wait_for_block_visible(validator3, hash3, timeouts.node_startup)
-        block3 = _fetch(client, hash3, validator1)
-
-        forged = BlockMessage()
-        forged.CopyFrom(block3)
-        forged.header.ClearField("parentsHashList")
-        forged.header.parentsHashList.append(bytes.fromhex(hash1))
-        forged.body.state.blockNumber = 2
-        forged.header.timestamp = int(time.time() * 1000)
-        forged.body.deploys[0].deploy.CopyFrom(
-            create_deploy_data(KEY_2, HELLO_CONTRACT, 1, 1000000, shard_id="root")
-        )
-        forged_hash = _seal(forged, KEY_1)
-        client.send_block(forged, validator2)
-
-        _wait_recorded(validator2, forged_hash, "InvalidTransaction", timeouts)
-        _assert_rejected_without_slash(shard, client, validator2, KEY_2, timeouts)
+                timeout=timeouts.blocks(2 * epoch_length),
+                interval=timeouts.poll_interval,
+                description=f"the finalized chain past epoch {evidence_epoch}",
+            )
+            t3 = _silence(client, v3, VALIDATOR3_ID, ro, [v4, ro, shard.boot], timeouts)
+            replay = _copy(t3)
+            replay.body.systemDeploys.append(
+                _slash_deploy(sibling1.blockHash, VALIDATOR3_ID, evidence_epoch)
+            )
+            replay.header.timestamp = t3.header.timestamp + 1
+            replay_hash = _seal(replay, VALIDATOR3_ID)
+            _inject(
+                client,
+                replay,
+                [v4, ro],
+                _recorded(replay_hash, "UnauthorizedSlashDeploy"),
+                timeouts,
+            )
+            v3.unpause()
+            assert_chain_advances(
+                running,
+                ro.last_finalized_block().blockInfo.blockNumber + 5,
+                timeouts.blocks(30),
+                label="after the stale slash",
+            )
+            _assert_never_finalized(running, replay_hash)
+            _await_finalized_stake(ro, stake, timeouts, "unchanged by the stale slash")
+            _assert_validators_live([(v3, VALIDATOR3_ID), (v4, VALIDATOR4_ID)], running, timeouts)
+        finally:
+            v1.unpause()
+            v2.unpause()
+            v3.unpause()
 
 
-# ── Equivocation: provable from the two signed blocks alone, so slashed ──
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "the slash is re-issued in later blocks: proposers judge the target bonded by "
-        "the parent's bonds field, which lags the slash until the finalized floor passes it"
-    ),
-)
-@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
-def test_node_working_right_after_slashing(provider, timeouts) -> None:
-    """v1 equivocates. v2's next block slashes v1, and v2's block after that
-    is ordinary: the slash is issued once per offence."""
-    with _slash_shard(provider, timeouts) as (shard, validator1, validator2, client):
-        b1_hash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, b1_hash, timeouts.node_startup)
-        sibling = _sibling(_fetch(client, b1_hash, validator1), KEY_1)
-        client.send_block(sibling, validator2)
-        _wait_recorded(validator2, sibling.blockHash, "IgnorableEquivocation", timeouts)
-
-        slashing_hash = _propose(validator2, KEY_2)
-        assert is_exist_slash_deploy(_fetch(client, slashing_hash, validator2))
-        assert _stake(shard, slashing_hash, KEY_1, timeouts) == 0
-
-        next_hash = _propose(validator2, KEY_2)
-        assert not is_exist_slash_deploy(_fetch(client, next_hash, validator2))
-
-
-@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
-def test_slash_ignorable_equivocation(provider, timeouts) -> None:
-    """v1 sends v2 a second block at the same sequence number as one v2
-    holds. v2 has not asked for it, so it records
-    :class:`IgnorableEquivocation`, and its next block slashes v1."""
-    with _slash_shard(provider, timeouts) as (shard, validator1, validator2, client):
-        b1_hash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, b1_hash, timeouts.node_startup)
-        sibling = _sibling(_fetch(client, b1_hash, validator1), KEY_1)
-        client.send_block(sibling, validator2)
-        _wait_recorded(validator2, sibling.blockHash, "IgnorableEquivocation", timeouts)
-
-        slashing_hash = _propose(validator2, KEY_2)
-        assert is_exist_slash_deploy(_fetch(client, slashing_hash, validator2))
-        assert _stake(shard, slashing_hash, KEY_1, timeouts) == 0
-        assert _stake(shard, slashing_hash, KEY_2, timeouts) == STAKE
-
-
-@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock", "InvalidRepeatDeploy")
-def test_slash_admissible_equivocation(provider, timeouts) -> None:
-    """v2 first receives a block citing v1's equivocating sibling, so it asks
-    for the sibling as a dependency; when the sibling arrives v2 records
-    :class:`AdmissibleEquivocation`, and its next block slashes v1.
-
-    The citing block never validates: it only has to pass the format and
-    signature checks that come before dependency resolution.
-    """
-    with _slash_shard(provider, timeouts) as (shard, validator1, validator2, client):
-        b1_hash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, b1_hash, timeouts.node_startup)
-        b1 = _fetch(client, b1_hash, validator1)
-        genesis_hash = b1.header.parentsHashList[0]
-        sibling = _sibling(b1, KEY_1)
-
-        child = BlockMessage()
-        child.CopyFrom(b1)
-        child.sender = KEY_2.get_public_key().to_bytes()
-        child.seqNum = 1
-        child.body.state.blockNumber = 2
-        child.ClearField("justifications")
-        child.justifications.extend(
-            [
-                Justification(
-                    validator=KEY_1.get_public_key().to_bytes(),
-                    latestBlockHash=sibling.blockHash,
-                ),
-                Justification(
-                    validator=KEY_2.get_public_key().to_bytes(), latestBlockHash=genesis_hash
-                ),
-            ]
-        )
-        child.header.ClearField("parentsHashList")
-        child.header.parentsHashList.append(sibling.blockHash)
-        child.header.timestamp = b1.header.timestamp + 2
-        _seal(child, KEY_2)
-        client.send_block(child, validator2)
-        wait_for_log_match(
-            validator2,
-            re.compile(
-                rf"Adding {sibling.blockHash.hex()[:10]}.*hash to RequestedBlocks "
-                rf"because of MissingDependencyRequested"
-            ),
-            timeouts.command,
-        )
-
-        client.send_block(sibling, validator2)
-        _wait_recorded(validator2, sibling.blockHash, "AdmissibleEquivocation", timeouts)
-
-        slashing_hash = _propose(validator2, KEY_2)
-        assert is_exist_slash_deploy(_fetch(client, slashing_hash, validator2))
-        assert _stake(shard, slashing_hash, KEY_1, timeouts) == 0
-
-
-@pytest.mark.allow_forbidden_patterns(
-    "RecordingInvalidBlock", "InvalidTransaction", "ComputedPreStateMismatch"
-)
-def test_slash_neglected_equivocation(provider, timeouts) -> None:
-    """v1 equivocates to v2 and v3. v2 then sends v3 a block citing the
-    sibling without slashing. v3 rejects v2's block, and v3's next block
-    slashes v1 but not v2: building on an equivocation is judged against the
-    receiver's own records, so it is not slashable.
-
-    v2's block copies v1's post-state while carrying its own deploy, so v3's
-    replay diverges before the neglect check runs; either verdict rejects it.
-    """
-    with _slash_shard(provider, timeouts, three_validators=True) as (
-        shard,
-        validator1,
-        validator2,
-        client,
-    ):
-        validator3 = shard.node("validator3")
-        b1_hash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, b1_hash, timeouts.node_startup)
-        wait_for_block_visible(validator3, b1_hash, timeouts.node_startup)
-        b1 = _fetch(client, b1_hash, validator1)
-        genesis_hash = b1.header.parentsHashList[0]
-        sibling = _sibling(b1, KEY_1)
-        for node in (validator2, validator3):
-            client.send_block(sibling, node)
-            _wait_recorded(node, sibling.blockHash, "IgnorableEquivocation", timeouts)
-
-        neglect = BlockMessage()
-        neglect.CopyFrom(b1)
-        neglect.sender = KEY_2.get_public_key().to_bytes()
-        neglect.seqNum = 1
-        neglect.body.state.blockNumber = 2
-        neglect.ClearField("justifications")
-        neglect.justifications.extend(
-            [
-                Justification(
-                    validator=KEY_1.get_public_key().to_bytes(),
-                    latestBlockHash=sibling.blockHash,
-                ),
-                Justification(
-                    validator=KEY_2.get_public_key().to_bytes(), latestBlockHash=genesis_hash
-                ),
-                Justification(
-                    validator=KEY_3.get_public_key().to_bytes(), latestBlockHash=genesis_hash
-                ),
-            ]
-        )
-        neglect.body.deploys[0].deploy.CopyFrom(
-            create_deploy_data(KEY_2, HELLO_CONTRACT, 1, 1000000, shard_id="root")
-        )
-        neglect.header.ClearField("parentsHashList")
-        neglect.header.parentsHashList.append(bytes.fromhex(b1_hash))
-        neglect.header.timestamp = b1.header.timestamp + 2
-        neglect_hash = _seal(neglect, KEY_2)
-        client.send_block(neglect, validator3)
-        _wait_recorded(
-            validator3, neglect_hash, "NeglectedInvalidBlock|InvalidTransaction", timeouts
-        )
-
-        slashing_hash = _propose(validator3, KEY_3)
-        assert is_exist_slash_deploy(_fetch(client, slashing_hash, validator3))
-        assert _stake(shard, slashing_hash, KEY_1, timeouts) == 0
-        assert _stake(shard, slashing_hash, KEY_2, timeouts) == STAKE
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=F1r3flyClientException,
-    reason=(
-        "node defect: after a late-released equivocation the honest validator's own "
-        "slashing block fails self-validation as NeglectedEquivocation"
-    ),
-)
-@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock", "ProposeBugError")
-def test_slash_late_released_equivocation(provider, timeouts) -> None:
-    """v1 withholds an equivocating sibling of its block while v2 builds four
-    blocks on the original, then releases it. v2 records
-    :class:`IgnorableEquivocation`, and its next block slashes v1: withheld
-    evidence is punished whenever it surfaces within the epoch."""
-    with _slash_shard(provider, timeouts) as (shard, validator1, validator2, client):
-        b1_hash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, b1_hash, timeouts.node_startup)
-        sibling = _sibling(_fetch(client, b1_hash, validator1), KEY_1)
-        for _ in range(4):
-            v2_hash = _propose(validator2, KEY_2)
-            wait_for_block_visible(validator1, v2_hash, timeouts.node_startup)
-
-        client.send_block(sibling, validator2)
-        _wait_recorded(validator2, sibling.blockHash, "IgnorableEquivocation", timeouts)
-
-        slashing_hash = _propose(validator2, KEY_2)
-        assert is_exist_slash_deploy(_fetch(client, slashing_hash, validator2))
-        assert _stake(shard, slashing_hash, KEY_1, timeouts) == 0
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=F1r3flyClientException,
-    reason=(
-        "node defect: once an equivocation arrives after the chain has built past it, the "
-        "honest validator's next block fails self-validation as NeglectedEquivocation"
-    ),
-)
-@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock", "ProposeBugError")
-def test_slash_stale_evidence_rebond(provider, timeouts) -> None:
-    """v1 equivocates in epoch 0, and the evidence reaches v2 and v3 only once
-    the chain is in a later epoch. v2 then sends v3 a block slashing v1 on
-    it. v3 records :class:`UnauthorizedSlashDeploy`, and nobody is slashed:
-    evidence counts only in its own epoch, and an unauthorized slash is not
-    itself slashable.
-
-    With an epoch of two blocks, v1's block is number 1 (epoch 0). The
-    evidence arrives only after v2 and v3 have built on it, so no honest
-    proposer holds it while its epoch is current.
-    """
-    with _slash_shard(
-        provider,
-        timeouts,
-        three_validators=True,
-        global_cli_options={"--epoch-length": "2"},
-    ) as (shard, validator1, validator2, client):
-        validator3 = shard.node("validator3")
-        b1_hash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, b1_hash, timeouts.node_startup)
-        wait_for_block_visible(validator3, b1_hash, timeouts.node_startup)
-        sibling = _sibling(_fetch(client, b1_hash, validator1), KEY_1)
-
-        v2_hash = _propose(validator2, KEY_2)
-        wait_for_block_visible(validator3, v2_hash, timeouts.node_startup)
-        v3_hash = _propose(validator3, KEY_3)
-        wait_for_block_visible(validator2, v3_hash, timeouts.node_startup)
-
-        for node in (validator2, validator3):
-            client.send_block(sibling, node)
-            _wait_recorded(node, sibling.blockHash, "IgnorableEquivocation", timeouts)
-
-        v2_later_hash = _propose(validator2, KEY_2)
-        wait_for_block_visible(validator3, v2_later_hash, timeouts.node_startup)
-
-        v2_later = _fetch(client, v2_later_hash, validator2)
-        forged = BlockMessage()
-        forged.CopyFrom(v2_later)
-        forged.body.systemDeploys.append(_forged_slash(sibling.blockHash, KEY_2))
-        forged.header.timestamp = v2_later.header.timestamp + 1
-        forged_hash = _seal(forged, KEY_2)
-        client.send_block(forged, validator3)
-        _wait_recorded(validator3, forged_hash, "UnauthorizedSlashDeploy", timeouts)
-
-        _assert_rejected_without_slash(shard, client, validator3, KEY_3, timeouts)
-
-
-@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
-def test_slash_self_correcting_block_admitted(provider, timeouts) -> None:
-    """v1 equivocates to v2 and v3. v2's next block cites the equivocation and
-    carries its slash; v3 admits that block rather than rejecting it as
-    neglect, so v1 is slashed and v2 keeps its stake."""
-    with _slash_shard(provider, timeouts, three_validators=True) as (
-        shard,
-        validator1,
-        validator2,
-        client,
-    ):
-        validator3 = shard.node("validator3")
-        b1_hash = _propose(validator1, KEY_1)
-        wait_for_block_visible(validator2, b1_hash, timeouts.node_startup)
-        wait_for_block_visible(validator3, b1_hash, timeouts.node_startup)
-        sibling = _sibling(_fetch(client, b1_hash, validator1), KEY_1)
-        for node in (validator2, validator3):
-            client.send_block(sibling, node)
-            _wait_recorded(node, sibling.blockHash, "IgnorableEquivocation", timeouts)
-
-        slashing_hash = _propose(validator2, KEY_2)
-        assert is_exist_slash_deploy(_fetch(client, slashing_hash, validator2))
-        wait_for_block_visible(validator3, slashing_hash, timeouts.node_startup)
-        assert f"Recording invalid block {slashing_hash[:10]}" not in validator3.logs()
-        assert _stake(shard, slashing_hash, KEY_1, timeouts) == 0
-        assert _stake(shard, slashing_hash, KEY_2, timeouts) == STAKE
-        assert _stake(shard, slashing_hash, KEY_3, timeouts) == STAKE
-
-
-def test_no_false_positive_slash_on_propose_imbalance(provider, timeouts) -> None:
-    """v1 proposes five blocks in a row while v2 stays silent, then v3
-    proposes once. Nobody is slashed: neither dominating the chain nor
-    staying silent is an offence."""
-    with _slash_shard(provider, timeouts, three_validators=True) as (
-        shard,
-        validator1,
-        validator2,
-        client,
-    ):
-        validator3 = shard.node("validator3")
-        for _ in range(5):
-            v1_hash = _propose(validator1, KEY_1)
-            wait_for_block_visible(validator2, v1_hash, timeouts.node_startup)
-            wait_for_block_visible(validator3, v1_hash, timeouts.node_startup)
-
-        v3_hash = _propose(validator3, KEY_3)
-        for key in (KEY_1, KEY_2, KEY_3):
-            assert _stake(shard, v3_hash, key, timeouts) == STAKE
+@pytest.mark.timeout(2400)
+def test_uneven_proposing_is_not_punished(provider, timeouts) -> None:
+    """v2 stays silent for 40 blocks while the others propose, then returns.
+    Nobody is slashed, stake and the committee are unchanged on every node,
+    and v2 gets blocks finalized again."""
+    with _live_shard(provider, timeouts, "uneven-proposing") as (shard, client):
+        v1, v2 = shard.node("validator1"), shard.node("validator2")
+        v3, v4 = shard.node("validator3"), shard.node("validator4")
+        ro, nodes = shard.readonly, shard.all_nodes
+        start = ro.last_finalized_block().blockInfo.blockNumber
+        running = [v1, v3, v4, ro, shard.boot]
+        v2.pause()
+        try:
+            assert_chain_advances(running, start + 40, timeouts.blocks(60), label="v2 silent")
+        finally:
+            v2.unpause()
+        _assert_validators_live([(v2, VALIDATOR2_ID)], nodes, timeouts)
+        assert _finalized_slashes(client, ro, start) == {}
+        _await_finalized_stake(ro, _GENESIS_BONDS, timeouts, "unchanged")
+        _assert_committee_agreed(nodes, _GENESIS_BONDS, timeouts)

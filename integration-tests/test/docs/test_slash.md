@@ -2,67 +2,63 @@
 
 ## Purpose
 
-Wire-level tests of how nodes judge and punish misbehaving validators. Each test spawns a custom shard (two or three validators of stake 100 plus a read-only node, heartbeat off, `ftt=-1`), takes a real block, forges a variant a validator must not produce, signs it with that validator's key and sends it to a node over the P2P transport with `infra/p2p_client.NodeClient`. It then checks the node's verdict and its consequence.
+How a live shard judges and punishes misbehaving validators. Each test runs a shard as production does: heartbeat on, the shard's fault-tolerance threshold and epoch, four validators of stake 100/200/300/400 and a read-only observer. Misbehaviour is injected over the P2P transport with `infra/p2p_client.NodeClient`, as blocks signed with a validator's key and built from blocks that validator really produced.
 
 Only equivocation is slashable. Every other offence is judged against the receiving node's own state, so the node rejects the block and its sender keeps its stake.
 
+Each test checks the outcome the way the network must agree on it: every receiving node reaches the verdict, a slash finalizes on every node, finalized stake and the committee are identical everywhere, and the chain keeps finalizing.
+
 Runs under the subprocess and Docker providers. Under Docker the nodes reply to the client through the network gateway, which works only with native Linux networking, so the suite skips on other hosts there.
 
-## Tests (19)
+## Tests (3)
 
-### Rejected, not slashed
+### `test_rejected_offences_do_not_punish`
 
-| Test | Forgery | Expected |
-|------|---------|----------|
-| `test_slash_invalid_block_hash` | declared hash does not match the content | v2 ignores it without a verdict (`Ignoring block … does not match`) |
-| `test_slash_invalid_block_number` | block number not one above its parents' | v2 records `InvalidBlockNumber` |
-| `test_slash_invalid_block_seq` | sequence number not one above the previous block's | v2 records `InvalidSequenceNumber` |
-| `test_slash_justification_not_correct` | extra justification from an unbonded key | v2 records `InvalidFollows` |
-| `test_slash_unauthorized_slash_deploy` | slash of v1 citing a block no node holds | v3 records `UnauthorizedSlashDeploy` |
-| `test_slash_references_valid_block` | slash of v1 citing v1's valid block | v3 records `UnauthorizedSlashDeploy` |
-| `test_slash_self_regression` | own justification points behind its latest block | v2 records `JustificationRegression` |
-| `test_slash_invalid_bonds_cache` | bonds field halves the sender's stake | v2 records `InvalidBondsCache` |
-| `test_slash_invalid_repeat_deploy` | successor block repeats its deploy | v2 records `InvalidRepeatDeploy` |
-| `test_slash_ghost_disobeyed` | parents skip the fork-choice winner, deploy replaced | v2 records `InvalidTransaction` (replay fails before the parent check) |
-| `test_slash_invalid_validator_approve_evil_block` | v2's block cites v1's rejected block without slashing | v3 parks v2's block on the missing dependency and never admits it |
+v1 and v2 are attackers: they propose only when the test tells them to (`--heartbeat-disabled` on those two nodes), so a block one of them forges from is still its latest. Each offence is sent to every other node, and every one of them must reach the verdict.
 
-Each then has the judging node propose: its block carries no slash, and every validator's stake is unchanged.
+| Offence | Verdict |
+|---------|---------|
+| declared hash does not match the content | ignored without a verdict (`Ignoring block … because block hash`) |
+| block number not one above its parents' | `InvalidBlockNumber` |
+| sequence number not one above the previous block's | `InvalidSequenceNumber` |
+| justification from an unbonded key | `InvalidFollows` |
+| bonds field halves the sender's stake | `InvalidBondsCache` |
+| successor block repeats its deploy | `InvalidRepeatDeploy` |
+| parents skip the fork-choice winner | `InvalidTransaction` (replay fails before the parent check) |
+| slash citing a block no node holds | `UnauthorizedSlashDeploy` |
+| slash citing a valid block | `UnauthorizedSlashDeploy` |
+| block built on a rejected block | parked on the missing dependency, never admitted |
+| own justification behind its latest block | `JustificationRegression` |
 
-### Equivocation: slashed
+Then: the chain keeps finalizing, no forged block and no slash finalizes, finalized stake and the committee are unchanged and identical on every node, and all four validators still get blocks finalized.
 
-| Test | Scenario | Expected |
-|------|----------|----------|
-| `test_slash_ignorable_equivocation` | v2 receives a sibling of a block it holds | `IgnorableEquivocation`; v2's next block slashes v1 |
-| `test_slash_admissible_equivocation` | v2 first asks for the sibling as a dependency | `AdmissibleEquivocation`; v2's next block slashes v1 |
-| `test_slash_neglected_equivocation` | v2's block cites the sibling without slashing | v3 rejects v2's block; v3's next block slashes v1, not v2 |
-| `test_slash_self_correcting_block_admitted` | v2's block cites the sibling and carries the slash | v3 admits it; v1 slashed, v2 and v3 keep their stake |
-| `test_node_working_right_after_slashing` | v2 proposes again after slashing | **expected failure**: the slash is re-issued |
-| `test_slash_late_released_equivocation` | sibling released after v2 built four blocks | **expected failure**: node defect |
-| `test_slash_stale_evidence_rebond` | sibling arrives in a later epoch; v2 forges a slash on it | **expected failure**: node defect |
+### `test_equivocation_is_slashed_network_wide`
 
-### Safety of uneven proposing
+1. v1 signs a sibling of its latest block and goes quiet; only v2 receives the sibling (`IgnorableEquivocation`).
+2. v2 does the same; v3 first receives a block built on v2's sibling, asks for the sibling as a dependency, then receives it (`AdmissibleEquivocation`).
+3. Once the epoch of v1's evidence has passed, a block re-citing it carries a slash for the old epoch; v4 and the observer reject it (`UnauthorizedSlashDeploy`) and it never finalizes.
 
-`test_no_false_positive_slash_on_propose_imbalance`: v1 proposes five blocks in a row, v2 stays silent, v3 proposes once; every stake is unchanged.
+A slash is authorized only in its evidence's epoch, so each equivocation starts with room left in the shard's epoch. After each slash: it finalizes on every running node; finalized stake and the committee agree everywhere; every honest validator still gets blocks finalized. Honest proposers that see the evidence first may each slash in parallel blocks, and the merge keeps one; no block may slash again on top of a block that already did.
 
-## Expected failures
+### `test_uneven_proposing_is_not_punished`
 
-- **Late-arriving equivocation** (`test_slash_late_released_equivocation`, `test_slash_stale_evidence_rebond`): once an equivocation reaches an honest validator after the chain has built past it, that validator's next block fails its own validation as `NeglectedEquivocation`, and it cannot propose.
-- **Repeated slash** (`test_node_working_right_after_slashing`): proposers decide a target is still bonded from the parent's `bonds` field, which records the committee at the finalized floor, so the same slash is issued in later blocks until the floor passes it.
-
-Both are strict: they fail the suite once the behaviour changes.
+v2 stays silent for 40 blocks while the others propose, then returns. Nobody is slashed, stake and the committee are unchanged on every node, and v2 gets blocks finalized again.
 
 ## Key assertions
 
-- **Verdict:** the receiving node logs `Recording invalid block <hash[:10]>... for <Variant>.`, or `Ignoring block` for a hash mismatch.
-- **Stake:** read from PoS state after a block (`readonly.pos.get_bonds(block_hash)`). A block's `bonds` field is the committee at its finalized floor and does not show its own slash.
-- **Slash deploy:** whether a block carries one (`is_exist_slash_deploy`).
+- **Verdict:** each receiving node logs `Recording invalid block <hash[:10]>... for <Variant>.`, or `Ignoring block` for a hash mismatch.
+- **Finalized slash:** slashes are read from blocks every node has finalized (`slash_evidence`), keyed by the evidence they cite.
+- **Stake:** read from the finalized state (`readonly.pos.get_bonds()`). A block's `bonds` field is the committee at its finalized floor and does not show its own slash.
+- **Committee:** the bonds field of a block every node has finalized, identical on every node.
 - **Hash:** every fetched block must hash with pyf1r3fly's `gen_block_hash_from_block` to its own `blockHash`.
+- **Forensics:** a failure carries every node's LFB, whether the chain is advancing, and the forbidden log patterns each node hit.
 
 ## Infrastructure used
 
-- `infra/p2p_client.py`: `NodeClient` handshakes for the node's network and chain identity, fetches blocks and pushes forged ones.
+- `infra/p2p_client.py`: `NodeClient` handshakes for the node's network and chain identity, fetches blocks and pushes forged ones; `slash_evidence` lists the evidence a block's slashes cite.
 - `Node.p2p_address()`, `Node.tls_certificate()`, `Node.p2p_reply_host`, implemented by each provider.
-- `@pytest.mark.allow_forbidden_patterns(...)` per test, allowing exactly the log patterns its forgery provokes.
+- `ShardConfig.extra_wallets` funds validator 4's vault, which the default genesis wallets leave empty.
+- `@pytest.mark.allow_forbidden_patterns(...)` per test, allowing exactly the log patterns its forgeries provoke.
 
 ## Related
 

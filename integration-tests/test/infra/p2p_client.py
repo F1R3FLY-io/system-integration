@@ -315,9 +315,10 @@ def generate_block_hash() -> bytes:
     return hashlib.blake2b(b"evil", digest_size=32).digest()
 
 
-def is_exist_slash_deploy(block: BlockMessage) -> bool:
-    """Whether ``block`` carries a slash system deploy."""
-    return any(
-        deploy.systemDeploy.WhichOneof("systemDeploy") == "slashSystemDeploy"
+def slash_evidence(block: BlockMessage) -> List[bytes]:
+    """The invalid-block hash each slash system deploy in ``block`` cites."""
+    return [
+        deploy.systemDeploy.slashSystemDeploy.invalidBlockHash
         for deploy in block.body.systemDeploys
-    )
+        if deploy.systemDeploy.WhichOneof("systemDeploy") == "slashSystemDeploy"
+    ]
