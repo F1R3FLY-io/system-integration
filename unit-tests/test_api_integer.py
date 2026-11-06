@@ -113,6 +113,32 @@ def test_block_assertions_accept_exact_bond_stakes(encode):
         web_api._assert_light_block_info(block, expect)
 
 
+def test_grpc_status_assertions_accept_exact_min_phlo_price(encode, monkeypatch):
+    price = 2**63 - 1
+    node = SimpleNamespace(name="validator1")
+    shard = SimpleNamespace(all_nodes=[node])
+    http_status = {
+        "shardId": "root",
+        "networkId": "testnet",
+        "minPhloPrice": encode(price),
+        "lastFinalizedBlockNumber": 1,
+        "isValidator": True,
+        "isReadOnly": False,
+        "isReady": True,
+        "epochLength": 10,
+    }
+    grpc_status = SimpleNamespace(**{**http_status, "minPhloPrice": price})
+    monkeypatch.setattr(
+        web_api, "_status_pair_over_stable_lfb", lambda _: (http_status, grpc_status)
+    )
+
+    web_api.test_grpc_status_matches_http(shard, None)
+
+    http_status["minPhloPrice"] = encode(price - 1)
+    with pytest.raises(AssertionError, match="minPhloPrice mismatch"):
+        web_api.test_grpc_status_matches_http(shard, None)
+
+
 def test_transfer_assertions_accept_exact_amounts(encode, monkeypatch):
     v1_vault = wallets.VALIDATOR1_ID.private_key().get_public_key().get_vault_address()
     v2_vault = wallets.VALIDATOR2_ID.private_key().get_public_key().get_vault_address()

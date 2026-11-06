@@ -250,7 +250,7 @@ def test_status(shared_shard, node_conf, timeouts) -> None:
         )
 
         # Phlo
-        assert status["minPhloPrice"] == expect["min_phlo_price"], (
+        assert api_integer(status["minPhloPrice"]) == expect["min_phlo_price"], (
             f"{node.name}: minPhloPrice {status['minPhloPrice']} != "
             f"config {expect['min_phlo_price']}"
         )
@@ -305,7 +305,7 @@ def test_status(shared_shard, node_conf, timeouts) -> None:
     shard_ids = {n: s["shardId"] for n, s in statuses.items()}
     assert len(set(shard_ids.values())) == 1, f"Nodes disagree on shardId: {shard_ids}"
 
-    phlo_prices = {n: s["minPhloPrice"] for n, s in statuses.items()}
+    phlo_prices = {n: api_integer(s["minPhloPrice"]) for n, s in statuses.items()}
     assert len(set(phlo_prices.values())) == 1, f"Nodes disagree on minPhloPrice: {phlo_prices}"
 
     epoch_lengths = {n: s["epochLength"] for n, s in statuses.items()}
@@ -546,7 +546,7 @@ def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
         # Full view fields
         assert detail["deployer"] == v1_pubkey, f"{node.name}: deployer mismatch"
         assert detail["systemDeployError"] == "", f"{node.name}: systemDeployError should be empty"
-        assert detail["phloPrice"] == 1, (
+        assert api_integer(detail["phloPrice"]) == 1, (
             f"{node.name}: phloPrice should be 1, got {detail['phloPrice']}"
         )
         assert detail["phloLimit"] == 100_000, (
@@ -889,7 +889,7 @@ def test_grpc_status_matches_http(shared_shard, node_conf) -> None:
 
         assert grpc_status.shardId == http_status["shardId"], f"{node.name}: shardId mismatch"
         assert grpc_status.networkId == http_status["networkId"], f"{node.name}: networkId mismatch"
-        assert grpc_status.minPhloPrice == http_status["minPhloPrice"], (
+        assert grpc_status.minPhloPrice == api_integer(http_status["minPhloPrice"]), (
             f"{node.name}: minPhloPrice mismatch"
         )
         assert grpc_status.lastFinalizedBlockNumber == http_status["lastFinalizedBlockNumber"], (
