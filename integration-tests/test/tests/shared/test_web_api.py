@@ -25,7 +25,9 @@ import re
 import time
 
 import pytest
+from f1r3fly import token_amount
 from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto
+from f1r3fly.token_amount import parse as parse_amount
 from f1r3fly.util import sign_deploy_data
 
 from ...infra.keys import VALIDATOR1_ID
@@ -172,7 +174,7 @@ def _assert_light_block_info(block, expect, context=""):
         assert validator in expect["stakes"], (
             f"{context}: unknown validator in bonds: {validator[:24]}..."
         )
-        assert bond["stake"] == expect["stakes"][validator], (
+        assert parse_amount(bond["stake"]) == expect["stakes"][validator], (
             f"{context}: stake for {validator[:24]}... is {bond['stake']}, "
             f"expected {expect['stakes'][validator]}"
         )
@@ -249,7 +251,7 @@ def test_status(shared_shard, node_conf, timeouts) -> None:
         )
 
         # Phlo
-        assert status["minPhloPrice"] == expect["min_phlo_price"], (
+        assert parse_amount(status["minPhloPrice"]) == expect["min_phlo_price"], (
             f"{node.name}: minPhloPrice {status['minPhloPrice']} != "
             f"config {expect['min_phlo_price']}"
         )
@@ -545,7 +547,7 @@ def test_get_deploy_detail(shared_shard, node_conf, timeouts) -> None:
         # Full view fields
         assert detail["deployer"] == v1_pubkey, f"{node.name}: deployer mismatch"
         assert detail["systemDeployError"] == "", f"{node.name}: systemDeployError should be empty"
-        assert detail["phloPrice"] == 1, (
+        assert parse_amount(detail["phloPrice"]) == 1, (
             f"{node.name}: phloPrice should be 1, got {detail['phloPrice']}"
         )
         assert detail["phloLimit"] == 100_000, (
@@ -705,7 +707,7 @@ def test_deploy_via_http(shared_shard) -> None:
         term="@2!(1)",
         timestamp=timestamp,
         phloLimit=100_000,
-        phloPrice=1,
+        phloPrice=token_amount.encode(1),
         validAfterBlockNumber=valid_after_block_number,
         shardId="root",
     )
@@ -714,7 +716,7 @@ def test_deploy_via_http(shared_shard) -> None:
             "term": "@2!(1)",
             "timestamp": timestamp,
             "phloLimit": 100_000,
-            "phloPrice": 1,
+            "phloPrice": "1",
             "validAfterBlockNumber": valid_after_block_number,
             "shardId": "root",
         },

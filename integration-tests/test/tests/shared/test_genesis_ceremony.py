@@ -15,6 +15,7 @@ from the shard's ShardConfig and node_conf fixture.
 import logging
 
 import pytest
+from f1r3fly.token_amount import parse as parse_amount
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -66,7 +67,7 @@ def test_successful_genesis_ceremony(shared_shard, node_conf) -> None:
 
     # Bonds match shard config
     expected_bonds = {identity.public_hex: stake for identity, stake in config.bonds}
-    actual_bonds = {b.validator: b.stake for b in genesis_info.bonds}
+    actual_bonds = {b.validator: parse_amount(b.stake) for b in genesis_info.bonds}
 
     assert len(actual_bonds) == len(expected_bonds), (
         f"Genesis block has {len(actual_bonds)} bonds, "

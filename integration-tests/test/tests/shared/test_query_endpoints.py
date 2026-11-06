@@ -12,6 +12,7 @@ where applicable. Endpoints requiring exploratory deploy are readonly-only.
 import logging
 
 import pytest
+from f1r3fly.token_amount import parse as parse_amount
 
 from ...infra.keys import ALL_IDENTITIES, VALIDATOR1_ID
 from ...infra.polling import wait_for_deploy_finalized
@@ -66,19 +67,19 @@ def test_validators_endpoint(shared_shard, node_conf) -> None:
     )
 
     for v in validators:
-        assert v["stake"] == expected_stakes[v["publicKey"]], (
+        assert parse_amount(v["stake"]) == expected_stakes[v["publicKey"]], (
             f"stake mismatch for {v['publicKey'][:24]}"
         )
 
     expected_total = sum(expected_stakes.values())
-    assert result["totalStake"] == expected_total, (
+    assert parse_amount(result["totalStake"]) == expected_total, (
         f"totalStake {result['totalStake']} != expected {expected_total}"
     )
     assert isinstance(result["blockNumber"], int) and result["blockNumber"] >= 0
     assert isinstance(result["blockHash"], str) and len(result["blockHash"]) > 0
 
     logging.info(
-        "Validators endpoint: %d validators, totalStake=%d",
+        "Validators endpoint: %d validators, totalStake=%s",
         len(validators),
         result["totalStake"],
     )
@@ -93,11 +94,11 @@ def test_validator_bonded(shared_shard) -> None:
 
     assert result["publicKey"] == pubkey
     assert result["isBonded"] is True
-    assert isinstance(result["stake"], int) and result["stake"] > 0
+    assert parse_amount(result["stake"]) > 0
     assert isinstance(result["blockNumber"], int) and result["blockNumber"] >= 0
     assert isinstance(result["blockHash"], str) and len(result["blockHash"]) > 0
 
-    logging.info("Validator %s: bonded, stake=%d", pubkey[:24], result["stake"])
+    logging.info("Validator %s: bonded, stake=%s", pubkey[:24], result["stake"])
 
 
 def test_validator_unknown(shared_shard) -> None:
