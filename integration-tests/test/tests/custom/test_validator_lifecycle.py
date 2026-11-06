@@ -39,6 +39,7 @@ from eth_hash.auto import keccak
 from f1r3fly.client import F1r3flyClientException
 from f1r3fly.crypto import PrivateKey
 
+from ...infra.api_integer import api_integer
 from ...infra.assertions import (
     assert_balance_consistent_across_nodes,
     assert_block_finalized_on_all_nodes,
@@ -313,7 +314,7 @@ def _validators_on(ro) -> Dict[str, int]:
     only; for the ACTIVE consensus set use ``_active_set``.
     """
     resp = ro.api_get("/validators")
-    return {v["publicKey"]: v["stake"] for v in resp["validators"]}
+    return {v["publicKey"]: api_integer(v["stake"]) for v in resp["validators"]}
 
 
 def _active_set(node) -> Dict[str, int]:
