@@ -37,10 +37,9 @@ def test_deploy_phlo_price_too_small(provider, timeouts) -> None:
     try:
         # Verify API reports the configured min phlo price
         status = node.api_get("/status")
-        assert parse_amount(status["minPhloPrice"]) == 10, (
-            f"Expected minPhloPrice=10, got {status['minPhloPrice']}"
-        )
-        logging.info("Node reports minPhloPrice=%s", status["minPhloPrice"])
+        min_phlo_price = parse_amount(status["minPhloPrice"])
+        assert min_phlo_price == 10, f"Expected minPhloPrice=10, got {status['minPhloPrice']}"
+        logging.info("Node reports minPhloPrice=%d", min_phlo_price)
 
         # Deploy below threshold — must be rejected
         with pytest.raises(

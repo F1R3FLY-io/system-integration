@@ -306,7 +306,7 @@ def test_status(shared_shard, node_conf, timeouts) -> None:
     shard_ids = {n: s["shardId"] for n, s in statuses.items()}
     assert len(set(shard_ids.values())) == 1, f"Nodes disagree on shardId: {shard_ids}"
 
-    phlo_prices = {n: s["minPhloPrice"] for n, s in statuses.items()}
+    phlo_prices = {n: parse_amount(s["minPhloPrice"]) for n, s in statuses.items()}
     assert len(set(phlo_prices.values())) == 1, f"Nodes disagree on minPhloPrice: {phlo_prices}"
 
     epoch_lengths = {n: s["epochLength"] for n, s in statuses.items()}
@@ -890,9 +890,9 @@ def test_grpc_status_matches_http(shared_shard, node_conf) -> None:
 
         assert grpc_status.shardId == http_status["shardId"], f"{node.name}: shardId mismatch"
         assert grpc_status.networkId == http_status["networkId"], f"{node.name}: networkId mismatch"
-        assert grpc_status.minPhloPrice == http_status["minPhloPrice"], (
-            f"{node.name}: minPhloPrice mismatch"
-        )
+        assert parse_amount(grpc_status.minPhloPrice) == parse_amount(
+            http_status["minPhloPrice"]
+        ), f"{node.name}: minPhloPrice mismatch"
         assert grpc_status.lastFinalizedBlockNumber == http_status["lastFinalizedBlockNumber"], (
             f"{node.name}: lastFinalizedBlockNumber mismatch: "
             f"gRPC={grpc_status.lastFinalizedBlockNumber}, HTTP={http_status['lastFinalizedBlockNumber']}"
