@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from eth_hash.auto import keccak
+from f1r3fly.crypto import commitment_hash
 from f1r3fly.pb import CasperMessage_pb2
 from f1r3fly.pb.CasperMessage_pb2 import BlockMessageProto as BlockMessage
 from f1r3fly.pb.CasperMessage_pb2 import BlockRequestProto as BlockRequest
@@ -315,10 +316,14 @@ def generate_block_hash() -> bytes:
     return hashlib.blake2b(b"evil", digest_size=32).digest()
 
 
-def slash_evidence(block: BlockMessage) -> List[bytes]:
-    """The invalid-block hash each slash system deploy in ``block`` cites."""
+def slash_evidence(block: BlockMessage) -> List[Tuple[bytes, bytes]]:
+    """The hashes of the two blocks each slash in ``block`` proves were signed
+    at one sequence number, in the order the slash carries them."""
     return [
-        deploy.systemDeploy.slashSystemDeploy.invalidBlockHash
+        (
+            commitment_hash(deploy.systemDeploy.slashSystemDeploy.first),
+            commitment_hash(deploy.systemDeploy.slashSystemDeploy.second),
+        )
         for deploy in block.body.systemDeploys
         if deploy.systemDeploy.WhichOneof("systemDeploy") == "slashSystemDeploy"
     ]

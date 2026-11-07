@@ -5,12 +5,12 @@ fault-tolerance threshold, four validators of distinct stake and a read-only
 observer. Misbehaviour is injected over the P2P transport as blocks signed
 with a validator's key, built from blocks that validator really produced.
 
-Only equivocation is slashable. Every other offence is judged against the
-receiving node's own state, so the block is rejected and its sender keeps its
-stake. Each test checks the outcome the way the network must agree on it:
-every receiving node reaches the verdict, a slash finalizes on every node,
-finalized stake and the committee are identical everywhere, and the chain
-keeps finalizing.
+Only equivocation is slashable: two blocks one key signed at one sequence
+number. Every other offence is judged against the receiving node's own state,
+so the block is rejected and its sender keeps its stake. Each test checks the
+outcome the way the network must agree on it: every receiving node reaches
+the verdict, a slash finalizes on every node, finalized stake and the
+committee are identical everywhere, and the chain keeps finalizing.
 """
 
 from __future__ import annotations
@@ -20,11 +20,12 @@ import re
 import sys
 import time
 from contextlib import contextmanager
-from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
+from dataclasses import dataclass, field
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 import pytest
 from f1r3fly.client import F1r3flyClientException
-from f1r3fly.crypto import PrivateKey, gen_block_hash_from_block
+from f1r3fly.crypto import PrivateKey, block_commitment, commitment_hash, gen_block_hash_from_block
 from f1r3fly.pb.CasperMessage_pb2 import BlockMessageProto as BlockMessage
 from f1r3fly.pb.CasperMessage_pb2 import JustificationProto as Justification
 from f1r3fly.pb.CasperMessage_pb2 import (
@@ -66,9 +67,7 @@ _EXTRA_WALLETS = [
 
 _HELLO = "new x in { x!(1) }"
 
-# Blocks an equivocation needs from its sibling to a finalized slash: the
-# equivocator's pause, delivery, and the next honest proposals.
-_SLASH_ROOM = 20
+Evidence = Tuple[bytes, bytes]
 
 
 @contextmanager
@@ -127,16 +126,22 @@ def _attacker_block(client: NodeClient, node: Node, identity, nodes: Sequence[No
     return _fetch(client, block_hash, node)
 
 
-def _silence(client: NodeClient, node: Node, identity, ro: Node, running, timeouts):
-    """Pause ``identity``'s node and return its latest block once every running
-    node holds it."""
-    node.pause()
-    time.sleep(timeouts.blocks(2))
+def _silence(client: NodeClient, node: Node, identity, ro: Node, running, timeouts, min_seq=0):
+    """Pause ``identity``'s node once it has a block at ``min_seq`` or above,
+    and return its latest block once every running node holds it."""
 
     def _latest():
         own = [b for b in ro.get_blocks(10) if b.sender == identity.public_hex]
         return max(own, key=lambda b: b.seqNum) if own else None
 
+    poll_until(
+        predicate=lambda: (lambda b: b if b and b.seqNum >= min_seq else None)(_latest()),
+        timeout=timeouts.finalization * 5,
+        interval=timeouts.poll_interval,
+        description=f"{identity.name} at sequence number {min_seq}",
+    )
+    node.pause()
+    time.sleep(timeouts.blocks(2))
     latest = poll_until(
         predicate=_latest,
         timeout=timeouts.finalization,
@@ -154,6 +159,40 @@ def _copy(block: BlockMessage) -> BlockMessage:
     return forged
 
 
+def _own_justification(block: BlockMessage) -> Justification:
+    return next(j for j in block.justifications if j.validator == block.sender)
+
+
+def _sort_justifications(block: BlockMessage) -> None:
+    ordered = sorted(block.justifications, key=lambda j: j.validator)
+    del block.justifications[:]
+    block.justifications.extend(ordered)
+
+
+_nonce = iter(range(1_000, 1_000_000))
+
+
+def _next_block(latest: BlockMessage, sender) -> BlockMessage:
+    """``sender``'s next block after ``latest``, its latest block: one sequence
+    number on, built on ``latest`` alone, with a deploy no block carries. Once
+    sent, the sender cannot sign another block at that sequence number without
+    equivocating."""
+    block = _copy(latest)
+    block.seqNum = latest.seqNum + 1
+    block.body.state.blockNumber = latest.body.state.blockNumber + 1
+    block.header.ClearField("parentsHashList")
+    block.header.parentsHashList.append(latest.blockHash)
+    _own_justification(block).latestBlockHash = latest.blockHash
+    block.header.timestamp = int(time.time() * 1000)
+    del block.body.deploys[:]
+    deploy = block.body.deploys.add()
+    deploy.deploy.CopyFrom(
+        create_deploy_data(sender.private_key(), _HELLO, next(_nonce), 1000000, shard_id="root")
+    )
+    deploy.cost.SetInParent()
+    return block
+
+
 def _seal(block: BlockMessage, identity) -> bytes:
     """Re-hash ``block`` and sign it as ``identity``; returns the new hash."""
     block_hash = gen_block_hash_from_block(block)
@@ -162,50 +201,59 @@ def _seal(block: BlockMessage, identity) -> bytes:
     return block_hash
 
 
-def _slash_deploy(evidence: bytes, issuer, epoch: int) -> ProcessedSystemDeployProto:
+def _evidence(a: BlockMessage, b: BlockMessage) -> Evidence:
+    first, second = sorted((a.blockHash, b.blockHash))
+    return first, second
+
+
+def _slash_deploy(a: BlockMessage, b: BlockMessage, issuer) -> ProcessedSystemDeployProto:
+    """A slash whose evidence is the commitments of ``a`` and ``b``, ordered by
+    the hash each commits to."""
+    first, second = sorted((block_commitment(a), block_commitment(b)), key=commitment_hash)
     return ProcessedSystemDeployProto(
         systemDeploy=SystemDeployDataProto(
             slashSystemDeploy=SlashSystemDeployDataProto(
-                invalidBlockHash=evidence,
                 issuerPublicKey=bytes.fromhex(issuer.public_hex),
-                targetActivationEpoch=epoch,
+                first=first,
+                second=second,
             )
         ),
     )
 
 
-def _await_epoch_room(ro: Node, epoch_length: int, room: int, timeouts) -> None:
-    """Wait until the tip is at least ``room`` blocks before the next epoch
-    boundary: a slash is authorized only in its evidence's epoch."""
-    assert room < epoch_length, f"an epoch of {epoch_length} blocks never has {room} to spare"
-    poll_until(
-        predicate=lambda: (
-            True if ro.get_blocks(1)[0].blockNumber % epoch_length <= epoch_length - room else None
-        ),
-        timeout=timeouts.blocks(epoch_length),
-        interval=timeouts.poll_interval,
-        description=f"{room} blocks left in the current epoch",
-    )
-
-
 def _equivocate(client: NodeClient, node: Node, identity, ro: Node, running, timeouts):
-    """Silence ``identity``'s node after its latest block and return a sibling
-    of that block it signed: an equivocator that signs twice and goes quiet."""
-    sibling = _copy(_silence(client, node, identity, ro, running, timeouts))
+    """Silence ``identity``'s node after its latest block and return that block
+    and a sibling of it the validator signed: an equivocator that signs twice
+    and goes quiet."""
+    latest = _silence(client, node, identity, ro, running, timeouts)
+    sibling = _copy(latest)
     sibling.extraBytes = sibling.extraBytes + b"\x00"
     _seal(sibling, identity)
-    return sibling
+    return latest, sibling
 
 
 # ── Verdicts ───────────────────────────────────────────────────────────────
 
 
 def _recorded(block_hash: bytes, verdict: str) -> re.Pattern:
-    return re.compile(rf"Recording invalid block {block_hash.hex()[:10]}\.\.\. for (?:{verdict})\.")
+    return re.compile(
+        rf"Recording invalid block {block_hash.hex()[:10]}\.\.\. for (?:{verdict})[.,]"
+    )
 
 
-def _hash_ignored(block_hash: bytes) -> re.Pattern:
-    return re.compile(rf"Ignoring block {block_hash.hex()[:10]}\.\.\. because block hash")
+_HASH_MISMATCHES = re.compile(
+    r'^block_integrity_rejected(?:_total)?\{[^}]*reason="hash-mismatch"[^}]*\}\s+(\S+)$',
+    re.MULTILINE,
+)
+
+
+def _hash_mismatches(node: Node) -> float:
+    """Blocks ``node`` refused on receipt because their hash did not match
+    their content. The node records no log line for these."""
+    return sum(
+        float(count)
+        for count in _HASH_MISMATCHES.findall(node.http_get("/metrics", timeout=10).text)
+    )
 
 
 def _parked(block_hash: bytes) -> re.Pattern:
@@ -232,11 +280,11 @@ def _assert_never_finalized(nodes: Sequence[Node], block_hash: bytes) -> None:
 # ── Finalized state ────────────────────────────────────────────────────────
 
 
-def _finalized_slashes(client: NodeClient, ro: Node, since: int) -> Dict[bytes, List[str]]:
-    """Every slash in a block finalized above height ``since``, by the evidence
-    it cites."""
+def _finalized_slashes(client: NodeClient, ro: Node, since: int) -> Dict[Evidence, List[str]]:
+    """Every slash in a block finalized above height ``since``, by the pair of
+    blocks its evidence names."""
     lfb = ro.last_finalized_block().blockInfo.blockNumber
-    slashes: Dict[bytes, List[str]] = {}
+    slashes: Dict[Evidence, List[str]] = {}
     for info in ro.get_blocks(lfb - since + 20):
         if info.blockNumber <= since or not ro.is_finalized(info.blockHash):
             continue
@@ -281,15 +329,10 @@ def _assert_committee_agreed(nodes: Sequence[Node], expected: Dict[str, int], ti
     )
 
 
-def _assert_validators_live(
-    validators, nodes: Sequence[Node], timeouts, attackers: Sequence[Node] = ()
-) -> None:
-    """Every listed validator still gets a block finalized on every node; an
-    attacker is told to propose."""
+def _assert_validators_live(validators, nodes: Sequence[Node], timeouts) -> None:
+    """Every listed validator still gets a block finalized on every node."""
     for node, identity in validators:
         deploy_id = node.deploy_string(_HELLO, identity.private_key())
-        if node in attackers:
-            node.propose()
         assert_deploy_block_finalized_on_all_nodes(
             node, deploy_id, nodes, timeouts.finalization * 5
         )
@@ -300,7 +343,7 @@ def _assert_slashed_once_everywhere(
     ro: Node,
     nodes: Sequence[Node],
     offender,
-    evidence: bytes,
+    evidence: Evidence,
     expected_stake: Dict[str, int],
     since: int,
     timeouts,
@@ -359,10 +402,179 @@ def _slashing_ancestor(
     return None
 
 
+# ── Offences that are not equivocations ────────────────────────────────────
+
+
+@dataclass
+class _Attack:
+    """One shard's attack: v1 and v2 each send one offence as their next
+    block, then stay silent, since any further block at that sequence number
+    would be an equivocation."""
+
+    client: NodeClient
+    ro: Node
+    t1: BlockMessage
+    t2: BlockMessage
+    v1_judges: List[Node]
+    v2_judges: List[Node]
+    timeouts: object
+    forged: List[bytes] = field(default_factory=list)
+    rejected_v1: Optional[bytes] = None
+
+    def offence(self, name: str, block: BlockMessage, sender, verdict) -> bytes:
+        block_hash = _seal(block, sender)
+        judges = self.v1_judges if sender is VALIDATOR1_ID else self.v2_judges
+        logging.info("offence %s: %s", name, block_hash.hex()[:10])
+        _inject(self.client, block, judges, verdict(block_hash), self.timeouts)
+        self.forged.append(block_hash)
+        return block_hash
+
+
+def _block_number(attack: _Attack) -> None:
+    block = _next_block(attack.t1, VALIDATOR1_ID)
+    block.body.state.blockNumber += 7
+    attack.rejected_v1 = attack.offence(
+        "block number", block, VALIDATOR1_ID, lambda h: _recorded(h, "InvalidBlockNumber")
+    )
+
+
+def _hash_and_sequence(attack: _Attack) -> None:
+    """Offences that occupy no sequence number v1 will reach."""
+    wrong_hash = _copy(attack.t1)
+    wrong_hash.header.timestamp = attack.t1.header.timestamp + 1
+    evil = generate_block_hash()
+    wrong_hash.blockHash = evil
+    wrong_hash.sig = VALIDATOR1_ID.private_key().sign_block_hash(evil)
+    refused = {node.name: _hash_mismatches(node) for node in attack.v1_judges}
+    for node in attack.v1_judges:
+        attack.client.send_block(wrong_hash, node)
+    for node in attack.v1_judges:
+        poll_until(
+            predicate=lambda: True if _hash_mismatches(node) > refused[node.name] else None,
+            timeout=attack.timeouts.command,
+            interval=attack.timeouts.poll_interval,
+            description=f"{node.name} refusing a block whose hash does not match",
+        )
+    attack.forged.append(evil)
+
+    wrong_seq = _copy(attack.t1)
+    wrong_seq.seqNum = attack.t1.seqNum + 1000
+    wrong_seq.header.timestamp = attack.t1.header.timestamp + 1
+    attack.offence(
+        "sequence number",
+        wrong_seq,
+        VALIDATOR1_ID,
+        lambda h: _recorded(h, "InvalidSequenceNumber"),
+    )
+
+
+def _builds_on_rejected(attack: _Attack) -> None:
+    block = _next_block(attack.t2, VALIDATOR2_ID)
+    for justification in block.justifications:
+        if justification.validator.hex() == VALIDATOR1_ID.public_hex:
+            justification.latestBlockHash = attack.rejected_v1
+    attack.offence("building on a rejected block", block, VALIDATOR2_ID, _parked)
+
+
+def _unbonded_justification(attack: _Attack) -> None:
+    block = _next_block(attack.t1, VALIDATOR1_ID)
+    block.justifications.append(
+        Justification(
+            validator=PrivateKey.generate().get_public_key().to_bytes(),
+            latestBlockHash=attack.t1.blockHash,
+        )
+    )
+    _sort_justifications(block)
+    attack.offence(
+        "justification from an unbonded key",
+        block,
+        VALIDATOR1_ID,
+        lambda h: _recorded(h, "InvalidFollows"),
+    )
+
+
+def _badly_signed_evidence(attack: _Attack) -> None:
+    unsigned = _copy(attack.t1)
+    unsigned.extraBytes = unsigned.extraBytes + b"\x00"
+    unsigned.blockHash = gen_block_hash_from_block(unsigned)
+    block = _next_block(attack.t2, VALIDATOR2_ID)
+    block.body.systemDeploys.append(_slash_deploy(attack.t1, unsigned, VALIDATOR2_ID))
+    attack.offence(
+        "slash whose second block v1 never signed",
+        block,
+        VALIDATOR2_ID,
+        lambda h: _recorded(h, "UnauthorizedSlashDeploy"),
+    )
+
+
+def _bonds_field(attack: _Attack) -> None:
+    block = _next_block(attack.t1, VALIDATOR1_ID)
+    for bond in block.body.state.bonds:
+        if bond.validator.hex() == VALIDATOR1_ID.public_hex:
+            bond.stake //= 2
+    attack.offence("bonds field", block, VALIDATOR1_ID, lambda h: _recorded(h, "InvalidBondsCache"))
+
+
+def _not_an_equivocation(attack: _Attack) -> None:
+    earlier = _fetch(attack.client, _own_justification(attack.t1).latestBlockHash.hex(), attack.ro)
+    assert earlier.sender == attack.t1.sender and earlier.seqNum < attack.t1.seqNum
+    block = _next_block(attack.t2, VALIDATOR2_ID)
+    block.body.systemDeploys.append(_slash_deploy(attack.t1, earlier, VALIDATOR2_ID))
+    attack.offence(
+        "slash citing two of v1's blocks at different sequence numbers",
+        block,
+        VALIDATOR2_ID,
+        lambda h: _recorded(h, "UnauthorizedSlashDeploy"),
+    )
+
+
+def _repeated_deploy(attack: _Attack) -> None:
+    block = _next_block(attack.t1, VALIDATOR1_ID)
+    block.body.deploys[0].CopyFrom(attack.t1.body.deploys[0])
+    attack.offence(
+        "repeated deploy", block, VALIDATOR1_ID, lambda h: _recorded(h, "InvalidRepeatDeploy")
+    )
+
+
+def _skipped_parents(attack: _Attack) -> None:
+    grandparent = _fetch(
+        attack.client,
+        _fetch(attack.client, attack.t2.header.parentsHashList[0].hex(), attack.ro)
+        .header.parentsHashList[0]
+        .hex(),
+        attack.ro,
+    )
+    block = _next_block(attack.t2, VALIDATOR2_ID)
+    block.header.ClearField("parentsHashList")
+    block.header.parentsHashList.append(grandparent.blockHash)
+    block.body.state.blockNumber = grandparent.body.state.blockNumber + 1
+    attack.offence(
+        "parents skipping the fork-choice winner",
+        block,
+        VALIDATOR2_ID,
+        lambda h: _recorded(h, "InvalidRejectedDeploy|InvalidTransaction"),
+    )
+
+
+_OFFENCE_PAIRS: Dict[str, Tuple[Callable[[_Attack], None], ...]] = {
+    "number-hash-sequence-and-rejected-parent": (
+        _hash_and_sequence,
+        _block_number,
+        _builds_on_rejected,
+    ),
+    "unbonded-justification-and-unsigned-evidence": (
+        _unbonded_justification,
+        _badly_signed_evidence,
+    ),
+    "bonds-and-not-an-equivocation": (_bonds_field, _not_an_equivocation),
+    "repeated-deploy-and-skipped-parents": (_repeated_deploy, _skipped_parents),
+}
+
+
 # ── Tests ──────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.timeout(2400)
+@pytest.mark.timeout(1800)
 @pytest.mark.allow_forbidden_patterns(
     "RecordingInvalidBlock",
     "InvalidBondsCache",
@@ -374,168 +586,37 @@ def _slashing_ancestor(
     "UnableToConsumeSystemDeploy",
     "ObserverReporterUnusedCOMM",
 )
-def test_rejected_offences_do_not_punish(provider, timeouts) -> None:
-    """Every offence that is not an equivocation, sent to every honest node
-    while the shard runs: each node reaches the same verdict, no forged block
-    finalizes, no slash finalizes, and stake and the committee stay as they
-    were on every node."""
+@pytest.mark.parametrize("pair", list(_OFFENCE_PAIRS))
+def test_rejected_offences_do_not_punish(provider, timeouts, pair: str) -> None:
+    """Offences that are not equivocations, sent to every honest node while the
+    shard runs: each node reaches the same verdict, no forged block finalizes,
+    no slash finalizes, and stake and the committee stay as they were on every
+    node.
+
+    An offence that occupies a sequence number leaves its sender unable to sign
+    another block there without equivocating, so v1 and v2 each commit one
+    such offence per shard and then stay silent; v3 and v4 hold the stake
+    that keeps finalizing."""
     with _live_shard(
-        provider, timeouts, "rejected-offences", attackers=("validator1", "validator2")
+        provider, timeouts, f"rejected-{pair}", attackers=("validator1", "validator2")
     ) as (shard, client):
         v1, v2 = shard.node("validator1"), shard.node("validator2")
         v3, v4 = shard.node("validator3"), shard.node("validator4")
         ro, nodes = shard.readonly, shard.all_nodes
         start = ro.last_finalized_block().blockInfo.blockNumber
-        epoch_length = ro.pos.get_epoch_length()
 
-        t1 = _attacker_block(client, v1, VALIDATOR1_ID, nodes, timeouts)
-        t2 = _attacker_block(client, v2, VALIDATOR2_ID, nodes, timeouts)
-        v1_judges, v2_judges = [v2, v3, v4, ro], [v1, v3, v4, ro]
-        forged_hashes: List[bytes] = []
-
-        def offence(name: str, block: BlockMessage, sender, judges, verdict) -> bytes:
-            block_hash = _seal(block, sender)
-            logging.info("offence %s: %s", name, block_hash.hex()[:10])
-            _inject(client, block, judges, verdict(block_hash), timeouts)
-            forged_hashes.append(block_hash)
-            return block_hash
-
-        wrong_hash = _copy(t1)
-        wrong_hash.header.timestamp = t1.header.timestamp + 1
-        evil = generate_block_hash()
-        wrong_hash.blockHash = evil
-        wrong_hash.sig = VALIDATOR1_ID.private_key().sign_block_hash(evil)
-        _inject(client, wrong_hash, v1_judges, _hash_ignored(evil), timeouts)
-        forged_hashes.append(evil)
-
-        wrong_number = _copy(t1)
-        wrong_number.body.state.blockNumber = t1.body.state.blockNumber + 7
-        wrong_number.header.timestamp = t1.header.timestamp + 1
-        rejected = offence(
-            "block number",
-            wrong_number,
-            VALIDATOR1_ID,
-            v1_judges,
-            lambda h: _recorded(h, "InvalidBlockNumber"),
-        )
-
-        wrong_seq = _copy(t1)
-        wrong_seq.seqNum = t1.seqNum + 1000
-        wrong_seq.header.timestamp = t1.header.timestamp + 1
-        offence(
-            "sequence number",
-            wrong_seq,
-            VALIDATOR1_ID,
-            v1_judges,
-            lambda h: _recorded(h, "InvalidSequenceNumber"),
-        )
-
-        unbonded_justification = _copy(t1)
-        unbonded_justification.justifications.append(
-            Justification(validator=PrivateKey.generate().to_bytes(), latestBlockHash=t1.blockHash)
-        )
-        unbonded_justification.header.timestamp = t1.header.timestamp + 1
-        offence(
-            "justification from an unbonded key",
-            unbonded_justification,
-            VALIDATOR1_ID,
-            v1_judges,
-            lambda h: _recorded(h, "InvalidFollows"),
-        )
-
-        halved_bond = _copy(t1)
-        for bond in halved_bond.body.state.bonds:
-            if bond.validator.hex() == VALIDATOR1_ID.public_hex:
-                bond.stake //= 2
-        offence(
-            "bonds field",
-            halved_bond,
-            VALIDATOR1_ID,
-            v1_judges,
-            lambda h: _recorded(h, "InvalidBondsCache"),
-        )
-
-        repeated_deploy = _copy(t1)
-        repeated_deploy.seqNum = t1.seqNum + 1
-        repeated_deploy.body.state.blockNumber = t1.body.state.blockNumber + 1
-        repeated_deploy.header.ClearField("parentsHashList")
-        repeated_deploy.header.parentsHashList.append(t1.blockHash)
-        repeated_deploy.header.timestamp = int(time.time() * 1000)
-        offence(
-            "repeated deploy",
-            repeated_deploy,
-            VALIDATOR1_ID,
-            v1_judges,
-            lambda h: _recorded(h, "InvalidRepeatDeploy"),
-        )
-
-        grandparent = _fetch(
-            client,
-            _fetch(client, t1.header.parentsHashList[0].hex(), ro).header.parentsHashList[0].hex(),
-            ro,
-        )
-        skipped_parents = _copy(t1)
-        skipped_parents.header.ClearField("parentsHashList")
-        skipped_parents.header.parentsHashList.append(grandparent.blockHash)
-        skipped_parents.body.state.blockNumber = grandparent.body.state.blockNumber + 1
-        skipped_parents.header.timestamp = int(time.time() * 1000)
-        skipped_parents.body.deploys[0].deploy.CopyFrom(
-            create_deploy_data(VALIDATOR1_ID.private_key(), _HELLO, 998, 1000000, shard_id="root")
-        )
-        offence(
-            "parents skipping the fork-choice winner",
-            skipped_parents,
-            VALIDATOR1_ID,
-            v1_judges,
-            lambda h: _recorded(h, "InvalidTransaction"),
-        )
-
-        t2_epoch = t2.body.state.blockNumber // epoch_length
-        fabricated = _copy(t2)
-        fabricated.body.systemDeploys.append(_slash_deploy(b"\xde" * 32, VALIDATOR2_ID, t2_epoch))
-        fabricated.header.timestamp = t2.header.timestamp + 1
-        offence(
-            "slash on fabricated evidence",
-            fabricated,
-            VALIDATOR2_ID,
-            v2_judges,
-            lambda h: _recorded(h, "UnauthorizedSlashDeploy"),
-        )
-
-        framing = _copy(t2)
-        framing.body.systemDeploys.append(_slash_deploy(t1.blockHash, VALIDATOR2_ID, t2_epoch))
-        framing.header.timestamp = t2.header.timestamp + 1
-        offence(
-            "slash citing a valid block",
-            framing,
-            VALIDATOR2_ID,
-            v2_judges,
-            lambda h: _recorded(h, "UnauthorizedSlashDeploy"),
-        )
-
-        builds_on_rejected = _copy(t2)
-        for justification in builds_on_rejected.justifications:
-            if justification.validator.hex() == VALIDATOR1_ID.public_hex:
-                justification.latestBlockHash = rejected
-        builds_on_rejected.header.timestamp = t2.header.timestamp + 1
-        offence(
-            "building on a rejected block", builds_on_rejected, VALIDATOR2_ID, v2_judges, _parked
-        )
-
-        # v1 moves on, so a block reusing t1's justifications now regresses them.
         _attacker_block(client, v1, VALIDATOR1_ID, nodes, timeouts)
-        regressed = _copy(t1)
-        regressed.body.deploys[0].deploy.CopyFrom(
-            create_deploy_data(VALIDATOR1_ID.private_key(), _HELLO, 999, 1000000, shard_id="root")
+        attack = _Attack(
+            client=client,
+            ro=ro,
+            t1=_attacker_block(client, v1, VALIDATOR1_ID, nodes, timeouts),
+            t2=_attacker_block(client, v2, VALIDATOR2_ID, nodes, timeouts),
+            v1_judges=[v2, v3, v4, ro],
+            v2_judges=[v1, v3, v4, ro],
+            timeouts=timeouts,
         )
-        regressed.extraBytes = t1.extraBytes + b"\x00"
-        offence(
-            "justification regression",
-            regressed,
-            VALIDATOR1_ID,
-            v1_judges,
-            lambda h: _recorded(h, "JustificationRegression"),
-        )
+        for offence in _OFFENCE_PAIRS[pair]:
+            offence(attack)
 
         assert_chain_advances(
             nodes,
@@ -543,33 +624,27 @@ def test_rejected_offences_do_not_punish(provider, timeouts) -> None:
             timeouts.blocks(30),
             label="after the offences",
         )
-        for block_hash in forged_hashes:
+        for block_hash in attack.forged:
             _assert_never_finalized(nodes, block_hash)
         assert _finalized_slashes(client, ro, start) == {}
         _await_finalized_stake(ro, _GENESIS_BONDS, timeouts, "unchanged")
         _assert_committee_agreed(nodes, _GENESIS_BONDS, timeouts)
-        _assert_validators_live(
-            [(v1, VALIDATOR1_ID), (v2, VALIDATOR2_ID), (v3, VALIDATOR3_ID), (v4, VALIDATOR4_ID)],
-            nodes,
-            timeouts,
-            attackers=[v1, v2],
-        )
+        _assert_validators_live([(v3, VALIDATOR3_ID), (v4, VALIDATOR4_ID)], nodes, timeouts)
 
 
 @pytest.mark.timeout(2400)
 @pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
 def test_equivocation_is_slashed_network_wide(provider, timeouts) -> None:
     """Equivocators are slashed once, on every node, whichever node first
-    holds the evidence.
+    holds the evidence and however late the second block comes.
 
-    A slash is authorized only in its evidence's epoch, so each equivocation
-    starts with room left in the shard's epoch.
-
-    1. v1 signs a sibling of its latest block and goes quiet; only v2 receives
-       the sibling.
-    2. v2 does the same; v3 first receives a block built on the sibling, asks
-       for the sibling as a dependency, then receives it.
-    3. A later epoch's block re-citing v1's evidence is rejected.
+    1. v1 moves on, then signs a sibling of its previous block and goes quiet;
+       only v2 receives the sibling.
+    2. v2 signs a sibling of its latest block and goes quiet; v3 first
+       receives a block built on the sibling, asks for the sibling as a
+       dependency, then receives it.
+    3. v3's next block slashes v1 again; v4 and the observer reject it, since
+       v1 has no stake left, and v3 stays silent.
 
     After each slash: it finalizes on every running node, once; finalized
     stake and the committee agree everywhere; every honest validator still
@@ -580,11 +655,14 @@ def test_equivocation_is_slashed_network_wide(provider, timeouts) -> None:
         v3, v4 = shard.node("validator3"), shard.node("validator4")
         ro = shard.readonly
         start = ro.last_finalized_block().blockInfo.blockNumber
-        epoch_length = ro.pos.get_epoch_length()
         try:
             running = [v2, v3, v4, ro, shard.boot]
-            _await_epoch_room(ro, epoch_length, _SLASH_ROOM, timeouts)
-            sibling1 = _equivocate(client, v1, VALIDATOR1_ID, ro, running, timeouts)
+            latest = _silence(client, v1, VALIDATOR1_ID, ro, running, timeouts, min_seq=2)
+            earlier = _fetch(client, _own_justification(latest).latestBlockHash.hex(), ro)
+            assert earlier.sender == latest.sender and earlier.seqNum == latest.seqNum - 1
+            sibling1 = _copy(earlier)
+            sibling1.extraBytes = sibling1.extraBytes + b"\x00"
+            _seal(sibling1, VALIDATOR1_ID)
             _inject(
                 client,
                 sibling1,
@@ -592,26 +670,18 @@ def test_equivocation_is_slashed_network_wide(provider, timeouts) -> None:
                 _recorded(sibling1.blockHash, "IgnorableEquivocation"),
                 timeouts,
             )
+            evidence1 = _evidence(earlier, sibling1)
             stake = dict(_GENESIS_BONDS, **{VALIDATOR1_ID.public_hex: 0})
             _assert_slashed_once_everywhere(
-                client, ro, running, VALIDATOR1_ID, sibling1.blockHash, stake, start, timeouts
+                client, ro, running, VALIDATOR1_ID, evidence1, stake, start, timeouts
             )
             _assert_validators_live(
                 [(v2, VALIDATOR2_ID), (v3, VALIDATOR3_ID), (v4, VALIDATOR4_ID)], running, timeouts
             )
 
             running = [v3, v4, ro, shard.boot]
-            _await_epoch_room(ro, epoch_length, _SLASH_ROOM, timeouts)
-            sibling2 = _equivocate(client, v2, VALIDATOR2_ID, ro, running, timeouts)
-            child = _copy(sibling2)
-            child.seqNum = sibling2.seqNum + 1
-            child.body.state.blockNumber = sibling2.body.state.blockNumber + 1
-            child.header.ClearField("parentsHashList")
-            child.header.parentsHashList.append(sibling2.blockHash)
-            for justification in child.justifications:
-                if justification.validator.hex() == VALIDATOR2_ID.public_hex:
-                    justification.latestBlockHash = sibling2.blockHash
-            child.header.timestamp = sibling2.header.timestamp + 1
+            latest2, sibling2 = _equivocate(client, v2, VALIDATOR2_ID, ro, running, timeouts)
+            child = _next_block(sibling2, VALIDATOR2_ID)
             _seal(child, VALIDATOR2_ID)
             client.send_block(child, v3)
             wait_for_log_match(
@@ -631,50 +701,41 @@ def test_equivocation_is_slashed_network_wide(provider, timeouts) -> None:
             )
             stake[VALIDATOR2_ID.public_hex] = 0
             _assert_slashed_once_everywhere(
-                client, ro, running, VALIDATOR2_ID, sibling2.blockHash, stake, start, timeouts
+                client,
+                ro,
+                running,
+                VALIDATOR2_ID,
+                _evidence(latest2, sibling2),
+                stake,
+                start,
+                timeouts,
             )
             _assert_validators_live([(v3, VALIDATOR3_ID), (v4, VALIDATOR4_ID)], running, timeouts)
 
-            evidence_epoch = sibling1.body.state.blockNumber // epoch_length
-            poll_until(
-                predicate=lambda: (
-                    True
-                    if ro.last_finalized_block().blockInfo.blockNumber // epoch_length
-                    > evidence_epoch
-                    else None
-                ),
-                timeout=timeouts.blocks(2 * epoch_length),
-                interval=timeouts.poll_interval,
-                description=f"the finalized chain past epoch {evidence_epoch}",
-            )
-            t3 = _silence(client, v3, VALIDATOR3_ID, ro, [v4, ro, shard.boot], timeouts)
-            replay = _copy(t3)
-            replay.body.systemDeploys.append(
-                _slash_deploy(sibling1.blockHash, VALIDATOR3_ID, evidence_epoch)
-            )
-            replay.header.timestamp = t3.header.timestamp + 1
-            replay_hash = _seal(replay, VALIDATOR3_ID)
+            running = [v4, ro, shard.boot]
+            t3 = _silence(client, v3, VALIDATOR3_ID, ro, running, timeouts)
+            again = _next_block(t3, VALIDATOR3_ID)
+            again.body.systemDeploys.append(_slash_deploy(earlier, sibling1, VALIDATOR3_ID))
+            again_hash = _seal(again, VALIDATOR3_ID)
             _inject(
                 client,
-                replay,
+                again,
                 [v4, ro],
-                _recorded(replay_hash, "UnauthorizedSlashDeploy"),
+                _recorded(again_hash, "UnauthorizedSlashDeploy"),
                 timeouts,
             )
-            v3.unpause()
             assert_chain_advances(
                 running,
                 ro.last_finalized_block().blockInfo.blockNumber + 5,
                 timeouts.blocks(30),
-                label="after the stale slash",
+                label="after the second slash of v1",
             )
-            _assert_never_finalized(running, replay_hash)
-            _await_finalized_stake(ro, stake, timeouts, "unchanged by the stale slash")
-            _assert_validators_live([(v3, VALIDATOR3_ID), (v4, VALIDATOR4_ID)], running, timeouts)
+            _assert_never_finalized(running, again_hash)
+            _await_finalized_stake(ro, stake, timeouts, "unchanged by the second slash")
+            _assert_validators_live([(v4, VALIDATOR4_ID)], running, timeouts)
         finally:
             v1.unpause()
             v2.unpause()
-            v3.unpause()
 
 
 @pytest.mark.timeout(2400)
