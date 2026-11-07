@@ -16,6 +16,7 @@ submitted via validators since they are state-changing operations.
 import logging
 
 import pytest
+from f1r3fly.token_amount import parse as parse_amount
 
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import poll_until, wait_for_deploy_finalized
@@ -306,7 +307,7 @@ def test_block_api_returns_transfer_info(shared_shard, timeouts) -> None:
         transfer = deploy_with_transfers["transfers"][0]
         assert transfer["fromAddr"] == v1_vault, f"{node.name}: fromAddr mismatch"
         assert transfer["toAddr"] == v2_vault, f"{node.name}: toAddr mismatch"
-        assert transfer["amount"] == transfer_amount, f"{node.name}: amount mismatch"
+        assert parse_amount(transfer["amount"]) == transfer_amount, f"{node.name}: amount mismatch"
         assert transfer["success"] is True, f"{node.name}: transfer not marked successful"
         assert transfer["failReason"] == "", (
             f"{node.name}: expected empty failReason, got '{transfer['failReason']}'"
