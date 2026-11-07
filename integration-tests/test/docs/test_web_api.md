@@ -69,7 +69,7 @@ All block info assertions use `_assert_light_block_info()` which validates every
 - Valid `blockHash`, `blockNumber` > 0, `timestamp` > 0
 - `cost` > 0, `errored` == false, `isFinalized` == true
 - `deployer` matches V1's public key
-- `systemDeployError` == "", `phloPrice` == 1, `phloLimit` == 100000
+- `systemDeployError` == "", `phloPrice` == "1", `phloLimit` == 100000
 - `sigAlgorithm` == "secp256k1"
 - **Transfers**: omitted on validators, present as list on readonly
 - Cross-node: all agree on `blockHash` and `cost`
