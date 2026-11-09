@@ -46,15 +46,12 @@ new rl(`rho:registry:lookup`), poSCh, deployerId(`rho:system:deployerId`), ret i
 """
 
 
-@pytest.fixture
-def liveness_shard(provider, timeouts):
+def _profile_shard(provider, timeouts, stakes: List[int]):
+    """A shard of validators 1-4 at `stakes`, heartbeat on, under the liveness
+    profile, with validator 4's vault funded."""
+    identities = (VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID, VALIDATOR4_ID)
     config = ShardConfig(
-        bonds=[
-            (VALIDATOR1_ID, _STAKE),
-            (VALIDATOR2_ID, _STAKE),
-            (VALIDATOR3_ID, _STAKE),
-            (VALIDATOR4_ID, _STAKE),
-        ],
+        bonds=list(zip(identities, stakes)),
         heartbeat=True,
         extra_wallets=[
             (VALIDATOR4_ID.private_key().get_public_key().get_vault_address(), _SILENT_BALANCE)
@@ -66,6 +63,16 @@ def liveness_shard(provider, timeouts):
         yield shard
     finally:
         shard.destroy()
+
+
+@pytest.fixture
+def liveness_shard(provider, timeouts):
+    yield from _profile_shard(provider, timeouts, [_STAKE] * 4)
+
+
+@pytest.fixture
+def mixed_shard(provider, timeouts):
+    yield from _profile_shard(provider, timeouts, [100, 200, 300, 400])
 
 
 def _bucket(report: dict, validator: str) -> Optional[dict]:
@@ -84,12 +91,13 @@ class _Scenario:
 
     shard: Shard
     timeouts: object
+    producer_names: tuple = _PRODUCERS
     started: float = field(default_factory=time.monotonic)
     steps: Dict[str, tuple] = field(default_factory=dict)
 
     @property
     def producers(self):
-        return [self.shard.node(name) for name in _PRODUCERS]
+        return [self.shard.node(name) for name in self.producer_names]
 
     def reports(self) -> List[dict]:
         producers = self.producers
@@ -211,3 +219,39 @@ def test_an_ejected_validator_that_rejoins_within_grace_is_reinstated(
             f"a reinstated validator that produces again is not drained: {bucket}"
         )
     logger.info("liveness steps (seconds, tip height): %s", scenario.steps)
+
+
+# Heights a holding run covers: several times the drain and observation window
+# of the profile, so a validator that slipped would have been ejected.
+_HOLDING_HEIGHTS = 100
+
+
+def test_validators_with_mixed_bonds_that_keep_producing_are_never_ejected(
+    mixed_shard, timeouts
+) -> None:
+    names = _PRODUCERS + ("validator4",)
+    scenario = _Scenario(mixed_shard, timeouts, producer_names=names)
+    keys = [mixed_shard.node(name).identity.public_hex for name in names]
+    tightest: Dict[str, float] = {}
+
+    def held(rs: List[dict]) -> bool:
+        for report in rs:
+            decision = report["decision"] or {}
+            assert not decision.get("ejectionOffers"), f"ejection offered: {decision}"
+            assert not report["localView"]["openEjectionClaims"], report["localView"]
+            state = report["finalizedState"]
+            assert not state["ejected"], f"ejected: {state['ejected']}"
+            assert not [c for c in state["claims"] if c["family"] == "eject"], state["claims"]
+            for key in keys:
+                bucket = _bucket(report, key)
+                if bucket is not None:
+                    margin = int(bucket["level"]) / int(bucket["threshold"])
+                    tightest[key] = min(tightest.get(key, margin), margin)
+        return all(r["localView"]["tipHeight"] >= _HOLDING_HEIGHTS for r in rs)
+
+    scenario.step("held", held)
+    logger.info(
+        "tightest level as a multiple of the threshold, by stake: %s",
+        {stake: round(tightest[key], 3) for stake, key in zip((100, 200, 300, 400), keys)},
+    )
+    assert set(tightest) == set(keys), "every validator's bucket was reported"

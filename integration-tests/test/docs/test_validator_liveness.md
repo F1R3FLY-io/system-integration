@@ -2,7 +2,7 @@
 
 ## Purpose
 
-How the leaky bucket ejects a validator that stops proposing, on a live shard. Each validator keeps a bucket that every block drains and that the validator's own blocks refill. A validator whose bucket stays below the ejection threshold for long enough is ejected by a vote of the others. If it does not rejoin before its grace ends, it is slashed.
+How the leaky bucket ejects a validator that stops proposing, and spares the validators that keep producing, on a live shard. Each validator keeps a bucket that every block drains and that the validator's own blocks refill. A validator whose bucket stays below the ejection threshold for long enough is ejected by a vote of the others. If it does not rejoin before its grace ends, it is slashed.
 
 The suite reads each step from the honest validators' liveness reports, `GET /api/validator-liveness` on the admin port (`Node.validator_liveness()`). The report holds two kinds of data:
 
@@ -22,9 +22,9 @@ The shard runs under `LIVENESS_PROFILE_CLI_OPTIONS` (`infra/config.py`):
 
 Runs under the subprocess provider.
 
-## Tests (2)
+## Tests (3)
 
-Each test runs its own shard: four validators of stake 100 with heartbeat on. The genesis also funds v4's vault, which pays for its rejoin.
+Each test runs its own shard of four validators with heartbeat on. The genesis also funds v4's vault, which pays for its rejoin. The ejection tests give every validator a stake of 100. The holding test uses stakes 100, 200, 300 and 400.
 
 ### `test_a_silent_validator_is_ejected_and_slashed_when_its_grace_ends`
 
@@ -58,3 +58,14 @@ The test ejects v4 through the same steps as the test above. Then v4 calls `rejo
 2. `past_grace`: every honest node has finalized a block 10 blocks past v4's original grace end.
 
 Then v4 still holds stake and no honest node sees its bucket drained. One run reinstated v4 38 s after its ejection.
+
+### `test_validators_with_mixed_bonds_that_keep_producing_are_never_ejected`
+
+All four validators keep producing, at stakes 100, 200, 300 and 400. The test polls every node until each has reached height 100. On every poll, no node may see any of these conditions:
+
+- a validator drained
+- an ejection offered
+- an ejection claim open
+- a validator ejected
+
+Every validator's bucket must be reported. The test logs each validator's lowest level as a multiple of its threshold. One run measured 1.083 to 1.089 at every stake, so every bucket stayed at or above about 97% of capacity.
