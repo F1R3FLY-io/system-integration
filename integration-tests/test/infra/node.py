@@ -138,6 +138,20 @@ class Node:
         resp.raise_for_status()
         return resp.json()
 
+    @property
+    def admin_url(self) -> str:
+        return f"http://{self.grpc_host}:{self.ports.admin}"
+
+    def validator_liveness(self, timeout: int = 30) -> dict:
+        """GET the admin API's validator liveness report: this node's view
+        of every validator's bucket, its own next decision, and what its
+        last finalized block records of claims and ejections."""
+        import requests
+
+        resp = requests.get(f"{self.admin_url}/api/validator-liveness", timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+
     def api_post(self, path: str, json_data=None, timeout: int = 60):
         """POST to /api/{path} and return the response object."""
         import requests

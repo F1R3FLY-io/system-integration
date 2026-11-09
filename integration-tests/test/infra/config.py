@@ -141,6 +141,22 @@ SHORT_EPOCH_CLI_OPTIONS: Dict[str, str] = {
     "--quarantine-length": str(SHORT_EPOCH_QUARANTINE_LENGTH),
 }
 
+# A leaky-bucket profile for suites that wait on ejection. A silent validator
+# drains below the threshold in 20 blocks and becomes ejectable 10 blocks
+# later. The reward rate scales with the drain, so a validator that produces
+# its share of blocks stays above the threshold. An ejection claim must
+# resolve within an epoch, and grace lasts two. The quarantine is the shortest
+# the node accepts for this epoch, derived as for SHORT_EPOCH_CLI_OPTIONS.
+LIVENESS_PROFILE_EPOCH_LENGTH = 20
+LIVENESS_PROFILE_CLI_OPTIONS: Dict[str, str] = {
+    "--epoch-length": str(LIVENESS_PROFILE_EPOCH_LENGTH),
+    "--quarantine-length": "135",
+    "--leaky-bucket-lambda-base-ppm": "5000",
+    "--leaky-bucket-theta-eject-ppm": "900000",
+    "--leaky-bucket-eject-observation-blocks": "10",
+    "--leaky-bucket-reward-rate-ppm": "50000",
+}
+
 
 @dataclasses.dataclass(frozen=True)
 class NodeConfig:
