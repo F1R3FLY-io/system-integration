@@ -1,11 +1,12 @@
 """A validator that stops proposing is ejected through the leaky bucket.
 
 Runs a four-validator shard under the liveness profile (a fast drain and short
-epochs) and silences one validator. The test follows each step through the
+epochs) and silences one validator. The tests follow each step through the
 honest validators' liveness reports (``GET /api/validator-liveness`` on the
 admin port): the silent validator's bucket drains, it becomes ejectable, a
-claim to eject it opens and passes, it is ejected, and when its grace ends it
-is slashed. The validators that keep producing never drain.
+claim to eject it opens and passes, and it is ejected. Left alone, it is
+slashed when its grace ends; rejoining with a topup within grace reinstates it.
+The validators that keep producing never drain.
 """
 
 import logging
@@ -31,9 +32,21 @@ _SILENT = VALIDATOR4_ID.public_hex
 # drain and the observation window, the claim's votes and finality, and two
 # epochs of grace.
 _BLOCKS_BUDGET = 200
+# The default genesis wallets fund validators 1-3 only; the silent validator
+# pays for its rejoin deploy and topup.
+_SILENT_BALANCE = 50_000_000_000_000_000
+
+_REJOIN = """
+new rl(`rho:registry:lookup`), poSCh, deployerId(`rho:system:deployerId`), ret in {{
+  rl!(`rho:system:pos`, *poSCh) |
+  for (@(_, PoS) <- poSCh) {{
+    @PoS!("rejoinFromEjection", *deployerId, {topup}, *ret)
+  }}
+}}
+"""
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def liveness_shard(provider, timeouts):
     config = ShardConfig(
         bonds=[
@@ -43,6 +56,9 @@ def liveness_shard(provider, timeouts):
             (VALIDATOR4_ID, _STAKE),
         ],
         heartbeat=True,
+        extra_wallets=[
+            (VALIDATOR4_ID.private_key().get_public_key().get_vault_address(), _SILENT_BALANCE)
+        ],
         global_cli_options=dict(LIVENESS_PROFILE_CLI_OPTIONS),
     )
     shard = Shard.create(provider, config, timeouts)
@@ -50,19 +66,6 @@ def liveness_shard(provider, timeouts):
         yield shard
     finally:
         shard.destroy()
-
-
-@dataclass
-class _Progress:
-    """When each step was first seen, as (seconds since silencing, tip height)."""
-
-    started: float = field(default_factory=time.monotonic)
-    steps: Dict[str, tuple] = field(default_factory=dict)
-
-    def mark(self, step: str, tip_height: int) -> None:
-        if step not in self.steps:
-            self.steps[step] = (round(time.monotonic() - self.started, 1), tip_height)
-            logger.info("liveness step %s at %ss, tip %s", step, *self.steps[step])
 
 
 def _bucket(report: dict, validator: str) -> Optional[dict]:
@@ -73,71 +76,138 @@ def _stake(state: dict, validator: str) -> Optional[int]:
     return next((b["stake"] for b in state["bonds"] if b["validator"] == validator), None)
 
 
-def test_a_silent_validator_is_ejected_and_slashed_when_its_grace_ends(
-    liveness_shard, timeouts
-) -> None:
-    producers = [liveness_shard.node(name) for name in _PRODUCERS]
-    producer_keys = {node.identity.public_hex for node in producers}
-    liveness_shard.node("validator4").pause()
-    progress = _Progress()
+@dataclass
+class _Scenario:
+    """Polls the producers' liveness reports, holding on every poll that no
+    producer is drained, and logs when each step is first seen as (seconds
+    since silencing, tip height)."""
 
-    def reports() -> List[dict]:
+    shard: Shard
+    timeouts: object
+    started: float = field(default_factory=time.monotonic)
+    steps: Dict[str, tuple] = field(default_factory=dict)
+
+    @property
+    def producers(self):
+        return [self.shard.node(name) for name in _PRODUCERS]
+
+    def reports(self) -> List[dict]:
+        producers = self.producers
+        keys = {node.identity.public_hex for node in producers}
         reports = [node.validator_liveness() for node in producers]
         for node, report in zip(producers, reports):
-            for key in producer_keys:
+            for key in keys:
                 bucket = _bucket(report, key)
                 assert bucket is None or not bucket["drained"], (
                     f"{node.name} sees producer {key[:12]} drained: {bucket}"
                 )
         return reports
 
-    def step(name: str, seen: Callable[[List[dict]], bool]) -> List[dict]:
+    def step(self, name: str, seen: Callable[[List[dict]], bool]) -> List[dict]:
         def probe() -> Optional[List[dict]]:
-            current = reports()
+            current = self.reports()
             return current if seen(current) else None
 
         current = poll_until(
             probe,
-            timeout=timeouts.blocks(_BLOCKS_BUDGET),
-            interval=timeouts.poll_interval,
+            timeout=self.timeouts.blocks(_BLOCKS_BUDGET),
+            interval=self.timeouts.poll_interval,
             description=f"liveness step {name}",
         )
-        progress.mark(name, max(r["localView"]["tipHeight"] for r in current))
+        if name not in self.steps:
+            tip = max(r["localView"]["tipHeight"] for r in current)
+            self.steps[name] = (round(time.monotonic() - self.started, 1), tip)
+            logger.info("liveness step %s at %ss, tip %s", name, *self.steps[name])
         return current
 
-    step(
-        "drained",
-        lambda rs: all((_bucket(r, _SILENT) or {}).get("drained") for r in rs),
-    )
-    step(
-        "offered",
-        lambda rs: any(_SILENT in (r["decision"] or {}).get("ejectionOffers", []) for r in rs),
-    )
-    step(
-        "claim_open",
-        lambda rs: (
-            any(
-                c["family"] == "eject" and c["target"] == _SILENT
-                for r in rs
-                for c in r["finalizedState"]["claims"]
-            )
-            or any(c["target"] == _SILENT for r in rs for c in r["localView"]["openEjectionClaims"])
-        ),
-    )
-    ejected = step(
-        "ejected",
-        lambda rs: all(_SILENT in r["finalizedState"]["ejected"] for r in rs),
-    )
-    grace_ends = {
-        g["graceEnd"]
-        for r in ejected
-        for g in r["finalizedState"]["graceEnds"]
-        if g["validator"] == _SILENT
-    }
-    assert len(grace_ends) == 1, f"honest nodes disagree on the grace end: {grace_ends}"
-    step(
+    def eject_silent(self) -> int:
+        """Silences validator 4 and waits until every producer's finalized
+        state shows it ejected. Returns the end of its grace."""
+        self.shard.node("validator4").pause()
+        self.started = time.monotonic()
+        self.step(
+            "drained",
+            lambda rs: all((_bucket(r, _SILENT) or {}).get("drained") for r in rs),
+        )
+        self.step(
+            "offered",
+            lambda rs: any(_SILENT in (r["decision"] or {}).get("ejectionOffers", []) for r in rs),
+        )
+        self.step(
+            "claim_open",
+            lambda rs: (
+                any(
+                    c["family"] == "eject" and c["target"] == _SILENT
+                    for r in rs
+                    for c in r["finalizedState"]["claims"]
+                )
+                or any(
+                    c["target"] == _SILENT for r in rs for c in r["localView"]["openEjectionClaims"]
+                )
+            ),
+        )
+        ejected = self.step(
+            "ejected",
+            lambda rs: all(_SILENT in r["finalizedState"]["ejected"] for r in rs),
+        )
+        grace_ends = {
+            g["graceEnd"]
+            for r in ejected
+            for g in r["finalizedState"]["graceEnds"]
+            if g["validator"] == _SILENT
+        }
+        assert len(grace_ends) == 1, f"honest nodes disagree on the grace end: {grace_ends}"
+        return grace_ends.pop()
+
+
+def test_a_silent_validator_is_ejected_and_slashed_when_its_grace_ends(
+    liveness_shard, timeouts
+) -> None:
+    scenario = _Scenario(liveness_shard, timeouts)
+    scenario.eject_silent()
+    scenario.step(
         "slashed",
         lambda rs: all(_stake(r["finalizedState"], _SILENT) == 0 for r in rs),
     )
+    logger.info("liveness steps (seconds, tip height): %s", scenario.steps)
 
-    logger.info("liveness steps (seconds, tip height): %s", progress.steps)
+
+def test_an_ejected_validator_that_rejoins_within_grace_is_reinstated(
+    liveness_shard, timeouts
+) -> None:
+    scenario = _Scenario(liveness_shard, timeouts)
+    grace_end = scenario.eject_silent()
+
+    # A topup of the whole stake covers any shortfall, so every voter backs it.
+    liveness_shard.node("validator1").deploy_string(
+        _REJOIN.format(topup=_STAKE), VALIDATOR4_ID.private_key()
+    )
+
+    def reinstated(rs: List[dict]) -> bool:
+        for r in rs:
+            state = r["finalizedState"]
+            freezes = next(
+                (f["intervals"] for f in state["freezes"] if f["validator"] == _SILENT), []
+            )
+            if _SILENT in state["ejected"] or not any(
+                interval["rejoinedAt"] is not None for interval in freezes
+            ):
+                return False
+        return True
+
+    scenario.step("reinstated", reinstated)
+    liveness_shard.node("validator4").unpause()
+
+    scenario.step(
+        "past_grace",
+        lambda rs: all(r["finalizedState"]["blockNumber"] > grace_end + 10 for r in rs),
+    )
+    for report in scenario.reports():
+        assert (_stake(report["finalizedState"], _SILENT) or 0) > 0, (
+            "a reinstated validator keeps its stake"
+        )
+        bucket = _bucket(report, _SILENT)
+        assert bucket is not None and not bucket["drained"], (
+            f"a reinstated validator that produces again is not drained: {bucket}"
+        )
+    logger.info("liveness steps (seconds, tip height): %s", scenario.steps)
