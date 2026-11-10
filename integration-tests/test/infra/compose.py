@@ -25,7 +25,7 @@ import yaml
 from .cleanup import DockerCleanupRegistry
 from .config import ResourcePaths, ShardConfig
 from .keys import BOOTSTRAP_NODE_ID
-from .types import PortMapping
+from .types import PortMapping, deploy_queue_key
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,8 @@ _NODE_PORT_RESERVATION_SYSCTLS: List[str] = [
 # subcommand. Startup errors and panics still reach stderr, which keeps the
 # `docker logs` fallback useful when the node dies before the sink opens.
 NODE_LOG_SINK_ARGS: List[str] = ["--log-sink=file"]
+
+DEPLOY_QUEUE_ENTRYPOINT = "/opt/docker/bin/deploy-queue"
 
 
 def generate_compose(
@@ -175,6 +177,34 @@ def generate_compose(
             validator_command.append("--heartbeat-disabled")
         validator_command += _extra_cli(node_key)
 
+        client_ports = [f"{v_ports.grpc_ext}:40401", f"{v_ports.http}:40403"]
+        if config.deploy_queue:
+            queue_key = deploy_queue_key(slot)
+            queue_host = container_name(queue_key)
+            services[queue_key] = {
+                "image": config.effective_image,
+                "pull_policy": "never",
+                "user": "root",
+                "restart": "no",
+                "container_name": queue_host,
+                "depends_on": [node_key],
+                "networks": [network_name],
+                "entrypoint": [DEPLOY_QUEUE_ENTRYPOINT],
+                "command": [
+                    f"--node-grpc=http://{host}:40401",
+                    f"--node-http=http://{host}:40403",
+                    "--data-dir=/var/lib/deploy-queue",
+                ],
+                "ports": client_ports,
+                "volumes": [f"{volume_name(queue_key)}:/var/lib/deploy-queue"],
+                "environment": [
+                    *([f"RUST_LOG={os.environ['RUST_LOG']}"] if "RUST_LOG" in os.environ else []),
+                ],
+            }
+            registry.register_container(queue_host)
+            registry.register_volume(volume_name(queue_key))
+            client_ports = []
+
         services[node_key] = {
             "image": config.effective_image,
             "pull_policy": "never",
@@ -187,11 +217,10 @@ def generate_compose(
             "command": validator_command,
             "ports": [
                 f"{v_ports.protocol}:40400",
-                f"{v_ports.grpc_ext}:40401",
                 f"{v_ports.grpc_int}:40402",
-                f"{v_ports.http}:40403",
                 f"{v_ports.discovery}:40404",
                 f"{v_ports.admin}:40405",
+                *client_ports,
             ],
             "volumes": [
                 f"{volume_name(node_key)}:/var/lib/rnode",
@@ -265,9 +294,14 @@ def generate_compose(
         registry.register_container(ro_host)
         registry.register_volume(volume_name(ro_key))
 
+    for node_key, cpus in config.per_node_cpus.items():
+        services[node_key]["cpuset"] = ",".join(map(str, sorted(cpus)))
+
     # ── Compose structure ──
     all_volumes = [volume_name("boot")]
     all_volumes += [volume_name(f"validator{i + 1}") for i in range(len(config.bonds))]
+    if config.deploy_queue:
+        all_volumes += [volume_name(deploy_queue_key(i + 1)) for i in range(len(config.bonds))]
     if config.include_readonly:
         all_volumes.append(volume_name("readonly"))
 

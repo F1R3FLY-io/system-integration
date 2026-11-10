@@ -206,8 +206,8 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
     # An RSpace single-write Number channel (counter / balance) ended up
     # with multiple pre-state values when the proposer tried to merge
     # sibling branches at the same height. Surfaces under sustained
-    # multi-validator load (e.g. test_shard_degradation BATCH 4+) when
-    # 3 validators propose siblings touching the same shared channel.
+    # multi-validator load when validators propose siblings touching the
+    # same shared channel.
     # Hard consensus bug — propose fails with BugError, shard wedges,
     # LFB freezes deterministically. See real-flakes-tracker #1.
     #
@@ -255,7 +255,7 @@ FORBIDDEN_PATTERNS: Dict[str, re.Pattern] = {
     # a bug — either the DagMerger invariant above or a related state-
     # consistency assertion. Same family across surfaces: tracker #7
     # (synchrony_constraint test, seqNum -1) and tracker #1
-    # (test_shard_degradation, seqNum N≥0). Distinct entry from
+    # (sustained load, seqNum N≥0). Distinct entry from
     # SingleValueInvariantViolated so each surface stays attributable
     # even when only one of the two messages reaches the captured tail.
     "ProposeBugError": re.compile(r"BugError \(seqNum -?\d+\)"),

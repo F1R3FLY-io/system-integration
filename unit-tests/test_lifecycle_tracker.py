@@ -46,9 +46,10 @@ HASH_B = b"\xbb" * 32
 
 
 class _Status:
-    def __init__(self, state, latest=b""):
+    def __init__(self, state, latest=b"", rejection_count=0):
         self.state = state
         self.latestBlockHash = latest
+        self.rejectionCount = rejection_count
 
 
 class _StubClient:
@@ -83,11 +84,11 @@ class _StubNode:
         return SimpleNamespace(blockInfo=SimpleNamespace(blockNumber=self.block_number))
 
 
-def _record(deploy_id):
+def _record(deploy_id, validator_name="v1"):
     return metrics.DeployRecord(
         deploy_id=deploy_id,
         submit_time=time.time(),
-        validator_name="v1",
+        validator_name=validator_name,
         phase="unit",
         index=0,
     )
@@ -263,7 +264,7 @@ def _two_node_tracker(statuses_a, statuses_b, **tracker_kwargs):
     node_a, node_b = _StubNode(client_a), _StubNode(client_b)
     tracker = metrics.LifecycleTracker({"a": node_a, "b": node_b}, **tracker_kwargs)
     for deploy_id in statuses_a:
-        tracker.track_deploy(_record(deploy_id))
+        tracker.track_deploy(_record(deploy_id, validator_name="a"))
     return tracker, (node_a, client_a), (node_b, client_b)
 
 

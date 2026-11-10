@@ -145,6 +145,10 @@ class K8sProvider:
         raise NotImplementedError("Mirror DockerProvider.keep_running (from the cleanup registry).")
 
     @property
+    def node_logs_available(self) -> bool:
+        return True
+
+    @property
     def active_handles(self) -> list:
         raise NotImplementedError(
             "Track handles added via create_shard/create_standalone/add_node "

@@ -150,7 +150,7 @@ def test_full_suite_option_controls_capability_gated_regressions(monkeypatch):
 
             @staticmethod
             def getoption(name):
-                return {"--run-all-node-capability-tests": run_all}[name]
+                return {"--run-all-node-capability-tests": run_all, "--provider": "docker"}[name]
 
         class Item:
             nodeid = "test_capability_gate.py::test_regression"

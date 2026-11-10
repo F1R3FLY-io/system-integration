@@ -96,7 +96,8 @@ Each worker gets a non-overlapping host port range automatically. No coordinatio
 
 | Flag | Effect |
 |---|---|
-| `--provider={docker,subprocess}` | Infrastructure backend. `docker` (default) spawns nodes as containers using the `F1R3FLY_NODE_IMAGE` tag; `subprocess` spawns the locally-built node binary directly on the host. Set `F1R3FLY_NODE_BINARY=/abs/path/to/target/release/node` to override the default lookup at `services/f1r3node-rust/target/release/node`. **`F1R3FLY_NODE_BINARY` is ignored under the Docker provider** — to exercise a feature-branch binary, pass `--provider=subprocess`. |
+| `--provider={docker,subprocess,remote}` | Infrastructure backend. `docker` (default) spawns nodes as containers using the `F1R3FLY_NODE_IMAGE` tag; `subprocess` spawns the locally-built node binary directly on the host. Set `F1R3FLY_NODE_BINARY=/abs/path/to/target/release/node` to override the default lookup at `services/f1r3node-rust/target/release/node`. **`F1R3FLY_NODE_BINARY` is ignored under the Docker provider** — to exercise a feature-branch binary, pass `--provider=subprocess`. `remote` adopts an existing shard; see [Running against an existing shard](#running-against-an-existing-shard). |
+| `--inventory <path>` | The existing shard's inventory, for `--provider=remote` only. |
 | `--instafail` | Print each test's traceback the moment it errors or fails, instead of buffering until session end. Strongly recommended under `-n auto` (xdist) — without it, a session-fixture failure on the `@shared` worker can hide behind 30+ identical ERROR markers for the duration of the run. Provided by `pytest-instafail`. |
 | `--maxfail=N` | Abort the session after N total failures/errors. Pair with `--instafail` for diagnostic runs. Useful as a "storm-stop" against fixture-failure cascades — e.g. `--maxfail=10` aborts a runaway session in ~10s instead of grinding through every dependent test. |
 | `--keep-running` | Start shard, run tests, **don't tear down** after. Prints the session ID for reuse. Keeps *every* shard — on a multi-test suite this accumulates shards and stresses the host. |
@@ -144,6 +145,37 @@ poetry run shardctl test-reset
 ```
 
 `shardctl test-reset` force-removes every framework container/network/volume — including containers kept alive by `--keep-running` and stale state from crashed sessions.
+
+---
+
+## Running against an existing shard
+
+`--provider=remote` points the harness at a shard it did not start, such as a
+long-lived testnet. It reaches the nodes over the network only: it never
+starts, stops, restarts or removes a node, and it cannot read node logs.
+
+```bash
+poetry run pytest integration-tests/test/tests/custom/test_load.py \
+  --provider=remote --inventory path/to/inventory.yml \
+  --skip-setup --session-id <inventory shard>
+```
+
+The inventory (format in `test/infra/inventory.py`) lists each node's name,
+role (`boot`, `validator` or `readonly`) and address, and the funded deployer
+accounts that sign the load. Key files must be readable by their owner only.
+Before any test runs, every node must answer `/api/status` on the inventory's
+`network_id`.
+
+- Only tests marked `remote_shard` run; every other test is skipped, because
+  it would build, restart, bond on or otherwise change the shard. Today those
+  are `test_load` and `test_capacity`, which sign with the inventory's
+  deployers, each deployer submitting to one validator.
+- The harness needs each node's gRPC (`port_base + 1`, default 40401) and
+  HTTP (`port_base + 3`, default 40403) ports reachable from where it runs.
+- The post-test forbidden-pattern log scan does not run; scan the node logs
+  on their hosts.
+- `LOAD_TEST_SUSTAINED_RATE` and `LOAD_TEST_SUSTAINED_DURATION` set
+  `test_load`'s sustained step's rate and length.
 
 ---
 
