@@ -56,10 +56,10 @@ Each test builds its own `ShardConfig` and calls `provider.create_shard(...)`. U
 | 1 | [test_synchrony_constraint](test_synchrony_constraint.md) | Per-validator synchrony constraint threshold enforcement |
 | 1 | [test_transient_peer_liveness](test_transient_peer_liveness.md) | Transient failures retain peers, successful heartbeats reset the streak, and removed peers are rediscovered |
 | 1 | [test_trim_state](test_trim_state.md) | Joiner syncs from Last Finalized State instead of replaying genesis |
-| 3 | [test_validator_liveness](test_validator_liveness.md) | Leaky-bucket ejection on a live shard, read from each node's validator liveness report: a silent validator drains, is offered, claimed, ejected and slashed when its grace ends; one that rejoins with a topup within grace is reinstated; validators with mixed bonds that keep producing are never ejected |
+| 1 | [test_validator_liveness](test_validator_liveness.md) | Leaky-bucket ejection on one live shard at mixed stakes, read from each node's validator liveness report and checked against the PoS contract on an observer: a validator is ejected while another joins and a third leaves; its short rejoin is refused and its full rejoin reinstates it while a fourth goes silent; that one is slashed when its grace ends; vault balances reconcile exactly |
 | 6 | [test_websocket](test_websocket.md) | `/ws/events` block, genesis, transfer, lifecycle events + startup replay |
 
-**Total: 47 tests across 21 files.**
+**Total: 45 tests across 21 files.**
 
 ---
 
@@ -84,6 +84,6 @@ Each test spins up a single node with no peers. Used for heartbeat timing, stand
 | Directory | Files | Tests |
 |---|---|---|
 | `tests/shared/` | 14 | 69 |
-| `tests/custom/` | 20 | 44 |
+| `tests/custom/` | 20 | 42 |
 | `tests/standalone/` | 5 | 14 |
-| **Total** | **39** | **127** |
+| **Total** | **39** | **125** |

@@ -337,6 +337,16 @@ def assert_deploy_block_finalized_on_all_nodes(node, deploy_id: str, nodes, time
     return block_hash
 
 
+def finalized_deploy_cost(node, deploy_id: str, block_hash: str) -> int:
+    """The phlo cost a finalized deploy charged its signer's vault."""
+    for deploy in node.get_block(block_hash).deploys:
+        if deploy.sig == deploy_id:
+            return deploy.cost
+    raise AssertionError(
+        f"deploy {deploy_id[:16]} not found in its inclusion block {block_hash[:16]}"
+    )
+
+
 def assert_all_deploys_finalized_on_all_nodes(
     nodes,
     deploy_ids: list[str],

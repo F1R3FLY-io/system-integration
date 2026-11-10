@@ -30,7 +30,6 @@ and a budget counted in blocks for the quarantine payout.
 """
 
 import logging
-import threading
 import time
 from typing import Callable, Dict, List, Optional
 
@@ -40,17 +39,20 @@ from f1r3fly.client import F1r3flyClientException
 from f1r3fly.crypto import PrivateKey
 
 from ...infra.assertions import (
-    assert_balance_consistent_across_nodes,
     assert_block_finalized_on_all_nodes,
     assert_bonds_map_consistent_across_nodes,
     assert_chain_advances,
     assert_deploy_block_finalized_on_all_nodes,
     assert_deploy_errored,
-    await_balance_converges_on_all_nodes,
     collect_forensics,
-    common_finalized_anchor,
+    finalized_deploy_cost,
     lowest_lfb_number,
     resolve_deploy_verdicts,
+)
+from ...infra.background_load import (
+    BackgroundLoad,
+    assert_vault_transfers_reconciled,
+    vault_transfers,
 )
 from ...infra.config import (
     SHORT_EPOCH_CLI_OPTIONS,
@@ -130,7 +132,7 @@ _REWARD_DST_ADDR = _REWARD_DST_KEY.get_public_key().get_vault_address()
 
 # Background-load master switch. Same-vault IntegerAdd contention stresses the merge
 # end-to-end AND drives netPhlo so rewards accrue; the bg end-check is exact-vault
-# reconciliation (_assert_bg_load_robust), mirroring the user-contract test.
+# reconciliation (assert_vault_transfers_reconciled), shared with the user-contract test.
 # Temporarily DISABLED (active-issues Issue G): the read-only observer can't keep pace
 # with block production under bg load, so all-node FS assertions flake. Get the lifecycle
 # green bg-off first, then address observer throughput and re-enable.
@@ -149,66 +151,6 @@ _THROWAWAY_WITHDRAW_KEY = PrivateKey.from_seed(80002)
 # (false, "Bond deposit failed: ..."), distinct from out-of-phlo (Mode A).
 _MODE_B_KEY = PrivateKey.from_seed(80003)
 _MODE_B_BALANCE = _BOND_PHLO_LIMIT + 500  # ~500 left after precharge, < bond amount
-
-
-class _BackgroundLoad:
-    """Same-vault transfer generator, round-robin across producer nodes.
-
-    Always-on for the whole test: same-vault IntegerAdd contention stresses the
-    merge end-to-end and drives netPhlo so rewards accrue.
-    """
-
-    def __init__(self, producers: List, interval: float = _BG_INTERVAL) -> None:
-        self._producers = producers
-        self._interval = interval
-        self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._counter = 0
-        self._errors = 0
-        self._deploy_ids: List[str] = []
-        self._lock = threading.Lock()
-
-    def deploy_ids(self) -> List[str]:
-        """Snapshot of every transfer deploy id submitted so far."""
-        with self._lock:
-            return list(self._deploy_ids)
-
-    def start(self) -> None:
-        if self._thread is not None:
-            raise RuntimeError("BackgroundLoad already started")
-        self._thread = threading.Thread(target=self._run, daemon=True, name="lifecycle-bg-load")
-        self._thread.start()
-
-    def stop(self, join_timeout: float = 10.0) -> None:
-        if self._thread is None:
-            return
-        self._stop.set()
-        self._thread.join(timeout=join_timeout)
-        logging.info(
-            "Background load stopped: %d transfers, %d errors", self._counter, self._errors
-        )
-        self._thread = None
-
-    def _run(self) -> None:
-        while not self._stop.is_set():
-            node = self._producers[self._counter % len(self._producers)]
-            try:
-                did = node.get_vault().transfer(
-                    _BG_SRC_ADDR,
-                    _BG_DST_ADDR,
-                    _BG_TRANSFER_AMOUNT,
-                    _BG_SRC_KEY,
-                    phlo_price=1,
-                    phlo_limit=_BOND_PHLO_LIMIT,
-                )
-                with self._lock:
-                    self._deploy_ids.append(did)
-            except Exception as e:  # noqa: BLE001 — submit errors are surfaced via the
-                # finalization assertion (missing deploy), not swallowed silently.
-                self._errors += 1
-                logging.warning("bg-load transfer %d on %s failed: %s", self._counter, node.name, e)
-            self._counter += 1
-            self._stop.wait(self._interval)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -274,18 +216,7 @@ def _assert_withdraw_rejected(actor, all_nodes, ro, key, expected_reason: str, t
     )
     assert ro.pos.get_bonds() == bonds_before, "rejected withdraw changed bonds map"
     logging.info("Withdraw correctly rejected (%s): %s", expected_reason, result.reason)
-    return _finalized_deploy_cost(actor, deploy_id, block_hash)
-
-
-def _finalized_deploy_cost(node, deploy_id: str, block_hash: str) -> int:
-    """The phlo cost a finalized deploy charged its signer's vault."""
-    info = node.get_block(block_hash)
-    for d in info.deploys:
-        if d.sig == deploy_id:
-            return d.cost
-    raise AssertionError(
-        f"deploy {deploy_id[:16]} not found in its inclusion block {block_hash[:16]}"
-    )
+    return finalized_deploy_cost(actor, deploy_id, block_hash)
 
 
 def _pos_call_result(actor, all_nodes, deploy_id: str, timeouts):
@@ -628,70 +559,6 @@ def _rewards(ro) -> Dict[str, int]:
     return ro.pos.get_rewards()
 
 
-def _assert_bg_load_robust(
-    all_nodes, bg, src0: int, dst0: int, timeouts, label: str = "bg-load"
-) -> None:
-    """Exact-vault reconciliation for the same-vault bg transfers (mirrors the
-    user-contract test).
-
-    Expired is a legitimate verdict here — these transfers are incidental
-    contention, not the subject of the test, and one the shard terminally judged
-    Expired moved nothing. But tolerating the verdict is only sound while STATE
-    AGREES WITH IT, so the reconciliation is two-sided:
-
-      - the target is built from the FINALIZED subset, so an expired transfer is
-        not counted (demanding every submitted id finalize would fail a shard
-        that behaved correctly under contention);
-      - ``upper_bound`` fails the instant the destination EXCEEDS that target —
-        an expired transfer whose credit landed anyway is a verdict-vs-state
-        contradiction, and it must surface as an over-apply, not as a
-        convergence timeout minutes later;
-      - ``non_regression="up"`` fails if a finalized credit is ever undone.
-
-    Read across ALL nodes at an aligned finalized cut, not from the readonly
-    node alone: a per-node divergence in the finalized balance is exactly the
-    forked-read-surface mode, and a single-node read cannot see it.
-
-    The gas-paying src has no exact target — gas makes the debit inexact — so it
-    is checked for cross-node identity at the settled cut and for having fallen
-    by at least the transferred total.
-
-    Integrity still hard-fails: the shard failing to DECIDE (no verdict in
-    budget — the frozen-chain / propose-wedge signature), a terminal Failed, or
-    a verdict that differs between nodes.
-    """
-    bg_ids = bg.deploy_ids()
-    verdicts = resolve_deploy_verdicts(all_nodes, bg_ids, timeouts.finalization * 2, label=label)
-    logging.info("[%s] bg verdicts: %s", label, verdicts.summary())
-    n = len(verdicts.finalized)
-    want_dst = dst0 + n * _BG_TRANSFER_AMOUNT
-    min_src_debit = n * _BG_TRANSFER_AMOUNT
-    await_balance_converges_on_all_nodes(
-        all_nodes,
-        _BG_DST_ADDR,
-        want_dst,
-        timeouts.finalization * 3,
-        f"{label}-dst",
-        non_regression="up",
-        upper_bound=want_dst,
-    )
-    # Stable finalized anchor rather than live-pointer agreement: under load the
-    # per-node LFB pointers may never coincide within a sequential sweep.
-    lfb = common_finalized_anchor(all_nodes, timeouts.finalization)
-    src_final = assert_balance_consistent_across_nodes(all_nodes, _BG_SRC_ADDR, lfb)
-    assert src0 - src_final >= min_src_debit, (
-        f"[{label}] bg-src under-debited: source fell by {src0 - src_final} < transferred "
-        f"{min_src_debit} — a finalized debit was lost"
-    )
-    logging.info(
-        "%s: reconciled %d bg transfers on all nodes — dst->%d (exact), src->%d (incl gas)",
-        label,
-        n,
-        want_dst,
-        src_final,
-    )
-
-
 def _submit_pos_until_effective(
     all_nodes,
     submits: Dict[str, Callable[[], str]],
@@ -930,7 +797,14 @@ def test_validator_lifecycle(lifecycle_shard, timeouts) -> None:
         VALIDATOR6_ID.public_hex,
     )
 
-    bg = _BackgroundLoad([v1, v2, v3])
+    bg = BackgroundLoad(
+        [v1, v2, v3],
+        vault_transfers(
+            _BG_SRC_KEY, _BG_DST_ADDR, _BG_TRANSFER_AMOUNT, phlo_limit=_BOND_PHLO_LIMIT
+        ),
+        interval=_BG_INTERVAL,
+        name="lifecycle-bg-load",
+    )
     bg_src0 = _balance(ro, _BG_SRC_ADDR) if _BG_LOAD_ENABLED else 0
     bg_dst0 = _balance(ro, _BG_DST_ADDR) if _BG_LOAD_ENABLED else 0
     if _BG_LOAD_ENABLED:
@@ -955,7 +829,17 @@ def test_validator_lifecycle(lifecycle_shard, timeouts) -> None:
     # IntegerAdd cell composes to exactly dst0 + N (no dropped/double-applied work under
     # the lifecycle's merge contention); src debited (gas-aware) by at least the total.
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(shard.all_nodes, bg, bg_src0, bg_dst0, timeouts)
+        assert_vault_transfers_reconciled(
+            bg,
+            shard.all_nodes,
+            _BG_SRC_KEY,
+            _BG_DST_ADDR,
+            _BG_TRANSFER_AMOUNT,
+            bg_src0,
+            bg_dst0,
+            timeouts,
+            "lifecycle-bg-load",
+        )
 
 
 def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> None:
@@ -1196,8 +1080,8 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         v1, settled["withdraw-V4"], shard.all_nodes, timeouts.finalization * 3
     )
     assert v1.pos.read_result(settled["withdraw-V4"], wd_v4_hash).success, "V4 withdraw failed"
-    v4_fees += _finalized_deploy_cost(v1, settled["withdraw-V4"], wd_v4_hash)
-    v5_fees += _finalized_deploy_cost(
+    v4_fees += finalized_deploy_cost(v1, settled["withdraw-V4"], wd_v4_hash)
+    v5_fees += finalized_deploy_cost(
         v2, settled["withdraw-V5"], v2.find_deploy(settled["withdraw-V5"]).blockHash
     )
     _await_withdrawal_started(ro, v4_pk, timeouts, "V4 withdrawal started")
@@ -1213,7 +1097,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     dw_block = wait_for_deploy_included(v1, dw_id, timeouts.deploy_inclusion * 3)
     wait_for_finalized(v1, dw_block.blockNumber, timeouts.finalization * 3)
     dw_res = v1.pos.read_result(dw_id, dw_block.blockHash)
-    v4_fees += _finalized_deploy_cost(v1, dw_id, dw_block.blockHash)
+    v4_fees += finalized_deploy_cost(v1, dw_id, dw_block.blockHash)
     bonds_now = ro.pos.get_bonds()
     pend, wdr_now = ro.pos.get_pending_withdrawer(), ro.pos.get_withdrawers()
     v4_stake = _JOINER_STAKE[VALIDATOR4_ID.name]

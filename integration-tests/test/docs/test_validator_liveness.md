@@ -2,12 +2,14 @@
 
 ## Purpose
 
-How the leaky bucket ejects a validator that stops proposing, and spares the validators that keep producing, on a live shard. Each validator keeps a bucket that every block drains and that the validator's own blocks refill. A validator whose bucket stays below the ejection threshold for long enough is ejected by a vote of the others. If it does not rejoin before its grace ends, it is slashed.
+How the leaky bucket ejects a validator that stops proposing, and spares the validators that keep producing, join or leave, on one live shard. Each validator keeps a bucket that every block drains and that the validator's own blocks refill. A validator whose bucket stays below the ejection threshold for long enough is ejected by a vote of the others. If it does not rejoin before its grace ends, it is slashed.
 
-The suite reads each step from the honest validators' liveness reports, `GET /api/validator-liveness` on the admin port (`Node.validator_liveness()`). The report holds two kinds of data:
+The test reads each step from the honest validators' liveness reports, `GET /api/validator-liveness` on the admin port (`Node.validator_liveness()`). The report holds two kinds of data:
 
 - `localView`: the node's own buckets and its next decision. These depend on which blocks the node accepted, so nodes can disagree.
 - `finalizedState`: the claims, ejections and stake that the node's last finalized block records. Nodes that hold the same finalized block report the same values.
+
+The test does not trust the reports alone. At each outcome it reads the PoS contract on the readonly observer at the same finalized block (`PosAPI` getters), and requires the bonds, the active set and the ejected set to agree with the report.
 
 The shard runs under `LIVENESS_PROFILE_CLI_OPTIONS` (`infra/config.py`):
 
@@ -22,50 +24,38 @@ The shard runs under `LIVENESS_PROFILE_CLI_OPTIONS` (`infra/config.py`):
 
 Runs under the subprocess provider.
 
-## Tests (3)
+## The shard
 
-Each test runs its own shard of four validators with heartbeat on. The genesis also funds v4's vault, which pays for its rejoin. The ejection tests give every validator a stake of 100. The holding test uses stakes 100, 200, 300 and 400.
+Five genesis validators hold stakes 500, 400, 300, 200 and 100, with heartbeat on and a readonly observer. Validator 6 attaches later as a joiner. The genesis funds the vaults of validators 4, 5 and 6 and the two load vaults.
 
-### `test_a_silent_validator_is_ejected_and_slashed_when_its_grace_ends`
+| Validator | Stake | Role |
+|-----------|-------|------|
+| v1 | 500 | Producer and reporter. Submits the joiner's bond and A's rejoins |
+| v2 | 400 | Producer and reporter |
+| v3 | 300 | The leaver |
+| v4 | 200 | A: silenced, ejected, refused once, then reinstated |
+| v5 | 100 | B: reporter until it is silenced, then ejected and slashed |
+| v6 | 100 | The joiner |
 
-The test pauses v4 and then waits for each step on v1, v2 and v3:
+Background deploy load runs for the whole test (`infra/background_load.py`): a vault transfer every 2 s, round-robin across v1 and v2.
 
-1. `drained`: every honest node sees v4's bucket below the threshold.
-2. `offered`: an honest node offers v4 for ejection in its next block.
-3. `claim_open`: a claim to eject v4 is open.
-4. `ejected`: every honest node's finalized state shows v4 ejected, with one grace end.
-5. `slashed`: every honest node's finalized state shows v4's stake at 0.
+## The test (1)
 
-On every poll, no honest node may see a producing validator drained.
+### `test_ejection_rejoin_and_slashing_while_validators_join_and_leave`
 
-The test logs the time and tip height of each step. One run measured these values:
+On every poll, no reporter may see a producing validator drained. No reporter may offer, claim or eject a protected validator. The producing and protected sets change as the phases run.
 
-| Step | Seconds | Tip height |
-|------|---------|------------|
-| `drained` | 46 | 9 |
-| `offered` | 67 | 12 |
-| `claim_open` | 77 | 14 |
-| `ejected` | 105 | 24 |
-| `slashed` | 344 | 62 |
+1. `held`: the shard runs 30 heights at mixed stakes. Every producer's bucket must be reported.
+2. `joiner_synced`, `epoch_end`, `epoch_start`: v6 attaches as a joiner, and the test waits until its tip is within 2 heights of the reporters' tips. A validator bonded before its node catches up cannot propose, and its bucket drains under this profile. A is paused 17 or 18 heights into an epoch. When the tip is 1 to 4 heights into the next epoch, v1 submits v6's bond of 100 and v3 submits its withdrawal. Both changes take effect at the boundary after that, so the ejection claim against A opens while v3 is still seated.
+3. `a_drained`, `a_claim_open`, `a_ejected`: A drains and is ejected. The claim's electorate holds the leaver, v3. The honest nodes agree on one grace end, and the contract's ejection record holds the same grace end and the leaver's stake. Then A is unpaused, so it catches up while it is ejected.
+4. `joined`, `left`: v6 holds stake 100 and is active. v3 holds no bonded stake and is in withdrawal quarantine. The contract agrees.
+5. `a_rejoin_refused`: A asks to rejoin with a topup of 1, below its shortfall. The rejoin fails, A stays ejected, and its freeze stays open. A's vault loses only the deploy's phlo.
+6. `a_caught_up`, `a_reinstated`: A's tip is within 2 heights of the reporters' tips. Then B is paused, and A asks to rejoin with a topup of 200. A is reinstated. Its freeze closes with the topup, and its bond stays 200. A's vault loses the phlo of both deploys and the topup, and nothing more. From this step, no reporter may offer, claim or eject A.
+7. `b_ejected`, `b_slashed`: B is ejected, and its grace ends. B holds no stake, and the coop vault grows by exactly B's stake of 100.
+8. `a_holds`: one epoch after B's slash, no reporter sees A drained.
 
-Each height holds several blocks, one from each producer, and the drain counts blocks. The grace takes most of the run.
+At the end, every background transfer must reach the same verdict on every live node. The destination vault must equal its start balance plus one per finalized transfer (`assert_vault_transfers_reconciled`). Every live node must hold the same bonds map at a common finalized block: v1 500, v2 400, A 200 and v6 100.
 
-### `test_an_ejected_validator_that_rejoins_within_grace_is_reinstated`
+Step 6 depends on the node's tally rule for a member that left. A's rejoin electorate is the electorate that ejected A, so it holds v3. By then v3 has left without voting on the rejoin, and B is silent. A member that holds no seat and has not voted does not count, so the yeas of v1 and v2 pass the rejoin. Without that rule, v3's stake holds the yeas below two thirds, and A is slashed although it paid.
 
-The test ejects v4 through the same steps as the test above. Then v4 calls `rejoinFromEjection` with a topup of its whole stake, through v1, because an ejected validator cannot propose. A topup of the whole stake covers any shortfall, so every voter backs the rejoin. The test then waits for these steps:
-
-1. `reinstated`: every honest node's finalized state shows v4 no longer ejected, and its freeze closed by the rejoin. The test then unpauses v4.
-2. `past_grace`: every honest node has finalized a block 10 blocks past v4's original grace end.
-
-Then v4 still holds stake and no honest node sees its bucket drained. One run reinstated v4 38 s after its ejection.
-
-### `test_validators_with_mixed_bonds_that_keep_producing_are_never_ejected`
-
-All four validators keep producing, at stakes 100, 200, 300 and 400. The test polls every node until each has reached height 100. On every poll, no node may see any of these conditions:
-
-- a validator drained
-- an ejection offered
-- an ejection claim open
-- a validator ejected
-
-Every validator's bucket must be reported. The test logs each validator's lowest level as a multiple of its threshold. One run measured 1.083 to 1.089 at every stake, so every bucket stayed at or above about 97% of capacity.
+The test logs the time and tip height of each step, and each producer's lowest bucket level as a multiple of its threshold.

@@ -48,9 +48,8 @@ sampled window happened to be single-parent.
 """
 
 import logging
-import threading
 import time
-from typing import List, Optional
+from typing import List
 
 import pytest
 
@@ -59,6 +58,7 @@ from ...infra.assertions import (
     assert_block_finalized_on_all_nodes,
     assert_bonds_map_consistent_across_nodes,
 )
+from ...infra.background_load import BackgroundLoad, own_key_sends
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from ...infra.polling import (
@@ -133,82 +133,6 @@ def observer_shard(provider, timeouts):
         shard.destroy()
 
 
-class _BackgroundLoad:
-    """Round-robin deploy generator — drives the chain forward during
-    observer attach so the LFS sync chases a moving LFB.
-
-    Local copy of the pattern used by ``test_bonding_validators._BackgroundLoad``
-    rather than a shared infra import: each test calibrates cadence and
-    failure tolerance differently. Keeping the class local makes those
-    knobs explicit at the call site.
-    """
-
-    def __init__(
-        self,
-        producers: List,
-        identities: List,
-        interval: float = _BG_LOAD_INTERVAL,
-    ) -> None:
-        if len(producers) != len(identities):
-            raise ValueError("producers and identities must be same length")
-        self._producers = producers
-        self._identities = identities
-        self._interval = interval
-        self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._counter = 0
-        self._errors = 0
-
-    def start(self) -> None:
-        if self._thread is not None:
-            raise RuntimeError("BackgroundLoad already started")
-        self._thread = threading.Thread(
-            target=self._run,
-            daemon=True,
-            name="obs-lfs-bg-load",
-        )
-        self._thread.start()
-
-    def stop(self, join_timeout: float = 10.0) -> None:
-        if self._thread is None:
-            return
-        self._stop.set()
-        self._thread.join(timeout=join_timeout)
-        logging.info(
-            "Background load stopped: %d deploys sent, %d errors",
-            self._counter,
-            self._errors,
-        )
-        self._thread = None
-
-    @property
-    def deploy_count(self) -> int:
-        return self._counter
-
-    def _run(self) -> None:
-        while not self._stop.is_set():
-            idx = self._counter % len(self._producers)
-            node = self._producers[idx]
-            identity = self._identities[idx]
-            try:
-                node.deploy_string(
-                    f'@"obs-lfs-bg-{self._counter}"!({self._counter})',
-                    identity.private_key(),
-                    phlo_limit=_BG_LOAD_PHLO_LIMIT,
-                    phlo_price=1,
-                )
-            except Exception as e:
-                self._errors += 1
-                logging.warning(
-                    "Background load deploy %d failed on %s: %s",
-                    self._counter,
-                    node.name,
-                    e,
-                )
-            self._counter += 1
-            self._stop.wait(self._interval)
-
-
 def _walk_finalized_chain(node, lfb_hash: str, max_blocks: int = 20) -> List[str]:
     """Walk back from `lfb_hash` along the main parent chain.
 
@@ -265,7 +189,12 @@ def test_observer_lfs_sync_against_active_shard(observer_shard, timeouts) -> Non
     keys = [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID]
 
     # ── 1. Background load drives the fresh DAG forward ───────────────
-    bg = _BackgroundLoad(validators, keys)
+    bg = BackgroundLoad(
+        validators,
+        own_key_sends(keys, phlo_limit=_BG_LOAD_PHLO_LIMIT),
+        interval=_BG_LOAD_INTERVAL,
+        name="obs-lfs-bg-load",
+    )
     bg.start()
     try:
         # ── 2. Pre-attach DAG depth ───────────────────────────────────
@@ -330,7 +259,7 @@ def test_observer_lfs_sync_against_active_shard(observer_shard, timeouts) -> Non
             logging.info(
                 "Observer %s attached during bg load (~%d deploys so far)",
                 observer.name,
-                bg.deploy_count,
+                bg.attempts,
             )
 
             # ── 5. Wait for observer to catch up ──────────────────────

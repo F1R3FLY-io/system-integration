@@ -92,9 +92,9 @@ The types run BATCHED per round: the five cells are independent, so each of the 
 
 ## Background load + robust reconciliation
 
-`_BG_LOAD_ENABLED` (module-level master switch) gates an always-on `_BackgroundLoad` thread across all three scenarios: same-vault transfers (`_BG_SRC → _BG_DST`, amount 1) submitted round-robin across the producer nodes, so concurrent transfers from one source vault stress the merge with continuous number-channel contention + recovery pressure. Submit failures surface via the finalization assertion (a missing deploy), never swallowed.
+`_BG_LOAD_ENABLED` (module-level master switch) gates an always-on `BackgroundLoad` thread (`vault_transfers`, `infra/background_load.py`) across all three scenarios: same-vault transfers (`_BG_SRC → _BG_DST`, amount 1) submitted round-robin across the producer nodes, so concurrent transfers from one source vault stress the merge with continuous number-channel contention + recovery pressure. Submit failures surface via the finalization assertion (a missing deploy), never swallowed.
 
-After each scenario, `_assert_bg_load_robust` reconciles the bg vaults with the same non-regression + exact-reconciliation principle the foreground checks use:
+After each scenario, `assert_vault_transfers_reconciled` (`infra/background_load.py`, shared with the lifecycle test) reconciles the bg vaults with the same non-regression + exact-reconciliation principle the foreground checks use:
 
 - every bg transfer finalizes on every node;
 - the **destination** credit reaches EXACTLY `dst0 + N×amount` and never decreases en route — a drop is the finalized-state regression mode, and a double-apply overshoots the exact target and is caught as a timeout (the strong check: dest is a contended IntegerAdd cell, so exact convergence is direct evidence concurrent credits compose losslessly);
@@ -119,7 +119,7 @@ Reading finalized balances on the readonly observer suffices for cluster agreeme
 - `_deploy_on_each` — one deploy per genesis validator in tight succession (sibling proposals the next block multi-parent-merges)
 - `_finalize_setup` — one-time cell initialization driven to cluster-wide finalization
 - `_await_map_monotone` / `_await_balance_monotone` — finalized-state convergence with per-poll non-regression (catches a finalized write that vanishes and self-heals, which a converge-only check would miss)
-- `_BackgroundLoad` + `_assert_bg_load_robust` — always-on contended load + gas-aware vault reconciliation
+- `BackgroundLoad` + `assert_vault_transfers_reconciled` (`infra/background_load.py`) — always-on contended load + gas-aware vault reconciliation
 - Exploratory deploy on the readonly observer (`_read_map` / `_read_int` via non-consuming `<<-`) for finalized-state reads
 - `assert_block_finalized_on_all_nodes` / `wait_for_deploy_included` / `wait_for_finalized` ([`infra/polling.py`](../infra/polling.py)) for cluster-wide finalization waits
 - `_assert_all_finalized` — the bg-load orphan-regression check; a thin wrapper over the shared `assert_all_deploys_finalized_on_all_nodes`. **Deploy-status based, not block-hash:** it polls each node's `deploy_finalization_status`, so a deploy re-homed from a losing-fork block into a finalized descendant counts as finalized (the older find_deploy + block-hash check falsely flagged that as dropped work)
