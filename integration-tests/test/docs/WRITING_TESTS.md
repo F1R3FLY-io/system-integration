@@ -279,7 +279,7 @@ The observer attach exists to verify the LFS forward-horizon rspace sync (`servi
 observer = shard.attach_observer()
 target_lfb = v1.last_finalized_block().blockInfo
 wait_for_block_visible(observer, target_lfb.blockHash, timeout=timeouts.deploy_inclusion)
-expected_bonds = {b.validator: b.stake for b in target_lfb.bonds}
+expected_bonds = {b.validator: parse_amount(b.stake) for b in target_lfb.bonds}
 assert_bonds_map_consistent_across_nodes([v1, observer], target_lfb.blockHash, expected_bonds)
 ```
 

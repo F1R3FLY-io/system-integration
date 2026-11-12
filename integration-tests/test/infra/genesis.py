@@ -11,11 +11,38 @@ import logging
 import os
 import shutil
 import tempfile
+from typing import Iterable, Tuple
 
 from .cleanup import DockerCleanupRegistry
 from .config import ResourcePaths, ShardConfig
 
 logger = logging.getLogger(__name__)
+
+
+def write_wallets(
+    default_wallets: str,
+    target: str,
+    extra_wallets: Iterable[Tuple[str, int]],
+) -> None:
+    """Write ``target`` as the default wallets file plus ``extra_wallets``.
+
+    Raises ``ValueError`` when a vault address appears twice: the node
+    accepts a duplicate genesis wallet and then loses credits to that vault.
+    """
+    with open(default_wallets) as f:
+        default_addrs = [line.split(",", 1)[0].strip() for line in f if line.strip()]
+    extras = list(extra_wallets)
+    seen = set()
+    for addr in default_addrs + [addr for addr, _ in extras]:
+        if addr in seen:
+            raise ValueError(f"vault address {addr} appears twice in genesis wallets")
+        seen.add(addr)
+
+    shutil.copy2(default_wallets, target)
+    if extras:
+        with open(target, "a") as f:
+            for vault_addr, balance in extras:
+                f.write(f"{vault_addr},{balance}\n")
 
 
 def generate_genesis(
@@ -42,14 +69,11 @@ def generate_genesis(
         for identity, stake in config.bonds:
             f.write(f"{identity.public_hex} {stake}\n")
 
-    # wallets.txt — copy default, append extras
-    wallets_path = os.path.join(genesis_dir, "wallets.txt")
-    shutil.copy2(paths.genesis_wallets, wallets_path)
-
-    if config.extra_wallets:
-        with open(wallets_path, "a") as f:
-            for vault_addr, balance in config.extra_wallets:
-                f.write(f"{vault_addr},{balance}\n")
+    write_wallets(
+        paths.genesis_wallets,
+        os.path.join(genesis_dir, "wallets.txt"),
+        config.extra_wallets or [],
+    )
 
     logger.info(
         "Generated custom genesis in %s (bonds: %s, extra_wallets: %d)",

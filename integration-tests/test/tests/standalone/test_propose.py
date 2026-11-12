@@ -9,6 +9,7 @@ import logging
 
 import pytest
 from f1r3fly.client import F1r3flyClientException
+from f1r3fly.token_amount import parse as parse_amount
 
 from ...infra.config import NodeConfig
 from ...infra.keys import BOOTSTRAP_ID
@@ -36,10 +37,9 @@ def test_deploy_phlo_price_too_small(provider, timeouts) -> None:
     try:
         # Verify API reports the configured min phlo price
         status = node.api_get("/status")
-        assert status["minPhloPrice"] == 10, (
-            f"Expected minPhloPrice=10, got {status['minPhloPrice']}"
-        )
-        logging.info("Node reports minPhloPrice=%d", status["minPhloPrice"])
+        min_phlo_price = parse_amount(status["minPhloPrice"])
+        assert min_phlo_price == 10, f"Expected minPhloPrice=10, got {status['minPhloPrice']}"
+        logging.info("Node reports minPhloPrice=%d", min_phlo_price)
 
         # Deploy below threshold — must be rejected
         with pytest.raises(

@@ -53,6 +53,7 @@ import time
 from typing import List, Optional
 
 import pytest
+from f1r3fly.token_amount import parse as parse_amount
 
 from ...infra.assertions import (
     assert_all_nodes_agree_on_block,
@@ -375,7 +376,7 @@ def test_observer_lfs_sync_against_active_shard(observer_shard, timeouts) -> Non
 
             # ── 7. Robust cross-node assertions ───────────────────────
             observer_lfb = observer.last_finalized_block().blockInfo
-            observer_bonds = {b.validator: b.stake for b in observer_lfb.bonds}
+            observer_bonds = {b.validator: parse_amount(b.stake) for b in observer_lfb.bonds}
             assert len(observer_bonds) == len(validators), (
                 f"Observer LFB #{observer_lfb.blockNumber} bonds map has "
                 f"{len(observer_bonds)} entries, expected {len(validators)}: "

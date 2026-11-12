@@ -55,6 +55,7 @@ from typing import List, Optional
 
 import pytest
 from f1r3fly.client import F1r3flyClientException
+from f1r3fly.token_amount import parse as parse_amount
 
 from ...infra.assertions import (
     assert_all_deploys_finalized_on_all_nodes,
@@ -339,7 +340,7 @@ def _bond_lifecycle(
 
     # ── Phase 1: pre-bond state ──────────────────────────────────
     current_lfb = v1.last_finalized_block()
-    bonds_pre = {b.validator: b.stake for b in current_lfb.blockInfo.bonds}
+    bonds_pre = {b.validator: parse_amount(b.stake) for b in current_lfb.blockInfo.bonds}
     assert joiner_identity.public_hex not in bonds_pre, (
         f"Joiner {joiner_identity.name} already in bonds pre-bond: {sorted(bonds_pre)}"
     )
@@ -424,7 +425,7 @@ def _bond_lifecycle(
         bond_block_hash[:16],
     )
     bond_block_info = proposer_node.get_block(bond_block_hash)
-    bond_block_bonds = {b.validator: b.stake for b in bond_block_info.blockInfo.bonds}
+    bond_block_bonds = {b.validator: parse_amount(b.stake) for b in bond_block_info.blockInfo.bonds}
     # The joiner is sealed into the ledger by this block but activates
     # only at an epoch boundary. Off-boundary, the bond block's active
     # map is exactly the pre-bond set. ON a boundary, closeBlock
@@ -483,7 +484,7 @@ def _bond_lifecycle(
 
     def _activated_lfb():
         lfb = proposer_node.last_finalized_block()
-        active_bonds = {b.validator: b.stake for b in lfb.blockInfo.bonds}
+        active_bonds = {b.validator: parse_amount(b.stake) for b in lfb.blockInfo.bonds}
         if lfb.blockInfo.blockNumber >= epoch_target and active_bonds == expected_active_bonds:
             return lfb
         return None
@@ -730,7 +731,9 @@ def test_bonding_validators(bonding_shard, timeouts) -> None:
         )
 
         # Sanity: confirm V4 is in the on-chain bonds map before Phase B.
-        bonds = {b.validator: b.stake for b in v1.last_finalized_block().blockInfo.bonds}
+        bonds = {
+            b.validator: parse_amount(b.stake) for b in v1.last_finalized_block().blockInfo.bonds
+        }
         assert VALIDATOR4_ID.public_hex in bonds, (
             f"Phase B precondition failed: expected V4 bonded after Phase A; "
             f"current bonds: {sorted(bonds)}"
@@ -786,7 +789,7 @@ def test_bonding_validators(bonding_shard, timeouts) -> None:
     )
 
     observer_lfb = observer.last_finalized_block().blockInfo
-    expected_bonds_5 = {b.validator: b.stake for b in observer_lfb.bonds}
+    expected_bonds_5 = {b.validator: parse_amount(b.stake) for b in observer_lfb.bonds}
     assert len(expected_bonds_5) == 5, (
         f"Phase C: observer LFB #{observer_lfb.blockNumber} has "
         f"{len(expected_bonds_5)} bonds, expected 5: "

@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_binary
+from ..genesis import write_wallets
 from ..keys import BOOTSTRAP_NODE_ID
 from ..ports import PortAllocator
 from ..run_outcome import current_test_failed
@@ -702,13 +703,11 @@ class SubprocessProvider:
             for identity, stake in config.bonds:
                 f.write(f"{identity.public_hex} {stake}\n")
 
-        # wallets.txt — copy default + extras
-        wallets_path = target_dir / "wallets.txt"
-        shutil.copy2(self._paths.genesis_wallets, wallets_path)
-        if config.extra_wallets:
-            with wallets_path.open("a") as f:
-                for vault_addr, balance in config.extra_wallets:
-                    f.write(f"{vault_addr},{balance}\n")
+        write_wallets(
+            self._paths.genesis_wallets,
+            str(target_dir / "wallets.txt"),
+            config.extra_wallets or [],
+        )
 
         logger.info(
             "Subprocess genesis written to %s (bonds: %s, extra_wallets: %d)",

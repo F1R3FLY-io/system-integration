@@ -7,8 +7,10 @@ sampled in under 30 minutes. Two node images (for example F1+F2 against
 F1+F2+H1) can then be compared in one day.
 
 Same shard as ``test_deploy_throughput_and_finalization`` (``_load_shard_config``):
-4 validators, heartbeat on, readonly included, autopropose off, 3s self-propose
-cooldown. One unreported warm-up, then N repetitions. Before each repetition the
+4 validators, heartbeat on at the ``conf/rust.conf`` cadence, readonly included,
+autopropose off. Deploys go to all 4 validators and count as finalized only when
+every node reports them, as in ``test_load``. One unreported warm-up, then N
+repetitions. Before each repetition the
 deploys finalize and every node's LFB converges, so each one starts from a
 drained pool.
 
@@ -47,6 +49,7 @@ from ...infra.shard import Shard
 from .test_load import (
     PHASE_LINE_FORMAT,
     PHASES,
+    VALIDATORS_AND_KEYS,
     _load_shard_config,
     _log_unfinalized,
     _run_phase,
@@ -106,7 +109,7 @@ def test_heartbeat_timing(provider, timeouts, resource_monitor) -> None:
     shard = Shard.create(provider, _load_shard_config(), timeouts)
     try:
         v1 = shard.node("validator1")
-        nodes = {name: shard.node(name) for name in ("validator1", "validator2", "validator3")}
+        nodes = {name: shard.node(name) for _, name in VALIDATORS_AND_KEYS}
 
         poll_until(
             predicate=lambda: lfb_number(v1) or None,
@@ -115,7 +118,10 @@ def test_heartbeat_timing(provider, timeouts, resource_monitor) -> None:
             description="initial LFB > 0",
         )
 
-        tracker = LifecycleTracker(nodes, inclusion_timeout=timeouts.deploy_inclusion)
+        tracker = LifecycleTracker(
+            {node.name: node for node in shard.all_nodes},
+            inclusion_timeout=timeouts.deploy_inclusion,
+        )
         tracker.start_lfb_monitor()
         deploy_index = 100_000
         try:
