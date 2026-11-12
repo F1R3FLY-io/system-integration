@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -435,6 +436,7 @@ class DockerNodeHandle:
         self._volume_name = volume_name
         # per_core_cpu_percent baseline: (mode, data, monotonic_time)
         self._percore_prev: Optional[tuple] = None
+        self._file_logs_seen = False
 
     @property
     def volume_name(self) -> Optional[str]:
@@ -465,11 +467,9 @@ class DockerNodeHandle:
         return self._identity
 
     # Directory inside every container where the node writes its structured
-    # log. The appender uses filename_prefix "node.log" with rotation, so the
-    # files on disk are "node.log.<date>" (plus gzipped predecessors) — the
-    # unsuffixed name NEVER exists. Reading a fixed "node.log" therefore always
-    # missed and fell through to `docker logs`, whose json buffer is capped by
-    # the daemon: log scans silently saw a truncated tail instead of the run.
+    # log. Older appenders use "node.log.<date>"; the bounded writer renames
+    # "node.log" to a numbered predecessor and opens a new "node.log".
+    # Read the whole uncompressed inventory, not just the live file.
     _LOG_DIR = "/var/lib/rnode/logs"
     _LOG_GLOB = "node.log*"
 
@@ -480,13 +480,16 @@ class DockerNodeHandle:
         )
         if listing.returncode != 0:
             return []
-        return [
+        files = [
             line.strip()
             for line in (listing.stdout or "").splitlines()
             # .gz predecessors are not readable by `cat`; the live file and its
             # uncompressed siblings carry the window diagnostics need.
             if line.strip() and not line.strip().endswith(".gz")
         ]
+        # The bounded writer's live file is always newest, including when it
+        # is empty or its mtime ties a predecessor immediately after rotation.
+        return sorted(files, key=lambda p: Path(p).name == "node.log", reverse=True)
 
     def logs(self, tail: Optional[int] = None) -> str:
         """Return the node's log content.
@@ -495,21 +498,79 @@ class DockerNodeHandle:
         (``NODE_LOG_SINK_ARGS``: ``--log-sink=file``), oldest-first so the result is chronological.
         Falls back to ``docker logs`` (stdout/stderr buffer) only when no log
         file exists — the startup-failure case where the node crashed before
-        the file sink opened.
+        the file sink opened. After a file-logging node exits, copy its files
+        and append stdout/stderr so panic output remains visible.
         """
-        files = self._log_files_newest_first()
-        text = ""
-        if files:
-            result = _docker("exec", self._name, "cat", *reversed(files))
-            if result.returncode == 0:
+        for _ in range(3):
+            files = self._log_files_newest_first()
+            if files:
+                self._file_logs_seen = True
+                result = _docker("exec", self._name, "cat", *reversed(files))
+                if result.returncode != 0:
+                    continue
                 text = result.stdout or ""
-        if not text:
-            fallback = _docker("logs", self._name)
-            text = (fallback.stdout or "") + (fallback.stderr or "")
+            elif self._file_logs_seen:
+                # A missing inventory after the file sink opened is a read
+                # failure, not permission to change to a different log stream.
+                continue
+            elif self.exit_code() is not None:
+                # Exec cannot list a stopped container's files; that is not
+                # evidence the file sink never opened.
+                text = self._stopped_logs(require_files=False)
+                break
+            else:
+                fallback = _docker("logs", self._name)
+                if fallback.returncode != 0:
+                    continue
+                text = (fallback.stdout or "") + (fallback.stderr or "")
+            # Rotation can rename node.log AFTER ls but BEFORE cat: cat then
+            # succeeds on the fresh file alone, and the read silently drops the
+            # renamed file. Verify even a successful/empty read, including the
+            # first rotation (where the live path still exists and cat reports
+            # no error).
+            if files == self._log_files_newest_first():
+                break
+        else:
+            if self.exit_code() is not None:
+                text = self._stopped_logs(require_files=self._file_logs_seen)
+            else:
+                raise RuntimeError(f"Could not read a stable log inventory for {self._name}")
         if tail:
             lines = text.splitlines()
             text = "\n".join(lines[-tail:])
         return text
+
+    def _stopped_logs(self, require_files: bool) -> str:
+        """Keep the file prefix and append crash output from a stopped container.
+
+        Docker exec cannot run after exit. Docker cp still reads the files.
+        Panic output goes to stderr independently of the node's configured
+        file sink; Docker's timestamps place it in the log scan window. With
+        ``require_files`` unset, a container whose log directory does not
+        exist (it exited before opening the file sink) yields its stdout/stderr
+        alone; any other copy failure is an error.
+        """
+        with tempfile.TemporaryDirectory(prefix="node-stopped-logs-") as directory:
+            copied = _docker("cp", f"{self._name}:{self._LOG_DIR}/.", directory)
+            never_opened = not require_files and "Could not find the file" in (copied.stderr or "")
+            if copied.returncode != 0 and not never_opened:
+                raise RuntimeError(
+                    f"Could not copy file logs from stopped container {self._name}: "
+                    f"{(copied.stderr or '').strip()}"
+                )
+            files = [p for p in Path(directory).glob(self._LOG_GLOB) if not p.name.endswith(".gz")]
+            if not files and require_files:
+                raise RuntimeError(f"No file logs copied from stopped container {self._name}")
+            # Match ls -t's mtime order and filename tie-break, with node.log
+            # always newest, just as in _log_files_newest_first.
+            files.sort(key=lambda p: p.name)
+            files.sort(key=lambda p: p.stat().st_mtime_ns, reverse=True)
+            files.sort(key=lambda p: p.name == "node.log", reverse=True)
+            text = "".join(p.read_text(errors="replace") for p in reversed(files))
+        crash = _docker("logs", "--timestamps", self._name, check=True)
+        if text and not text.endswith("\n"):
+            text += "\n"
+        return text + (crash.stdout or "") + (crash.stderr or "")
 
     def archive_log(self, dest_path: Path) -> None:
         """Persist the node's complete log to ``dest_path``.
@@ -1051,12 +1112,14 @@ class DockerProvider:
         ``add_joiner`` / ``add_observer``.
         """
         for h in handles:
+            read_error = None
             try:
                 snapshot_text = h.logs()
-            except Exception:
+            except Exception as exc:
                 snapshot_text = ""
+                read_error = str(exc)
             self._retired_log_snapshots.append(
-                RetiredLogSnapshot(name=h.name, log_text=snapshot_text)
+                RetiredLogSnapshot(name=h.name, log_text=snapshot_text, read_error=read_error)
             )
             if h in self._active_handles:
                 self._active_handles.remove(h)
@@ -1522,12 +1585,14 @@ class DockerProvider:
         # destroy its container/volume, so the autouse log scanner
         # still sees whatever the transient node emitted before its
         # handle was detached.
+        read_error = None
         try:
             snapshot_text = handle.logs()
-        except Exception:
+        except Exception as exc:
             snapshot_text = ""
+            read_error = str(exc)
         self._retired_log_snapshots.append(
-            RetiredLogSnapshot(name=handle.name, log_text=snapshot_text)
+            RetiredLogSnapshot(name=handle.name, log_text=snapshot_text, read_error=read_error)
         )
         if self.keep_running:
             logger.info("Node %s kept running (--keep-running)", handle.name)

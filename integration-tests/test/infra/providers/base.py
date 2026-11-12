@@ -33,10 +33,14 @@ class RetiredLogSnapshot:
     nodes (attached via ``add_observer`` / ``add_joiner`` context
     managers) don't escape the scanner when their handles are removed
     from ``active_handles`` at context exit.
+
+    ``read_error`` preserves a failed snapshot read so teardown cannot
+    silently judge an empty log as clean.
     """
 
     name: str
     log_text: str
+    read_error: Optional[str] = None
 
 
 class NodeHandle(typing_extensions.Protocol):
