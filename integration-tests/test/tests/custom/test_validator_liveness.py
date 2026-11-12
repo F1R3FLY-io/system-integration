@@ -3,7 +3,8 @@
 Five validators with stakes 500, 400, 300, 200 and 100 run under the liveness
 profile (a fast drain and short epochs), with a readonly observer and
 background deploy load throughout. One scenario runs in phases that overlap on
-purpose: a validator joins and another leaves while a third goes silent and is
+purpose: a validator flaps short of ejection and refills each time; then a
+validator joins and another leaves while a third goes silent and is
 ejected; the ejected validator's first rejoin is refused and its second
 reinstates it while a fourth validator goes silent; that one is slashed when
 its grace ends.
@@ -14,6 +15,7 @@ against the PoS contract, read on the observer at the same finalized block.
 """
 
 import logging
+import statistics
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Set
@@ -91,6 +93,22 @@ _EPOCH_OFFSET = range(1, 5)
 _STEP_BLOCKS = 200
 _FUNDED = 50_000_000_000_000_000
 
+# A is paused until it has used these fractions of its headroom above the
+# threshold, then resumed, and must refill without any reporter acting on it.
+_FLAP_DEPTHS = (0.5, 0.95)
+# Then it is paused until a reporter sees it drained, this many times.
+_DIPS = 3
+# A dip is resumed at most this many blocks below the threshold, half the
+# observation window, or the poll was too slow to test the boundary.
+_DIP_RESUME_LIMIT = 5
+# A flap's pause ends within about a block of its trigger only at this poll.
+_FLAP_POLL = 0.25
+# Windows shorter than this many blocks are not measured for earnings.
+_EARNINGS_MIN_BLOCKS = 20
+# The most heights one block listing returns (the node's max-blocks-limit).
+_MAX_BLOCKS_DEPTH = 100
+_REWARD_PPM = int(LIVENESS_PROFILE_CLI_OPTIONS["--leaky-bucket-reward-rate-ppm"])
+
 _LOAD_KEY = PrivateKey.from_seed(71001)
 _LOAD_DESTINATION = PrivateKey.from_seed(71002).get_public_key().get_vault_address()
 _LOAD_AMOUNT = 1
@@ -119,6 +137,15 @@ def _stakes(entries: List[dict]) -> Dict[str, int]:
     return {e["validator"]: int(e["stake"]) for e in entries if int(e["stake"]) > 0}
 
 
+def _headroom_used(bucket: dict) -> float:
+    full = int(bucket["capacity"]) * _PPM
+    return (full - int(bucket["level"])) / (full - int(bucket["threshold"]))
+
+
+def _full(bucket: Optional[dict]) -> bool:
+    return bucket is not None and int(bucket["level"]) == int(bucket["capacity"]) * _PPM
+
+
 def _claims(report: dict, family: str, target: str) -> List[dict]:
     return [
         c
@@ -142,6 +169,8 @@ class _Run:
     started: float = field(default_factory=time.monotonic)
     steps: Dict[str, tuple] = field(default_factory=dict)
     tightest: Dict[str, float] = field(default_factory=dict)
+    samples: List[dict] = field(default_factory=list)
+    earnings: Dict[str, List[dict]] = field(default_factory=dict)
 
     @property
     def observer(self):
@@ -183,7 +212,12 @@ class _Run:
                 self.tightest[key] = min(self.tightest.get(key, margin), margin)
         return reports
 
-    def step(self, name: str, seen: Callable[[List[dict]], bool]) -> List[dict]:
+    def step(
+        self,
+        name: str,
+        seen: Callable[[List[dict]], bool],
+        interval: Optional[float] = None,
+    ) -> List[dict]:
         def probe():
             try:
                 current = self.reports()
@@ -194,7 +228,7 @@ class _Run:
         current = poll_until(
             probe,
             timeout=self.timeouts.blocks(_STEP_BLOCKS),
-            interval=self.timeouts.poll_interval,
+            interval=interval or self.timeouts.poll_interval,
             description=f"liveness step {name}",
         )
         if isinstance(current, _ViolationError):
@@ -202,10 +236,61 @@ class _Run:
         tip = max(r["localView"]["tipHeight"] for r in current)
         self.steps[name] = (round(time.monotonic() - self.started, 1), tip)
         logger.info("liveness step %s at %ss, tip %s", name, *self.steps[name])
+        self.measure_earnings()
         return current
 
-    def every(self, name: str, seen: Callable[[dict], bool]) -> List[dict]:
-        return self.step(name, lambda rs: all(seen(r) for r in rs))
+    def measure_earnings(self) -> None:
+        """Records what each producer earned since the last step, as
+        validator 1 sees it: ``e`` is its credit over its drain and holds it
+        at 1 or more, ``p`` its blocks over its share of the blocks, and
+        ``q`` its blocks' mean reward factor."""
+        node = self.shard.node("validator1")
+        report = node.validator_liveness()
+        view = report["localView"]
+        sample = {
+            "tip": view["tipHeight"],
+            "producers": set(self.producers),
+            "members": len(view["tipCommittee"]),
+            "buckets": {b["validator"]: b for b in view["buckets"]},
+        }
+        previous = self.samples[-1] if self.samples else None
+        self.samples.append(sample)
+        if previous is None:
+            return
+        heights = sample["tip"] - previous["tip"]
+        if heights > _MAX_BLOCKS_DEPTH - 5:
+            return
+        blocks = [
+            b
+            for b in node.get_blocks(depth=heights + 5)
+            if previous["tip"] < b.blockNumber <= sample["tip"]
+        ]
+        if len(blocks) < _EARNINGS_MIN_BLOCKS:
+            return
+        drain_ppm = report["params"]["lambdaPpm"]
+        for key in previous["producers"] & sample["producers"]:
+            before, after = previous["buckets"].get(key), sample["buckets"].get(key)
+            if before is None or after is None or before["capacity"] != after["capacity"]:
+                continue
+            credited = (
+                int(after["level"])
+                + int(after["overflow"])
+                - int(before["level"])
+                - int(before["overflow"])
+            )
+            drained = int(after["capacity"]) * drain_ppm * len(blocks)
+            e = 1 + credited / drained
+            own = sum(1 for b in blocks if b.sender.lower() == key.lower())
+            p = own * sample["members"] / len(blocks)
+            q = e * drain_ppm / (p * _REWARD_PPM) if own else None
+            self.earnings.setdefault(key, []).append(
+                {"tip": sample["tip"], "blocks": len(blocks), "e": e, "p": p, "q": q}
+            )
+
+    def every(
+        self, name: str, seen: Callable[[dict], bool], interval: Optional[float] = None
+    ) -> List[dict]:
+        return self.step(name, lambda rs: all(seen(r) for r in rs), interval)
 
     def caught_up(self, step: str, node_name: str) -> List[dict]:
         """Waits until ``node_name``'s tip is within 2 heights of every
@@ -250,6 +335,32 @@ class _Run:
         block_hash = report["finalizedState"]["blockHash"]
         wait_for_block_visible(self.observer, block_hash, timeout=self.timeouts.finalization * 3)
         return self.observer.get_vault().get_balance(address, block_hash)
+
+
+def _flap(run: _Run, name: str, depth: Optional[float]) -> None:
+    """Pauses A until the deepest reporter sees it ``depth`` of the way from
+    full to the threshold, or, at ``None``, until one sees it drained. Then
+    resumes it and waits until every reporter sees it full. A stays
+    protected throughout, so no reporter may offer, claim or eject it."""
+    run.producers.discard(_A)
+    run.pause("validator4")
+
+    def reached(reports: List[dict]) -> bool:
+        buckets = [_bucket(r, _A) for r in reports]
+        if depth is None:
+            return any(b["drained"] for b in buckets)
+        return max(_headroom_used(b) for b in buckets) >= depth
+
+    paused = run.step(f"{name}_paused", reached, interval=_FLAP_POLL)
+    run.unpause("validator4")
+    if depth is None:
+        below = max(_bucket(r, _A)["blocksBelowThreshold"] for r in paused)
+        assert below <= _DIP_RESUME_LIMIT, (
+            f"A resumed {below} blocks below the threshold: the test polled too slowly "
+            "to resume it well inside the observation window"
+        )
+    run.every(f"{name}_full", lambda r: _full(_bucket(r, _A)), interval=_FLAP_POLL)
+    run.producers.add(_A)
 
 
 def _rejoin(run: _Run, topup: int) -> int:
@@ -345,6 +456,21 @@ def test_ejection_rejoin_and_slashing_while_validators_join_and_leave(
         "tightest level as a multiple of the threshold: %s",
         {_NAME[k]: round(v, 3) for k, v in run.tightest.items()},
     )
+    for key, windows in run.earnings.items():
+        qs = [w["q"] for w in windows if w["q"] is not None]
+        logger.info(
+            "earnings %s over %d windows (%d blocks): e min %.2f median %.2f, "
+            "p min %.2f median %.2f, q min %s median %s",
+            _NAME[key],
+            len(windows),
+            sum(w["blocks"] for w in windows),
+            min(w["e"] for w in windows),
+            statistics.median(w["e"] for w in windows),
+            min(w["p"] for w in windows),
+            statistics.median(w["p"] for w in windows),
+            f"{min(qs):.2f}" if qs else "-",
+            f"{statistics.median(qs):.2f}" if qs else "-",
+        )
 
 
 def _scenario(run: _Run) -> None:
@@ -355,6 +481,12 @@ def _scenario(run: _Run) -> None:
     # ── Hold at mixed stakes ────────────────────────────────────────────
     run.every("held", lambda r: r["localView"]["tipHeight"] >= _HOLD_HEIGHTS)
     assert set(run.tightest) == run.producers, "every producer's bucket is reported"
+
+    # ── A flaps short of ejection ───────────────────────────────────────
+    for i, depth in enumerate(_FLAP_DEPTHS, start=1):
+        _flap(run, f"a_flap{i}", depth)
+    for i in range(1, _DIPS + 1):
+        _flap(run, f"a_dip{i}", None)
 
     # ── Join and leave, with A silenced before the boundary that applies them ──
     lfb = v1.last_finalized_block()
