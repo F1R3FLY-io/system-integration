@@ -4,10 +4,15 @@ Five validators with stakes 500, 400, 300, 200 and 100 run under the liveness
 profile (a fast drain and short epochs), with a readonly observer and
 background deploy load throughout. One scenario runs in phases that overlap on
 purpose: a validator flaps short of ejection and refills each time; then a
-validator joins and another leaves while a third goes silent and is
-ejected; the ejected validator's first rejoin is refused and its second
-reinstates it while a fourth validator goes silent; that one is slashed when
-its grace ends.
+validator joins and another leaves while a third goes silent and is ejected by
+a claim the leaver votes on; once the leaver has gone, the ejected validator's
+paid rejoin reinstates it while a fourth validator goes silent; that one is
+ejected, its rejoin with too small a topup is refused, and it is slashed when
+its grace ends; the leaver is paid when its quarantine ends.
+
+Each ejected validator rejoins once, with at least a claim deadline of its
+grace left, and no step waits for a state that a later state can replace, so
+the outcome does not depend on where the epoch boundaries fall.
 
 Each step is detected from the honest validators' liveness reports
 (``GET /api/validator-liveness`` on the admin port) and its outcome is checked
@@ -72,7 +77,7 @@ _NAME = {
     identity.public_hex: identity.name for identity in (*(i for i, _ in _GENESIS), VALIDATOR6_ID)
 }
 
-# Well below the shortfall of any drained bucket (at least a tenth of A's 200),
+# Well below the shortfall of any drained bucket (at least a tenth of B's 100),
 # so every voter refuses it.
 _SHORT_TOPUP = 1
 # Bucket levels and shortfalls are reported in `1 / _PPM` of a bond unit.
@@ -91,6 +96,9 @@ _EPOCH_OFFSET = range(1, 5)
 # Budget for any one step, in blocks: the slowest step waits out two epochs of
 # grace.
 _STEP_BLOCKS = 200
+# Blocks beyond the claim deadline a rejoin needs before its grace ends: the
+# rejoin deploy's inclusion and the decision's finalization.
+_DECISION_SLACK_BLOCKS = 5
 _FUNDED = 50_000_000_000_000_000
 
 # A is paused until it has used these fractions of its headroom above the
@@ -154,11 +162,26 @@ def _claims(report: dict, family: str, target: str) -> List[dict]:
     ]
 
 
+def _standing(report: dict, validator: str) -> dict:
+    """What one report says about ``validator``, for failure messages."""
+    state = report["finalizedState"]
+    return {
+        "tip": report["localView"]["tipHeight"],
+        "stake": _stakes(state["bonds"]).get(validator),
+        "ejected": validator in state["ejected"],
+        "graceEnd": next(
+            (g["graceEnd"] for g in state["graceEnds"] if g["validator"] == validator), None
+        ),
+        "claims": [c for c in state["claims"] if c["target"] == validator],
+    }
+
+
 @dataclass
 class _Run:
     """Polls the reporters' liveness reports. On every poll no reporter may
     see a producer drained, or any protected validator offered, claimed or
-    ejected. Logs when each step is first seen."""
+    ejected, and an ejected validator keeps its bond until a slash at or after
+    its grace end. Logs when each step is first seen."""
 
     shard: Shard
     timeouts: object
@@ -166,6 +189,8 @@ class _Run:
     producers: Set[str]
     protected: Set[str]
     paused: Set[str] = field(default_factory=set)
+    # Ejected validator -> (its bond, its grace end).
+    frozen: Dict[str, tuple] = field(default_factory=dict)
     started: float = field(default_factory=time.monotonic)
     steps: Dict[str, tuple] = field(default_factory=dict)
     tightest: Dict[str, float] = field(default_factory=dict)
@@ -210,6 +235,16 @@ class _Run:
                 )
                 margin = int(bucket["level"]) / int(bucket["threshold"])
                 self.tightest[key] = min(self.tightest.get(key, margin), margin)
+            state = report["finalizedState"]
+            stakes = _stakes(state["bonds"])
+            for key, (stake, grace_end) in self.frozen.items():
+                held = stakes.get(key)
+                _require(
+                    held == stake or (held is None and state["blockNumber"] >= grace_end),
+                    f"{name} sees {_NAME[key]}'s bond at {held} by finalized block "
+                    f"{state['blockNumber']}: it holds {stake} until a slash at or after "
+                    f"its grace end {grace_end}",
+                )
         return reports
 
     def step(
@@ -217,6 +252,7 @@ class _Run:
         name: str,
         seen: Callable[[List[dict]], bool],
         interval: Optional[float] = None,
+        blocks: int = _STEP_BLOCKS,
     ) -> List[dict]:
         def probe():
             try:
@@ -227,7 +263,7 @@ class _Run:
 
         current = poll_until(
             probe,
-            timeout=self.timeouts.blocks(_STEP_BLOCKS),
+            timeout=self.timeouts.blocks(blocks),
             interval=interval or self.timeouts.poll_interval,
             description=f"liveness step {name}",
         )
@@ -288,9 +324,13 @@ class _Run:
             )
 
     def every(
-        self, name: str, seen: Callable[[dict], bool], interval: Optional[float] = None
+        self,
+        name: str,
+        seen: Callable[[dict], bool],
+        interval: Optional[float] = None,
+        blocks: int = _STEP_BLOCKS,
     ) -> List[dict]:
-        return self.step(name, lambda rs: all(seen(r) for r in rs), interval)
+        return self.step(name, lambda rs: all(seen(r) for r in rs), interval, blocks)
 
     def caught_up(self, step: str, node_name: str) -> List[dict]:
         """Waits until ``node_name``'s tip is within 2 heights of every
@@ -317,6 +357,7 @@ class _Run:
             "ejectionEvidence": pos.get_ejection_evidence(block_hash),
             "freezes": pos.get_freeze_history(block_hash),
             "withdrawers": pos.get_withdrawers(block_hash),
+            "rewards": pos.get_rewards(block_hash),
         }
         assert read["bonds"] == _stakes(state["bonds"]), (
             f"bonds at {block_hash[:12]}: contract {read['bonds']}, report {state['bonds']}"
@@ -363,11 +404,58 @@ def _flap(run: _Run, name: str, depth: Optional[float]) -> None:
     run.producers.add(_A)
 
 
-def _rejoin(run: _Run, topup: int) -> int:
-    """A's rejoin with ``topup``, signed by A and submitted through
-    validator 1. Returns the phlo it cost A."""
+def _await_ejection(run: _Run, prefix: str, key: str) -> tuple:
+    """Waits for the silenced ``key`` to drain, be claimed and be ejected.
+    Each step also accepts any later state, so a step that starts late never
+    waits for a state that has passed. Checks honest nodes and the contract
+    agree on its grace end, and from then on holds it to its bond until a
+    slash at or after that grace end. Returns the ejection claim if a poll saw
+    it open, the reports that saw it ejected, the grace end, and the
+    contract's ejection record, whose snapshot is the claim's electorate."""
+
+    def ejected_by(report: dict) -> bool:
+        return key in report["finalizedState"]["ejected"]
+
+    def claimed(report: dict) -> bool:
+        return bool(_claims(report, "eject", key)) or ejected_by(report)
+
+    run.every(
+        f"{prefix}_drained",
+        lambda r: bool((_bucket(r, key) or {}).get("drained")) or claimed(r),
+    )
+    opened = run.step(f"{prefix}_claimed", lambda rs: any(claimed(r) for r in rs))
+    claim = next((c for r in opened for c in _claims(r, "eject", key)), None)
+    ejected = run.every(f"{prefix}_ejected", ejected_by)
+    grace_ends = {
+        g["graceEnd"]
+        for r in ejected
+        for g in r["finalizedState"]["graceEnds"]
+        if g["validator"] == key
+    }
+    assert len(grace_ends) == 1, f"honest nodes disagree on {_NAME[key]}'s grace end: {grace_ends}"
+    grace_end = grace_ends.pop()
+    record = run.contract(ejected[0])["ejected"][key]
+    assert record["graceEnd"] == grace_end, f"contract grace end {record}, reports {grace_end}"
+    run.frozen[key] = (_STAKE[key], grace_end)
+    return claim, ejected, grace_end, record
+
+
+def _rejoin(run: _Run, identity, topup: int, grace_end: int, context: str = "") -> int:
+    """``identity``'s rejoin with ``topup``, signed by it and submitted
+    through validator 1. Refuses to start unless a claim opened now can be
+    decided before ``grace_end``; ``context`` explains a late start. Returns
+    the phlo it cost the rejoiner."""
+    report = run.reports()[0]
+    finalized = report["finalizedState"]["blockNumber"]
+    needed = report["params"]["claimDeadlineBlocks"] + _DECISION_SLACK_BLOCKS
+    logger.info("%s before its rejoin: %s", identity.name, _standing(report, identity.public_hex))
+    assert grace_end - finalized >= needed, (
+        f"{identity.name}'s rejoin would start at finalized block {finalized} with its grace "
+        f"ending at {grace_end}: a rejoin claim needs up to {needed} blocks to be decided. "
+        f"{context}"
+    )
     v1 = run.shard.node("validator1")
-    deploy_id = v1.pos.rejoin_from_ejection(VALIDATOR4_ID.private_key(), topup)
+    deploy_id = v1.pos.rejoin_from_ejection(identity.private_key(), topup)
     block_hash = assert_deploy_block_finalized_on_all_nodes(
         v1, deploy_id, run.live(), run.timeouts.finalization * 3
     )
@@ -497,32 +585,35 @@ def _scenario(run: _Run) -> None:
     run.pause("validator4")
     run.producers.discard(_A)
     run.protected.discard(_A)
-    run.every("epoch_start", lambda r: r["localView"]["tipHeight"] % epoch in _EPOCH_OFFSET)
-    v1.pos.bond(VALIDATOR6_ID.private_key(), _JOINER_STAKE)
-    shard.node("validator3").pos.withdraw(VALIDATOR3_ID.private_key())
+    started = run.every(
+        "epoch_start", lambda r: r["localView"]["tipHeight"] % epoch in _EPOCH_OFFSET
+    )
+    boundary = (max(r["localView"]["tipHeight"] for r in started) // epoch + 1) * epoch
+    bond_id = v1.pos.bond(VALIDATOR6_ID.private_key(), _JOINER_STAKE)
+    v3 = shard.node("validator3")
+    withdraw_id = v3.pos.withdraw(VALIDATOR3_ID.private_key())
+    run.producers.discard(_LEAVER)
 
-    run.every("a_drained", lambda r: bool((_bucket(r, _A) or {}).get("drained")))
-    opened = run.step("a_claim_open", lambda rs: any(_claims(r, "eject", _A) for r in rs))
-    claim = next(c for r in opened for c in _claims(r, "eject", _A))
-    assert _LEAVER in _stakes(claim["electorate"]), (
+    # ── A is ejected by a claim the leaver votes on ─────────────────────
+    claim, a_ejected, a_grace_end, record = _await_ejection(run, "a", _A)
+    assert claim is None or _LEAVER in _stakes(claim["electorate"]), (
         f"the ejection claim against A opened after the leaver left: {claim}"
     )
-
-    ejected = run.every("a_ejected", lambda r: _A in r["finalizedState"]["ejected"])
-    grace_ends = {
-        g["graceEnd"]
-        for r in ejected
-        for g in r["finalizedState"]["graceEnds"]
-        if g["validator"] == _A
-    }
-    assert len(grace_ends) == 1, f"honest nodes disagree on A's grace end: {grace_ends}"
-    record = run.contract(ejected[0])["ejected"][_A]
-    assert record["graceEnd"] in grace_ends, f"contract grace end {record}, reports {grace_ends}"
     assert record["ejectionSnapshot"].get(_LEAVER) == _STAKE[_LEAVER], (
         f"A's ejection electorate holds the leaver: {record['ejectionSnapshot']}"
     )
     run.unpause("validator4")
+    finalized_in = {}
+    for name, node, deploy_id in (("bond", v1, bond_id), ("withdraw", v3, withdraw_id)):
+        block_hash = assert_deploy_block_finalized_on_all_nodes(
+            node, deploy_id, run.live(), run.timeouts.finalization * 3
+        )
+        result = node.pos.read_result(deploy_id, block_hash)
+        assert result.success, f"the {name} failed: {result}"
+        finalized_in[name] = node.get_block(block_hash).blockInfo.blockNumber
+    logger.info("the bond and the withdrawal for the boundary at %s: %s", boundary, finalized_in)
 
+    # ── The join and the leave take effect ──────────────────────────────
     joined = run.every(
         "joined",
         lambda r: (
@@ -541,50 +632,37 @@ def _scenario(run: _Run) -> None:
             and _LEAVER in _stakes(r["finalizedState"]["withdrawers"])
         ),
     )
-    assert _LEAVER in run.contract(left[0])["withdrawers"]
-    run.producers.discard(_LEAVER)
-
-    # ── A's short rejoin is refused ─────────────────────────────────────
-    a_vault = _vault(VALIDATOR4_ID)
-    a_before = run.balance(a_vault, left[0])
-    for report in run.reports():
-        shortfall = next(
-            int(s["amount"]) for s in report["decision"]["shortfall"] if s["validator"] == _A
-        )
-        assert shortfall > _SHORT_TOPUP * _PPM, (
-            f"a reporter's view leaves A no shortfall for the short topup to miss: {shortfall}"
-        )
-    short_cost = _rejoin(run, _SHORT_TOPUP)
-
-    def a_refused(report: dict) -> bool:
-        _require(
-            _A in report["finalizedState"]["ejected"] or bool(_claims(report, "rejoin", _A)),
-            "A was reinstated by a rejoin whose topup is below its shortfall",
-        )
-        return not _claims(report, "rejoin", _A)
-
-    refused = run.every("a_rejoin_refused", a_refused)
-    state = run.contract(refused[0])
-    assert _A not in state["pendingRejoins"], state["pendingRejoins"]
-    assert all(f["to"] is None for f in state["freezes"][_A].values()), (
-        f"a refused rejoin leaves A's freeze open: {state['freezes'][_A]}"
+    left_state = run.contract(left[0])
+    assert _LEAVER in left_state["withdrawers"], (
+        f"the leaver awaits payout: {left_state['withdrawers']}"
     )
-    assert a_before - run.balance(a_vault, refused[0]) == short_cost, (
-        "a refused rejoin takes only the deploy's phlo from A"
-    )
+    bond, quarantine_end = left_state["withdrawers"][_LEAVER]
+    rewards = left_state["rewards"].get(_LEAVER, 0)
 
-    # ── B goes silent while A's full rejoin is decided ──────────────────
-    run.caught_up("a_caught_up", "validator4")
+    # ── A's paid rejoin passes, with the leaver gone and B silent ───────
+    # A's rejoin electorate is the one that ejected A, so it holds the
+    # leaver, who has left without voting. The rejoin passes only because a
+    # member that holds no seat and has not voted does not count.
     run.pause("validator5")
     run.reporters.remove("validator5")
     run.producers.discard(_B)
     run.protected.discard(_B)
-    full_cost = _rejoin(run, _FULL_TOPUP)
+    a_vault = _vault(VALIDATOR4_ID)
+    a_before = run.balance(a_vault, left[0])
+    full_cost = _rejoin(
+        run,
+        VALIDATOR4_ID,
+        _FULL_TOPUP,
+        a_grace_end,
+        f"the bond and the withdrawal finalized in blocks {finalized_in} for the boundary "
+        f"at {boundary}",
+    )
 
     def a_reinstated(report: dict) -> bool:
         _require(
             _A in _stakes(report["finalizedState"]["bonds"]),
-            "A was slashed although every remaining voter could back its paid rejoin",
+            f"A was slashed although every remaining voter could back its paid rejoin: "
+            f"{_standing(report, _A)}",
         )
         return _A not in report["finalizedState"]["ejected"]
 
@@ -595,24 +673,88 @@ def _scenario(run: _Run) -> None:
         f"the full rejoin closes A's freeze with its topup: {state['freezes'][_A]}"
     )
     assert state["bonds"].get(_A) == _STAKE[_A], "a rejoin topup does not change A's bond"
-    assert a_before - run.balance(a_vault, reinstated[0]) == short_cost + full_cost + _FULL_TOPUP, (
-        "A pays both deploys' phlo and the full topup, nothing more"
+    assert a_before - run.balance(a_vault, reinstated[0]) == full_cost + _FULL_TOPUP, (
+        "A pays the deploy's phlo and the full topup, nothing more"
     )
+    run.frozen[_A] = (_STAKE[_A], float("inf"))
     run.protected.add(_A)
 
-    # ── B is ejected, then slashed when its grace ends ──────────────────
-    b_ejected = run.every("b_ejected", lambda r: _B in r["finalizedState"]["ejected"])
+    # ── B is ejected, and its short rejoin is refused ───────────────────
+    _, b_ejected, b_grace_end, _ = _await_ejection(run, "b", _B)
+    b_vault = _vault(VALIDATOR5_ID)
+    b_before = run.balance(b_vault, b_ejected[0])
+    for report in run.reports():
+        shortfall = next(
+            int(s["amount"]) for s in report["decision"]["shortfall"] if s["validator"] == _B
+        )
+        assert shortfall > _SHORT_TOPUP * _PPM, (
+            f"a reporter's view leaves B no shortfall for the short topup to miss: {shortfall}"
+        )
+    short_cost = _rejoin(run, VALIDATOR5_ID, _SHORT_TOPUP, b_grace_end)
+
+    def b_refused(report: dict) -> bool:
+        if _B not in report["finalizedState"]["ejected"] and not _claims(report, "rejoin", _B):
+            standing = _standing(report, _B)
+            _require(
+                standing["stake"] is None,
+                f"B was reinstated by a rejoin whose topup is below its shortfall: {standing}",
+            )
+            _require(False, f"B was slashed before its short rejoin was decided: {standing}")
+        return not _claims(report, "rejoin", _B)
+
+    refused = run.every("b_rejoin_refused", b_refused)
+    state = run.contract(refused[0])
+    assert _B not in state["pendingRejoins"], state["pendingRejoins"]
+    assert all(f["to"] is None for f in state["freezes"][_B].values()), (
+        f"a refused rejoin leaves B's freeze open: {state['freezes'][_B]}"
+    )
+    assert b_before - run.balance(b_vault, refused[0]) == short_cost, (
+        "a refused rejoin takes only the deploy's phlo from B"
+    )
+
+    # ── B is slashed when its grace ends ────────────────────────────────
     coop = par_as_string(run.observer.pos.get_coop_vault()[1])
-    coop_before = run.balance(coop, b_ejected[0])
+    coop_before = run.balance(coop, refused[0])
     slashed = run.every("b_slashed", lambda r: _B not in _stakes(r["finalizedState"]["bonds"]))
     state = run.contract(slashed[0])
     assert _B not in state["bonds"], f"B keeps stake after its grace: {state['bonds']}"
     assert run.balance(coop, slashed[0]) - coop_before == _STAKE[_B], (
         "the coop vault receives exactly B's stake"
     )
+    del run.frozen[_B]
+
+    # ── The leaver is paid exactly its due when its quarantine ends ─────
+    leaver_vault = _vault(VALIDATOR3_ID)
+    leaver_before = run.balance(leaver_vault, left[0])
+
+    def leaver_paid(report: dict) -> bool:
+        state = report["finalizedState"]
+        paid = _LEAVER not in _stakes(state["withdrawers"])
+        _require(
+            not paid or state["blockNumber"] >= quarantine_end,
+            f"the leaver was paid by finalized block {state['blockNumber']}, before its "
+            f"quarantine ends at {quarantine_end}",
+        )
+        return paid
+
+    paid = run.every(
+        "leaver_paid",
+        leaver_paid,
+        blocks=quarantine_end - left[0]["finalizedState"]["blockNumber"] + _STEP_BLOCKS,
+    )
+    assert _LEAVER not in run.contract(paid[0])["withdrawers"]
+    last_held = run.observer.get_blocks_by_heights(quarantine_end - 1, quarantine_end - 1)
+    assert last_held, f"the observer holds no block at height {quarantine_end - 1}"
+    held_rewards = run.observer.pos.get_rewards(last_held[0].blockHash).get(_LEAVER, 0)
+    assert held_rewards == rewards, (
+        f"the leaver's rewards moved from {rewards} to {held_rewards} while it sat in quarantine"
+    )
+    assert run.balance(leaver_vault, paid[0]) - leaver_before == bond + rewards, (
+        f"the leaver receives exactly its bond {bond} plus its rewards {rewards}"
+    )
 
     # ── A holds once it produces again ──────────────────────────────────
-    past = slashed[0]["finalizedState"]["blockNumber"] + epoch
+    past = paid[0]["finalizedState"]["blockNumber"] + epoch
     final = run.every("a_holds", lambda r: r["finalizedState"]["blockNumber"] >= past)
     for report in final:
         bucket = _bucket(report, _A)

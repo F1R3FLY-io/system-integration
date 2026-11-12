@@ -134,12 +134,12 @@ MAX_PARENT_DEPTH = 25
 DEPLOY_LIFESPAN = 300
 
 
-def minimum_quarantine(epoch_length: int) -> int:
+def minimum_quarantine(epoch_length: int, deploy_lifespan: int = DEPLOY_LIFESPAN) -> int:
     """The shortest quarantine genesis accepts for ``epoch_length``: two epochs
     of ejection grace, plus the retention window (max-parent-depth plus the
     longest of the deploy lifespan, the claim deadline and the epoch, the claim
     deadline being one epoch), plus an epoch."""
-    return 3 * epoch_length + MAX_PARENT_DEPTH + max(DEPLOY_LIFESPAN, epoch_length)
+    return 3 * epoch_length + MAX_PARENT_DEPTH + max(deploy_lifespan, epoch_length)
 
 
 # A short epoch for suites that wait on epoch boundaries (bond activation,
@@ -156,12 +156,17 @@ SHORT_EPOCH_CLI_OPTIONS: Dict[str, str] = {
 # later. The drain and the reward rate are the shipped values (140 and 630
 # ppm) scaled by the same factor, so a validator holds or drains as it would
 # under the shipped genesis, in fewer blocks. An ejection claim must
-# resolve within an epoch, and grace lasts two. The quarantine is the shortest
-# the node accepts for this epoch.
+# resolve within an epoch, and grace lasts two. The deploy lifespan is
+# shortened with the rest of the profile, still above max-parent-depth, and
+# the quarantine is the shortest the node accepts for this epoch and lifespan.
 LIVENESS_PROFILE_EPOCH_LENGTH = 20
+LIVENESS_PROFILE_DEPLOY_LIFESPAN = 50
 LIVENESS_PROFILE_CLI_OPTIONS: Dict[str, str] = {
     "--epoch-length": str(LIVENESS_PROFILE_EPOCH_LENGTH),
-    "--quarantine-length": str(minimum_quarantine(LIVENESS_PROFILE_EPOCH_LENGTH)),
+    "--deploy-lifespan": str(LIVENESS_PROFILE_DEPLOY_LIFESPAN),
+    "--quarantine-length": str(
+        minimum_quarantine(LIVENESS_PROFILE_EPOCH_LENGTH, LIVENESS_PROFILE_DEPLOY_LIFESPAN)
+    ),
     "--leaky-bucket-lambda-base-ppm": "5000",
     "--leaky-bucket-theta-eject-ppm": "900000",
     "--leaky-bucket-eject-observation-blocks": "10",

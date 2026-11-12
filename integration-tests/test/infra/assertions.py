@@ -286,21 +286,22 @@ def assert_block_finalized_on_all_nodes(
                         "fault_tolerance": float(block.blockInfo.faultTolerance),
                     }
             except F1r3flyClientException as e:
-                # Transient race during high-contention multi-validator scenarios:
-                # a node has received the block hash via the propagation layer but
-                # hasn't fully indexed it for state-query gRPC calls yet. Treat as
-                # "not finalized yet on this node" and let the polling loop retry.
-                # Without this catch, a transient indexing race fails the assertion
-                # with a confusing error message that masks the real consensus state.
+                # A node that has not received the block yet, or has received
+                # it but not indexed it for queries, has not finalized it yet.
+                # The polling loop retries it; at the deadline it is reported
+                # with the rest.
                 msg = str(e)
-                if "received but not added yet" in msg or "not added yet" in msg:
-                    not_finalized[node.name] = {
-                        "block_number": None,
-                        "fault_tolerance": None,
-                        "transient_error": "received but not added yet",
-                    }
+                if "not added yet" in msg:
+                    state = "received but not added yet"
+                elif "Block not found" in msg:
+                    state = "not held"
                 else:
                     raise
+                not_finalized[node.name] = {
+                    "block_number": None,
+                    "fault_tolerance": None,
+                    "transient_error": state,
+                }
         if not not_finalized or time.time() >= deadline:
             break
         time.sleep(interval)
