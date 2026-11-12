@@ -1,0 +1,30 @@
+name: Protected Head Guard
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited]
+
+permissions: {}
+
+jobs:
+  guard:
+    name: Protected Head Guard
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.head_ref == 'main' || github.head_ref == 'dev')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      # No checkout: the write token never runs code from the pull request.
+      - name: Close the protected-head pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash -euo pipefail {0}
+        run: |
+          env -u GITHUB_TOKEN gh pr close "$PR_NUMBER" --repo "$REPOSITORY"
+          echo "::error::Use Promote and Back-merge to open a PR from a temporary branch. A PR with head dev or main can delete or update that protected branch."
+          exit 1

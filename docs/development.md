@@ -68,6 +68,54 @@ git push origin feature/new-feature
 
 ## Development Workflow
 
+### Branches, promotion, and backmerge
+
+Open feature and fix PRs into `dev`. Promote `dev` into `main` through the
+**Promote and Back-merge** workflow. Use the same workflow to bring `main`
+back into `dev`, including after a `hotfix/*` PR merges into `main`.
+
+1. In **Actions**, select **Promote and Back-merge** and click **Run workflow**.
+2. Keep **Use workflow from** set to `main`.
+3. Choose `promote` (`dev` → `main`) or `backmerge` (`main` → `dev`) and run it.
+4. Review the generated PR. Both branches require one approving review and
+   all nine Smoke Test checks. A different maintainer should review a PR
+   opened by a workflow you started; this is a convention, not an enforced
+   distinction between the app author and the workflow initiator.
+5. Tick Mergify's **Queue this pull request** checkbox, or comment
+   `@Mergifyio queue`. Both request the same operation. PRs never queue
+   automatically. A push while the request waits cancels it; review the new
+   commits and request the queue again.
+
+The workflow creates `promote/dev-<SHA>` or `backmerge/main-<SHA>` at the
+source commit. It does nothing when the target already contains that source
+or a PR for that direction is open. A creation failure is reported, and any
+created branch is retained for inspection. Never use `dev` or `main` directly
+as a PR head: automatic branch deletion can retarget open PRs, and **Update
+branch** can write to the protected source. The Protected Head Guard closes
+such PRs from this repository; Validate & CLI also rejects them.
+
+Mergify has a queue for each base branch. The `main` queue accepts
+`promote/*` and `hotfix/*` heads from this repository. Each queue updates the
+PR with its base and checks one PR at a time on its own branch. Every merge
+uses a merge commit, preserving promotion and backmerge history. The nine
+existing checks and review rules still apply; no CI waiver is added.
+
+#### Workflow setup and first promotion
+
+Configure a `release-credentials` GitHub environment that permits deployments
+from `main` only. Install the promotion GitHub App for this repository with
+**Contents: write** and **Pull requests: write**. Set environment variable
+`PROMOTION_APP_ID` and environment secret `PROMOTION_APP_PRIVATE_KEY`. Keep
+this app off branch-ruleset bypass lists. Its token lets the generated PR's
+CI start automatically without a workflow-approval prompt.
+
+GitHub shows the Run workflow button only after this workflow reaches the
+default branch, `main`. For the initial rollout, merge the implementation
+into `dev`, then open a one-time promotion PR from a temporary `promote/*`
+branch at that `dev` commit into `main`. Once that PR merges, both directions
+are available through Actions. The Mergify configuration also becomes active
+only after reaching `main`.
+
 ### Typical Session
 
 ```bash
