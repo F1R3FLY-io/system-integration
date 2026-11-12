@@ -129,13 +129,23 @@ class TimeoutConfig:
     scale: float = 1.0
 
 
+# conf/rust.conf's max-parent-depth and the node's default deploy-lifespan.
+MAX_PARENT_DEPTH = 25
+DEPLOY_LIFESPAN = 300
+
+
+def minimum_quarantine(epoch_length: int) -> int:
+    """The shortest quarantine genesis accepts for ``epoch_length``: two epochs
+    of ejection grace, plus the retention window (max-parent-depth plus the
+    longest of the deploy lifespan, the claim deadline and the epoch, the claim
+    deadline being one epoch), plus an epoch."""
+    return 3 * epoch_length + MAX_PARENT_DEPTH + max(DEPLOY_LIFESPAN, epoch_length)
+
+
 # A short epoch for suites that wait on epoch boundaries (bond activation,
-# withdrawal moves). The quarantine is the shortest the node accepts for it
-# under conf/rust.conf's max-parent-depth (25) and deploy-lifespan (50): two
-# epochs of ejection grace, plus the retention window (25 + max(50, 4)), plus an
-# epoch. Genesis refuses anything shorter.
+# withdrawal moves), with the shortest quarantine the node accepts for it.
 SHORT_EPOCH_LENGTH = 4
-SHORT_EPOCH_QUARANTINE_LENGTH = 87
+SHORT_EPOCH_QUARANTINE_LENGTH = minimum_quarantine(SHORT_EPOCH_LENGTH)
 SHORT_EPOCH_CLI_OPTIONS: Dict[str, str] = {
     "--epoch-length": str(SHORT_EPOCH_LENGTH),
     "--quarantine-length": str(SHORT_EPOCH_QUARANTINE_LENGTH),
@@ -146,11 +156,11 @@ SHORT_EPOCH_CLI_OPTIONS: Dict[str, str] = {
 # later. The reward rate scales with the drain, so a validator that produces
 # its share of blocks stays above the threshold. An ejection claim must
 # resolve within an epoch, and grace lasts two. The quarantine is the shortest
-# the node accepts for this epoch, derived as for SHORT_EPOCH_CLI_OPTIONS.
+# the node accepts for this epoch.
 LIVENESS_PROFILE_EPOCH_LENGTH = 20
 LIVENESS_PROFILE_CLI_OPTIONS: Dict[str, str] = {
     "--epoch-length": str(LIVENESS_PROFILE_EPOCH_LENGTH),
-    "--quarantine-length": "135",
+    "--quarantine-length": str(minimum_quarantine(LIVENESS_PROFILE_EPOCH_LENGTH)),
     "--leaky-bucket-lambda-base-ppm": "5000",
     "--leaky-bucket-theta-eject-ppm": "900000",
     "--leaky-bucket-eject-observation-blocks": "10",

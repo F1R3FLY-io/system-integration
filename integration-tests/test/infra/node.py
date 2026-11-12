@@ -388,6 +388,10 @@ class Node:
         """Get recent blocks. Returns List[LightBlockInfo]."""
         return self._external_client().show_blocks(depth)
 
+    def get_blocks_by_heights(self, start: int, end: int):
+        """Get blocks at heights start..end inclusive. Returns List[LightBlockInfo]."""
+        return self._external_client().get_blocks_by_heights(start, end)
+
     def get_deploy_data(self, deploy_id: str, block_hash: str = ""):
         """Read data from the deployId channel."""
         return self._external_client().get_data_at_deploy_id(deploy_id, block_hash=block_hash)

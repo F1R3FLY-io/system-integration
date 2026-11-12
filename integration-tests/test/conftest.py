@@ -737,8 +737,10 @@ def check_node_logs_after_test(request, provider):
                 start_offsets[handle.name] = (
                     sum(1 for _ in il()) if il is not None else len(handle.logs().splitlines())
                 )
-            except Exception:
-                start_offsets[handle.name] = 0
+            except Exception as exc:
+                pytest.fail(
+                    f"Cannot establish log scan boundary for {handle.name}: {exc}", pytrace=False
+                )
     except Exception:
         pass
 
@@ -757,6 +759,7 @@ def check_node_logs_after_test(request, provider):
         allowed = allowed | frozenset(marker.args)
 
     forbidden: list = []
+    scan_errors: list = []
 
     # Scan logs from retired nodes FIRST — transient nodes detached during
     # this test (e.g., observers attached via the ``add_observer`` context
@@ -776,6 +779,8 @@ def check_node_logs_after_test(request, provider):
     # names, or the retired snapshot would be scanned with the new
     # node's offset.
     for snapshot in getattr(provider, "retired_log_snapshots", []):
+        if getattr(snapshot, "read_error", None) is not None:
+            scan_errors.append(f"{snapshot.name} (retired): {snapshot.read_error}")
         forbidden.extend(
             scan_retired_snapshot(
                 snapshot.name,
@@ -813,16 +818,18 @@ def check_node_logs_after_test(request, provider):
             record_scanned(
                 handle.name, offset, scanned, _scanned_log_offsets, _last_scan_allowances, allowed
             )
-        except Exception:
+        except Exception as exc:
             # Fail closed: a failed scan records nothing. The judged-through
             # offset must not advance (the window was not judged), and this
             # test's allowances must not be attached to lines it never
             # judged — accumulating allowances across failed scans could
             # hide a forbidden event produced under a stricter test.
-            continue
+            scan_errors.append(f"{handle.name}: {exc}")
 
     if forbidden:
-        pytest.fail(format_errors(forbidden), pytrace=False)
+        scan_errors.insert(0, format_errors(forbidden))
+    if scan_errors:
+        pytest.fail("Log scan failed:\n" + "\n".join(scan_errors), pytrace=False)
 
 
 # ── Resource monitoring ──────────────────────────────────────────────

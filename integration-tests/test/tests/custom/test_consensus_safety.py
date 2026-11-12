@@ -12,6 +12,7 @@ import logging
 import time
 
 import pytest
+from f1r3fly.token_amount import parse as parse_amount
 
 from ...infra.assertions import assert_all_nodes_agree_on_block
 from ...infra.config import SHORT_EPOCH_CLI_OPTIONS, ShardConfig
@@ -595,7 +596,10 @@ def test_epoch_transition_under_heartbeat(provider, timeouts) -> None:
             # LFB target on its own and the test passes vacuously. Poll
             # rather than snapshot to ride out header-side activation lag.
             def _joiner_active():
-                bonds = {b.validator: b.stake for b in v1.last_finalized_block().blockInfo.bonds}
+                bonds = {
+                    b.validator: parse_amount(b.stake)
+                    for b in v1.last_finalized_block().blockInfo.bonds
+                }
                 return bonds if bonds.get(VALIDATOR4_ID.public_hex) == joiner_bond else None
 
             active_bonds = poll_until(

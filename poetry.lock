@@ -1226,13 +1226,13 @@ pycryptodome = ">=3.19.0"
 python-bitcoinlib = ">=0.12.0"
 
 [package.extras]
-dev = ["grpcio-tools (>=1.60.0)", "isort (>=5.12.0)", "mypy (>=1.7.0)", "mypy-protobuf (>=3.5.0)", "pytest (>=8.0.0)", "typing-extensions (>=4.8.0)"]
+dev = ["grpcio-tools (==1.78.0)", "isort (>=5.12.0)", "mypy (>=1.7.0)", "mypy-protobuf (==5.0.0)", "pytest (>=8.0.0)", "typing-extensions (>=4.8.0)"]
 
 [package.source]
 type = "git"
 url = "file://None/home/stephen/src/firefly/system-integration/services/pyf1r3fly"
-reference = "f17541d"
-resolved_reference = "f17541db260e7e0f33241415a469a041c743bc8f"
+reference = "38dcf9538bff14f1587a7505c218c0150dc1102b"
+resolved_reference = "38dcf9538bff14f1587a7505c218c0150dc1102b"
 
 [[package]]
 name = "pygments"
@@ -1752,4 +1752,4 @@ test = ["pytest", "websockets"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "ad4df1efc604ea6f6c217058fde9075b1713e96355f782329438c142dbb6f983"
+content-hash = "dd20762fcc5734b070bcbb4a2cf5a056a8bb97b46dd74e7c08026725f52a6ec5"

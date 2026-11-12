@@ -37,6 +37,7 @@ import pytest
 from eth_hash.auto import keccak
 from f1r3fly.client import F1r3flyClientException
 from f1r3fly.crypto import PrivateKey
+from f1r3fly.token_amount import parse as parse_amount
 
 from ...infra.assertions import (
     assert_block_finalized_on_all_nodes,
@@ -239,7 +240,7 @@ def _validators_on(ro) -> Dict[str, int]:
     only; for the ACTIVE consensus set use ``_active_set``.
     """
     resp = ro.api_get("/validators")
-    return {v["publicKey"]: v["stake"] for v in resp["validators"]}
+    return {v["publicKey"]: parse_amount(v["stake"]) for v in resp["validators"]}
 
 
 def _active_set(node) -> Dict[str, int]:
@@ -252,7 +253,7 @@ def _active_set(node) -> Dict[str, int]:
     ``pos.get_bonds()`` (PoS allBonds ledger state).
     """
     info = node.last_finalized_block().blockInfo
-    return {b.validator: b.stake for b in info.bonds}
+    return {b.validator: parse_amount(b.stake) for b in info.bonds}
 
 
 _GENESIS_BY_NAME = {
@@ -276,7 +277,7 @@ def _attach_prebond(shard, identity, timeouts):
     """
     pk = identity.public_hex
     current_lfb = shard.node("validator1").last_finalized_block()
-    bonds_pre = {b.validator: b.stake for b in current_lfb.blockInfo.bonds}
+    bonds_pre = {b.validator: parse_amount(b.stake) for b in current_lfb.blockInfo.bonds}
     assert pk not in bonds_pre, f"{identity.name} already bonded pre-bond: {sorted(bonds_pre)}"
 
     joiner = shard.attach_joiner(identity)
@@ -782,9 +783,9 @@ def lifecycle_shard(provider, timeouts):
         shard.destroy()
 
 
-# About 17 minutes unloaded, seven of them waiting out the quarantine, so the
-# suite-wide 1200 s limit is too close.
-@pytest.mark.timeout(2400)
+# About 37 minutes unloaded, 27 of them waiting out the 337-block quarantine,
+# so the suite-wide 1200 s limit is too close.
+@pytest.mark.timeout(3600)
 @pytest.mark.allow_forbidden_patterns("ComputationOutOfPhlogistons")
 def test_validator_lifecycle(lifecycle_shard, timeouts) -> None:
     shard = lifecycle_shard
@@ -852,7 +853,9 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # throughout (always-on). Finalization budgets match the retired test's
     # per-wait multipliers (finalization * 3/5, etc.) to absorb lumpy under-load
     # finalization, asserted over ALL nodes read fresh.
-    bonds_pre = {b.validator: b.stake for b in v1.last_finalized_block().blockInfo.bonds}
+    bonds_pre = {
+        b.validator: parse_amount(b.stake) for b in v1.last_finalized_block().blockInfo.bonds
+    }
     assert len(bonds_pre) == 3, f"expected 3 genesis bonds pre-Phase-1: {sorted(bonds_pre)}"
 
     # Bring both joiners online BEFORE bonding either, so the two bond deploys
@@ -912,7 +915,8 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         # ledger predicate (/validators), and assert the block's active-bonds field is
         # node-identical across nodes (the consensus-state agreement the seal guards).
         bonds_now = {
-            b.validator: b.stake for b in proposer.get_block(bond_block_hash).blockInfo.bonds
+            b.validator: parse_amount(b.stake)
+            for b in proposer.get_block(bond_block_hash).blockInfo.bonds
         }
         assert_bonds_map_consistent_across_nodes(
             shard.all_nodes, bond_block_hash, bonds_now, timeout=timeouts.finalization * 3
@@ -1168,7 +1172,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         volatile=frozenset({v4_pk, v5_pk}),
     )
     sb = v1.last_finalized_block()
-    sb_bonds = {b.validator: b.stake for b in sb.blockInfo.bonds}
+    sb_bonds = {b.validator: parse_amount(b.stake) for b in sb.blockInfo.bonds}
     assert_bonds_map_consistent_across_nodes(
         shard.all_nodes, sb.blockInfo.blockHash, sb_bonds, timeout=timeouts.finalization * 3
     )
@@ -1266,7 +1270,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         description="V5 vault credited bond+reward",
     )
     pb = v1.last_finalized_block()
-    pb_bonds = {b.validator: b.stake for b in pb.blockInfo.bonds}
+    pb_bonds = {b.validator: parse_amount(b.stake) for b in pb.blockInfo.bonds}
     assert_bonds_map_consistent_across_nodes(
         shard.all_nodes, pb.blockInfo.blockHash, pb_bonds, timeout=timeouts.finalization * 3
     )

@@ -18,6 +18,7 @@ from f1r3fly.deploy import (
     check_deploy_errored,
     check_deploy_succeeded,
 )
+from f1r3fly.token_amount import parse as parse_amount
 
 from .types import NodeRole
 
@@ -239,7 +240,7 @@ def assert_bonds_map_consistent_across_nodes(
     per_node: dict = {}
     for node in nodes:
         block = _get_block_with_retry(node, block_hash, timeout)
-        per_node[node.name] = {b.validator: b.stake for b in block.blockInfo.bonds}
+        per_node[node.name] = {b.validator: parse_amount(b.stake) for b in block.blockInfo.bonds}
     mismatches = {name: bonds for name, bonds in per_node.items() if bonds != expected_bonds}
     assert not mismatches, (
         f"Bonds map divergence at block {block_hash[:16]}... "

@@ -41,6 +41,7 @@ from typing import List, Tuple
 
 import pytest
 from f1r3fly.client import F1r3flyClientException
+from f1r3fly.token_amount import parse as parse_amount
 
 from ...infra.assertions import assert_bonds_map_consistent_across_nodes
 from ...infra.config import SHORT_EPOCH_CLI_OPTIONS, SHORT_EPOCH_LENGTH, ShardConfig
@@ -287,7 +288,7 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
         # suite's boundary handling; soak preflight 31919610258 failed here
         # by demanding bonds_4 unconditionally). Pin whichever side b4
         # actually shows, then require ALL nodes to agree on that exact map.
-        b4_bonds = {b.validator: b.stake for b in b4_info.bonds}
+        b4_bonds = {b.validator: parse_amount(b.stake) for b in b4_info.bonds}
         assert b4_bonds in (bonds_3, bonds_4), (
             f"Bond block #4 bonds map matches neither transition side:\n"
             f"  got:      {sorted(b4_bonds)}\n"
@@ -305,7 +306,7 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
         b5 = _propose_with_filler(v1, VALIDATOR1_ID, "post-boundary")
         for n in (v2, v3, joiner, ro):
             wait_for_block_visible(n, b5, t)
-        b5_bonds = {b.validator: b.stake for b in _expect(v1, b5).bonds}
+        b5_bonds = {b.validator: parse_amount(b.stake) for b in _expect(v1, b5).bonds}
         assert b5_bonds in (bonds_3, bonds_4), (
             f"Block #5 bonds map matches neither transition side:\n"
             f"  got:      {sorted(b5_bonds)}\n"
