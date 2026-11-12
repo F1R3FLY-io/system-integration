@@ -284,8 +284,11 @@ jobs:
         run: |
           mkdir -p /tmp/logs
           docker ps -a > /tmp/logs/containers.txt 2>&1 || true
-          docker info > /tmp/logs/docker-info.txt 2>&1 || true
-          docker logs --tail 200 cadvisor > /tmp/logs/cadvisor.log 2>&1 || true
+          docker version > /tmp/logs/docker-version.txt 2>&1 || true
+          docker info --format 'version={{.ServerVersion}} driver={{.Driver}} driver_status={{json .DriverStatus}} cgroup={{.CgroupVersion}}' > /tmp/logs/docker-runtime.txt 2>&1 || true
+          for c in cadvisor prometheus grafana; do
+            docker logs "$c" > "/tmp/logs/${c}.log" 2>&1 || true
+          done
           for c in $(docker ps -aq --filter "name=rnode" 2>/dev/null); do
             name=$(docker inspect --format '{{.Name}}' "$c" | sed 's|^/||')
             docker logs "$c" > "/tmp/logs/${name}.log" 2>&1 || true
@@ -411,8 +414,11 @@ jobs:
         run: |
           mkdir -p /tmp/logs
           docker ps -a > /tmp/logs/containers.txt 2>&1 || true
-          docker info > /tmp/logs/docker-info.txt 2>&1 || true
-          docker logs --tail 200 cadvisor > /tmp/logs/cadvisor.log 2>&1 || true
+          docker version > /tmp/logs/docker-version.txt 2>&1 || true
+          docker info --format 'version={{.ServerVersion}} driver={{.Driver}} driver_status={{json .DriverStatus}} cgroup={{.CgroupVersion}}' > /tmp/logs/docker-runtime.txt 2>&1 || true
+          for c in cadvisor prometheus grafana; do
+            docker logs "$c" > "/tmp/logs/${c}.log" 2>&1 || true
+          done
           for c in $(docker ps -aq --filter "name=rnode" 2>/dev/null); do
             name=$(docker inspect --format '{{.Name}}' "$c" | sed 's|^/||')
             docker logs "$c" > "/tmp/logs/${name}.log" 2>&1 || true

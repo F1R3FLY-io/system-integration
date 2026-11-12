@@ -28,7 +28,7 @@ The shard-based deploy validation and lookup tests that were previously in `test
 
 ## Key assertions
 
-- `status["minPhloPrice"] == 10` — API reports configured value
+- `status["minPhloPrice"] == "10"` — API reports configured value as a decimal string
 - `pytest.raises(F1r3flyClientException, match="Phlo price 1 is less than minimum price 10")` — below threshold rejected
 - `wait_for_deploy_included` succeeds for `phlo_price=10` — at threshold accepted
 

@@ -582,12 +582,37 @@ class DeployRecord:
 
 @dataclasses.dataclass
 class DeployResult:
-    """A deploy with its measured inclusion and finalization times."""
+    """A deploy with its measured inclusion and finalization times.
+
+    ``finalization_time`` is when the LAST tracked node reported the deploy
+    Finalized; ``first_finalization_time`` is when the first one did.
+    """
 
     record: DeployRecord
     inclusion_time: Optional[float] = None
     block_number: Optional[int] = None
     finalization_time: Optional[float] = None
+    first_finalization_time: Optional[float] = None
+
+
+@dataclasses.dataclass
+class NodeOutcome:
+    """One node's view of a deploy its phase left unsettled.
+
+    Settled once the node reports Finalized or a terminal state. Until then
+    ``last_state`` holds the latest answer, so a deploy a node never settles
+    shows what that node kept reporting.
+    """
+
+    finalized_at: Optional[float] = None
+    terminal: Optional[str] = None
+    last_state: Optional[str] = None
+    last_seen: Optional[float] = None
+    last_block: Optional[str] = None
+
+    @property
+    def settled(self) -> bool:
+        return self.finalized_at is not None or self.terminal is not None
 
 
 @dataclasses.dataclass
@@ -629,12 +654,16 @@ def summarize_unfinalized(entries: List[UnfinalizedDeploy]) -> Dict[str, int]:
 
 
 class LifecycleTracker:
-    """Tracks deploy inclusion and finalization with one batch-poll thread.
+    """Tracks deploy inclusion and finalization with one batch-poll thread
+    per tracked node.
 
-    A single background thread sweeps every pending deploy through
-    ``deploy_finalization_status`` — the node's authoritative canonical-state
-    answer. Inclusion is observed when the status first reports a containing
-    block; finalization when the state reaches ``DEPLOY_STATE_FINALIZED``.
+    Each node's thread sweeps the deploys that node has not yet reported
+    through its own ``deploy_finalization_status`` — the node's
+    authoritative canonical-state answer. Inclusion is observed when any
+    node first reports a containing block. A deploy is finalized only when
+    EVERY tracked node reports ``DEPLOY_STATE_FINALIZED``; a node stops
+    polling a deploy once it has reported it. A terminal FAILED/EXPIRED from
+    any node settles the deploy as unfinalized.
 
     This replaces two unreliable mechanisms that produced the 640 bogus
     "unfinalized" results in soak preflight 31919610258:
@@ -652,6 +681,14 @@ class LifecycleTracker:
     backlog, and the status API already accounts for merge rejection and
     re-homing, so no block-number inference is involved.
 
+    ``nodes`` is the set finalization is confirmed on — pass every node of
+    the shard, not only the ones deploys are submitted to.
+
+    With ``late_tracking``, ``clear()`` keeps every deploy its phase left
+    unsettled and each node goes on polling it every ``late_poll_interval``
+    seconds until that node reports Finalized or a terminal state. The phase
+    results are unaffected; ``late_rows()`` gives each node's eventual outcome.
+
     Usage::
 
         tracker = LifecycleTracker({"v1": node1, "v2": node2})
@@ -662,15 +699,29 @@ class LifecycleTracker:
         tracker.shutdown()
     """
 
-    def __init__(self, nodes: dict, inclusion_timeout: int = 90):
+    def __init__(
+        self,
+        nodes: dict,
+        inclusion_timeout: int = 90,
+        late_tracking: bool = False,
+        late_poll_interval: float = 5.0,
+    ):
         self._nodes = nodes
-        self._node_list = list(nodes.values())
+        self._late_tracking = late_tracking
+        self._late_poll_interval = late_poll_interval
+        self._late: Dict[str, DeployRecord] = {}
+        self._late_included: Dict[str, Optional[float]] = {}
+        self._late_outcomes: Dict[str, Dict[str, NodeOutcome]] = {}
+        self._late_next_poll: Dict[str, float] = {}
         # Kept for API compatibility; the sweep is continuous and the
         # overall bound is wait_for_finalization's timeout.
         self._inclusion_timeout = inclusion_timeout
         self._lock = threading.Lock()
         self._records: Dict[str, DeployRecord] = {}
         self._inclusion: Dict[str, Tuple[int, float]] = {}
+        # deploy -> {node name -> time that node first reported Finalized}.
+        self._node_finalization: Dict[str, Dict[str, float]] = {}
+        # Set once every tracked node has reported: the latest report time.
         self._finalization: Dict[str, float] = {}
         # Terminal FAILED/EXPIRED deploys: excluded from further sweeps but
         # deliberately left un-finalized so they count against the load
@@ -685,20 +736,24 @@ class LifecycleTracker:
         # bounds its growth to one entry per unique block per phase.
         self._block_numbers: Dict[str, int] = {}
         self._max_block = 0
-        self._lfb_thread: Optional[threading.Thread] = None
+        self._sweep_threads: List[threading.Thread] = []
         self._stop_event = threading.Event()
 
     def start_lfb_monitor(self):
-        """Start the background status-sweep thread."""
+        """Start one background status-sweep thread per tracked node."""
         self._stop_event.clear()
-        self._lfb_thread = threading.Thread(target=self._sweep_loop, daemon=True)
-        self._lfb_thread.start()
+        self._sweep_threads = [
+            threading.Thread(target=self._sweep_loop, args=(name, node), daemon=True)
+            for name, node in self._nodes.items()
+        ]
+        for thread in self._sweep_threads:
+            thread.start()
 
     def stop_lfb_monitor(self):
-        """Stop the background status-sweep thread."""
+        """Stop the background status-sweep threads."""
         self._stop_event.set()
-        if self._lfb_thread:
-            self._lfb_thread.join(timeout=10)
+        for thread in self._sweep_threads:
+            thread.join(timeout=10)
 
     # Bounded concurrency for the per-cycle status probes. Small enough
     # to be gentle on a loaded node, large enough that one slow RPC
@@ -709,7 +764,7 @@ class LifecycleTracker:
     # channel / crashed node from ordinary not-yet-included polling.
     _SWEEP_FAIL_STREAK_WARN = 5
 
-    def _sweep_loop(self):
+    def _sweep_loop(self, name, node):
         from concurrent.futures import ThreadPoolExecutor
 
         from f1r3fly.pb.DeployServiceCommon_pb2 import (
@@ -721,7 +776,6 @@ class LifecycleTracker:
         # Human-readable names for terminal diagnostics (get_results /
         # logs) instead of opaque stringified enum ints.
         terminal_states = {DEPLOY_STATE_FAILED: "FAILED", DEPLOY_STATE_EXPIRED: "EXPIRED"}
-        node = self._node_list[0]
         client = node._external_client()
         fail_streak = 0
         pool = ThreadPoolExecutor(max_workers=self._SWEEP_WORKERS)
@@ -729,17 +783,18 @@ class LifecycleTracker:
             while not self._stop_event.is_set():
                 cycle_start = time.time()
                 pending, errors = self._sweep_cycle(
-                    pool, node, client, DEPLOY_STATE_FINALIZED, terminal_states
+                    pool, name, node, client, DEPLOY_STATE_FINALIZED, terminal_states
                 )
 
                 if pending and errors == pending:
                     fail_streak += 1
                     if fail_streak == self._SWEEP_FAIL_STREAK_WARN:
                         logger.warning(
-                            "LifecycleTracker: every status probe has failed for %d "
+                            "LifecycleTracker: every status probe to %s has failed for %d "
                             "consecutive cycles (%d pending) — node unreachable or "
                             "channel dead; dropping the cached client to force a "
                             "fresh channel",
+                            name,
                             fail_streak,
                             pending,
                         )
@@ -786,8 +841,8 @@ class LifecycleTracker:
             logger.debug("fresh sweep client construction failed: %s", exc)
             return None
 
-    def _sweep_cycle(self, pool, node, client, finalized_state, terminal_states):
-        """One sweep pass over every pending deploy.
+    def _sweep_cycle(self, pool, name, node, client, finalized_state, terminal_states):
+        """One sweep pass over every deploy still pending on node ``name``.
 
         Two phases, strictly ordered: phase 1 folds EVERY probe result's
         finalized/terminal state into the bookkeeping; phase 2 runs
@@ -800,12 +855,20 @@ class LifecycleTracker:
         the loop so lifecycle unit tests can drive a cycle synchronously
         (no thread, no inter-cycle wait).
         """
+        now = time.time()
         with self._lock:
             pending = [
                 did
                 for did in self._records
-                if did not in self._finalization and did not in self._terminal
+                if name not in self._node_finalization.get(did, {}) and did not in self._terminal
             ]
+            if self._late_outcomes and now >= self._late_next_poll.get(name, 0.0):
+                self._late_next_poll[name] = now + self._late_poll_interval
+                pending.extend(
+                    did
+                    for did, outcomes in self._late_outcomes.items()
+                    if not outcomes[name].settled
+                )
 
         def _probe(deploy_id):
             try:
@@ -822,8 +885,11 @@ class LifecycleTracker:
                 errors += 1
                 logger.debug("status probe failed for %s: %s", deploy_id[:16], exc)
                 continue
-            self._apply_state(deploy_id, status, finalized_state, terminal_states)
-            succeeded.append((deploy_id, status))
+            self._apply_state(name, deploy_id, status, finalized_state, terminal_states)
+            with self._lock:
+                late = deploy_id in self._late_outcomes
+            if not late:
+                succeeded.append((deploy_id, status))
 
         # Pre-resolve block numbers for every UNIQUE uncached containing
         # block through the worker pool: a first cycle over a large
@@ -863,24 +929,46 @@ class LifecycleTracker:
             self._enrich_inclusion(node, deploy_id, status, attempted)
         return len(pending), errors
 
-    def _apply_state(self, deploy_id, status, finalized_state, terminal_states):
-        """Fold one status response's STATE into the bookkeeping maps.
+    def _apply_state(self, name, deploy_id, status, finalized_state, terminal_states):
+        """Fold one node's status response STATE into the bookkeeping maps.
 
         Pure dictionary writes — no RPCs, nothing here can be slow.
         Every write is gated on ``deploy_id in self._records`` under the
         lock: ``clear()`` runs between load phases while the sweep
-        thread is alive, and a stale write after the clear would corrupt
+        threads are alive, and a stale write after the clear would corrupt
         the next phase's counts.
         """
         now = time.time()
+        with self._lock:
+            outcome = self._late_outcomes.get(deploy_id, {}).get(name)
+            if outcome is not None:
+                self._apply_late_state(outcome, status, now, finalized_state, terminal_states)
+                return
         if status.state == finalized_state:
             with self._lock:
                 if deploy_id in self._records:
-                    self._finalization[deploy_id] = now
+                    reported = self._node_finalization.setdefault(deploy_id, {})
+                    reported.setdefault(name, now)
+                    if len(reported) == len(self._nodes):
+                        self._finalization[deploy_id] = max(reported.values())
         elif status.state in terminal_states:
             with self._lock:
                 if deploy_id in self._records:
                     self._terminal[deploy_id] = terminal_states[status.state]
+
+    @staticmethod
+    def _apply_late_state(outcome, status, now, finalized_state, terminal_states):
+        """Fold one node's answer for a late deploy into its outcome (lock held)."""
+        from f1r3fly.pb.DeployServiceCommon_pb2 import DeployFinalizationStateProto
+
+        outcome.last_state = DeployFinalizationStateProto.Name(status.state)
+        outcome.last_seen = now
+        if status.latestBlockHash:
+            outcome.last_block = status.latestBlockHash.hex()
+        if status.state == finalized_state:
+            outcome.finalized_at = now
+        elif status.state in terminal_states:
+            outcome.terminal = terminal_states[status.state]
 
     def _enrich_inclusion(self, node, deploy_id, status, attempted=None):
         """Resolve inclusion telemetry (block number) for one deploy.
@@ -962,22 +1050,81 @@ class LifecycleTracker:
                 block_number = inc[0] if inc else None
                 fin_time = self._finalization.get(deploy_id)
                 finalization_time = (fin_time - record.submit_time) if fin_time else None
+                reported = self._node_finalization.get(deploy_id)
+                first_finalization_time = (
+                    min(reported.values()) - record.submit_time if reported else None
+                )
                 results.append(
                     DeployResult(
                         record=record,
                         inclusion_time=inclusion_time,
                         block_number=block_number,
                         finalization_time=finalization_time,
+                        first_finalization_time=first_finalization_time,
                     )
                 )
         return results
 
+    def deploy_rows(self) -> List[dict]:
+        """Every tracked deploy with each node's Finalized report time (epoch s)."""
+        with self._lock:
+            return [
+                {
+                    "deploy_id": deploy_id,
+                    "phase": record.phase,
+                    "validator": record.validator_name,
+                    "submit": record.submit_time,
+                    "included": self._inclusion[deploy_id][1]
+                    if deploy_id in self._inclusion
+                    else None,
+                    "node_finalized": dict(self._node_finalization.get(deploy_id, {})),
+                    "terminal": self._terminal.get(deploy_id),
+                }
+                for deploy_id, record in self._records.items()
+            ]
+
+    def wait_for_late_outcomes(self, timeout: float) -> bool:
+        """Block until every late deploy is settled on every node, or timeout.
+
+        Returns True when all settled, False when the timeout ran out first.
+        """
+        deadline = time.time() + timeout
+        while True:
+            with self._lock:
+                settled = all(
+                    outcome.settled
+                    for outcomes in self._late_outcomes.values()
+                    for outcome in outcomes.values()
+                )
+            if settled or time.time() >= deadline:
+                return settled
+            time.sleep(1)
+
+    def late_rows(self) -> List[dict]:
+        """Every late deploy with each node's eventual outcome."""
+        with self._lock:
+            return [
+                {
+                    "deploy_id": deploy_id,
+                    "phase": record.phase,
+                    "validator": record.validator_name,
+                    "submit": record.submit_time,
+                    "included": self._late_included[deploy_id],
+                    "nodes": {
+                        name: dataclasses.asdict(outcome)
+                        for name, outcome in self._late_outcomes[deploy_id].items()
+                    },
+                }
+                for deploy_id, record in self._late.items()
+            ]
+
     def get_unfinalized(self) -> List[UnfinalizedDeploy]:
-        """Return every tracked, non-finalized deploy, oldest submit first.
+        """Return every tracked deploy not finalized on every node, oldest
+        submit first.
 
         Separates the cases ``get_results`` folds together as
-        unfinalized: never included, included but not finalized by the
-        deadline, and terminal (FAILED/EXPIRED).
+        unfinalized: never included, included but not finalized on every
+        node by the deadline, and terminal (FAILED/EXPIRED).
         """
         entries = []
         with self._lock:
@@ -998,10 +1145,26 @@ class LifecycleTracker:
         return entries
 
     def clear(self):
-        """Clear all tracked records for a new phase."""
+        """Clear all tracked records for a new phase.
+
+        With late tracking, deploys not finalized on every node move to the
+        late set first, keeping the Finalized reports already received.
+        """
         with self._lock:
+            if self._late_tracking:
+                for deploy_id, record in self._records.items():
+                    if deploy_id in self._finalization:
+                        continue
+                    reported = self._node_finalization.get(deploy_id, {})
+                    inclusion = self._inclusion.get(deploy_id)
+                    self._late[deploy_id] = record
+                    self._late_included[deploy_id] = inclusion[1] if inclusion else None
+                    self._late_outcomes[deploy_id] = {
+                        name: NodeOutcome(finalized_at=reported.get(name)) for name in self._nodes
+                    }
             self._records.clear()
             self._inclusion.clear()
+            self._node_finalization.clear()
             self._finalization.clear()
             self._terminal.clear()
             self._block_numbers.clear()

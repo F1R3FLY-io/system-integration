@@ -15,6 +15,7 @@ from the shard's ShardConfig and node_conf fixture.
 import logging
 
 import pytest
+from f1r3fly.token_amount import parse as parse_amount
 
 pytestmark = pytest.mark.xdist_group("shared")
 
@@ -32,16 +33,14 @@ def test_successful_genesis_ceremony(shared_shard, node_conf) -> None:
     all_nodes = shared_shard.all_nodes
     config = shared_shard.config
 
-    # Get genesis block from each node by fetching deep enough to find block #0
+    # Ask each node for height 0 directly; the shared shard may be any height by now
     genesis_hashes = {}
     for node in all_nodes:
-        blocks = node.get_blocks(100)
-        genesis = None
-        for b in blocks:
-            if b.blockNumber == 0:
-                genesis = b
-                break
-        assert genesis is not None, f"{node.name}: could not find block #0 in get_blocks(100)"
+        blocks = node.get_blocks_by_heights(0, 0)
+        assert [b.blockNumber for b in blocks] == [0], (
+            f"{node.name}: expected exactly block #0 at height 0, got {[b.blockNumber for b in blocks]}"
+        )
+        genesis = blocks[0]
         genesis_hashes[node.name] = genesis.blockHash
         log.info("%s: genesis hash = %s", node.name, genesis.blockHash[:16])
 
@@ -66,7 +65,7 @@ def test_successful_genesis_ceremony(shared_shard, node_conf) -> None:
 
     # Bonds match shard config
     expected_bonds = {identity.public_hex: stake for identity, stake in config.bonds}
-    actual_bonds = {b.validator: b.stake for b in genesis_info.bonds}
+    actual_bonds = {b.validator: parse_amount(b.stake) for b in genesis_info.bonds}
 
     assert len(actual_bonds) == len(expected_bonds), (
         f"Genesis block has {len(actual_bonds)} bonds, "

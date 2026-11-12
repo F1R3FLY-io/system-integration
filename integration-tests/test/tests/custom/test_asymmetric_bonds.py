@@ -28,6 +28,7 @@ V2 + V3 alone cannot finalize — they need V1 (the heaviest validator).
 import logging
 
 import pytest
+from f1r3fly.token_amount import parse as parse_amount
 
 from ...infra.assertions import assert_all_nodes_agree_on_block
 from ...infra.config import ShardConfig
@@ -86,7 +87,7 @@ def test_genesis_asymmetric_bonds(asymmetric_shard, node_conf) -> None:
 
     # Bonds match asymmetric config
     expected_bonds = {identity.public_hex: stake for identity, stake in _ASYMMETRIC_BONDS}
-    actual_bonds = {b.validator: b.stake for b in genesis_info.bonds}
+    actual_bonds = {b.validator: parse_amount(b.stake) for b in genesis_info.bonds}
     assert len(actual_bonds) == len(expected_bonds), (
         f"Genesis has {len(actual_bonds)} bonds, expected {len(expected_bonds)}"
     )
