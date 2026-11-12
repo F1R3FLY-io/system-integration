@@ -536,14 +536,15 @@ def scan_lines_for_forbidden(
     return matches
 
 
-_RECORD_TIMESTAMP = re.compile(
-    r'"timestamp":"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})"'
-)
+_TIME = r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})"
+# `docker logs --timestamps` prefixes each line with the time it was written.
+_STREAM_TIMESTAMP = re.compile(rf"^{_TIME} ")
+_RECORD_TIMESTAMP = re.compile(rf'"timestamp":"{_TIME}"')
 
 
 def record_timestamp(line: str) -> Optional[datetime]:
-    """The time a JSON log record was logged, or None for any other line."""
-    match = _RECORD_TIMESTAMP.search(line)
+    """The time a log line was logged, or None for a line that carries none."""
+    match = _STREAM_TIMESTAMP.match(line) or _RECORD_TIMESTAMP.search(line)
     if match is None:
         return None
     seconds, fraction, zone = match.groups()

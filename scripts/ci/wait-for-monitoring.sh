@@ -17,7 +17,9 @@
 #
 # Ready therefore means: Grafana /api/health reports database ok, and
 # Prometheus /api/v1/targets lists at least one active target with none
-# still in health "unknown" (unknown = discovered but never scraped).
+# still in health "unknown" (unknown = discovered but never scraped), and
+# cAdvisor has exported named node container memory metrics. A healthy
+# cAdvisor HTTP endpoint alone does not prove Docker container discovery.
 set -euo pipefail
 
 TIMEOUT="${MONITORING_READY_TIMEOUT:-120}"
@@ -37,14 +39,27 @@ targets = json.load(sys.stdin)["data"]["activeTargets"]
 sys.exit(0 if targets and all(t["health"] != "unknown" for t in targets) else 1)' 2>/dev/null
 }
 
+container_metrics_ready() {
+    curl -sf --max-time 5 -G "$PROMETHEUS/api/v1/query" \
+        --data-urlencode 'query=container_memory_usage_bytes{name=~"rnode.*"}' | python3 -c '
+import json, sys
+response = json.load(sys.stdin)
+sys.exit(0 if response.get("status") == "success" and response["data"]["result"] else 1)' 2>/dev/null
+}
+
 deadline=$((SECONDS + TIMEOUT))
-until grafana_ready && prometheus_scraped; do
+until grafana_ready && prometheus_scraped && container_metrics_ready; do
     if [ "$SECONDS" -ge "$deadline" ]; then
         echo "wait-for-monitoring: not ready after ${TIMEOUT}s" >&2
         echo "--- grafana /api/health ---" >&2
         curl -s --max-time 5 "$GRAFANA/api/health" >&2 || true
         echo "--- prometheus /api/v1/targets ---" >&2
         curl -s --max-time 5 "$PROMETHEUS/api/v1/targets" >&2 || true
+        echo "--- node container metrics ---" >&2
+        curl -s --max-time 5 -G "$PROMETHEUS/api/v1/query" \
+            --data-urlencode 'query=container_memory_usage_bytes{name=~"rnode.*"}' >&2 || true
+        echo "--- cadvisor logs ---" >&2
+        docker logs --tail 100 cadvisor >&2 || true
         exit 1
     fi
     sleep 2
