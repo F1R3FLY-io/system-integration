@@ -7,6 +7,7 @@ something. All were review findings on PR #74 — each one is a case where a
 comment claimed a property that nothing checked.
 """
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -278,3 +279,85 @@ def test_every_monitoring_verification_waits_for_readiness():
         if re.search(r"shardctl up monitoring\s*\n\s*sleep \d+", runs[up]):
             offenders.append(f"{name} (fixed sleep)")
     assert not offenders, f"monitoring verified without waiting for readiness: {offenders}"
+
+
+@pytest.mark.parametrize(
+    "wallets",
+    sorted((REPO_ROOT / "genesis").glob("*wallets.txt"))
+    + sorted((REPO_ROOT / "integration-tests" / "genesis").glob("*wallets.txt")),
+    ids=lambda p: str(p.relative_to(REPO_ROOT)),
+)
+def test_genesis_wallet_addresses_are_unique(wallets):
+    """The node rejects duplicate addresses before starting a ceremony."""
+    addresses = [line.split(",")[0].strip() for line in wallets.read_text().splitlines() if line]
+    duplicates = {address for address in addresses if addresses.count(address) > 1}
+    assert not duplicates, f"{wallets.name} contains duplicate wallet addresses: {duplicates}"
+
+
+@pytest.fixture
+def monitoring_commands(tmp_path):
+    commands = tmp_path / "bin"
+    commands.mkdir()
+    curl = commands / "curl"
+    curl.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+if any('/api/health' in arg for arg in args):
+    response = {'database': 'ok'}
+elif any('/api/v1/targets' in arg for arg in args):
+    response = {'data': {'activeTargets': [{'health': 'up'}]}}
+elif any('/api/v1/query' in arg for arg in args):
+    assert 'query=container_memory_usage_bytes{name=~"rnode.*"}' in args
+    counter = Path(os.environ['QUERY_COUNTER'])
+    count = int(counter.read_text()) + 1 if counter.exists() else 1
+    counter.write_text(str(count))
+    ready_after = int(os.environ['METRICS_READY_AFTER'])
+    result = [{'metric': {'name': 'rnode.standalone'}, 'value': [0, '1024']}]
+    response = {'status': 'success', 'data': {'result': result if count >= ready_after else []}}
+else:
+    raise AssertionError(args)
+print(json.dumps(response))
+"""
+    )
+    curl.chmod(0o755)
+    for name, body in {
+        "sleep": "exit 0",
+        "docker": "echo 'cAdvisor discovery diagnostics'",
+    }.items():
+        command = commands / name
+        command.write_text(f"#!/bin/sh\n{body}\n")
+        command.chmod(0o755)
+    return {
+        **os.environ,
+        "PATH": f"{commands}:{os.environ['PATH']}",
+        "QUERY_COUNTER": str(tmp_path / "query-count"),
+    }
+
+
+def test_monitoring_wait_rejects_healthy_endpoint_without_container_metrics(monitoring_commands):
+    result = subprocess.run(
+        ["bash", str(WAIT_SCRIPT)],
+        env={**monitoring_commands, "MONITORING_READY_TIMEOUT": "0", "METRICS_READY_AFTER": "100"},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode != 0, "an UP endpoint without node metrics must not pass readiness"
+    assert "cAdvisor discovery diagnostics" in result.stderr
+
+
+def test_monitoring_wait_allows_container_discovery_to_finish(monitoring_commands):
+    result = subprocess.run(
+        ["bash", str(WAIT_SCRIPT)],
+        env={**monitoring_commands, "MONITORING_READY_TIMEOUT": "10", "METRICS_READY_AFTER": "3"},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    assert Path(monitoring_commands["QUERY_COUNTER"]).read_text() == "3"

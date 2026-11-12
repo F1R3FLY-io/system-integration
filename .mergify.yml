@@ -1,20 +1,50 @@
-# Merge queues. Mergify queues a PR in the first rule whose
-# queue_conditions match, so the catch-all `default` stays last.
-# The `[agent] ` title prefix is optional; scopes like `feat(test_load):` match.
+# Queue requests come from the checkbox or @Mergifyio queue, never automatically.
+# Test each PR on its own branch after updating it with the current base.
+merge_queue:
+  mode: serial
+  max_parallel_checks: 1
+  queue_controls_comment: true
+  status_comments: all
+
 queue_rules:
-  - name: Large File Change
+  - name: dev
+    batch_size: 1
+    max_checks_retries: 0
+    merge_method: merge
+    update_method: merge
     queue_conditions:
-      - "#added-files > 11"
-  - name: feature
+      - base=dev
+      - or:
+          - -head-repo-full-name=F1R3FLY-io/system-integration
+          - -head~=^(dev|main)$
+      - -draft
+      - "#approved-reviews-by >= 1"
+      - check-success=Validate & CLI
+      - check-success=Lint
+      - check-success=Markdown links
+      - check-success=Rust Shard (10 finalized)
+      - check-success=Rust Standalone (10 finalized)
+      - 'check-success=Rust: test_web_api (shard)'
+      - 'check-success=Rust: test_heartbeat (standalone)'
+      - 'check-success=Rust: test_synchrony (custom)'
+      - check-success=Iterative debug loop (--keep-running + --skip-setup)
+  - name: main
+    batch_size: 1
+    max_checks_retries: 0
+    merge_method: merge
+    update_method: merge
     queue_conditions:
-      - 'title ~= ^(\[agent\] )?feat(\(.+\))?!?:'
-  - name: fix
-    queue_conditions:
-      - 'title ~= ^(\[agent\] )?fix(\(.+\))?!?:'
-  - name: docs
-    queue_conditions:
-      - 'title ~= ^(\[agent\] )?docs(\(.+\))?!?:'
-  - name: chore
-    queue_conditions:
-      - 'title ~= ^(\[agent\] )?(chore|ci|build|style|refactor|test|perf)(\(.+\))?!?:'
-  - name: default
+      - base=main
+      - head-repo-full-name=F1R3FLY-io/system-integration
+      - head~=^(promote|hotfix)/
+      - -draft
+      - "#approved-reviews-by >= 1"
+      - check-success=Validate & CLI
+      - check-success=Lint
+      - check-success=Markdown links
+      - check-success=Rust Shard (10 finalized)
+      - check-success=Rust Standalone (10 finalized)
+      - 'check-success=Rust: test_web_api (shard)'
+      - 'check-success=Rust: test_heartbeat (standalone)'
+      - 'check-success=Rust: test_synchrony (custom)'
+      - check-success=Iterative debug loop (--keep-running + --skip-setup)

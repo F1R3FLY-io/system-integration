@@ -1,0 +1,59 @@
+name: Promote and Back-merge
+run-name: ${{ inputs.operation == 'backmerge' && 'Back-merge main into dev' || 'Promote dev to main' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "promote opens dev -> main. backmerge opens main -> dev."
+        type: choice
+        options: [promote, backmerge]
+        default: promote
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote-and-backmerge
+  cancel-in-progress: false
+
+jobs:
+  open:
+    name: Open Promotion or Back-merge Pull Request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release-credentials
+    steps:
+      - name: Require main
+        env:
+          REF: ${{ github.ref }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if [ "$REF" != refs/heads/main ]; then
+            echo "::error::Run Promote and Back-merge from main. Select the direction with the operation input."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create promotion token
+        id: promotion-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.PROMOTION_APP_ID }}
+          private-key: ${{ secrets.PROMOTION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ steps.promotion-token.outputs.token }}
+          OPERATION: ${{ inputs.operation }}
+          REPOSITORY: ${{ github.repository }}
+          TRIGGERED_BY: ${{ github.triggering_actor }}
+        shell: bash -euo pipefail {0}
+        run: bash scripts/ci/open-promotion-pr.sh
