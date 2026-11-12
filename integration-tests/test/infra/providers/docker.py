@@ -437,11 +437,7 @@ class DockerNodeHandle:
         return self._identity
 
     # Directory inside every container where the node writes its structured
-    # log. The appender uses filename_prefix "node.log" with rotation, so the
-    # files on disk are "node.log.<date>" (plus gzipped predecessors) — the
-    # unsuffixed name NEVER exists. Reading a fixed "node.log" therefore always
-    # missed and fell through to `docker logs`, whose json buffer is capped by
-    # the daemon: log scans silently saw a truncated tail instead of the run.
+    # log: the active "node.log" plus the files rotation renamed away from it.
     _LOG_DIR = "/var/lib/rnode/logs"
     _LOG_GLOB = "node.log*"
 
