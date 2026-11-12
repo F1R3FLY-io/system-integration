@@ -29,9 +29,9 @@ else
     [ "$status" -eq 1 ] || exit "$status"
 fi
 
-open_filter="[.[] | select(.headRefName | startswith(\"$prefix\")) | \"#\\(.number)\"] | join(\" \")"
+open_filter="[.[] | select(.isCrossRepository == false) | select(.headRefName | startswith(\"$prefix\")) | \"#\\(.number)\"] | join(\" \")"
 open_prs="$(env -u GITHUB_TOKEN gh pr list --repo "$repo" --base "$target_branch" \
-    --state open --limit 1000 --json number,headRefName --jq "$open_filter")"
+    --state open --limit 1000 --json number,headRefName,isCrossRepository --jq "$open_filter")"
 if [ -n "$open_prs" ]; then
     echo "A $OPERATION PR is already open: $open_prs. Merge or close it before running the workflow again."
     exit 0
@@ -39,7 +39,15 @@ fi
 
 count="$(git rev-list --count "origin/$target_branch..$sha")"
 branch="$prefix$source_branch-${sha:0:12}"
-env -u GITHUB_TOKEN gh api "repos/$repo/git/refs" -f "ref=refs/heads/$branch" -f "sha=$sha" >/dev/null
+if ! env -u GITHUB_TOKEN gh api "repos/$repo/git/refs" \
+    -f "ref=refs/heads/$branch" -f "sha=$sha" >/dev/null; then
+    existing_sha="$(env -u GITHUB_TOKEN gh api "repos/$repo/git/ref/heads/$branch" --jq '.object.sha')"
+    if [ "$existing_sha" != "$sha" ]; then
+        echo "ERROR: $branch does not match source commit $sha. Inspect the retained branch before retrying." >&2
+        exit 1
+    fi
+    echo "Reusing $branch at verified source commit $sha."
+fi
 
 body_file="$(mktemp)"
 trap 'rm -f "$body_file"' EXIT

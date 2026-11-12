@@ -44,24 +44,60 @@ def transition(tmp_path):
     gh = bin_dir / "gh"
     gh.write_text(
         f"#!{sys.executable}\n"
-        "import json, os, pathlib, sys\n"
+        "import json, os, pathlib, re, sys\n"
         "args = sys.argv[1:]\n"
         "entry = {'args': args, 'inherited_token': 'GITHUB_TOKEN' in os.environ}\n"
         "if '--body-file' in args:\n"
         "    entry['body'] = pathlib.Path(args[args.index('--body-file') + 1]).read_text()\n"
         "with open(os.environ['GH_LOG'], 'a') as log:\n"
         "    log.write(json.dumps(entry) + '\\n')\n"
+        "state_file = pathlib.Path(os.environ['GH_STATE'])\n"
+        "state = json.loads(state_file.read_text())\n"
         "if args[:2] == ['pr', 'list']:\n"
-        "    print(os.environ.get('OPEN_PRS', ''))\n"
-        "    sys.exit(int(os.environ.get('LIST_STATUS', '0')))\n"
+        "    if os.environ.get('LIST_STATUS', '0') != '0':\n"
+        "        sys.exit(int(os.environ['LIST_STATUS']))\n"
+        "    query = args[args.index('--jq') + 1]\n"
+        '    prefix = re.search(r\'startswith\\("([^"]+)"\\)\', query).group(1)\n'
+        "    prs = json.loads(os.environ.get('OPEN_PRS', json.dumps(state['prs'])))\n"
+        "    if '.isCrossRepository == false' in query:\n"
+        "        assert 'isCrossRepository' in args[args.index('--json') + 1].split(',')\n"
+        "        prs = [pr for pr in prs if pr['isCrossRepository'] is False]\n"
+        "    print(' '.join('#' + str(pr['number']) for pr in prs\n"
+        "                   if pr['headRefName'].startswith(prefix)))\n"
+        "    sys.exit(0)\n"
         "if args[0] == 'api':\n"
-        "    sys.exit(int(os.environ.get('REF_STATUS', '0')))\n"
+        "    if '/git/ref/heads/' in args[1]:\n"
+        "        if os.environ.get('READ_STATUS', '0') != '0':\n"
+        "            sys.exit(int(os.environ['READ_STATUS']))\n"
+        "        branch = args[1].split('/git/ref/heads/', 1)[1]\n"
+        "        if branch not in state['refs']:\n"
+        "            sys.exit(1)\n"
+        "        assert args[2:] == ['--jq', '.object.sha']\n"
+        "        print(state['refs'][branch])\n"
+        "        sys.exit(0)\n"
+        "    if os.environ.get('REF_STATUS', '0') != '0':\n"
+        "        sys.exit(int(os.environ['REF_STATUS']))\n"
+        "    branch = next(a for a in args if a.startswith('ref=refs/heads/'))[15:]\n"
+        "    sha = next(a for a in args if a.startswith('sha='))[4:]\n"
+        "    if branch in state['refs']:\n"
+        "        print('gh: Reference already exists (HTTP 422)', file=sys.stderr)\n"
+        "        sys.exit(1)\n"
+        "    state['refs'][branch] = sha\n"
+        "    state_file.write_text(json.dumps(state))\n"
+        "    sys.exit(0)\n"
         "if args[:2] == ['pr', 'create']:\n"
-        "    sys.exit(int(os.environ.get('CREATE_STATUS', '0')))\n"
+        "    if os.environ.get('CREATE_STATUS', '0') != '0':\n"
+        "        sys.exit(int(os.environ['CREATE_STATUS']))\n"
+        "    state['prs'].append({'number': 42, 'isCrossRepository': False,\n"
+        "                         'headRefName': args[args.index('--head') + 1]})\n"
+        "    state_file.write_text(json.dumps(state))\n"
+        "    sys.exit(0)\n"
         "sys.exit('Unexpected gh invocation')\n"
     )
     gh.chmod(0o755)
     log = tmp_path / "gh.jsonl"
+    state_file = tmp_path / "github.json"
+    state_file.write_text(json.dumps({"refs": {}, "prs": []}))
 
     def advance(branch):
         _git(repo, "switch", branch)
@@ -75,6 +111,7 @@ def transition(tmp_path):
             **os.environ,
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             "GH_LOG": str(log),
+            "GH_STATE": str(state_file),
             "GITHUB_TOKEN": "inherited-token-must-not-be-used",
             "GH_TOKEN": "promotion-app-token",
             "OPERATION": operation,
@@ -140,7 +177,9 @@ def test_already_contained_source_needs_no_github_mutation(transition, operation
 def test_existing_transition_pr_prevents_duplicate(transition, operation, source):
     _, _, advance, run = transition
     advance(source)
-    result, calls = run(operation, OPEN_PRS="#42")
+    prefix = "promote/" if operation == "promote" else "backmerge/"
+    prs = [{"number": 42, "headRefName": f"{prefix}existing", "isCrossRepository": False}]
+    result, calls = run(operation, OPEN_PRS=json.dumps(prs))
     assert result.returncode == 0, result.stderr
     assert "#42" in result.stdout
     assert len(calls) == 1 and calls[0]["args"][:2] == ["pr", "list"]
@@ -148,7 +187,7 @@ def test_existing_transition_pr_prevents_duplicate(transition, operation, source
 
 @pytest.mark.parametrize(
     "overrides,call_count",
-    [({"LIST_STATUS": "1"}, 1), ({"REF_STATUS": "1"}, 2), ({"CREATE_STATUS": "1"}, 3)],
+    [({"LIST_STATUS": "1"}, 1), ({"REF_STATUS": "1"}, 3), ({"CREATE_STATUS": "1"}, 3)],
 )
 def test_github_failure_stops_without_merging_or_deleting(transition, overrides, call_count):
     _, _, advance, run = transition
@@ -159,6 +198,75 @@ def test_github_failure_stops_without_merging_or_deleting(transition, overrides,
     assert not any("DELETE" in call["args"] or "merge" in call["args"] for call in calls)
     if "CREATE_STATUS" in overrides:
         assert "retained" in result.stderr
+
+
+@pytest.mark.parametrize("operation,source", [("promote", "dev"), ("backmerge", "main")])
+@pytest.mark.parametrize("first_result", ["closed", "creation_failed"])
+def test_retry_reuses_verified_branch_after_closed_or_failed_pr(
+    transition, operation, source, first_result
+):
+    repo, _, advance, run = transition
+    sha = advance(source)
+    overrides = {"CREATE_STATUS": "1"} if first_result == "creation_failed" else {}
+    first, _ = run(operation, **overrides)
+    assert (first.returncode == 0) == (first_result == "closed")
+    state_file = repo.parent / "github.json"
+    state = json.loads(state_file.read_text())
+    state["prs"] = []
+    state_file.write_text(json.dumps(state))
+    retained_refs = dict(state["refs"])
+
+    retry, calls = run(operation)
+    assert retry.returncode == 0, retry.stderr
+    assert "Reusing" in retry.stdout
+    assert calls[-1]["args"][:2] == ["pr", "create"]
+    assert sha in calls[-1]["body"]
+    final_state = json.loads(state_file.read_text())
+    assert final_state["refs"] == retained_refs
+    assert len(final_state["prs"]) == 1
+
+    again, calls = run(operation)
+    assert again.returncode == 0, again.stderr
+    assert "already open" in again.stdout
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("operation,source", [("promote", "dev"), ("backmerge", "main")])
+@pytest.mark.parametrize("read_status", ["0", "1"])
+def test_retained_branch_mismatch_or_lookup_error_stops_reuse(
+    transition, operation, source, read_status
+):
+    repo, initial, advance, run = transition
+    sha = advance(source)
+    prefix = "promote/" if operation == "promote" else "backmerge/"
+    state_file = repo.parent / "github.json"
+    state = {"refs": {f"{prefix}{source}-{sha[:12]}": initial}, "prs": []}
+    state_file.write_text(json.dumps(state))
+    result, calls = run(operation, READ_STATUS=read_status)
+    assert result.returncode != 0
+    assert not any(call["args"][:2] == ["pr", "create"] for call in calls)
+    assert json.loads(state_file.read_text()) == state
+
+
+@pytest.mark.parametrize("operation,source", [("promote", "dev"), ("backmerge", "main")])
+@pytest.mark.parametrize("same_repo_pr", [False, True])
+def test_fork_prefix_does_not_count_as_a_repository_transition(
+    transition, operation, source, same_repo_pr
+):
+    _, _, advance, run = transition
+    advance(source)
+    prefix = "promote/" if operation == "promote" else "backmerge/"
+    prs = [{"number": 99, "headRefName": f"{prefix}fork", "isCrossRepository": True}]
+    if same_repo_pr:
+        prs.append({"number": 42, "headRefName": f"{prefix}existing", "isCrossRepository": False})
+    result, calls = run(operation, OPEN_PRS=json.dumps(prs))
+    assert result.returncode == 0, result.stderr
+    assert "#99" not in result.stdout
+    if same_repo_pr:
+        assert "#42" in result.stdout
+        assert len(calls) == 1
+    else:
+        assert calls[-1]["args"][:2] == ["pr", "create"]
 
 
 @pytest.mark.parametrize("operation,actor", [("other", "maintainer"), ("promote", "bad actor")])

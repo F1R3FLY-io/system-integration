@@ -88,9 +88,16 @@ back into `dev`, including after a `hotfix/*` PR merges into `main`.
 
 The workflow creates `promote/dev-<SHA>` or `backmerge/main-<SHA>` at the
 source commit. It does nothing when the target already contains that source
-or a PR for that direction is open. A creation failure is reported, and any
-created branch is retained for inspection. Never use `dev` or `main` directly
-as a PR head: automatic branch deletion can retarget open PRs, and **Update
+or a PR from this repository for that direction is open. Fork PRs do not
+block promotion or backmerge, even when their branch names use those prefixes.
+
+A creation failure is reported, and any created branch is retained for inspection.
+After a PR closes or fails to open, a rerun can reuse its retained branch.
+The workflow verifies that the remote branch SHA matches the source commit before reuse.
+If the branch has moved or its SHA cannot be read, the workflow stops without changing it.
+
+Never use `dev` or `main` directly as a PR head:
+automatic branch deletion can retarget open PRs, and **Update
 branch** can write to the protected source. The Protected Head Guard closes
 such PRs from this repository; Validate & CLI also rejects them.
 
