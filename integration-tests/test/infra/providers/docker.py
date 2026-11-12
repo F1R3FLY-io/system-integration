@@ -407,6 +407,7 @@ class DockerNodeHandle:
         self._volume_name = volume_name
         # per_core_cpu_percent baseline: (mode, data, monotonic_time)
         self._percore_prev: Optional[tuple] = None
+        self._file_logs_seen = False
 
     @property
     def volume_name(self) -> Optional[str]:
@@ -437,11 +438,9 @@ class DockerNodeHandle:
         return self._identity
 
     # Directory inside every container where the node writes its structured
-    # log. The appender uses filename_prefix "node.log" with rotation, so the
-    # files on disk are "node.log.<date>" (plus gzipped predecessors) — the
-    # unsuffixed name NEVER exists. Reading a fixed "node.log" therefore always
-    # missed and fell through to `docker logs`, whose json buffer is capped by
-    # the daemon: log scans silently saw a truncated tail instead of the run.
+    # log. Older appenders use "node.log.<date>"; the bounded writer renames
+    # "node.log" to a numbered predecessor and opens a new "node.log".
+    # Read the whole uncompressed inventory, not just the live file.
     _LOG_DIR = "/var/lib/rnode/logs"
     _LOG_GLOB = "node.log*"
 
@@ -452,13 +451,16 @@ class DockerNodeHandle:
         )
         if listing.returncode != 0:
             return []
-        return [
+        files = [
             line.strip()
             for line in (listing.stdout or "").splitlines()
             # .gz predecessors are not readable by `cat`; the live file and its
             # uncompressed siblings carry the window diagnostics need.
             if line.strip() and not line.strip().endswith(".gz")
         ]
+        # The bounded writer's live file is always newest, including when it
+        # is empty or its mtime ties a predecessor immediately after rotation.
+        return sorted(files, key=lambda p: Path(p).name == "node.log", reverse=True)
 
     def logs(self, tail: Optional[int] = None) -> str:
         """Return the node's log content.
@@ -469,15 +471,32 @@ class DockerNodeHandle:
         file exists — the startup-failure case where the node crashed before
         the file sink opened.
         """
-        files = self._log_files_newest_first()
-        text = ""
-        if files:
-            result = _docker("exec", self._name, "cat", *reversed(files))
-            if result.returncode == 0:
+        for _ in range(3):
+            files = self._log_files_newest_first()
+            if files:
+                self._file_logs_seen = True
+                result = _docker("exec", self._name, "cat", *reversed(files))
+                if result.returncode != 0:
+                    continue
                 text = result.stdout or ""
-        if not text:
-            fallback = _docker("logs", self._name)
-            text = (fallback.stdout or "") + (fallback.stderr or "")
+            elif self._file_logs_seen:
+                # A missing inventory after the file sink opened is a read
+                # failure, not permission to change to a different log stream.
+                continue
+            else:
+                fallback = _docker("logs", self._name)
+                if fallback.returncode != 0:
+                    continue
+                text = (fallback.stdout or "") + (fallback.stderr or "")
+            # Rotation can rename node.log AFTER ls but BEFORE cat: cat then
+            # succeeds on the fresh file alone. A short setup snapshot followed
+            # by the full inventory at teardown replays earlier tests' lines.
+            # Verify even a successful/empty read, including the first rotation
+            # (where the live path still exists and cat reports no error).
+            if files == self._log_files_newest_first():
+                break
+        else:
+            raise RuntimeError(f"Could not read a stable log inventory for {self._name}")
         if tail:
             lines = text.splitlines()
             text = "\n".join(lines[-tail:])
