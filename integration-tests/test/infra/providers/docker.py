@@ -471,8 +471,7 @@ class DockerNodeHandle:
         Falls back to ``docker logs`` (stdout/stderr buffer) only when no log
         file exists — the startup-failure case where the node crashed before
         the file sink opened. After a file-logging node exits, copy its files
-        and append stdout/stderr so panic output remains visible without
-        replacing the prefix used by per-test offsets.
+        and append stdout/stderr so panic output remains visible.
         """
         for _ in range(3):
             files = self._log_files_newest_first()
@@ -486,21 +485,26 @@ class DockerNodeHandle:
                 # A missing inventory after the file sink opened is a read
                 # failure, not permission to change to a different log stream.
                 continue
+            elif self.exit_code() is not None:
+                # Exec cannot list a stopped container's files; that is not
+                # evidence the file sink never opened.
+                text = self._stopped_logs(require_files=False)
+                break
             else:
                 fallback = _docker("logs", self._name)
                 if fallback.returncode != 0:
                     continue
                 text = (fallback.stdout or "") + (fallback.stderr or "")
             # Rotation can rename node.log AFTER ls but BEFORE cat: cat then
-            # succeeds on the fresh file alone. A short setup snapshot followed
-            # by the full inventory at teardown replays earlier tests' lines.
-            # Verify even a successful/empty read, including the first rotation
-            # (where the live path still exists and cat reports no error).
+            # succeeds on the fresh file alone, and the read silently drops the
+            # renamed file. Verify even a successful/empty read, including the
+            # first rotation (where the live path still exists and cat reports
+            # no error).
             if files == self._log_files_newest_first():
                 break
         else:
-            if self._file_logs_seen and self.exit_code() is not None:
-                text = self._stopped_logs()
+            if self.exit_code() is not None:
+                text = self._stopped_logs(require_files=self._file_logs_seen)
             else:
                 raise RuntimeError(f"Could not read a stable log inventory for {self._name}")
         if tail:
@@ -508,17 +512,26 @@ class DockerNodeHandle:
             text = "\n".join(lines[-tail:])
         return text
 
-    def _stopped_logs(self) -> str:
+    def _stopped_logs(self, require_files: bool) -> str:
         """Keep the file prefix and append crash output from a stopped container.
 
-        Docker exec cannot run after exit. Docker cp still reads the files,
-        preserving the offsets used by active and retired scans. Panic output
-        goes to stderr independently of the node's configured file sink.
+        Docker exec cannot run after exit. Docker cp still reads the files.
+        Panic output goes to stderr independently of the node's configured
+        file sink; Docker's timestamps place it in the log scan window. With
+        ``require_files`` unset, a container whose log directory does not
+        exist (it exited before opening the file sink) yields its stdout/stderr
+        alone; any other copy failure is an error.
         """
         with tempfile.TemporaryDirectory(prefix="node-stopped-logs-") as directory:
-            _docker("cp", f"{self._name}:{self._LOG_DIR}/.", directory, check=True)
+            copied = _docker("cp", f"{self._name}:{self._LOG_DIR}/.", directory)
+            never_opened = not require_files and "Could not find the file" in (copied.stderr or "")
+            if copied.returncode != 0 and not never_opened:
+                raise RuntimeError(
+                    f"Could not copy file logs from stopped container {self._name}: "
+                    f"{(copied.stderr or '').strip()}"
+                )
             files = [p for p in Path(directory).glob(self._LOG_GLOB) if not p.name.endswith(".gz")]
-            if not files:
+            if not files and require_files:
                 raise RuntimeError(f"No file logs copied from stopped container {self._name}")
             # Match ls -t's mtime order and filename tie-break, with node.log
             # always newest, just as in _log_files_newest_first.
@@ -526,7 +539,7 @@ class DockerNodeHandle:
             files.sort(key=lambda p: p.stat().st_mtime_ns, reverse=True)
             files.sort(key=lambda p: p.name == "node.log", reverse=True)
             text = "".join(p.read_text(errors="replace") for p in reversed(files))
-        crash = _docker("logs", self._name, check=True)
+        crash = _docker("logs", "--timestamps", self._name, check=True)
         if text and not text.endswith("\n"):
             text += "\n"
         return text + (crash.stdout or "") + (crash.stderr or "")
