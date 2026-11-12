@@ -268,6 +268,9 @@ class _RotatingFileSink:
         self.before_cat = None
         self.cat_status = 0
         self.fallback_calls = 0
+        self.running = True
+        self.copy_status = 0
+        self.stderr = ""
         monkeypatch.setattr(docker_mod, "_docker", self.docker)
 
     def rotate(self, new_text):
@@ -275,6 +278,17 @@ class _RotatingFileSink:
         self.files[self.live] = new_text
 
     def docker(self, *args, **_kw):
+        if args[:1] == ("inspect",):
+            status = "running" if self.running else "exited"
+            return subprocess.CompletedProcess(args, 0, f"0|{status}", "")
+        if args[:1] == ("exec",) and not self.running:
+            return subprocess.CompletedProcess(args, 1, "", "container is not running")
+        if args[:1] == ("cp",):
+            if self.copy_status:
+                raise subprocess.CalledProcessError(self.copy_status, args)
+            for name, text in self.files.items():
+                (Path(args[2]) / Path(name).name).write_text(text)
+            return subprocess.CompletedProcess(args, 0, "", "")
         if args[:1] == ("exec",) and "ls -1t" in args[-1]:
             return subprocess.CompletedProcess(args, 0, "\n".join(reversed(self.files)), "")
         if args[:1] == ("exec",) and args[2] == "cat":
@@ -286,7 +300,7 @@ class _RotatingFileSink:
             return subprocess.CompletedProcess(args, status, text, "")
         if args[:1] == ("logs",):
             self.fallback_calls += 1
-            return subprocess.CompletedProcess(args, 0, "INFO stdout startup only\n", "")
+            return subprocess.CompletedProcess(args, 0, "INFO stdout startup only\n", self.stderr)
         raise AssertionError(f"unexpected docker call {args}")
 
 
@@ -375,3 +389,114 @@ def test_live_file_precedes_rotated_files_even_when_mtimes_tie(monkeypatch):
     # A tied ls -t can put the numbered predecessor before the live file.
     sink.files[sink.retired] = "INFO old\n"
     assert _handle().logs() == "INFO old\nINFO startup\n"
+
+
+@pytest.fixture
+def log_scan(monkeypatch):
+    conftest = importlib.import_module("test.conftest")
+    monkeypatch.setattr(conftest, "_scanned_log_offsets", {})
+    monkeypatch.setattr(conftest, "_last_scan_allowances", {})
+
+    def begin(provider, *allowances):
+        markers = [SimpleNamespace(args=allowances)] if allowances else []
+        request = SimpleNamespace(node=SimpleNamespace(iter_markers=lambda _name: markers))
+        scan = conftest.check_node_logs_after_test.__wrapped__(request, provider)
+        next(scan)
+        return scan
+
+    return begin
+
+
+def _scan_provider():
+    # Keep resources after snapshotting so the real retirement paths need no
+    # Docker cleanup or archive I/O in these focused tests.
+    return docker_mod.DockerProvider(
+        port_allocator=None,
+        registry=SimpleNamespace(session_id="unit", keep_running=True),
+        timeouts=None,
+        paths=SimpleNamespace(),
+    )
+
+
+@pytest.mark.parametrize("retire", [None, "remove_node", "destroy_shard"])
+@pytest.mark.parametrize("new_node", [False, True])
+def test_stopped_container_panic_fails_active_and_retired_scans(
+    monkeypatch, log_scan, retire, new_node
+):
+    sink = _RotatingFileSink(monkeypatch)
+    handle = _handle()
+    provider = _scan_provider()
+    if not new_node:
+        provider._active_handles.append(handle)
+        earlier = log_scan(provider, "ComputationOutOfPhlogistons")
+        sink.files[sink.live] += "WARN old deploy: Computation ran out of phlogistons\n"
+        with pytest.raises(StopIteration):
+            next(earlier)
+        sink.rotate("INFO next hour\n")
+
+    strict = log_scan(provider)
+    if new_node:
+        provider._active_handles.append(handle)
+    handle.logs()  # Observe the file sink before the process exits.
+    sink.files[sink.live] += "INFO last file event\n"
+    sink.stderr = "thread 'main' panicked at casper/src/lib.rs\n"
+    sink.running = False
+    if retire == "remove_node":
+        provider.remove_node(handle)
+    elif retire == "destroy_shard":
+        provider.destroy_shard([handle])
+    with pytest.raises(pytest.fail.Exception) as failure:
+        next(strict)
+    assert "[Panic]" in str(failure.value)
+    assert "old deploy" not in str(failure.value)
+    assert "1 total" in str(failure.value)
+    assert sink.fallback_calls == 1
+    assert provider.retired_log_snapshots == []
+
+
+@pytest.mark.parametrize("retire", [None, "remove_node", "destroy_shard"])
+def test_unreadable_stopped_logs_fail_scanning(monkeypatch, log_scan, retire):
+    sink = _RotatingFileSink(monkeypatch)
+    handle = _handle()
+    provider = _scan_provider()
+    provider._active_handles.append(handle)
+    strict = log_scan(provider)
+    sink.running = False
+    sink.copy_status = 1
+    if retire == "remove_node":
+        provider.remove_node(handle)
+    elif retire == "destroy_shard":
+        provider.destroy_shard([handle])
+    with pytest.raises(pytest.fail.Exception, match="Log scan failed") as failure:
+        next(strict)
+    assert handle.name in str(failure.value)
+    assert provider.retired_log_snapshots == []
+
+
+def test_failed_setup_read_does_not_reset_log_boundary(monkeypatch, log_scan):
+    sink = _RotatingFileSink(monkeypatch)
+    provider = _scan_provider()
+    handle = _handle()
+    provider._active_handles.append(handle)
+    earlier = log_scan(provider, "ComputationOutOfPhlogistons")
+    sink.files[sink.live] += "WARN old deploy: Computation ran out of phlogistons\n"
+    with pytest.raises(StopIteration):
+        next(earlier)
+    sink.cat_status = 1
+    with pytest.raises(
+        pytest.fail.Exception, match="Cannot establish log scan boundary"
+    ) as failure:
+        log_scan(provider)
+    assert "old deploy" not in str(failure.value)
+
+
+def test_stopped_logs_preserve_file_prefix_and_tail(monkeypatch):
+    sink = _RotatingFileSink(monkeypatch)
+    handle = _handle()
+    prefix = handle.logs()
+    sink.rotate("INFO newest file\n")
+    prefix += sink.files[sink.live]
+    sink.stderr = "thread 'main' panicked at casper/src/lib.rs\n"
+    sink.running = False
+    assert handle.logs() == prefix + "INFO stdout startup only\n" + sink.stderr
+    assert handle.logs(tail=1) == sink.stderr.rstrip("\n")
