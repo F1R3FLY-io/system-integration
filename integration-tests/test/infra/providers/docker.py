@@ -1266,6 +1266,8 @@ class DockerProvider:
         # destroy_standalone archive would write to the same dest path —
         # use a `.pre-recreate.log` suffix to keep both runs distinct.
         handle.archive_log(self._archive_dir / f"{container_name}.pre-recreate.log")
+        original_snapshot = RetiredLogSnapshot(name=container_name, log_text=handle.logs())
+        self._retired_log_snapshots.append(original_snapshot)
         if handle in self._active_handles:
             self._active_handles.remove(handle)
         _ensure_no_container(container_name)
@@ -1340,6 +1342,13 @@ class DockerProvider:
         # The data volume and file-log prefix survive container recreation.
         new_handle._file_logs_seen = handle._file_logs_seen
         self._active_handles.append(new_handle)
+        # The replacement owns the continuing file stream after handoff.
+        # Until then, failures must leave the original evidence scannable.
+        self._retired_log_snapshots[:] = [
+            snapshot
+            for snapshot in self._retired_log_snapshots
+            if snapshot is not original_snapshot
+        ]
 
         if wait_running:
             wait_for_handles_or_archive(

@@ -611,17 +611,113 @@ def test_recreation_registers_replacement_before_readiness_check(
     assert observed == ([replacement] if wait_running else [])
 
 
-def test_failed_recreation_drops_removed_original(standalone_recreation, log_scan):
-    provider, original, _sink, state = standalone_recreation
+@pytest.mark.parametrize("failure_step", ["network", "run_status", "run_exception"])
+@pytest.mark.parametrize("unexpected", [False, True])
+def test_failed_recreation_retires_original_logs(
+    monkeypatch, standalone_recreation, log_scan, failure_step, unexpected
+):
+    provider, original, sink, state = standalone_recreation
     provider._active_handles.append(original)
     scan = log_scan(provider)
+    if unexpected:
+        sink.files[sink.live] += (
+            "WARN original before failure: Computation ran out of phlogistons\n"
+        )
+
+    def fail(*_args):
+        raise RuntimeError("replacement setup failed")
+
+    if failure_step == "run_status":
+        state.run_status = 1
+    else:
+        method = "_ensure_network" if failure_step == "network" else "_docker_run"
+        monkeypatch.setattr(docker_mod, method, fail)
+    with pytest.raises(RuntimeError, match="(recreate.*failed|replacement setup failed)"):
+        provider.recreate_standalone(original, NodeConfig(role=NodeRole.STANDALONE))
+    assert provider.active_handles == []
+    assert len(provider.retired_log_snapshots) == 1
+    assert provider.retired_log_snapshots[0].name == original.name
+    if unexpected:
+        with pytest.raises(pytest.fail.Exception, match="original before failure"):
+            next(scan)
+    else:
+        with pytest.raises(StopIteration):
+            next(scan)
+    assert provider.retired_log_snapshots == []
+    assert state.missing_reads == []
+
+
+def test_failed_recreation_retains_panic_emitted_during_stop(
+    monkeypatch, standalone_recreation, log_scan
+):
+    provider, original, sink, state = standalone_recreation
+    provider._active_handles.append(original)
+    scan = log_scan(provider)
+    stop = original.stop
+
+    def stop_with_panic():
+        stop()
+        sink.stderr = "thread 'main' panicked at casper/src/lib.rs\n"
+
+    monkeypatch.setattr(original, "stop", stop_with_panic)
     state.run_status = 1
     with pytest.raises(RuntimeError, match=r"docker run \(recreate\) failed"):
         provider.recreate_standalone(original, NodeConfig(role=NodeRole.STANDALONE))
-    assert provider.active_handles == []
-    with pytest.raises(StopIteration):
+    with pytest.raises(pytest.fail.Exception, match="Panic"):
         next(scan)
     assert state.missing_reads == []
+
+
+@pytest.mark.parametrize("unexpected", [False, True])
+def test_failed_recreation_preserves_prior_log_ownership(
+    standalone_recreation, log_scan, unexpected
+):
+    provider, original, sink, state = standalone_recreation
+    provider._active_handles.append(original)
+    earlier = log_scan(provider, "ComputationOutOfPhlogistons")
+    sink.files[sink.live] += "WARN earlier allowed: Computation ran out of phlogistons\n"
+    with pytest.raises(StopIteration):
+        next(earlier)
+    current = log_scan(provider)
+    if unexpected:
+        sink.files[sink.live] += "WARN current failure: Computation ran out of phlogistons\n"
+    state.run_status = 1
+    with pytest.raises(RuntimeError, match=r"docker run \(recreate\) failed"):
+        provider.recreate_standalone(original, NodeConfig(role=NodeRole.STANDALONE))
+    if unexpected:
+        with pytest.raises(pytest.fail.Exception) as failure:
+            next(current)
+        assert "current failure" in str(failure.value)
+        assert "earlier allowed" not in str(failure.value)
+    else:
+        with pytest.raises(StopIteration):
+            next(current)
+    assert state.missing_reads == []
+
+
+def test_successful_recreation_preserves_other_pending_snapshots(standalone_recreation):
+    provider, original, sink, _state = standalone_recreation
+    provider._active_handles.append(original)
+    pending = docker_mod.RetiredLogSnapshot(
+        name=original.name, log_text=sink.files[sink.live] + "INFO stdout startup only\n"
+    )
+    provider._retired_log_snapshots.append(pending)
+    provider.recreate_standalone(original, NodeConfig(role=NodeRole.STANDALONE), wait_running=False)
+    assert len(provider.retired_log_snapshots) == 1
+    assert provider.retired_log_snapshots[0] is pending
+
+
+def test_failed_snapshot_keeps_original_available_for_scanning(standalone_recreation, log_scan):
+    provider, original, sink, state = standalone_recreation
+    provider._active_handles.append(original)
+    scan = log_scan(provider)
+    sink.copy_status = 1
+    with pytest.raises(subprocess.CalledProcessError):
+        provider.recreate_standalone(original, NodeConfig(role=NodeRole.STANDALONE))
+    assert provider.active_handles == [original]
+    assert state.present
+    with pytest.raises(pytest.fail.Exception, match="Log scan failed"):
+        next(scan)
 
 
 def test_readiness_failure_can_destroy_replacement_through_original_handle(
