@@ -86,6 +86,28 @@ class TeardownWindowUsesOwnerAllowances(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn(PANIC_KEY, errors[0].message)
 
+    def test_current_window_does_not_inherit_prior_owner_allowance(self):
+        offsets, owners = {}, {}
+        record_scanned("v1", 0, 1, offsets, owners, frozenset({PHLO_KEY}))
+        snapshot = "\n".join([CLEAN_LINE, PHLO_LINE + " old gap", PHLO_LINE + " current"])
+        errors = scan_retired_snapshot(
+            "v1", snapshot, offsets, owners, frozenset(), current_offset=2
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("current", errors[0].message)
+        self.assertEqual(offsets, {})
+        self.assertEqual(owners, {})
+
+    def test_current_allowance_does_not_cover_prior_teardown_gap(self):
+        offsets, owners = {}, {}
+        record_scanned("v1", 0, 1, offsets, owners, frozenset())
+        snapshot = "\n".join([CLEAN_LINE, PHLO_LINE + " old gap", PHLO_LINE + " current"])
+        errors = scan_retired_snapshot(
+            "v1", snapshot, offsets, owners, frozenset({PHLO_KEY}), current_offset=2
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("old gap", errors[0].message)
+
 
 class TransientNodesKeepFullCoverage(unittest.TestCase):
     """A node with no recorded owner belongs wholly to the current test."""

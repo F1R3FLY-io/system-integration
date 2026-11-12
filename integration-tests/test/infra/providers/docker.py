@@ -1257,12 +1257,17 @@ class DockerProvider:
         network_name = handle.network_name
         ports = handle.ports
 
+        # Establish the continuing file-log source while exec is available;
+        # the replacement can exit before its first log read.
+        handle.logs()
         handle.stop()
         # Snapshot the stopped container's logs before _ensure_no_container
         # removes it. The new container reuses the same name, so its
         # destroy_standalone archive would write to the same dest path —
         # use a `.pre-recreate.log` suffix to keep both runs distinct.
         handle.archive_log(self._archive_dir / f"{container_name}.pre-recreate.log")
+        if handle in self._active_handles:
+            self._active_handles.remove(handle)
         _ensure_no_container(container_name)
         _ensure_network(network_name)
 
@@ -1332,6 +1337,9 @@ class DockerProvider:
             role=NodeRole.STANDALONE,
             volume_name=volume_name,
         )
+        # The data volume and file-log prefix survive container recreation.
+        new_handle._file_logs_seen = handle._file_logs_seen
+        self._active_handles.append(new_handle)
 
         if wait_running:
             wait_for_handles_or_archive(
@@ -1343,8 +1351,24 @@ class DockerProvider:
         return new_handle
 
     def destroy_standalone(self, handle: DockerNodeHandle) -> None:
-        if handle in self._active_handles:
-            self._active_handles.remove(handle)
+        # A failed recreation can leave the caller holding the original
+        # handle, while Docker operations by name address the replacement.
+        for active in self._active_handles:
+            if active.name == handle.name:
+                handle = active
+                self._active_handles.remove(handle)
+                read_error = None
+                try:
+                    snapshot_text = handle.logs()
+                except Exception as exc:
+                    snapshot_text = ""
+                    read_error = str(exc)
+                self._retired_log_snapshots.append(
+                    RetiredLogSnapshot(
+                        name=handle.name, log_text=snapshot_text, read_error=read_error
+                    )
+                )
+                break
         if self.keep_running:
             logger.info("Standalone %s kept running (--keep-running)", handle.name)
             return

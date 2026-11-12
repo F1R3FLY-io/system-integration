@@ -562,6 +562,7 @@ def scan_retired_snapshot(
     offsets: Dict[str, int],
     owners: Dict[str, FrozenSet[str]],
     current_allowed: FrozenSet[str],
+    current_offset: Optional[int] = None,
 ) -> List[LogError]:
     """Judge a retired node's unjudged log tail under its OWNER's allowances.
 
@@ -572,9 +573,12 @@ def scan_retired_snapshot(
     belong to the node's last owning test and are judged under THAT
     test's recorded allowances only — the consuming test's allowances
     never apply to another test's lines, so they cannot hide a forbidden
-    teardown event. ``current_allowed`` is used only when no owner is
-    recorded: a transient node attached and detached within the current
-    test, whose whole log belongs to the current test.
+    teardown event. When no owner is recorded, ``current_allowed`` covers
+    the whole unjudged log of a transient node created during this test.
+
+    With ``current_offset``, the node was active at this test's setup and
+    retired during its body. Only the lines before that setup boundary
+    belong to the prior owner. Later lines use the current allowances.
 
     Pops the bookkeeping entries, so a new node reusing the retired name
     starts fresh. Callers must invoke this BEFORE recording the current
@@ -583,8 +587,12 @@ def scan_retired_snapshot(
     offset = offsets.pop(name, 0)
     owner_allowances = owners.pop(name, None)
     effective = current_allowed if owner_allowances is None else owner_allowances
-    tail = log_text.splitlines()[offset:]
-    return scan_lines_for_forbidden(tail, name, effective)
+    lines = log_text.splitlines()
+    if current_offset is None:
+        return scan_lines_for_forbidden(lines[offset:], name, effective)
+    return scan_lines_for_forbidden(lines[offset:current_offset], name, effective) + (
+        scan_lines_for_forbidden(lines[max(offset, current_offset) :], name, current_allowed)
+    )
 
 
 def format_errors(errors: List[LogError], max_display: int = 30) -> str:
