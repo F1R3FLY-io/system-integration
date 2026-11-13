@@ -21,7 +21,7 @@ v1 and v2 are attackers: they propose only when the test tells them to (`--heart
 | declared hash does not match the content | v1 | ignored without a verdict (`Ignoring block … because block hash`) |
 | sequence number 1000 above the previous block's | v1 | `InvalidSequenceNumber` |
 | block number not one above its parents' | v1 | `InvalidBlockNumber` |
-| block built on v1's rejected block | v2 | parked on the missing dependency, never admitted |
+| block built on v1's rejected block | v2 | held by block ingest until the rejected block arrives, so never admitted (each judge's `block_ingest_held` rises) |
 | justification from an unbonded key | v1 | `InvalidFollows` |
 | slash whose second block v1 never signed | v2 | `UnauthorizedSlashDeploy` |
 | bonds field halves the sender's stake | v1 | `InvalidBondsCache` |

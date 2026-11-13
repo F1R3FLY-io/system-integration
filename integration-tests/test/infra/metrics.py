@@ -210,6 +210,27 @@ def scrape_metrics(node) -> Dict[str, float]:
     return result
 
 
+_SAMPLE = re.compile(r"^([A-Za-z_:][\w:]*)(?:\{([^}]*)\})?\s+(\S+)$")
+_LABEL = re.compile(r'(\w+)="((?:[^"\\]|\\.)*)"')
+
+
+def metric_value(node, name: str, labels: Optional[Dict[str, str]] = None) -> float:
+    """The sum of every sample of counter or gauge ``name`` on ``node`` whose
+    labels include ``labels``. The exporter omits a metric until it is first
+    recorded, so an absent metric reads as zero."""
+    resp = node.http_get("/metrics", timeout=10)
+    wanted = labels or {}
+    total = 0.0
+    for line in resp.text.splitlines():
+        match = _SAMPLE.match(line)
+        if match is None or match.group(1) not in (name, f"{name}_total"):
+            continue
+        sample_labels = dict(_LABEL.findall(match.group(2) or ""))
+        if all(sample_labels.get(key) == value for key, value in wanted.items()):
+            total += float(match.group(3))
+    return total
+
+
 def compute_metric_deltas(
     before: Dict[str, float],
     after: Dict[str, float],

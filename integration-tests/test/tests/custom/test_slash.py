@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 import pytest
+from f1r3fly import token_amount
 from f1r3fly.client import F1r3flyClientException
 from f1r3fly.crypto import PrivateKey, block_commitment, commitment_hash, gen_block_hash_from_block
 from f1r3fly.pb.CasperMessage_pb2 import BlockMessageProto as BlockMessage
@@ -37,6 +38,7 @@ from f1r3fly.util import create_deploy_data
 
 from ...infra.assertions import (
     assert_block_finalized_on_all_nodes,
+    assert_bonds_map_consistent_across_nodes,
     assert_chain_advances,
     assert_deploy_block_finalized_on_all_nodes,
     collect_forensics,
@@ -44,6 +46,7 @@ from ...infra.assertions import (
 )
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID, VALIDATOR4_ID
+from ...infra.metrics import metric_value
 from ...infra.node import Node
 from ...infra.p2p_client import (
     NodeClient,
@@ -241,23 +244,16 @@ def _recorded(block_hash: bytes, verdict: str) -> re.Pattern:
     )
 
 
-_HASH_MISMATCHES = re.compile(
-    r'^block_integrity_rejected(?:_total)?\{[^}]*reason="hash-mismatch"[^}]*\}\s+(\S+)$',
-    re.MULTILINE,
-)
-
-
 def _hash_mismatches(node: Node) -> float:
     """Blocks ``node`` refused on receipt because their hash did not match
     their content. The node records no log line for these."""
-    return sum(
-        float(count)
-        for count in _HASH_MISMATCHES.findall(node.http_get("/metrics", timeout=10).text)
-    )
+    return metric_value(node, "block_integrity_rejected", {"reason": "hash-mismatch"})
 
 
-def _parked(block_hash: bytes) -> re.Pattern:
-    return re.compile(rf"Block {block_hash.hex()[:10]}\.\.\. delayed: missing dependencies\.")
+def _held(node: Node) -> float:
+    """Blocks ``node`` holds until a block they cite arrives. The node records
+    no log line for these."""
+    return metric_value(node, "block_ingest_held")
 
 
 def _inject(client: NodeClient, block: BlockMessage, receivers, verdict: re.Pattern, timeouts):
@@ -266,6 +262,28 @@ def _inject(client: NodeClient, block: BlockMessage, receivers, verdict: re.Patt
         client.send_block(block, node)
     for node in receivers:
         wait_for_log_match(node, verdict, timeouts.command)
+
+
+def _inject_counted(
+    client: NodeClient,
+    block: BlockMessage,
+    receivers,
+    count: Callable[[Node], float],
+    what: str,
+    timeouts,
+) -> None:
+    """Send ``block`` to every receiver and wait for each one's ``count`` to
+    rise, for a verdict the node does not log."""
+    before = {node.name: count(node) for node in receivers}
+    for node in receivers:
+        client.send_block(block, node)
+    for node in receivers:
+        poll_until(
+            predicate=lambda node=node: True if count(node) > before[node.name] else None,
+            timeout=timeouts.command,
+            interval=timeouts.poll_interval,
+            description=f"{node.name} {what}",
+        )
 
 
 def _assert_never_finalized(nodes: Sequence[Node], block_hash: bytes) -> None:
@@ -304,22 +322,13 @@ def _await_finalized_stake(ro: Node, expected: Dict[str, int], timeouts, label: 
 
 def _assert_committee_agreed(nodes: Sequence[Node], expected: Dict[str, int], timeouts) -> None:
     """The committee recorded in a block every node finalized converges to
-    ``expected``, identically on every node."""
+    ``expected``, identically on every node. A block's bonds omit validators
+    without stake."""
 
     def _agreed():
         anchor = common_finalized_anchor(nodes, timeouts.finalization)
-        views = {
-            node.name: {
-                bond.validator: bond.stake
-                for bond in node.get_block(anchor).blockInfo.bonds
-                if bond.stake > 0
-            }
-            for node in nodes
-        }
-        assert len({tuple(sorted(view.items())) for view in views.values()}) == 1, (
-            f"nodes disagree on the committee of finalized block {anchor[:10]}: {views}"
-        )
-        return True if next(iter(views.values())) == expected else None
+        assert_bonds_map_consistent_across_nodes(nodes, anchor, expected)
+        return True
 
     poll_until(
         predicate=_agreed,
@@ -422,10 +431,17 @@ class _Attack:
     rejected_v1: Optional[bytes] = None
 
     def offence(self, name: str, block: BlockMessage, sender, verdict) -> bytes:
+        """Seal ``block`` as ``sender`` and send it to the sender's judges.
+        ``verdict`` maps the block's hash to the log line each judge records,
+        or is ``None`` for a block each judge holds until a block it cites
+        arrives."""
         block_hash = _seal(block, sender)
         judges = self.v1_judges if sender is VALIDATOR1_ID else self.v2_judges
         logging.info("offence %s: %s", name, block_hash.hex()[:10])
-        _inject(self.client, block, judges, verdict(block_hash), self.timeouts)
+        if verdict is None:
+            _inject_counted(self.client, block, judges, _held, "holding the block", self.timeouts)
+        else:
+            _inject(self.client, block, judges, verdict(block_hash), self.timeouts)
         self.forged.append(block_hash)
         return block_hash
 
@@ -445,16 +461,14 @@ def _hash_and_sequence(attack: _Attack) -> None:
     evil = generate_block_hash()
     wrong_hash.blockHash = evil
     wrong_hash.sig = VALIDATOR1_ID.private_key().sign_block_hash(evil)
-    refused = {node.name: _hash_mismatches(node) for node in attack.v1_judges}
-    for node in attack.v1_judges:
-        attack.client.send_block(wrong_hash, node)
-    for node in attack.v1_judges:
-        poll_until(
-            predicate=lambda: True if _hash_mismatches(node) > refused[node.name] else None,
-            timeout=attack.timeouts.command,
-            interval=attack.timeouts.poll_interval,
-            description=f"{node.name} refusing a block whose hash does not match",
-        )
+    _inject_counted(
+        attack.client,
+        wrong_hash,
+        attack.v1_judges,
+        _hash_mismatches,
+        "refusing a block whose hash does not match",
+        attack.timeouts,
+    )
     attack.forged.append(evil)
 
     wrong_seq = _copy(attack.t1)
@@ -473,7 +487,7 @@ def _builds_on_rejected(attack: _Attack) -> None:
     for justification in block.justifications:
         if justification.validator.hex() == VALIDATOR1_ID.public_hex:
             justification.latestBlockHash = attack.rejected_v1
-    attack.offence("building on a rejected block", block, VALIDATOR2_ID, _parked)
+    attack.offence("building on a rejected block", block, VALIDATOR2_ID, None)
 
 
 def _unbonded_justification(attack: _Attack) -> None:
@@ -511,7 +525,7 @@ def _bonds_field(attack: _Attack) -> None:
     block = _next_block(attack.t1, VALIDATOR1_ID)
     for bond in block.body.state.bonds:
         if bond.validator.hex() == VALIDATOR1_ID.public_hex:
-            bond.stake //= 2
+            bond.stake = token_amount.encode(token_amount.decode(bond.stake) // 2)
     attack.offence("bonds field", block, VALIDATOR1_ID, lambda h: _recorded(h, "InvalidBondsCache"))
 
 
@@ -683,14 +697,8 @@ def test_equivocation_is_slashed_network_wide(provider, timeouts) -> None:
             latest2, sibling2 = _equivocate(client, v2, VALIDATOR2_ID, ro, running, timeouts)
             child = _next_block(sibling2, VALIDATOR2_ID)
             _seal(child, VALIDATOR2_ID)
-            client.send_block(child, v3)
-            wait_for_log_match(
-                v3,
-                re.compile(
-                    rf"Adding {sibling2.blockHash.hex()[:10]}.*hash to RequestedBlocks "
-                    rf"because of MissingDependencyRequested"
-                ),
-                timeouts.command,
+            _inject_counted(
+                client, child, [v3], _held, "holding a block whose parent it lacks", timeouts
             )
             _inject(
                 client,
