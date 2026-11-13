@@ -1,41 +1,32 @@
 """
-Deploy load through deploy queues: the shard keeps working at its sustained
-rate and above it, and every deploy a queue accepts gets an outcome.
+The soak's deploy load through deploy queues: every deploy finalizes on every
+node within the finalization timeout of its phase's end.
 
-Builds the load shard (4 validators, a read-only node) with a deploy queue in
-front of each validator and runs the mixed workload (``DEFAULT_MIX`` in
-infra/workloads.py) in three steps:
+Builds the load shard (4 validators, boot, a read-only node) with a deploy
+queue in front of each validator and submits light ``@N!(N)`` deploys,
+round-robin across the validators, in the soak's phases: low 1/s for 30 s,
+medium 5/s for 20 s, high 10/s for 15 s, a burst of 32 within one second,
+then sustained 4/s for 300 s.
 
-- ``baseline``: 1 deploy/s for BASELINE_SECONDS. Its finality pace is the
-  reference the loaded steps are held to.
-- ``sustained``: SUSTAINED_RATE, the rate this shard settles without the
-  queues refusing, for SUSTAINED_SECONDS.
-- ``overload``: twice SUSTAINED_RATE for OVERLOAD_SECONDS. The queues refuse
-  what the shard cannot take on time; senders resubmit after the retry-after,
-  as clients that honor a refusal do.
-
-Load then stops and the shard drains until every accepted deploy has an
-outcome. The test fails when:
+A deploy a queue refuses is resubmitted after its retry-after, as a client
+that honors a refusal does. Its deadline does not move: every deploy of a
+phase, refused or not, must be Finalized on every node within
+``timeouts.finalization`` of the phase's last scheduled submission. The test
+fails when:
 
 - a submission fails other than by a queue's refusal;
-- a node logs a finalizer run that exceeded its timeout;
-- a loaded step finalizes heights at less than half the baseline's pace;
-- the LFB spread across nodes exceeds MAX_LFB_SPREAD while a step runs;
-- finality does not advance for STALL_SECONDS while a step runs;
-- a node takes longer than MAX_STATUS_SECONDS to answer its status;
-- an accepted deploy has no outcome after the drain, the nodes do not
-  converge, or the state the finalized deploys produced is wrong;
+- a refused deploy is not accepted before its phase's deadline;
+- an accepted deploy is not Finalized on every node by its phase's deadline;
+- the nodes' LFBs do not come within 5 heights of each other after the load;
 - a node is not running at the end.
 
-Deploys refused and abandoned, expired, finalized share and client latency
-are reported, not judged. A deploy counts as finalized only when every node
-reports it Finalized; the time the first node did is reported alongside.
+Per phase it reports inclusion and finalization latency from the accepted
+submission to the last node, client latency from the first attempt, the
+refusals, and the pace of finality.
 
 Settings: LOAD_TEST_SUSTAINED_RATE and LOAD_TEST_SUSTAINED_DURATION override
-the sustained step's rate and length (the overload step follows the rate);
-LOAD_TEST_DEPLOY_MIX overrides the mix weights; LOAD_TEST_NODE_CPUS
-("readonly:2") starts named nodes on fewer CPUs; LOAD_TEST_OUT writes every
-step, the summary and every deploy as JSON lines.
+the sustained phase's rate and length; LOAD_TEST_NODE_CPUS ("readonly:2")
+starts named nodes on fewer CPUs.
 
 With ``--provider=remote --inventory <file> --skip-setup --session-id
 <shard>`` the test adopts an existing shard instead, signs with the
@@ -45,8 +36,8 @@ inventory's funded deployer keys, and leaves the shard running.
 import dataclasses
 import logging
 import os
-import re
-from typing import Dict, List, Optional, Sequence
+import time
+from typing import Callable, Dict, List, Optional, Sequence
 
 import pytest  # type: ignore[import-not-found]
 
@@ -59,31 +50,45 @@ from ...infra.keys import (
     VALIDATOR3_ID,
     VALIDATOR4_ID,
 )
-from ...infra.load import sender_key, with_funded_senders
-from ...infra.load_run import LoadRun, Step, format_table, run_load, step_results
-from ...infra.metrics import PhaseReport, format_node_metrics, log_unfinalized
+from ...infra.load import (
+    DEPLOY_KINDS,
+    OpenLoopSubmitter,
+    PlannedDeploy,
+    Resubmitter,
+    VabnSource,
+    current_block_number,
+    node_key_pairs,
+    sender_key,
+    with_funded_senders,
+)
+from ...infra.metrics import LifecycleTracker, log_unfinalized, percentiles
+from ...infra.polling import lfb_number, wait_for_lfb_converged
 from ...infra.shard import Shard
-from ...infra.workloads import DEFAULT_MIX, make_workload
 
 pytestmark = [pytest.mark.xdist_group("custom"), pytest.mark.remote_shard]
 
-BASELINE_RATE = 1.0
-BASELINE_SECONDS = 60.0
-SUSTAINED_RATE = 2.0
-SUSTAINED_SECONDS = 240.0
-OVERLOAD_FACTOR = 2.0
-OVERLOAD_SECONDS = 60.0
+
+@dataclasses.dataclass(frozen=True)
+class Phase:
+    """``rate`` deploys per second for ``seconds``."""
+
+    name: str
+    rate: float
+    seconds: float
+
+
+PHASES = [
+    Phase("low", 1.0, 30.0),
+    Phase("medium", 5.0, 20.0),
+    Phase("high", 10.0, 15.0),
+    Phase("burst", 32.0, 1.0),
+    Phase("sustained", 4.0, 300.0),
+]
+
+# Each queue limits one deployer to a share of its capacity, so the load is
+# signed by several senders per validator, as independent clients would.
 SENDERS = 16
-CONTENTION_CELLS = 8
-CALL_CONTRACTS = 16
-PAYLOAD_BYTES = 262144
-
-MIN_FINALITY_PACE_RATIO = 0.5
 MAX_LFB_SPREAD = 5
-STALL_SECONDS = 60.0
-MAX_STATUS_SECONDS = 2.0
-
-FINALIZER_TIMEOUT_PATTERN = re.compile(r"Finalizer run exceeded timeout|finalizer-run exceeded")
 
 # The per-phase result line. The node summarizer
 # (f1r3node-rust scripts/bench/summarize-issue24-phases.sh) parses this exact
@@ -170,128 +175,126 @@ def _positive(name: str, default: float) -> float:
     return value
 
 
-def _steps() -> List[Step]:
-    """The baseline, sustained and overload steps, with the sustained
-    step's environment overrides applied."""
-    rate = _positive("LOAD_TEST_SUSTAINED_RATE", SUSTAINED_RATE)
-    hold = _positive("LOAD_TEST_SUSTAINED_DURATION", SUSTAINED_SECONDS)
-    return [
-        Step("baseline", BASELINE_RATE, BASELINE_SECONDS),
-        Step("sustained", rate, hold),
-        Step("overload", rate * OVERLOAD_FACTOR, OVERLOAD_SECONDS),
-    ]
+def _phases() -> List[Phase]:
+    """PHASES with the sustained phase's environment overrides applied."""
+    rate = _positive("LOAD_TEST_SUSTAINED_RATE", PHASES[-1].rate)
+    seconds = _positive("LOAD_TEST_SUSTAINED_DURATION", PHASES[-1].seconds)
+    return PHASES[:-1] + [dataclasses.replace(PHASES[-1], rate=rate, seconds=seconds)]
 
 
-def _finalizer_timeouts(nodes) -> Dict[str, int]:
-    return {n.name: len(FINALIZER_TIMEOUT_PATTERN.findall(n.logs())) for n in nodes}
-
-
-def _phase_report(run: LoadRun, row: dict, v1_name: str) -> PhaseReport:
-    finality = row["health"]["finality"]
-    by_validator = run.node_metrics[row["phase"]]
-    return PhaseReport(
-        name=row["phase"],
-        deploys_submitted=row["settlement"]["accepted"],
-        deploy_failures=row["errors"],
-        effective_rate=row["rate_achieved"],
-        inclusion_p50=row["inclusion_p50"],
-        inclusion_p95=row["inclusion_p95"],
-        inclusion_p99=row["inclusion_p99"],
-        finalization_p50=row["finalization_p50"],
-        finalization_p95=row["finalization_p95"],
-        finalization_p99=row["finalization_p99"],
-        unfinalized=row["unfinalized"],
-        lfb_start=finality["start"] or 0,
-        lfb_end=finality["end"] or 0,
-        lfb_rate_per_min=(finality["advanced"] or 0) / (row["hold_seconds"] / 60),
-        phase_duration=row["hold_seconds"],
-        node_metrics=by_validator[v1_name],
-        node_metrics_by_validator=by_validator,
+def _run_phase(
+    phase: Phase,
+    first_index: int,
+    plan,
+    vabn: VabnSource,
+    tracker: LifecycleTracker,
+    timeout,
+    on_submitted: Callable[[], None],
+) -> dict:
+    """Submit one phase, call ``on_submitted`` once its schedule has run,
+    resubmit refusals until the phase's deadline, then wait out the deadline
+    for every deploy to finalize on every node. Returns the phase's submission
+    counts and failures."""
+    resubmitter = Resubmitter(OpenLoopSubmitter.workers_for(phase.rate), vabn, tracker.track_deploy)
+    try:
+        stats = OpenLoopSubmitter(OpenLoopSubmitter.workers_for(phase.rate)).run(
+            phase.rate,
+            phase.seconds,
+            first_index,
+            plan,
+            vabn,
+            phase.name,
+            tracker.track_deploy,
+            retry_refusals=False,
+            on_refused=resubmitter.refused,
+        )
+        deadline = time.time() + timeout
+        on_submitted()
+        resubmitter.wait_idle(max(0.0, deadline - time.time()))
+    finally:
+        resubmitter.close()
+    resubmitted = resubmitter.outcomes.get(
+        phase.name, {"accepted": 0, "abandoned": 0, "error": 0, "attempts": 0}
     )
+    tracker.wait_for_finalization(timeout=max(0.0, deadline - time.time()))
+    failures = [f"{phase.name}: {e}" for e in stats.errors]
+    if resubmitted["error"]:
+        failures.append(f"{phase.name}: {resubmitted['error']} resubmissions failed")
+    if resubmitted["abandoned"]:
+        failures.append(
+            f"{phase.name}: {resubmitted['abandoned']} refused deploys were not accepted "
+            f"within {timeout}s of the phase's end"
+        )
+    return {
+        "submitted": stats.submitted,
+        "achieved_rate": stats.achieved_rate,
+        "refused": stats.refused,
+        "resubmitted": resubmitted,
+        "failures": failures,
+    }
 
 
-def _log_phase(run: LoadRun, report: PhaseReport, row: dict) -> None:
+def _log_phase(phase: Phase, tracker: LifecycleTracker, submission: dict, lfbs, seconds) -> int:
+    """Log the phase's result lines; return how many of its accepted deploys
+    were not Finalized on every node."""
+    results = tracker.get_results()
+    inclusion = [r.inclusion_time for r in results if r.inclusion_time is not None]
+    finalized = [r for r in results if r.finalization_time is not None]
+    finalization = [r.finalization_time for r in finalized]
+    first_node = [r.first_finalization_time for r in finalized]
+    client = [
+        r.record.submit_time + r.finalization_time - r.record.first_attempt_time for r in finalized
+    ]
+    unfinalized = len(results) - len(finalized)
+    inc_p50, inc_p95 = percentiles(inclusion, [50, 95])
+    fin_p50, fin_p95 = percentiles(finalization, [50, 95])
+    first_p50, first_p95 = percentiles(first_node, [50, 95])
+    client_p50, client_p95, client_max = percentiles(client, [50, 95, 100])
+    lfb_start, lfb_end = lfbs
     logging.info(
         PHASE_LINE_FORMAT,
-        report.name,
-        report.inclusion_p50,
-        report.inclusion_p95,
-        report.finalization_p50,
-        report.finalization_p95,
-        report.lfb_start,
-        report.lfb_end,
-        report.lfb_rate_per_min,
-        report.unfinalized,
+        phase.name,
+        inc_p50,
+        inc_p95,
+        fin_p50,
+        fin_p95,
+        lfb_start,
+        lfb_end,
+        (lfb_end - lfb_start) / seconds * 60 if seconds > 0 else 0.0,
+        unfinalized,
     )
     logging.info(
         "  Phase %s first node: finalization p50=%.1fs p95=%.1fs",
-        report.name,
-        row["first_node_p50"],
-        row["first_node_p95"],
+        phase.name,
+        first_p50,
+        first_p95,
     )
-    ids = {r.record.deploy_id for r in step_results(run.tracker, report.name)}
-    log_unfinalized(report.name, [u for u in run.tracker.get_unfinalized() if u.deploy_id in ids])
-    for v_name, m in report.node_metrics_by_validator.items():
-        if m:
-            logging.info("  Node internals (%s):\n%s", v_name, format_node_metrics(m))
-
-
-def _format_report(reports: List[PhaseReport]) -> str:
-    lines = [
-        "",
-        "LOAD TEST RESULTS",
-        "=" * 85,
-        f"{'Phase':<9} | {'Deploys':>7} | {'Rate':>6} | {'Inclusion (s)':^21} | {'Finalization (s)':^21} | {'LFB':>6}",
-        f"{'':9} | {'':>7} | {'(d/s)':>6} | {'p50':>6} {'p95':>6} {'p99':>6} | {'p50':>6} {'p95':>6} {'p99':>6} | {'bl/m':>6}",
-        "-" * 85,
-    ]
-    for r in reports:
-        lines.append(
-            f"{r.name:<9} | {r.deploys_submitted:>7} | {r.effective_rate:>6.1f} | "
-            f"{r.inclusion_p50:>6.1f} {r.inclusion_p95:>6.1f} {r.inclusion_p99:>6.1f} | "
-            f"{r.finalization_p50:>6.1f} {r.finalization_p95:>6.1f} {r.finalization_p99:>6.1f} | "
-            f"{r.lfb_rate_per_min:>6.1f}"
-        )
-    lines.append("=" * 85)
-    return "\n".join(lines)
-
-
-def _health_failures(rows: List[dict]) -> List[str]:
-    """The degradation checks over the steps' health samples."""
-    failures = []
-    baseline = rows[0]["health"]["finality"]["secs_per_height"]
-    for row in rows:
-        health = row["health"]
-        finality = health["finality"]
-        phase = row["phase"]
-        if row["errors"]:
-            failures.append(f"{phase}: {row['errors']} submissions failed: {row['submit_errors']}")
-        if not row["ok"]:
-            failures.append(f"{phase}: {'; '.join(row['failures'])}")
-        pace = finality["secs_per_height"]
-        if row is not rows[0] and baseline and pace and baseline / pace < MIN_FINALITY_PACE_RATIO:
-            failures.append(
-                f"{phase}: finality took {pace:.1f}s per height, under "
-                f"{MIN_FINALITY_PACE_RATIO:.0%} of the baseline's pace ({baseline:.1f}s)"
-            )
-        spread = health["lfb_spread"]["max"]
-        if spread is not None and spread > MAX_LFB_SPREAD:
-            failures.append(f"{phase}: LFB spread reached {spread} (max {MAX_LFB_SPREAD})")
-        if finality["longest_stall_seconds"] >= STALL_SECONDS:
-            failures.append(
-                f"{phase}: finality did not advance for {finality['longest_stall_seconds']:.0f}s"
-            )
-        slowest = health["status_seconds_max"]
-        if slowest is not None and slowest > MAX_STATUS_SECONDS:
-            failures.append(f"{phase}: a status read took {slowest:.2f}s")
-    return failures
+    resubmitted = submission["resubmitted"]
+    logging.info(
+        "  Phase %s queues: %d accepted first time at %.2f/s, %d refused, %d accepted on "
+        "resubmission (%d attempts), %d abandoned; client latency p50=%.1fs p95=%.1fs "
+        "max=%.1fs",
+        phase.name,
+        submission["submitted"],
+        submission["achieved_rate"],
+        submission["refused"],
+        resubmitted["accepted"],
+        resubmitted["attempts"],
+        resubmitted["abandoned"],
+        client_p50,
+        client_p95,
+        client_max,
+    )
+    log_unfinalized(phase.name, tracker.get_unfinalized())
+    return unfinalized
 
 
 def test_deploy_throughput_and_finalization(
     request, provider, timeouts, resource_monitor, remote_inventory
 ) -> None:
-    """Load the shard through its deploy queues, at and above its sustained rate."""
-    steps = _steps()
+    """The soak's phases through deploy queues, each deploy finalized on every
+    node within the finalization timeout of its phase's end."""
+    phases = _phases()
     if remote_inventory is not None:
         senders = remote_inventory.deploy_keys()
         config = None
@@ -302,71 +305,96 @@ def test_deploy_throughput_and_finalization(
         )
     shard = _acquire_shard(request, provider, timeouts, config)
     try:
-        logs_readable = provider.node_logs_available
-        timeouts_before = _finalizer_timeouts(shard.all_nodes) if logs_readable else {}
-        workload = make_workload(
-            "mix",
-            senders,
-            cells=CONTENTION_CELLS,
-            contracts=CALL_CONTRACTS,
-            payload_bytes=PAYLOAD_BYTES,
-            mix=os.environ.get("LOAD_TEST_DEPLOY_MIX", DEFAULT_MIX),
+        validators = list(shard.named_validators.values())
+        v1 = validators[0]
+        readonly = shard.readonly
+        if readonly is None:
+            raise AssertionError("the load test needs a read-only node to read the tip")
+        wait_for_lfb_converged(
+            shard.all_nodes,
+            timeout=timeouts.finalization * 2,
+            min_height=1,
+            max_spread=MAX_LFB_SPREAD,
+            description="finalized baseline before the load",
         )
-        run = run_load(
-            shard,
-            senders,
-            workload,
-            steps,
-            timeouts,
-            resubmit=True,
-            stop_on_failure=False,
-            out=os.environ.get("LOAD_TEST_OUT"),
+        pairs = node_key_pairs(validators, senders)
+        light_term, light_phlo = DEPLOY_KINDS["light"]
+
+        def plan(index: int) -> PlannedDeploy:
+            node, key = pairs[index % len(pairs)]
+            return PlannedDeploy(node, key, light_term(index), light_phlo, "light")
+
+        # The tip is read from an observer: a validator under load is slow to
+        # answer queries, and a failed read would fail the deploy it signs.
+        vabn = VabnSource(readonly, resource_monitor)
+        tracker = LifecycleTracker(
+            {n.name: n for n in shard.all_nodes}, inclusion_timeout=timeouts.deploy_inclusion
         )
-        summary = run.summary
+        tracker.start_lfb_monitor()
+        failures: List[str] = []
+        total_unfinalized = 0
+        index = 100_000
+        try:
+            for phase in phases:
+                logging.info(
+                    "--- Phase: %s (%g/s for %gs) ---", phase.name, phase.rate, phase.seconds
+                )
+                tracker.clear()
+                lfb_start = lfb_number(v1)
+                phase_start = time.time()
 
-        v1_name = next(iter(shard.named_validators))
-        reports = []
-        for row in run.rows:
-            report = _phase_report(run, row, v1_name)
-            reports.append(report)
-            _log_phase(run, report, row)
-        logging.info(_format_report(reports))
-        logging.info(format_table(run.rows, summary))
+                def log_cone(name: str = phase.name) -> None:
+                    tip = current_block_number(readonly, resource_monitor)
+                    lfb = lfb_number(v1)
+                    logging.info(
+                        "  Cone at end of %s submission: tip-LFB lag = %d blocks "
+                        "(tip #%d, LFB #%d)",
+                        name,
+                        tip - lfb,
+                        tip,
+                        lfb,
+                    )
 
-        failures = _health_failures(run.rows)
-        drain = {k: v for k, v in run.drain_lfbs.items() if v is not None}
-        if drain:
-            drain_spread = max(drain.values()) - min(drain.values())
-            logging.info("All-node LFBs at drain: %s (spread %d blocks)", drain, drain_spread)
-            emit_lfb_spread_metric(drain_spread)
-        else:
-            failures.append("no node's LFB could be read when the load stopped")
-        if summary["converged_lfbs"]:
-            converged = summary["converged_lfbs"]
+                submission = _run_phase(
+                    phase, index, plan, vabn, tracker, timeouts.finalization, log_cone
+                )
+                index += int(phase.rate * phase.seconds)
+                failures += submission["failures"]
+                lfb_end = lfb_number(v1)
+                unfinalized = _log_phase(
+                    phase, tracker, submission, (lfb_start, lfb_end), time.time() - phase_start
+                )
+                if unfinalized:
+                    failures.append(
+                        f"{phase.name}: {unfinalized} deploy(s) not finalized within "
+                        f"{timeouts.finalization}s"
+                    )
+                total_unfinalized += unfinalized
+        finally:
+            tracker.shutdown()
+
+        drain_lfbs = {n.name: lfb_number(n) for n in shard.all_nodes}
+        drain_spread = max(drain_lfbs.values()) - min(drain_lfbs.values())
+        logging.info("All-node LFBs at drain: %s (spread %d blocks)", drain_lfbs, drain_spread)
+        emit_lfb_spread_metric(drain_spread)
+        try:
+            converged = wait_for_lfb_converged(
+                shard.all_nodes,
+                timeout=timeouts.finalization * 3,
+                max_spread=MAX_LFB_SPREAD,
+                description=f"all-node LFB spread <= {MAX_LFB_SPREAD} after load drains",
+            )
             logging.info(
                 "All-node LFBs converged: %s (spread %d blocks)",
                 converged,
                 max(converged.values()) - min(converged.values()),
             )
-
-        if logs_readable:
-            timeouts_after = _finalizer_timeouts(shard.all_nodes)
-            exceeded = {
-                name: count - timeouts_before.get(name, 0)
-                for name, count in timeouts_after.items()
-                if count > timeouts_before.get(name, 0)
-            }
-            if exceeded:
-                failures.append(f"finalizer runs exceeded their timeout: {exceeded}")
-        if summary["drain_stall"]:
-            failures.append(summary["drain_stall"])
-        if summary["unsettled"]:
-            failures.append(f"{summary['unsettled']} accepted deploys have no outcome")
-        if summary["state_problems"]:
-            failures.append(f"inconsistent state: {summary['state_problems'][:5]}")
-        if not summary["converged_lfbs"]:
-            failures.append(f"the nodes did not converge: {summary['convergence_failure']}")
+        except AssertionError as exc:
+            failures.append(f"the nodes did not converge: {exc}")
         failures += [f"{n.name} is not running" for n in shard.all_nodes if not n.is_running()]
-        assert not failures, "the shard did not hold up under load:\n  " + "\n  ".join(failures)
+        assert not failures, (
+            f"{total_unfinalized} deploy(s) not finalized within {timeouts.finalization}s; "
+            "the shard did not hold the soak's load:\n  " + "\n  ".join(failures)
+        )
     finally:
         shard.destroy()

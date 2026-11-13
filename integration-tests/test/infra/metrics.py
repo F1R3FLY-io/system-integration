@@ -558,34 +558,6 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
 
 
 @dataclasses.dataclass
-class PhaseReport:
-    """Summary report for a single load test phase."""
-
-    name: str
-    deploys_submitted: int
-    deploy_failures: int
-    effective_rate: float
-    inclusion_p50: float
-    inclusion_p95: float
-    inclusion_p99: float
-    finalization_p50: float
-    finalization_p95: float
-    finalization_p99: float
-    unfinalized: int
-    lfb_start: int
-    lfb_end: int
-    lfb_rate_per_min: float
-    phase_duration: float
-    node_metrics: Optional[Dict[str, float]] = None
-    # Per-validator metric deltas for the phase, keyed by validator name.
-    # node_metrics (above) keeps the legacy v1-only view for callers that
-    # already consume it; node_metrics_by_validator is the broader picture
-    # that catches load on v2/v3 — important when v1 is mostly proposing
-    # while peers do the validation work.
-    node_metrics_by_validator: Optional[Dict[str, Dict[str, float]]] = None
-
-
-@dataclasses.dataclass
 class DeployRecord:
     """A single deploy submission record."""
 

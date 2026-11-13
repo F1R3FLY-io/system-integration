@@ -252,13 +252,24 @@ def test_adopted_shard_destroy_leaves_the_nodes_alone(key_file, monkeypatch):
     shard.destroy()
 
 
-def test_steps_apply_the_sustained_overrides(monkeypatch):
+def test_phases_apply_the_sustained_overrides(monkeypatch):
     monkeypatch.setenv("LOAD_TEST_SUSTAINED_RATE", "8")
     monkeypatch.setenv("LOAD_TEST_SUSTAINED_DURATION", "3600")
-    baseline, sustained, overload = load._steps()
-    assert (sustained.rate, sustained.hold) == (8.0, 3600.0)
-    assert overload.rate == 8.0 * load.OVERLOAD_FACTOR
-    assert (baseline.rate, baseline.hold) == (load.BASELINE_RATE, load.BASELINE_SECONDS)
+    *others, sustained = load._phases()
+    assert (sustained.name, sustained.rate, sustained.seconds) == ("sustained", 8.0, 3600.0)
+    assert others == load.PHASES[:-1]
+
+
+def test_phases_are_the_soaks_without_overrides(monkeypatch):
+    monkeypatch.delenv("LOAD_TEST_SUSTAINED_RATE", raising=False)
+    monkeypatch.delenv("LOAD_TEST_SUSTAINED_DURATION", raising=False)
+    assert [(p.name, p.rate, p.seconds) for p in load._phases()] == [
+        ("low", 1.0, 30.0),
+        ("medium", 5.0, 20.0),
+        ("high", 10.0, 15.0),
+        ("burst", 32.0, 1.0),
+        ("sustained", 4.0, 300.0),
+    ]
 
 
 def test_remote_runs_only_tests_marked_remote_shard():
@@ -294,7 +305,7 @@ def test_load_test_is_marked_remote_shard():
 
 
 @pytest.mark.parametrize("name", ["LOAD_TEST_SUSTAINED_RATE", "LOAD_TEST_SUSTAINED_DURATION"])
-def test_steps_reject_non_positive_overrides(monkeypatch, name):
+def test_phases_reject_non_positive_overrides(monkeypatch, name):
     monkeypatch.setenv(name, "0")
     with pytest.raises(ValueError, match="must be positive"):
-        load._steps()
+        load._phases()

@@ -35,10 +35,8 @@ from .load import (
 )
 from .metrics import (
     LifecycleTracker,
-    compute_metric_deltas,
     percentiles,
     scrape_gauges,
-    scrape_metrics,
 )
 from .polling import wait_for_lfb_converged
 from .workloads import SetupContext, Workload, check_execution
@@ -83,10 +81,6 @@ class LoadRun:
     rows: List[dict]
     summary: dict
     tracker: LifecycleTracker
-    # Per step, per validator key ("validator1"): /metrics deltas over the step.
-    node_metrics: Dict[str, Dict[str, Dict[str, float]]]
-    # Every node's LFB the moment load stopped.
-    drain_lfbs: Dict[str, Optional[int]]
 
 
 def _slope_per_minute(series: Sequence[Tuple[float, float]]) -> float:
@@ -556,7 +550,6 @@ def run_load(
     )
     index = 1_000_000
     rows: List[dict] = []
-    node_metrics: Dict[str, Dict[str, Dict[str, float]]] = {}
     logging.info(
         "Load: %s, steps %s, %d senders over %d validators, refused deploys %s",
         workload.name,
@@ -569,7 +562,6 @@ def run_load(
         for step in steps:
             submitter = OpenLoopSubmitter(OpenLoopSubmitter.workers_for(step.rate))
             tracker.cycle_stats()
-            metrics_before = {key: scrape_metrics(v) for key, v in named_validators.items()}
             start = time.time()
             stats = submitter.run(
                 step.rate,
@@ -583,10 +575,6 @@ def run_load(
                 on_refused=resubmitter.refused if resubmitter else None,
             )
             end = time.time()
-            node_metrics[step.phase] = {
-                key: compute_metric_deltas(metrics_before[key], scrape_metrics(v))
-                for key, v in named_validators.items()
-            }
             index += int(step.rate * step.hold)
             health = sampler.window(start, end)
             verdict = judge_step(step.rate, stats, health)
@@ -638,7 +626,6 @@ def run_load(
             if stop_on_failure and not verdict["ok"]:
                 break
 
-        drain_lfbs = {n.name: sampler.lfb(n) for n in shard.all_nodes}
         if resubmitter is not None:
             logging.info(
                 "Waiting up to %.0fs for refused deploys to be resubmitted",
@@ -751,13 +738,7 @@ def run_load(
         "deploys_out": deploys_out,
     }
     _write(out, summary)
-    return LoadRun(
-        rows=rows,
-        summary=summary,
-        tracker=tracker,
-        node_metrics=node_metrics,
-        drain_lfbs=drain_lfbs,
-    )
+    return LoadRun(rows=rows, summary=summary, tracker=tracker)
 
 
 def format_table(rows: List[dict], summary: dict) -> str:
