@@ -1230,7 +1230,7 @@ dev = ["grpcio-tools (==1.78.0)", "isort (>=5.12.0)", "mypy (>=1.7.0)", "mypy-pr
 
 [package.source]
 type = "git"
-url = "file://None/home/stephen/src/firefly/system-integration/services/pyf1r3fly"
+url = "https://github.com/F1R3FLY-io/pyf1r3fly.git"
 reference = "38dcf9538bff14f1587a7505c218c0150dc1102b"
 resolved_reference = "38dcf9538bff14f1587a7505c218c0150dc1102b"
 
@@ -1752,4 +1752,4 @@ test = ["pytest", "websockets"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "dd20762fcc5734b070bcbb4a2cf5a056a8bb97b46dd74e7c08026725f52a6ec5"
+content-hash = "de133475861925eb46d6749cb6db3d6bc30eef6f2bdced8bd25c04c29f89f346"
