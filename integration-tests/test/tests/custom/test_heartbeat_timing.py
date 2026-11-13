@@ -1,12 +1,12 @@
 """
 Heartbeat Timing Harness (issue #24)
 
-Repeats the ``high`` phase of ``test_load`` N times on one shard, so that the
+Repeats a ``high`` phase (light deploys at 10/s for 15 s) N times on one shard, so that the
 slow-high-phase signal a 60-hour soak shows about 50 times per provider can be
 sampled in under 30 minutes. Two node images (for example F1+F2 against
 F1+F2+H1) can then be compared in one day.
 
-Same shard as ``test_deploy_throughput_and_finalization`` (``_load_shard_config``):
+Same shard as ``test_load`` (``_load_shard_config``) without its deploy queues:
 4 validators, heartbeat on at the ``conf/rust.conf`` cadence, readonly included,
 autopropose off. Deploys go to all 4 validators and count as finalized only when
 every node reports them, as in ``test_load``. One unreported warm-up, then N
@@ -34,26 +34,23 @@ Select the node image with ``shardctl test --image``.
 import logging
 import os
 import time
+from typing import List, Tuple
 
 import pytest  # type: ignore[import-not-found]
 
+from ...infra.load import DEPLOY_KINDS, OpenLoopSubmitter, PlannedDeploy, VabnSource
 from ...infra.metrics import (
     LifecycleTracker,
     compute_metric_deltas,
     format_node_metrics,
+    log_unfinalized,
     percentiles,
     scrape_metrics,
 )
+from ...infra.node import Node
 from ...infra.polling import lfb_number, poll_until, wait_for_lfb_converged
 from ...infra.shard import Shard
-from .test_load import (
-    PHASE_LINE_FORMAT,
-    PHASES,
-    VALIDATORS_AND_KEYS,
-    _load_shard_config,
-    _log_unfinalized,
-    _run_phase,
-)
+from .test_load import PHASE_LINE_FORMAT, _load_shard_config
 
 pytestmark = [
     pytest.mark.xdist_group("custom"),
@@ -63,9 +60,37 @@ pytestmark = [
     ),
 ]
 
-HIGH_PHASE = next(p for p in PHASES if p["name"] == "high")
+# Light deploys at 10/s for 15 s, each validator signing what it receives.
+HIGH_PHASE = {"name": "high", "rate": 10, "duration": 15}
+_LIGHT_TERM, _LIGHT_PHLO = DEPLOY_KINDS["light"]
 
 DEFAULT_REPETITIONS = 20
+
+
+def _submitters(shard: Shard) -> List[Tuple[Node, object]]:
+    """(validator, its own signing key) pairs, in validator order."""
+    return [(v, v.identity.private_key()) for v in shard.validators]
+
+
+def _run_phase(submitters, tracker, start_index, monitor) -> Tuple[int, List[str], float]:
+    """Submit the high phase round-robin across ``submitters``, tracking each
+    deploy as it is accepted. Returns (accepted, errors, submission seconds)."""
+
+    def plan(index: int) -> PlannedDeploy:
+        node, key = submitters[(index - start_index) % len(submitters)]
+        return PlannedDeploy(node, key, _LIGHT_TERM(index), _LIGHT_PHLO, "light")
+
+    rate = HIGH_PHASE["rate"]
+    stats = OpenLoopSubmitter(OpenLoopSubmitter.workers_for(rate)).run(
+        rate,
+        HIGH_PHASE["duration"],
+        start_index,
+        plan,
+        VabnSource(submitters[0][0], monitor),
+        HIGH_PHASE["name"],
+        tracker.track_deploy,
+    )
+    return stats.submitted, stats.errors, stats.duration
 
 
 def repetitions_from_env() -> int:
@@ -109,7 +134,8 @@ def test_heartbeat_timing(provider, timeouts, resource_monitor) -> None:
     shard = Shard.create(provider, _load_shard_config(), timeouts)
     try:
         v1 = shard.node("validator1")
-        nodes = {name: shard.node(name) for _, name in VALIDATORS_AND_KEYS}
+        nodes = shard.named_validators
+        submitters = _submitters(shard)
 
         poll_until(
             predicate=lambda: lfb_number(v1) or None,
@@ -129,7 +155,7 @@ def test_heartbeat_timing(provider, timeouts, resource_monitor) -> None:
             # sees no record for it.
             logging.info("--- Warm-up: high ---")
             deploy_count, errors, _ = _run_phase(
-                nodes, tracker, HIGH_PHASE, deploy_index, resource_monitor
+                submitters, tracker, deploy_index, resource_monitor
             )
             deploy_index += deploy_count + len(errors)
             tracker.wait_for_finalization(timeout=timeouts.finalization)
@@ -144,7 +170,7 @@ def test_heartbeat_timing(provider, timeouts, resource_monitor) -> None:
                 rep_start = time.time()
 
                 deploy_count, errors, submission_duration = _run_phase(
-                    nodes, tracker, HIGH_PHASE, deploy_index, resource_monitor
+                    submitters, tracker, deploy_index, resource_monitor
                 )
                 deploy_index += deploy_count + len(errors)
                 for e in errors:
@@ -185,7 +211,7 @@ def test_heartbeat_timing(provider, timeouts, resource_monitor) -> None:
                     lfb_rate,
                     unfinalized,
                 )
-                _log_unfinalized(HIGH_PHASE["name"], tracker)
+                log_unfinalized(HIGH_PHASE["name"], tracker.get_unfinalized())
                 for v_name in nodes:
                     m = compute_metric_deltas(metrics_before[v_name], metrics_after[v_name])
                     if m:

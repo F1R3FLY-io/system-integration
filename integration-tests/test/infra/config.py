@@ -38,6 +38,18 @@ def resolve_node_binary(repo_root: str) -> str:
     return os.path.join(repo_root, "services", "f1r3node-rust", "target", "release", "node")
 
 
+def resolve_deploy_queue_binary(repo_root: str) -> str:
+    """Resolve the deploy queue binary from ``F1R3FLY_DEPLOY_QUEUE_BINARY``.
+
+    Falls back to ``services/f1r3node-rust/target/release/deploy-queue``. Only
+    a subprocess shard with ``deploy_queue`` set needs it.
+    """
+    override = os.environ.get("F1R3FLY_DEPLOY_QUEUE_BINARY")
+    if override:
+        return override
+    return os.path.join(repo_root, "services", "f1r3node-rust", "target", "release", "deploy-queue")
+
+
 def resolve_node_defaults_conf(repo_root: str) -> str:
     """Resolve the node's defaults.conf path.
 
@@ -158,8 +170,35 @@ class ShardConfig:
     include_readonly: bool = False
     global_cli_options: Dict[str, str] = dataclasses.field(default_factory=dict)
     per_node_cli_options: Dict[str, Dict[str, str]] = dataclasses.field(default_factory=dict)
+    # Host CPUs a node runs on from its first instruction, by node key ("boot",
+    # "validator1", ..., "readonly"). A node absent here may use every CPU.
+    per_node_cpus: Dict[str, FrozenSet[int]] = dataclasses.field(default_factory=dict)
     extra_wallets: Optional[List[Tuple[str, int]]] = None
     image: Optional[str] = None
+    # A deploy queue in front of each validator. The queue serves the
+    # validator's client ports (gRPC external and HTTP), so tests reach the
+    # validator through it; the validator keeps its other ports.
+    deploy_queue: bool = False
+
+    def __post_init__(self) -> None:
+        unknown = set(self.per_node_cpus) - set(self.node_keys)
+        if unknown:
+            raise ValueError(
+                f"per_node_cpus names nodes this shard does not have: {sorted(unknown)}"
+            )
+        for node_key, cpus in self.per_node_cpus.items():
+            if not cpus or any(cpu < 0 for cpu in cpus):
+                raise ValueError(
+                    f"per_node_cpus[{node_key!r}] must be a non-empty set of CPU "
+                    f"numbers, got {sorted(cpus)}"
+                )
+
+    @property
+    def node_keys(self) -> List[str]:
+        keys = ["boot"] + [f"validator{i + 1}" for i in range(len(self.bonds))]
+        if self.include_readonly:
+            keys.append("readonly")
+        return keys
 
     @property
     def effective_image(self) -> str:

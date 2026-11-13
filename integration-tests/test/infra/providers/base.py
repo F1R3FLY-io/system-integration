@@ -12,10 +12,12 @@ the method signatures.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+import requests
 import typing_extensions
 
 from ..config import NodeConfig, ShardConfig
@@ -156,6 +158,8 @@ class Provider(typing_extensions.Protocol):
     Implementations:
       - ``DockerProvider``: uses ``docker run`` / ``docker compose``
       - ``K8sProvider``: uses ``helm install`` / ``kubectl`` (future)
+      - ``RemoteProvider``: adopts an existing shard from an inventory and
+        creates nothing
 
     The provider manages the complete lifecycle: network creation,
     volume provisioning, container/pod startup, health checking,
@@ -169,6 +173,16 @@ class Provider(typing_extensions.Protocol):
 
         Set via ``--keep-running`` CLI flag. Allows post-failure
         inspection of containers, logs, and state.
+        """
+        ...
+
+    @property
+    def node_logs_available(self) -> bool:
+        """Whether ``NodeHandle.logs()`` can read node logs.
+
+        False for providers whose nodes run elsewhere (``RemoteProvider``):
+        the post-test forbidden-pattern scan cannot run in the harness, and
+        their logs are scanned on the node hosts instead.
         """
         ...
 
@@ -323,6 +337,28 @@ def archive_handles(handles: Sequence[NodeHandle], archive_dir: Path) -> None:
             h.archive_log(archive_dir / f"{h.name}.log")
         except Exception as e:  # pragma: no cover — defensive
             logger.warning("archive_handles: %s failed: %s", h.name, e)
+
+
+def wait_for_deploy_queues(status_urls: Sequence[str], timeout: float) -> None:
+    """Wait until every deploy queue answers ``GET /queue/status``.
+
+    A queue serves its status as soon as it listens; it connects to its
+    validator on its own, so its validator must already be Running.
+    """
+    deadline = time.monotonic() + timeout
+    for url in status_urls:
+        while True:
+            try:
+                if requests.get(url, timeout=5).status_code == 200:
+                    break
+                problem = "not ready"
+            except requests.RequestException as exc:
+                problem = str(exc)
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"deploy queue at {url} did not answer within {timeout}s: {problem}"
+                )
+            time.sleep(1.0)
 
 
 def wait_for_handles_or_archive(

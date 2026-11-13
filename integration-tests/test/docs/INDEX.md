@@ -45,11 +45,11 @@ Each test builds its own `ShardConfig` and calls `provider.create_shard(...)`. U
 | 11 | [test_user_contract_concurrency](test_user_contract_concurrency.md) | Multi-parent merge on user-contract state (no PoS): commuting writes (independent channels, distinct keys, nested/set unions, high fan-out), single-cell conflicts across all value types, guarded RMW, IntegerAdd composition + overdraft cost-priority — under always-on background load |
 | 1 | [test_validator_lifecycle](test_validator_lifecycle.md) | Full PoS validator lifecycle (3 joiners): concurrent bond, rewards, concurrent bond+unbond, epoch-move shrink+grow, quarantine payout, re-bond, commit-reveal randomness, posVaultTransfer + auth-token guards, Mode-A out-of-phlo — bg-on throughout, cross-node FS-identity (slashing + active-validator cap out of scope) |
 | 1 | [test_active_validator_cap](test_active_validator_cap.md) | PoS active-validator cap: `pickActiveValidators` take(N) — 5 bonded but only 3 active under `--number-of-active-validators=3`; capped genesis in its own shard |
-| 1 | [test_load](test_load.md) | Deploy throughput + finalization latency benchmark |
+| 1 | [test_load](test_load.md) | Mixed load through deploy queues at and above the sustained rate: shard health, every accepted deploy an outcome, state check |
+| 1 | test_capacity | Opt-in (`CAPACITY_WORKLOAD`) capacity ramp through deploy queues until the shard stalls; same engine as test_load (settings in the test's docstring) |
 | 1 | [test_observer_missing_block_retry](test_observer_missing_block_retry.md) | Observer retries missing blocks after peers return and reproduces the canonical post-state hash |
 | 1 | [test_observer_overload](test_observer_overload.md) | Observer rejects excess exploratory deploys with bounded memory and recovers API capacity |
 | 1 | [test_readonly_catchup_bounded](test_readonly_catchup_bounded.md) | Readonly catch-up keeps API latency and memory bounded while converging to canonical state |
-| 1 | [test_shard_degradation](test_shard_degradation.md) | Production-readiness gate: 150 deploys, sustained load |
 | 1 | [test_slow_peer_notification](test_slow_peer_notification.md) | A slow low-stake peer does not block deploy finalization while quorum remains available |
 | 1 | [test_joiner_self_proposes_at_epoch_boundary](test_joiner_self_proposes_at_epoch_boundary.md) | Negative-control for the joiner-bond-drop bug: deterministic single-node propose does NOT reproduce it; rules out architectural-shape-alone hypothesis |
 | 1 | [test_synchrony_constraint](test_synchrony_constraint.md) | Per-validator synchrony constraint threshold enforcement |

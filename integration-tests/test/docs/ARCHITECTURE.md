@@ -232,9 +232,9 @@ Design for `NotImplementedError` with clear guidance as a first pass — `K8sPro
 
 | Module | Role |
 |---|---|
-| `types.py` | Pure data — `NodeRole`, `ValidatorIdentity`, `PortMapping`. No I/O. |
+| `types.py` | Pure data — `NodeRole`, `ValidatorIdentity`, `PortMapping`, deploy queue naming. No I/O. |
 | `keys.py` | Pre-defined validator keys (single source of truth for genesis + signing) |
-| `config.py` | `TimeoutConfig`, `ShardConfig`, `NodeConfig`, `ResourcePaths`, `NodeConf` (HOCON parser), `resolve_node_image()` |
+| `config.py` | `TimeoutConfig`, `ShardConfig`, `NodeConfig`, `ResourcePaths`, `NodeConf` (HOCON parser), `resolve_node_image()`, `resolve_deploy_queue_binary()`. `ShardConfig(deploy_queue=True)` puts a deploy queue in front of each validator: the queue serves the validator's client ports (gRPC external, HTTP), the validator keeps the rest. Docker runs each queue as a container from the node image; subprocess runs the `deploy-queue` binary (`F1R3FLY_DEPLOY_QUEUE_BINARY`) and moves the validator's client ports to a second block. |
 | `timeouts.py` | `TimeoutHierarchy` |
 | `ports.py` | `PortAllocator` |
 | `cleanup.py` | `DockerCleanupRegistry` (see Section 4); other providers own their own resource lifetime |
@@ -248,8 +248,13 @@ Design for `NotImplementedError` with clear guidance as a first pass — `K8sPro
 | `node.py` | `Node` — wraps handle + pyf1r3fly clients + HTTP helpers |
 | `shard.py` | `Shard` — collection of `Node`s + joiner/observer attach + adoption (`add_joiner` transient context-manager; `attach_joiner` persistent with identity; `attach_observer` persistent readonly) |
 | `resource_monitor.py` | `--monitor` flag implementation (peak memory/CPU via `docker stats`) |
-| `metrics.py` | Prometheus metric helpers |
+| `metrics.py` | Prometheus metric helpers; `LifecycleTracker` (every deploy's outcome on every node) |
+| `load.py` | Open-loop submitter, deploy queue refusals and resubmission, deploy kinds, funded senders |
+| `workloads.py` | Load workloads with state checks (transfer, contention, nonce, install/call, payload, mix) |
+| `load_run.py` | `run_load`: steps of load, health sampling, drain, settlement and state check, shared by `test_load` and `test_capacity` |
+| `inventory.py` | `ShardInventory` for `--provider=remote` |
 | `providers/base.py` | `Provider` + `NodeHandle` Protocols |
 | `providers/docker.py` | `DockerProvider` + `DockerNodeHandle` |
 | `providers/subprocess.py` | `SubprocessProvider` + `SubprocessNodeHandle` (host-process backend) |
 | `providers/kubernetes.py` | `K8sProvider` + `K8sNodeHandle` (stub) |
+| `providers/remote.py` | `RemoteProvider`: adopts an existing shard from an inventory, never changes it |

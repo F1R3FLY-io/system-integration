@@ -24,11 +24,18 @@ from ..keys import BOOTSTRAP_NODE_ID
 from ..ports import PortAllocator
 from ..run_outcome import current_test_failed
 from ..timeouts import TimeoutHierarchy
-from ..types import NodeRole, PortMapping, ValidatorIdentity
+from ..types import (
+    DEPLOY_QUEUE_PREFIX,
+    NodeRole,
+    PortMapping,
+    ValidatorIdentity,
+    deploy_queue_key,
+)
 from .base import (
     RetiredLogSnapshot,
     archive_handles,
     archive_root_for,
+    wait_for_deploy_queues,
     wait_for_handles_or_archive,
 )
 
@@ -268,6 +275,27 @@ def _ensure_no_container(name: str, timeout: float = 30.0) -> None:
         f"stderr={rm.stderr.strip()!r}\n\n"
         f"Daemon state at timeout:\n{_daemon_diagnostics()}"
     )
+
+
+def _archive_containers(names: Sequence[str], archive_dir: Path) -> None:
+    """Write each container's ``docker logs`` to ``archive_dir/<name>.log``.
+
+    For the deploy queues, which log to stdout only.
+    """
+    for name in names:
+        dest = archive_dir / f"{name}.log"
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with dest.open("w") as f:
+                subprocess.run(
+                    ["docker", "logs", name],
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                    timeout=60,
+                )
+        except Exception as e:
+            logger.warning("archiving %s failed: %s", name, e)
 
 
 def _ensure_network(name: str, timeout: float = 30.0) -> None:
@@ -707,7 +735,9 @@ class DockerNodeHandle:
         _docker("rm", "-f", self._name)
 
     @classmethod
-    def from_container(cls, container_name: str) -> "DockerNodeHandle":
+    def from_container(
+        cls, container_name: str, client_container: Optional[str] = None
+    ) -> "DockerNodeHandle":
         """Build a handle for an already-running container by inspecting it.
 
         Used by :py:meth:`DockerProvider.adopt_session` to wrap containers
@@ -717,6 +747,8 @@ class DockerNodeHandle:
 
         Role is derived from the container name suffix:
         ``rnode.test.{session_id}.{role}`` → role (``boot``/``validator{N}``/``readonly``).
+        ``client_container``, when set, is the deploy queue that serves this
+        node's client ports (gRPC external and HTTP).
         """
         # Verify the container exists
         check = _docker("inspect", "-f", "{{.State.Status}}", container_name)
@@ -745,7 +777,7 @@ class DockerNodeHandle:
             raise ValueError(f"unrecognized role suffix {role_suffix!r} in {container_name!r}")
 
         # Port mapping: inspect each internal port
-        ports = _inspect_port_mapping(container_name)
+        ports = _inspect_port_mapping(container_name, client_container)
 
         # Network name: first network attached (we expect exactly one)
         net_result = _docker(
@@ -772,16 +804,25 @@ class DockerNodeHandle:
         )
 
 
-def _inspect_port_mapping(container_name: str) -> PortMapping:
-    """Read the host ports that map to each internal 40400-40405 port."""
+def _inspect_port_mapping(
+    container_name: str, client_container: Optional[str] = None
+) -> PortMapping:
+    """Read the host ports that map to each internal 40400-40405 port.
+
+    With ``client_container``, the client ports (40401, 40403) come from that
+    container, the deploy queue in front of this node.
+    """
     internal_ports = (40400, 40401, 40402, 40403, 40404, 40405)
     host_ports: Dict[int, int] = {}
     for iport in internal_ports:
-        result = _docker("port", container_name, f"{iport}/tcp")
+        source = (
+            client_container if client_container and iport in (40401, 40403) else container_name
+        )
+        result = _docker("port", source, f"{iport}/tcp")
         line = (result.stdout or "").strip().splitlines()
         if not line:
             raise ValueError(
-                f"container {container_name!r} has no host mapping for "
+                f"container {source!r} has no host mapping for "
                 f"internal port {iport} — was it started by this framework?"
             )
         # Format: "0.0.0.0:41234"  (may include IPv6 line; take IPv4)
@@ -837,6 +878,9 @@ class DockerProvider:
         self._shard_counter = 0
         self._active_handles: list = []
         self._retired_log_snapshots: List[RetiredLogSnapshot] = []
+        # Deploy queue containers by compose project. They are not nodes, so
+        # they have no handles; teardown archives and removes them by name.
+        self._shard_queues: Dict[str, List[str]] = {}
 
     @property
     def session_id(self) -> str:
@@ -845,6 +889,10 @@ class DockerProvider:
     @property
     def keep_running(self) -> bool:
         return self._registry.keep_running
+
+    @property
+    def node_logs_available(self) -> bool:
+        return True
 
     @property
     def keep_on_failure(self) -> bool:
@@ -1011,19 +1059,39 @@ class DockerProvider:
                 )
             )
 
+        queues = (
+            [
+                f"rnode.test.{shard_scope}.{deploy_queue_key(idx + 1)}"
+                for idx in range(len(config.bonds))
+            ]
+            if config.deploy_queue
+            else []
+        )
+        archive_dir = self._archive_dir / f"shard{self._shard_counter}"
+
         # Wait for all nodes to reach Running state
         if wait_running:
-            wait_for_handles_or_archive(
-                handles,
-                self._archive_dir / f"shard{self._shard_counter}",
-                self._timeouts.node_startup,
-            )
+            wait_for_handles_or_archive(handles, archive_dir, self._timeouts.node_startup)
+            try:
+                wait_for_deploy_queues(
+                    [
+                        f"http://{h.grpc_host}:{h.ports.http}/queue/status"
+                        for h in handles
+                        if queues and h.role == NodeRole.VALIDATOR
+                    ],
+                    self._timeouts.node_startup,
+                )
+            except Exception:
+                archive_handles(handles, archive_dir)
+                _archive_containers(queues, archive_dir)
+                raise
 
         # Store compose path for teardown, keyed per shard: keying by
         # session let a second live shard overwrite the first's record,
         # orphaning its compose project at teardown.
         self._compose_files = getattr(self, "_compose_files", {})
         self._compose_files[project_name] = (compose_path, project_name, genesis_dir)
+        self._shard_queues[project_name] = queues
 
         self._active_handles.extend(handles)
         logger.info(
@@ -1074,9 +1142,11 @@ class DockerProvider:
             else f"{self._session_id}-s{self._shard_counter}"
         )
         ordinal = scope.rsplit("-s", 1)[-1]
-        archive_handles(handles, self._archive_dir / f"shard{ordinal}")
-
         shard_key = f"test-{scope}"
+        queues = self._shard_queues.pop(shard_key, [])
+        archive_handles(handles, self._archive_dir / f"shard{ordinal}")
+        _archive_containers(queues, self._archive_dir / f"shard{ordinal}")
+
         compose_files = getattr(self, "_compose_files", {})
         try:
             if shard_key in compose_files:
@@ -1098,6 +1168,8 @@ class DockerProvider:
             # miss. Idempotent for containers compose already removed.
             for handle in handles:
                 _ensure_no_container(handle.name)
+            for queue in queues:
+                _ensure_no_container(queue)
         finally:
             # Hand the port blocks back even when teardown raises midway
             # — a block whose container survived stays bind-probe busy,
@@ -1571,14 +1643,16 @@ class DockerProvider:
             raise RuntimeError(
                 f"docker ps failed while adopting session {session_id!r}: {result.stderr.strip()}"
             )
-        names = sorted((result.stdout or "").strip().splitlines())
+        names = (result.stdout or "").strip().splitlines()
         if not names:
             raise ValueError(
                 f"no running containers found for session_id={session_id!r}. "
                 f"Expected names matching {prefix}* (was the session torn down?)"
             )
 
-        # Sort so bootstrap comes first, then validators by number, then readonly.
+        # Bootstrap first, then validators by number, then readonly. Deploy
+        # queues are not nodes: a validator behind one takes its client ports
+        # from the queue.
         def _sort_key(name: str) -> tuple:
             suffix = name.rsplit(".", 1)[-1]
             if suffix == "boot":
@@ -1592,8 +1666,20 @@ class DockerProvider:
                 return (2, 0)
             return (3, 0)
 
-        names.sort(key=_sort_key)
-        handles = [DockerNodeHandle.from_container(n) for n in names]
+        queues = {n for n in names if n.rsplit(".", 1)[-1].startswith(DEPLOY_QUEUE_PREFIX)}
+        nodes = sorted((n for n in names if n not in queues), key=_sort_key)
+
+        def _queue_for(name: str) -> Optional[str]:
+            scope, suffix = name.rsplit(".", 1)
+            slot = suffix[len("validator") :]
+            if not suffix.startswith("validator") or not slot.isdigit():
+                return None
+            queue = f"{scope}.{deploy_queue_key(int(slot))}"
+            return queue if queue in queues else None
+
+        handles = [
+            DockerNodeHandle.from_container(n, client_container=_queue_for(n)) for n in nodes
+        ]
         self._active_handles.extend(handles)
         logger.info(
             "Adopted shard for session %s: %d nodes (%s)",

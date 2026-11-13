@@ -357,7 +357,7 @@ def test_per_test_scan_does_not_replay_allowed_warning_after_first_rotation(
     monkeypatch.setattr(conftest, "_last_scan_allowances", {})
     sink = _RotatingFileSink(monkeypatch)
     handle = _handle()
-    provider = SimpleNamespace(active_handles=[handle])
+    provider = SimpleNamespace(active_handles=[handle], node_logs_available=True)
 
     def begin_test(*allowances):
         markers = [SimpleNamespace(args=allowances)] if allowances else []

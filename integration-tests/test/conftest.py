@@ -12,6 +12,8 @@ import time
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
 
 # Disable gRPC's pthread_atfork handlers before the gRPC C-core loads (pulled in
 # transitively by the .infra imports below via pyf1r3fly.client). The test
@@ -26,6 +28,7 @@ import pytest  # type: ignore[import-not-found]
 
 from .infra.cleanup import DockerCleanupRegistry
 from .infra.config import NodeConf, ResourcePaths, ShardConfig, TimeoutConfig
+from .infra.inventory import InventoryError, ShardInventory
 from .infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
 from .infra.node import Node
 from .infra.node_capabilities import (
@@ -140,11 +143,22 @@ def pytest_addoption(parser):
         "--provider",
         action="store",
         default="docker",
-        choices=["docker", "subprocess"],
+        choices=["docker", "subprocess", "remote"],
         help="Infrastructure backend: 'docker' (default) spawns nodes as "
         "containers; 'subprocess' spawns the locally-built node binary "
         "directly on the host (set F1R3FLY_NODE_BINARY or build "
-        "services/f1r3node-rust first).",
+        "services/f1r3node-rust first); 'remote' adopts an existing shard "
+        "described by --inventory and never starts, stops or changes a node "
+        "(requires --skip-setup --session-id <inventory shard>).",
+    )
+    group.addoption(
+        "--inventory",
+        action="store",
+        default=None,
+        metavar="PATH",
+        help="YAML inventory of the existing shard for --provider=remote: its "
+        "nodes' addresses and roles, and the funded deployer keys that sign "
+        "load deploys. Format in integration-tests/test/infra/inventory.py.",
     )
     group.addoption(
         "--node-capability",
@@ -172,6 +186,15 @@ def pytest_configure(config):
             "The session ID is printed by a prior `shardctl test --keep-running` run."
         )
 
+    remote = config.getoption("--provider") == "remote"
+    if remote and not (config.getoption("--inventory") and config.getoption("--skip-setup")):
+        raise pytest.UsageError(
+            "--provider=remote adopts an existing shard: it requires --inventory <path> "
+            "and --skip-setup --session-id <the inventory's shard>."
+        )
+    if config.getoption("--inventory") and not remote:
+        raise pytest.UsageError("--inventory applies only to --provider=remote.")
+
     if config.getoption("--readonly-history-blocks") <= 0:
         raise pytest.UsageError("--readonly-history-blocks must be a positive integer")
 
@@ -188,6 +211,13 @@ def pytest_configure(config):
         "FORBIDDEN_PATTERNS keys (e.g. 'RecordingInvalidBlock'). Use only "
         "when the test legitimately produces the pattern as part of its "
         "verification. See infra/log_events.py for the pattern set.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "remote_shard: this test may run against an adopted shard "
+        "(--provider=remote). Every other test is skipped there, because it "
+        "would build, restart, bond on or otherwise change a shard the "
+        "harness does not own.",
     )
     config.addinivalue_line(
         "markers",
@@ -209,6 +239,14 @@ def pytest_collection_modifyitems(config, items):
     if isolated:
         isolated_set = set(isolated)
         items[:] = isolated + [item for item in items if item not in isolated_set]
+
+    if config.getoption("--provider") == "remote":
+        not_remote = pytest.mark.skip(
+            reason="not marked remote_shard: unsafe against an adopted shard"
+        )
+        for item in items:
+            if not tuple(item.iter_markers("remote_shard")):
+                item.add_marker(not_remote)
 
     available = config.stash[_NODE_CAPABILITIES]
     run_all = config.getoption("--run-all-node-capability-tests")
@@ -249,6 +287,9 @@ def _stale_cleanup_for_provider(provider_choice: str) -> None:
         from .infra.providers.subprocess import SubprocessProvider
 
         SubprocessProvider.cleanup_stale_sessions()
+    elif provider_choice == "remote":
+        # An adopted shard is never the harness's to clean up.
+        pass
     else:
         # Unknown provider — silently skip rather than crash session start.
         pass
@@ -326,7 +367,19 @@ def readonly_history_blocks(request) -> int:
 
 
 @pytest.fixture(scope="session")
-def provider(request, port_allocator, session_id, timeouts, resource_paths):
+def remote_inventory(request) -> Optional[ShardInventory]:
+    """The adopted shard's inventory under ``--provider=remote``, else None."""
+    path = request.config.getoption("--inventory")
+    if path is None:
+        return None
+    try:
+        return ShardInventory.load(Path(path))
+    except InventoryError as exc:
+        raise pytest.UsageError(str(exc)) from exc
+
+
+@pytest.fixture(scope="session")
+def provider(request, port_allocator, session_id, timeouts, resource_paths, remote_inventory):
     """Construct the chosen Provider (Docker or Subprocess).
 
     Each provider owns its own resource lifecycle. For Docker, a
@@ -375,6 +428,10 @@ def provider(request, port_allocator, session_id, timeouts, resource_paths):
             timeouts=timeouts,
             paths=resource_paths,
         )
+    elif choice == "remote":
+        from .infra.providers.remote import RemoteProvider
+
+        prov = RemoteProvider(remote_inventory)
     else:
         raise pytest.UsageError(f"unknown --provider: {choice!r}")
 
@@ -719,6 +776,16 @@ def check_node_logs_after_test(request, provider):
     file, and a line count taken while a rotation renamed the file left
     the window open over earlier tests' lines.
     """
+    if not provider.node_logs_available:
+        yield
+        logging.warning(
+            "Node logs are not readable through the %s; the forbidden-pattern "
+            "scan for %s must run on the node hosts.",
+            type(provider).__name__,
+            request.node.nodeid,
+        )
+        return
+
     from .infra.log_events import (
         LogWindow,
         format_errors,
