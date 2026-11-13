@@ -725,6 +725,9 @@ def check_node_logs_after_test(request, provider):
     runs and scan only the lines added during the test at teardown.
     """
     start_offsets = {}
+    retired_before_test = {
+        id(snapshot) for snapshot in getattr(provider, "retired_log_snapshots", [])
+    }
     try:
         for handle in provider.active_handles:
             try:
@@ -764,8 +767,9 @@ def check_node_logs_after_test(request, provider):
     # already-judged prefix is skipped (re-judging it mis-attributed the
     # previous test's allowed ComputationOutOfPhlogistons lines to
     # test_bridge_api_exploratory), and the teardown-window tail is judged
-    # under the OWNING test's allowances only — this test's allowances
-    # never apply to another test's lines.
+    # under the owning test's allowances. For nodes active at this test's
+    # setup and retired during its body, the new tail uses this test's
+    # allowances while the earlier teardown gap retains its prior owner.
     #
     # Ordering is load-bearing: a NEW shard can reuse a retired node's
     # name (dedicated shard torn down, session shard created — container
@@ -774,6 +778,9 @@ def check_node_logs_after_test(request, provider):
     # names, or the retired snapshot would be scanned with the new
     # node's offset.
     for snapshot in getattr(provider, "retired_log_snapshots", []):
+        current_offset = None
+        if id(snapshot) not in retired_before_test:
+            current_offset = start_offsets.pop(snapshot.name, None)
         if getattr(snapshot, "read_error", None) is not None:
             scan_errors.append(f"{snapshot.name} (retired): {snapshot.read_error}")
         forbidden.extend(
@@ -783,6 +790,7 @@ def check_node_logs_after_test(request, provider):
                 _scanned_log_offsets,
                 _last_scan_allowances,
                 allowed,
+                current_offset=current_offset,
             )
         )
     if hasattr(provider, "clear_retired_log_snapshots"):
