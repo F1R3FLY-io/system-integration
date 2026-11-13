@@ -114,7 +114,9 @@ class TimeoutConfig:
     # poll_until degenerate to one attempt (see infra/polling.py). 30s puts it
     # in line with port_release/finalization/command.
     deploy_inclusion: int = 30
-    finalization: int = 45
+    # A deploy's Finalized verdict waits for the LFB's floor to cover its block,
+    # about one finality round after the block itself finalizes.
+    finalization: int = 105
     command: int = 60
     port_release: int = 30
     # Budget for an inherently multi-block consensus transition to complete:
