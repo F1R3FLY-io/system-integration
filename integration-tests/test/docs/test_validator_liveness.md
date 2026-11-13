@@ -17,13 +17,15 @@ The shard runs under `LIVENESS_PROFILE_CLI_OPTIONS` (`infra/config.py`):
 |-----------|-------|--------|
 | `--leaky-bucket-lambda-base-ppm` | 5000 | A silent validator drains below the threshold in 20 blocks |
 | `--leaky-bucket-theta-eject-ppm` | 900000 | The threshold is 90% of capacity |
-| `--leaky-bucket-eject-observation-blocks` | 10 | Ejection opens 10 blocks after the drain |
+| `--leaky-bucket-eject-observation-blocks` | 30 | Ejection opens 30 blocks after the drain |
 | `--leaky-bucket-reward-rate-ppm` | 22500 | 4.5 times the drain, the shipped ratio (630 to 140) |
-| `--epoch-length` | 20 | A claim must resolve within 20 blocks, and grace lasts 40 |
+| `--epoch-length` | 30 | A claim must resolve within 30 blocks, and grace lasts 60. See step 3 for why the epoch is this long |
 | `--deploy-lifespan` | 50 | Shortened with the rest of the profile and still above `max-parent-depth` (25). The node default is 300 |
-| `--quarantine-length` | 135 | The shortest quarantine the node accepts for this epoch and lifespan |
+| `--quarantine-length` | 165 | The shortest quarantine the node accepts for this epoch and lifespan |
 
 The drain and the reward rate are the shipped values scaled by the same factor. A validator holds or drains as it would under the shipped genesis, in about 36 times fewer blocks.
+
+The observation window is not scaled with them. A validator that resumes after a stall needs about 10 s to reconnect and acknowledge new blocks. On this shard, that is about 11 blocks. Until then, its blocks acknowledge no new work and earn nothing. The window must cover that recovery with margin.
 
 Runs under the subprocess provider.
 
@@ -48,11 +50,18 @@ Background deploy load runs for the whole test (`infra/background_load.py`): a v
 
 On every poll, no reporter may see a producing validator drained. No reporter may offer, claim or eject a protected validator. An ejected validator keeps its bond until a slash, and a slash may come only at or after its grace end. The producing and protected sets change as the phases run.
 
-Each ejected validator rejoins once. A rejoin starts only when at least the claim deadline plus 5 blocks of its grace remain, so the claim can be decided before the grace ends. If less remains, the test fails with the reason, and does not report a node fault. A step that waits for a state also accepts any later state, so a step that starts late never waits for a state that has passed.
+Each ejected validator rejoins once. A rejoin starts only when at least the claim deadline plus 5 blocks of its grace remain beyond the reporters' tip, so the claim can be decided before the grace ends. The test logs the blocks of grace left beyond that. If less remains, the test fails with the reason, and does not report a node fault. A step that waits for a state also accepts any later state, so a step that starts late never waits for a state that has passed.
 
 1. `held`: the shard runs 30 heights at mixed stakes. Every producer's bucket must be reported.
-2. `a_flap1`, `a_flap2`, `a_dip1` to `a_dip3`: A flaps short of ejection and stays protected. For each flap, A is paused until a reporter sees it use 50%, then 95%, of its headroom above the threshold. For each dip, A is paused until a reporter sees it drained. Then A is resumed, and every reporter must see it full again. A dip must resume A at most 5 blocks below the threshold, half the observation window. Otherwise the test polled too slowly to test the boundary, and it fails with that message. These steps poll every 0.25 s.
-3. `joiner_synced`, `epoch_end`, `epoch_start`: v6 attaches as a joiner, and the test waits until its tip is within 2 heights of the reporters' tips. A validator bonded before its node catches up cannot propose, and its bucket drains under this profile. A is paused 17 or 18 heights into an epoch. When the tip is 1 to 4 heights into the next epoch, v1 submits v6's bond of 100 and v3 submits its withdrawal. Both changes take effect at the boundary after that, so the ejection claim against A opens while v3 is still seated.
+2. `a_flap1`, `a_flap2`, `a_dip1` to `a_dip3`: A flaps short of ejection and stays protected. For each flap, A is paused until a reporter sees it use 50%, then 95%, of its headroom above the threshold. For each dip, A is paused until a reporter sees it drained. Then A is resumed, and every reporter must see it full again. A dip must resume A at most 5 blocks below the threshold. Otherwise the test polled too slowly to test the boundary, and it fails with that message. The rest of the window covers A's recovery. Each flap logs how far below the threshold A was when it resumed, and the deepest any reporter saw before A was full again. If a reporter offers A, the failure gives A's blocks below the threshold against the window. These steps poll every 0.25 s.
+3. `joiner_synced`, `epoch_start`: v6 attaches as a joiner, and the test waits until its tip is within 2 heights of the reporters' tips. A validator bonded before its node catches up cannot propose, and its bucket drains under this profile. When the tip is 1 to 4 heights into an epoch, v1 submits v6's bond of 100 and v3 submits its withdrawal. Both changes take effect at the boundary that closes this epoch. Then A is paused. The ejection claim against A opens about 20 heights later, about 8 heights before that boundary.
+
+   This placement must satisfy two limits, which the test cannot enforce directly. A seat changes when the finalized floor passes the boundary, a few blocks after the boundary itself. The finality lag differs from run to run.
+
+   - The claim's electorate is the committee at the claim's floor. For v3 to be in it, the claim's floor must be below the boundary.
+   - A can rejoin only after v3's leave is finalized. A's grace ends two epochs after the claim, and a rejoin needs the claim deadline (one epoch) plus 5 blocks. So the claim may open at most an epoch less 5 blocks before the leave is finalized.
+
+   With 20-height epochs, these limits left about 14 heights for the claim. The finality lag and the claim's timing used most of that, and runs passed with no margin. With 30-height epochs, both limits lie about a dozen heights from where the claim opens.
 4. `a_drained`, `a_claimed`, `a_ejected`: A drains and is ejected. The claim's electorate holds the leaver, v3. The honest nodes agree on one grace end, and the contract's ejection record holds the same grace end and the leaver's stake. Then A is unpaused, so it catches up while it is ejected. The test logs the blocks in which the bond and the withdrawal finalized, and the boundary that applies them.
 5. `joined`, `left`: v6 holds stake 100 and is active. v3 holds no bonded stake and is in withdrawal quarantine. The contract agrees and records v3's payout and the block at which its quarantine ends.
 6. `a_reinstated`: B is paused, and A asks to rejoin with a topup of 200. A is reinstated. Its freeze closes with the topup, and its bond stays 200. A's vault loses the deploy's phlo and the topup, and nothing more. From this step, no reporter may offer, claim or eject A, and A's bond may not change. If too little of A's grace remains, the failure names the blocks in which the bond and the withdrawal finalized, because a withdrawal that misses its boundary delays the leave and A's rejoin with it.

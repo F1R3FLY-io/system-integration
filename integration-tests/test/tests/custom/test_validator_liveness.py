@@ -11,8 +11,8 @@ ejected, its rejoin with too small a topup is refused, and it is slashed when
 its grace ends; the leaver is paid when its quarantine ends.
 
 Each ejected validator rejoins once, with at least a claim deadline of its
-grace left, and no step waits for a state that a later state can replace, so
-the outcome does not depend on where the epoch boundaries fall.
+grace left, and no step waits for a state that a later state can replace. A
+rejoin that starts with too little grace fails naming the cause.
 
 Each step is detected from the honest validators' liveness reports
 (``GET /api/validator-liveness`` on the admin port) and its outcome is checked
@@ -87,11 +87,17 @@ _FULL_TOPUP = _STAKE[_A]
 
 # Heights the shard runs at mixed stakes before anything changes.
 _HOLD_HEIGHTS = 30
-# A is silenced late in an epoch and the join and leave are submitted early in
-# the next, so they take effect a whole epoch later: the ejection claim
-# against A, which opens 10 to 16 heights after the silence, opens while the
-# leaver is still seated.
-_SILENCE_OFFSET = range(17, 19)
+# The join and the leave are submitted this many heights into an epoch, so
+# they finalize before its closing boundary and take effect there. A is
+# silenced at once, and the ejection claim against A opens about 20 heights
+# later (drain, observation window, inclusion), about 8 before the boundary.
+# A seat changes when the finalized floor passes the boundary, a few blocks
+# after it, so the leaver is in the claim's electorate while the claim's floor
+# is below the boundary, and A's rejoin can start only once the leave is
+# finalized. A's grace (the claim plus two epochs) must then still hold the
+# claim deadline plus slack: the claim may open at most an epoch less that
+# slack before the leave is finalized. With 30-height epochs both ends lie
+# about a dozen heights from where the claim opens.
 _EPOCH_OFFSET = range(1, 5)
 # Budget for any one step, in blocks: the slowest step waits out two epochs of
 # grace.
@@ -106,9 +112,11 @@ _FUNDED = 50_000_000_000_000_000
 _FLAP_DEPTHS = (0.5, 0.95)
 # Then it is paused until a reporter sees it drained, this many times.
 _DIPS = 3
-# A dip is resumed at most this many blocks below the threshold, half the
-# observation window, or the poll was too slow to test the boundary.
+# A dip is resumed at most this many blocks below the threshold, or the poll
+# was too slow to test the boundary. The rest of the observation window covers
+# A's recovery: reconnecting and acknowledging new blocks.
 _DIP_RESUME_LIMIT = 5
+_OBSERVATION_WINDOW = int(LIVENESS_PROFILE_CLI_OPTIONS["--leaky-bucket-eject-observation-blocks"])
 # A flap's pause ends within about a block of its trigger only at this poll.
 _FLAP_POLL = 0.25
 # Windows shorter than this many blocks are not measured for earnings.
@@ -223,7 +231,12 @@ class _Run:
             ejected = set(report["finalizedState"]["ejected"])
             for key in self.protected:
                 who = _NAME[key]
-                _require(key not in offers, f"{name} offers {who} for ejection")
+                if key in offers:
+                    below = (_bucket(report, key) or {}).get("blocksBelowThreshold")
+                    raise _ViolationError(
+                        f"{name} offers {who} for ejection, {below} blocks below the threshold "
+                        f"against a window of {_OBSERVATION_WINDOW}"
+                    )
                 _require(key not in claimed, f"{name} sees an ejection claim against {who}")
                 _require(key not in ejected, f"{name} sees {who} ejected")
             for key in self.producers:
@@ -394,13 +407,28 @@ def _flap(run: _Run, name: str, depth: Optional[float]) -> None:
 
     paused = run.step(f"{name}_paused", reached, interval=_FLAP_POLL)
     run.unpause("validator4")
+    resumed = max(_bucket(r, _A)["blocksBelowThreshold"] for r in paused)
     if depth is None:
-        below = max(_bucket(r, _A)["blocksBelowThreshold"] for r in paused)
-        assert below <= _DIP_RESUME_LIMIT, (
-            f"A resumed {below} blocks below the threshold: the test polled too slowly "
+        assert resumed <= _DIP_RESUME_LIMIT, (
+            f"A resumed {resumed} blocks below the threshold: the test polled too slowly "
             "to resume it well inside the observation window"
         )
-    run.every(f"{name}_full", lambda r: _full(_bucket(r, _A)), interval=_FLAP_POLL)
+    deepest = resumed
+
+    def refilled(reports: List[dict]) -> bool:
+        nonlocal deepest
+        buckets = [_bucket(r, _A) for r in reports]
+        deepest = max(deepest, *(b["blocksBelowThreshold"] for b in buckets))
+        return all(_full(b) for b in buckets)
+
+    run.step(f"{name}_full", refilled, interval=_FLAP_POLL)
+    logger.info(
+        "%s: A resumed %s blocks below the threshold, deepest %s of a window of %s",
+        name,
+        resumed,
+        deepest,
+        _OBSERVATION_WINDOW,
+    )
     run.producers.add(_A)
 
 
@@ -445,14 +473,20 @@ def _rejoin(run: _Run, identity, topup: int, grace_end: int, context: str = "") 
     through validator 1. Refuses to start unless a claim opened now can be
     decided before ``grace_end``; ``context`` explains a late start. Returns
     the phlo it cost the rejoiner."""
-    report = run.reports()[0]
-    finalized = report["finalizedState"]["blockNumber"]
+    reports = run.reports()
+    report = reports[0]
+    tip = max(r["localView"]["tipHeight"] for r in reports)
     needed = report["params"]["claimDeadlineBlocks"] + _DECISION_SLACK_BLOCKS
-    logger.info("%s before its rejoin: %s", identity.name, _standing(report, identity.public_hex))
-    assert grace_end - finalized >= needed, (
-        f"{identity.name}'s rejoin would start at finalized block {finalized} with its grace "
-        f"ending at {grace_end}: a rejoin claim needs up to {needed} blocks to be decided. "
-        f"{context}"
+    logger.info(
+        "%s before its rejoin: %s, %s blocks of grace beyond the %s a decision needs",
+        identity.name,
+        _standing(report, identity.public_hex),
+        grace_end - tip - needed,
+        needed,
+    )
+    assert grace_end - tip >= needed, (
+        f"{identity.name}'s rejoin would open after tip {tip} with its grace ending at "
+        f"{grace_end}: a rejoin claim needs up to {needed} blocks to be decided. {context}"
     )
     v1 = run.shard.node("validator1")
     deploy_id = v1.pos.rejoin_from_ejection(identity.private_key(), topup)
@@ -581,10 +615,6 @@ def _scenario(run: _Run) -> None:
     joiner = shard.attach_joiner(VALIDATOR6_ID)
     wait_for_block_visible(joiner, lfb.blockInfo.blockHash, timeout=run.timeouts.finalization * 3)
     run.caught_up("joiner_synced", "validator6")
-    run.every("epoch_end", lambda r: r["localView"]["tipHeight"] % epoch in _SILENCE_OFFSET)
-    run.pause("validator4")
-    run.producers.discard(_A)
-    run.protected.discard(_A)
     started = run.every(
         "epoch_start", lambda r: r["localView"]["tipHeight"] % epoch in _EPOCH_OFFSET
     )
@@ -593,6 +623,9 @@ def _scenario(run: _Run) -> None:
     v3 = shard.node("validator3")
     withdraw_id = v3.pos.withdraw(VALIDATOR3_ID.private_key())
     run.producers.discard(_LEAVER)
+    run.pause("validator4")
+    run.producers.discard(_A)
+    run.protected.discard(_A)
 
     # ── A is ejected by a claim the leaver votes on ─────────────────────
     claim, a_ejected, a_grace_end, record = _await_ejection(run, "a", _A)

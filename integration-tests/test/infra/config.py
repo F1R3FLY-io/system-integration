@@ -152,14 +152,20 @@ SHORT_EPOCH_CLI_OPTIONS: Dict[str, str] = {
 }
 
 # A leaky-bucket profile for suites that wait on ejection. A silent validator
-# drains below the threshold in 20 blocks and becomes ejectable 10 blocks
+# drains below the threshold in 20 blocks and becomes ejectable 30 blocks
 # later. The drain and the reward rate are the shipped values (140 and 630
 # ppm) scaled by the same factor, so a validator holds or drains as it would
-# under the shipped genesis, in fewer blocks. An ejection claim must
-# resolve within an epoch, and grace lasts two. The deploy lifespan is
-# shortened with the rest of the profile, still above max-parent-depth, and
-# the quarantine is the shortest the node accepts for this epoch and lifespan.
-LIVENESS_PROFILE_EPOCH_LENGTH = 20
+# under the shipped genesis, in fewer blocks. The observation window is not
+# scaled with them: a validator resumed after a stall needs about 10 s to
+# reconnect and acknowledge new blocks, about 11 blocks on a test shard, and
+# the window must cover that recovery with margin. An ejection claim must
+# resolve within an epoch, and grace lasts two. The epoch is long enough that
+# a validator ejected while another leaves still has the time a rejoin needs
+# after the leave is finalized, however late in the window the finality lag
+# puts the leave. The deploy lifespan is shortened with the rest of the
+# profile, still above max-parent-depth, and the quarantine is the shortest
+# the node accepts for this epoch and lifespan.
+LIVENESS_PROFILE_EPOCH_LENGTH = 30
 LIVENESS_PROFILE_DEPLOY_LIFESPAN = 50
 LIVENESS_PROFILE_CLI_OPTIONS: Dict[str, str] = {
     "--epoch-length": str(LIVENESS_PROFILE_EPOCH_LENGTH),
@@ -169,7 +175,7 @@ LIVENESS_PROFILE_CLI_OPTIONS: Dict[str, str] = {
     ),
     "--leaky-bucket-lambda-base-ppm": "5000",
     "--leaky-bucket-theta-eject-ppm": "900000",
-    "--leaky-bucket-eject-observation-blocks": "10",
+    "--leaky-bucket-eject-observation-blocks": "30",
     "--leaky-bucket-reward-rate-ppm": "22500",
 }
 
