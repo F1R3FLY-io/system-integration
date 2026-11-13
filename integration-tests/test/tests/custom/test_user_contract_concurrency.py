@@ -50,9 +50,8 @@ node by the autouse ``check_node_logs_after_test`` fixture.
 """
 
 import logging
-import threading
 import time
-from typing import List, Optional
+from typing import List
 
 import pytest
 from f1r3fly.crypto import PrivateKey
@@ -67,6 +66,11 @@ from ...infra.assertions import (
     common_finalized_anchor,
     lowest_lfb_number,
     resolve_deploy_verdicts,
+)
+from ...infra.background_load import (
+    BackgroundLoad,
+    assert_vault_transfers_reconciled,
+    vault_transfers,
 )
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
@@ -140,63 +144,16 @@ _CONFLICT_ROUNDS = 5
 _FANOUT_PER_NODE = 4
 
 
-class _BackgroundLoad:
-    """Same-vault transfer generator, round-robin across producer nodes.
-
-    Always-on for the duration of a scenario to reproduce the contended,
-    lumpy finalization the merge must survive. Submit errors are surfaced via
-    the finalization assertion (a missing deploy), never swallowed.
-    """
-
-    def __init__(self, producers: List, interval: float = _BG_INTERVAL) -> None:
-        self._producers = producers
-        self._interval = interval
-        self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._counter = 0
-        self._errors = 0
-        self._deploy_ids: List[str] = []
-        self._lock = threading.Lock()
-
-    def deploy_ids(self) -> List[str]:
-        with self._lock:
-            return list(self._deploy_ids)
-
-    def start(self) -> None:
-        if self._thread is not None:
-            raise RuntimeError("BackgroundLoad already started")
-        self._thread = threading.Thread(target=self._run, daemon=True, name="user-bg-load")
-        self._thread.start()
-
-    def stop(self, join_timeout: float = 10.0) -> None:
-        if self._thread is None:
-            return
-        self._stop.set()
-        self._thread.join(timeout=join_timeout)
-        logging.info(
-            "Background load stopped: %d transfers, %d errors", self._counter, self._errors
-        )
-        self._thread = None
-
-    def _run(self) -> None:
-        while not self._stop.is_set():
-            node = self._producers[self._counter % len(self._producers)]
-            try:
-                did = node.get_vault().transfer(
-                    _BG_SRC_ADDR,
-                    _BG_DST_ADDR,
-                    _BG_TRANSFER_AMOUNT,
-                    _BG_SRC_KEY,
-                    phlo_price=1,
-                    phlo_limit=_PHLO_LIMIT,
-                )
-                with self._lock:
-                    self._deploy_ids.append(did)
-            except Exception as e:  # noqa: BLE001 — surfaced via finalization assertion
-                self._errors += 1
-                logging.warning("bg-load transfer %d on %s failed: %s", self._counter, node.name, e)
-            self._counter += 1
-            self._stop.wait(self._interval)
+def _background_load(producers: List) -> BackgroundLoad:
+    """Same-vault transfers for the duration of a scenario, reproducing the
+    contended, lumpy finalization the merge must survive. Submit errors surface
+    through the finalization assertion (a missing deploy)."""
+    return BackgroundLoad(
+        producers,
+        vault_transfers(_BG_SRC_KEY, _BG_DST_ADDR, _BG_TRANSFER_AMOUNT, phlo_limit=_PHLO_LIMIT),
+        interval=_BG_INTERVAL,
+        name="user-bg-load",
+    )
 
 
 # ── Strict finalization helper (mirrors lifecycle's bg-load assertion) ───────
@@ -232,57 +189,6 @@ def _finalized_names(deploy_ids: List[str], verdicts) -> List[str]:
     ``_deploy_on_each`` (one per producer, in ``_PRODUCER_KEYS`` order)."""
     finalized = verdicts.finalized_set()
     return [name for name, did in zip(_PRODUCER_KEYS, deploy_ids) if did in finalized]
-
-
-def _assert_bg_load_robust(
-    producers, all_nodes, bg, src0: int, dst0: int, timeouts, label: str
-) -> None:
-    """Robust bg-load verification on ALL nodes — the same non-regression +
-    exact-reconciliation principle the foreground scenarios apply, carried over
-    to the always-on same-vault transfer stream.
-
-    The bg load moves exactly ``_BG_TRANSFER_AMOUNT`` from SRC to DST per
-    transfer. After the N submitted transfers finalize:
-
-      1. every bg transfer finalizes on every node;
-      2. DEST reconciles EXACTLY to ``dst0 + N*amount`` on every node, never
-         decreasing en route (a finalized credit not undone — #71) and never
-         EXCEEDING it (a double-applied credit — caught immediately by the
-         upper bound rather than as a convergence timeout);
-      3. SOURCE, at the settled common cut, is identical on every node and
-         debited by AT LEAST the transferred total (the surplus is gas)."""
-    bg_ids = bg.deploy_ids()
-    verdicts = _assert_all_finalized(producers, all_nodes, bg_ids, timeouts, label)
-    # Reconcile against the transfers that FINALIZED: an expired bg transfer moved
-    # nothing, so counting it would fail the exact-destination check on a shard that
-    # behaved correctly.
-    n = len(verdicts.finalized)
-    want_dst = dst0 + n * _BG_TRANSFER_AMOUNT
-    min_src_debit = n * _BG_TRANSFER_AMOUNT
-    await_balance_converges_on_all_nodes(
-        all_nodes,
-        _BG_DST_ADDR,
-        want_dst,
-        timeouts.finalization * 2,
-        f"{label}-dst",
-        non_regression="up",
-        upper_bound=want_dst,
-    )
-    # Stable finalized anchor, not live-pointer agreement: under the
-    # always-on bg load the LFB pointers may never coincide in a sweep.
-    lfb = common_finalized_anchor(all_nodes, timeouts.finalization)
-    src_final = assert_balance_consistent_across_nodes(all_nodes, _BG_SRC_ADDR, lfb)
-    assert src0 - src_final >= min_src_debit, (
-        f"[{label}] bg-src under-debited: source fell by {src0 - src_final} < transferred "
-        f"{min_src_debit} — a finalized debit was lost"
-    )
-    logging.info(
-        "%s: reconciled %d bg transfers on all nodes — dst->%d (exact), src->%d (incl gas)",
-        label,
-        n,
-        want_dst,
-        src_final,
-    )
 
 
 def _deploy_on_each(shard, term_for, timeouts) -> List[str]:
@@ -456,7 +362,7 @@ def test_independent_channels_merge_in_parallel(user_shard, timeouts):
     all_nodes = shard.all_nodes
     ro = shard.node("readonly")
     producers = [shard.node(n) for n in _PRODUCER_KEYS]
-    bg = _BackgroundLoad(producers)
+    bg = _background_load(producers)
     bg_src0 = bg_dst0 = 0
     if _BG_LOAD_ENABLED:
         bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
@@ -485,8 +391,16 @@ def test_independent_channels_merge_in_parallel(user_shard, timeouts):
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(
-            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(independent)"
+        assert_vault_transfers_reconciled(
+            bg,
+            all_nodes,
+            _BG_SRC_KEY,
+            _BG_DST_ADDR,
+            _BG_TRANSFER_AMOUNT,
+            bg_src0,
+            bg_dst0,
+            timeouts,
+            "bg-load(independent)",
         )
 
 
@@ -505,7 +419,7 @@ def test_single_cell_map_concurrent_adds_all_resolve(user_shard, timeouts):
     all_nodes = shard.all_nodes
     ro = shard.node("readonly")
     producers = [shard.node(n) for n in _PRODUCER_KEYS]
-    bg = _BackgroundLoad(producers)
+    bg = _background_load(producers)
     bg_src0 = bg_dst0 = 0
     if _BG_LOAD_ENABLED:
         bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
@@ -582,8 +496,16 @@ def test_single_cell_map_concurrent_adds_all_resolve(user_shard, timeouts):
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(
-            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(single-cell)"
+        assert_vault_transfers_reconciled(
+            bg,
+            all_nodes,
+            _BG_SRC_KEY,
+            _BG_DST_ADDR,
+            _BG_TRANSFER_AMOUNT,
+            bg_src0,
+            bg_dst0,
+            timeouts,
+            "bg-load(single-cell)",
         )
 
 
@@ -600,7 +522,7 @@ def test_same_key_conflict_resolves_to_single_value(user_shard, timeouts):
     all_nodes = shard.all_nodes
     ro = shard.node("readonly")
     producers = [shard.node(n) for n in _PRODUCER_KEYS]
-    bg = _BackgroundLoad(producers)
+    bg = _background_load(producers)
     bg_src0 = bg_dst0 = 0
     if _BG_LOAD_ENABLED:
         bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
@@ -661,8 +583,16 @@ def test_same_key_conflict_resolves_to_single_value(user_shard, timeouts):
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(
-            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(same-key-conflict)"
+        assert_vault_transfers_reconciled(
+            bg,
+            all_nodes,
+            _BG_SRC_KEY,
+            _BG_DST_ADDR,
+            _BG_TRANSFER_AMOUNT,
+            bg_src0,
+            bg_dst0,
+            timeouts,
+            "bg-load(same-key-conflict)",
         )
 
 
@@ -681,7 +611,7 @@ def test_guarded_rmw_conflict_no_double_apply(user_shard, timeouts):
     all_nodes = shard.all_nodes
     ro = shard.node("readonly")
     producers = [shard.node(n) for n in _PRODUCER_KEYS]
-    bg = _BackgroundLoad(producers)
+    bg = _background_load(producers)
     bg_src0 = bg_dst0 = 0
     if _BG_LOAD_ENABLED:
         bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
@@ -730,8 +660,16 @@ def test_guarded_rmw_conflict_no_double_apply(user_shard, timeouts):
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(
-            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(guarded-rmw)"
+        assert_vault_transfers_reconciled(
+            bg,
+            all_nodes,
+            _BG_SRC_KEY,
+            _BG_DST_ADDR,
+            _BG_TRANSFER_AMOUNT,
+            bg_src0,
+            bg_dst0,
+            timeouts,
+            "bg-load(guarded-rmw)",
         )
 
 
@@ -744,7 +682,7 @@ def test_mergeable_balance_concurrent_transfers_compose(user_shard, timeouts):
     all_nodes = shard.all_nodes
     ro = shard.node("readonly")
     producers = [shard.node(n) for n in _PRODUCER_KEYS]
-    bg = _BackgroundLoad(producers)
+    bg = _background_load(producers)
     bg_src0 = bg_dst0 = 0
     if _BG_LOAD_ENABLED:
         bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
@@ -796,8 +734,16 @@ def test_mergeable_balance_concurrent_transfers_compose(user_shard, timeouts):
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(
-            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(balance)"
+        assert_vault_transfers_reconciled(
+            bg,
+            all_nodes,
+            _BG_SRC_KEY,
+            _BG_DST_ADDR,
+            _BG_TRANSFER_AMOUNT,
+            bg_src0,
+            bg_dst0,
+            timeouts,
+            "bg-load(balance)",
         )
 
 
@@ -818,7 +764,7 @@ def test_overdraft_cost_priority_keeps_higher_cost_transfer(user_shard, timeouts
     all_nodes = shard.all_nodes
     ro = shard.node("readonly")
     producers = [shard.node(n) for n in _PRODUCER_KEYS]
-    bg = _BackgroundLoad(producers)
+    bg = _background_load(producers)
     bg_src0 = bg_dst0 = 0
     if _BG_LOAD_ENABLED:
         bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
@@ -919,8 +865,16 @@ def test_overdraft_cost_priority_keeps_higher_cost_transfer(user_shard, timeouts
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(
-            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(overdraft)"
+        assert_vault_transfers_reconciled(
+            bg,
+            all_nodes,
+            _BG_SRC_KEY,
+            _BG_DST_ADDR,
+            _BG_TRANSFER_AMOUNT,
+            bg_src0,
+            bg_dst0,
+            timeouts,
+            "bg-load(overdraft)",
         )
 
 
@@ -937,7 +891,7 @@ def test_nested_map_concurrent_distinct_inner_keys(user_shard, timeouts):
     all_nodes = shard.all_nodes
     ro = shard.node("readonly")
     producers = [shard.node(n) for n in _PRODUCER_KEYS]
-    bg = _BackgroundLoad(producers)
+    bg = _background_load(producers)
     bg_src0 = bg_dst0 = 0
     if _BG_LOAD_ENABLED:
         bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
@@ -976,8 +930,16 @@ def test_nested_map_concurrent_distinct_inner_keys(user_shard, timeouts):
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(
-            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(nested-map)"
+        assert_vault_transfers_reconciled(
+            bg,
+            all_nodes,
+            _BG_SRC_KEY,
+            _BG_DST_ADDR,
+            _BG_TRANSFER_AMOUNT,
+            bg_src0,
+            bg_dst0,
+            timeouts,
+            "bg-load(nested-map)",
         )
 
 
@@ -994,7 +956,7 @@ def test_concurrent_delete_and_set_same_key(user_shard, timeouts):
     all_nodes = shard.all_nodes
     ro = shard.node("readonly")
     producers = [shard.node(n) for n in _PRODUCER_KEYS]
-    bg = _BackgroundLoad(producers)
+    bg = _background_load(producers)
     bg_src0 = bg_dst0 = 0
     if _BG_LOAD_ENABLED:
         bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
@@ -1044,8 +1006,16 @@ def test_concurrent_delete_and_set_same_key(user_shard, timeouts):
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(
-            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(del-set)"
+        assert_vault_transfers_reconciled(
+            bg,
+            all_nodes,
+            _BG_SRC_KEY,
+            _BG_DST_ADDR,
+            _BG_TRANSFER_AMOUNT,
+            bg_src0,
+            bg_dst0,
+            timeouts,
+            "bg-load(del-set)",
         )
 
 
@@ -1060,7 +1030,7 @@ def test_high_fanout_distinct_keys_all_land(user_shard, timeouts):
     all_nodes = shard.all_nodes
     ro = shard.node("readonly")
     producers = [shard.node(n) for n in _PRODUCER_KEYS]
-    bg = _BackgroundLoad(producers)
+    bg = _background_load(producers)
     bg_src0 = bg_dst0 = 0
     if _BG_LOAD_ENABLED:
         bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
@@ -1106,8 +1076,16 @@ def test_high_fanout_distinct_keys_all_land(user_shard, timeouts):
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(
-            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(high-fanout)"
+        assert_vault_transfers_reconciled(
+            bg,
+            all_nodes,
+            _BG_SRC_KEY,
+            _BG_DST_ADDR,
+            _BG_TRANSFER_AMOUNT,
+            bg_src0,
+            bg_dst0,
+            timeouts,
+            "bg-load(high-fanout)",
         )
 
 
@@ -1121,7 +1099,7 @@ def test_set_cell_concurrent_distinct_elements_union(user_shard, timeouts):
     all_nodes = shard.all_nodes
     ro = shard.node("readonly")
     producers = [shard.node(n) for n in _PRODUCER_KEYS]
-    bg = _BackgroundLoad(producers)
+    bg = _background_load(producers)
     bg_src0 = bg_dst0 = 0
     if _BG_LOAD_ENABLED:
         bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
@@ -1159,8 +1137,16 @@ def test_set_cell_concurrent_distinct_elements_union(user_shard, timeouts):
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(
-            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(set-union)"
+        assert_vault_transfers_reconciled(
+            bg,
+            all_nodes,
+            _BG_SRC_KEY,
+            _BG_DST_ADDR,
+            _BG_TRANSFER_AMOUNT,
+            bg_src0,
+            bg_dst0,
+            timeouts,
+            "bg-load(set-union)",
         )
 
 
@@ -1183,7 +1169,7 @@ def test_scalar_value_conflict_resolves_deterministically(user_shard, timeouts):
     all_nodes = shard.all_nodes
     ro = shard.node("readonly")
     producers = [shard.node(n) for n in _PRODUCER_KEYS]
-    bg = _BackgroundLoad(producers)
+    bg = _background_load(producers)
     bg_src0 = bg_dst0 = 0
     if _BG_LOAD_ENABLED:
         bg_src0 = ro.get_vault().get_balance(_BG_SRC_ADDR)
@@ -1277,6 +1263,14 @@ def test_scalar_value_conflict_resolves_deterministically(user_shard, timeouts):
     finally:
         bg.stop()
     if _BG_LOAD_ENABLED:
-        _assert_bg_load_robust(
-            producers, all_nodes, bg, bg_src0, bg_dst0, timeouts, "bg-load(scalar-types)"
+        assert_vault_transfers_reconciled(
+            bg,
+            all_nodes,
+            _BG_SRC_KEY,
+            _BG_DST_ADDR,
+            _BG_TRANSFER_AMOUNT,
+            bg_src0,
+            bg_dst0,
+            timeouts,
+            "bg-load(scalar-types)",
         )

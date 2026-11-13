@@ -119,14 +119,67 @@ class TimeoutConfig:
     finalization: int = 105
     command: int = 60
     port_release: int = 30
-    # Budget for an inherently multi-block consensus transition to complete:
-    # an epoch boundary moving pending withdrawers out of the active set, and a
-    # quarantine elapsing so withdrawn validators are paid out. These span
-    # ~quarantine-length + epoch-length blocks by construction (not contention),
-    # so they need a budget larger than a single finalization. Used unscaled.
+    # Budget for an epoch boundary to move pending withdrawers out of the active
+    # set: a few short epochs of blocks by construction (not contention), so it
+    # needs more than a single finalization.
     epoch_transition: int = 90
+    # Budget per block for waits counted in blocks, such as a quarantine
+    # elapsing. About twice the ~5 s a block takes on a lightly loaded
+    # short-epoch shard.
+    block_interval: float = 10.0
     poll_interval: float = 2.0
     scale: float = 1.0
+
+
+# conf/rust.conf's max-parent-depth and the node's default deploy-lifespan.
+MAX_PARENT_DEPTH = 25
+DEPLOY_LIFESPAN = 300
+
+
+def minimum_quarantine(epoch_length: int, deploy_lifespan: int = DEPLOY_LIFESPAN) -> int:
+    """The shortest quarantine genesis accepts for ``epoch_length``: two epochs
+    of ejection grace, plus the retention window (max-parent-depth plus the
+    longest of the deploy lifespan, the claim deadline and the epoch, the claim
+    deadline being one epoch), plus an epoch."""
+    return 3 * epoch_length + MAX_PARENT_DEPTH + max(deploy_lifespan, epoch_length)
+
+
+# A short epoch for suites that wait on epoch boundaries (bond activation,
+# withdrawal moves), with the shortest quarantine the node accepts for it.
+SHORT_EPOCH_LENGTH = 4
+SHORT_EPOCH_QUARANTINE_LENGTH = minimum_quarantine(SHORT_EPOCH_LENGTH)
+SHORT_EPOCH_CLI_OPTIONS: Dict[str, str] = {
+    "--epoch-length": str(SHORT_EPOCH_LENGTH),
+    "--quarantine-length": str(SHORT_EPOCH_QUARANTINE_LENGTH),
+}
+
+# A leaky-bucket profile for suites that wait on ejection. A silent validator
+# drains below the threshold in 20 blocks and becomes ejectable 30 blocks
+# later. The drain and the reward rate are the shipped values (140 and 630
+# ppm) scaled by the same factor, so a validator holds or drains as it would
+# under the shipped genesis, in fewer blocks. The observation window is not
+# scaled with them: a validator resumed after a stall needs about 10 s to
+# reconnect and acknowledge new blocks, about 11 blocks on a test shard, and
+# the window must cover that recovery with margin. An ejection claim must
+# resolve within an epoch, and grace lasts two. The epoch is long enough that
+# a validator ejected while another leaves still has the time a rejoin needs
+# after the leave is finalized, however late in the window the finality lag
+# puts the leave. The deploy lifespan is shortened with the rest of the
+# profile, still above max-parent-depth, and the quarantine is the shortest
+# the node accepts for this epoch and lifespan.
+LIVENESS_PROFILE_EPOCH_LENGTH = 30
+LIVENESS_PROFILE_DEPLOY_LIFESPAN = 50
+LIVENESS_PROFILE_CLI_OPTIONS: Dict[str, str] = {
+    "--epoch-length": str(LIVENESS_PROFILE_EPOCH_LENGTH),
+    "--deploy-lifespan": str(LIVENESS_PROFILE_DEPLOY_LIFESPAN),
+    "--quarantine-length": str(
+        minimum_quarantine(LIVENESS_PROFILE_EPOCH_LENGTH, LIVENESS_PROFILE_DEPLOY_LIFESPAN)
+    ),
+    "--leaky-bucket-lambda-base-ppm": "5000",
+    "--leaky-bucket-theta-eject-ppm": "900000",
+    "--leaky-bucket-eject-observation-blocks": "30",
+    "--leaky-bucket-reward-rate-ppm": "22500",
+}
 
 
 @dataclasses.dataclass(frozen=True)

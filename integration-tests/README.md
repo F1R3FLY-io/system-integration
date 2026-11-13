@@ -51,7 +51,7 @@ poetry run pytest
 
 # By directory
 poetry run pytest integration-tests/test/tests/shared/       # 69 tests, one shard
-poetry run pytest integration-tests/test/tests/custom/        # 41 tests, one shard per test
+poetry run pytest integration-tests/test/tests/custom/        # 44 tests, one shard per test
 poetry run pytest integration-tests/test/tests/standalone/    # 14 tests, standalone nodes
 
 # Single file
