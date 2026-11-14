@@ -719,6 +719,10 @@ def check_node_logs_after_test(request, provider):
     file, and a line count taken while a rotation renamed the file left
     the window open over earlier tests' lines.
     """
+    retired_before_test = {
+        id(snapshot) for snapshot in getattr(provider, "retired_log_snapshots", [])
+    }
+    active_at_setup = {handle.name for handle in getattr(provider, "active_handles", [])}
     from .infra.log_events import (
         LogWindow,
         format_errors,
@@ -748,8 +752,9 @@ def check_node_logs_after_test(request, provider):
     # already-judged prefix is skipped (re-judging it mis-attributed the
     # previous test's allowed ComputationOutOfPhlogistons lines to
     # test_bridge_api_exploratory), and the teardown-window tail is judged
-    # under the OWNING test's allowances only — this test's allowances
-    # never apply to another test's lines.
+    # under the owning test's allowances. For nodes active at this test's
+    # setup and retired during its body, the new tail uses this test's
+    # allowances while the earlier teardown gap retains its prior owner.
     #
     # Ordering is load-bearing: a NEW shard can reuse a retired node's
     # name (dedicated shard torn down, session shard created — container
@@ -758,6 +763,9 @@ def check_node_logs_after_test(request, provider):
     # names, or the retired snapshot would be judged against the new
     # node's judged-through time.
     for snapshot in getattr(provider, "retired_log_snapshots", []):
+        current_opened = None
+        if id(snapshot) not in retired_before_test and snapshot.name in active_at_setup:
+            current_opened = window_opened
         if getattr(snapshot, "read_error", None) is not None:
             scan_errors.append(f"{snapshot.name} (retired): {snapshot.read_error}")
         forbidden.extend(
@@ -767,6 +775,7 @@ def check_node_logs_after_test(request, provider):
                 _judged_through,
                 _last_scan_allowances,
                 allowed,
+                current_opened=current_opened,
             )
         )
     if hasattr(provider, "clear_retired_log_snapshots"):

@@ -94,6 +94,32 @@ class TeardownWindowUsesOwnerAllowances(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn(PANIC_KEY, errors[0].message)
 
+    OLD_GAP = _record("00:00:03.000000", "WARN", "old gap: Computation ran out of phlogistons")
+    CURRENT = _record("00:00:05.000000", "WARN", "current: Computation ran out of phlogistons")
+    OPENED = stamp(_record("00:00:04.000000", "INFO", "current test window opens"))
+
+    def test_current_window_does_not_inherit_prior_owner_allowance(self):
+        judged, owners = {}, {}
+        record_scanned("v1", stamp(CLEAN_LINE), judged, owners, frozenset({PHLO_KEY}))
+        snapshot = "\n".join([CLEAN_LINE, self.OLD_GAP, self.CURRENT])
+        errors = scan_retired_snapshot(
+            "v1", snapshot, judged, owners, frozenset(), current_opened=self.OPENED
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("current", errors[0].message)
+        self.assertEqual(judged, {})
+        self.assertEqual(owners, {})
+
+    def test_current_allowance_does_not_cover_prior_teardown_gap(self):
+        judged, owners = {}, {}
+        record_scanned("v1", stamp(CLEAN_LINE), judged, owners, frozenset())
+        snapshot = "\n".join([CLEAN_LINE, self.OLD_GAP, self.CURRENT])
+        errors = scan_retired_snapshot(
+            "v1", snapshot, judged, owners, frozenset({PHLO_KEY}), current_opened=self.OPENED
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("old gap", errors[0].message)
+
 
 class TransientNodesKeepFullCoverage(unittest.TestCase):
     """A node with no recorded owner belongs wholly to the current test."""
