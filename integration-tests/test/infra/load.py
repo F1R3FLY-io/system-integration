@@ -186,24 +186,35 @@ class VabnSource:
 
     Re-reads the tip at most every VABN_REFRESH_INTERVAL seconds, and takes
     the node's own height from an expiration rejection, which is fresher.
+    One thread reads the tip at a time; the others wait for its answer
+    rather than each opening a read of their own, which a loaded node
+    answers by closing the connection.
     """
 
     def __init__(self, node, monitor=None):
         self._node = node
         self._monitor = monitor
         self._lock = threading.Lock()
+        self._refresh = threading.Lock()
         self._value = max(0, current_block_number(node, monitor) - 1)
         self._read_at = time.time()
 
+    def _fresh(self) -> bool:
+        return time.time() - self._read_at <= VABN_REFRESH_INTERVAL
+
     def get(self) -> int:
         with self._lock:
-            if time.time() - self._read_at <= VABN_REFRESH_INTERVAL:
+            if self._fresh():
                 return self._value
-        value = max(0, current_block_number(self._node, self._monitor) - 1)
-        with self._lock:
-            self._value = max(self._value, value)
-            self._read_at = time.time()
-            return self._value
+        with self._refresh:
+            with self._lock:
+                if self._fresh():
+                    return self._value
+            value = max(0, current_block_number(self._node, self._monitor) - 1)
+            with self._lock:
+                self._value = max(self._value, value)
+                self._read_at = time.time()
+                return self._value
 
     def advance_to(self, height: int) -> int:
         with self._lock:
@@ -225,15 +236,29 @@ def submit_deploy(
     loss) is ambiguous, since the first submission may have landed, and a
     blind retry would double-submit untracked load, so it is raised.
     """
+    if retry_refusals:
+        return submit_through_refusals(lambda: _submit_once(node, key, term, phlo_limit, vabn))
+    try:
+        return _submit_once(node, key, term, phlo_limit, vabn)
+    except Exception as exc:
+        refusal = queue_refusal(exc)
+        if refusal is None:
+            raise
+        raise refusal from exc
+
+
+def submit_through_refusals(submit: Callable[[], str]) -> str:
+    """Run ``submit``, waiting out each deploy-queue refusal for the time it
+    asks, up to REFUSAL_PATIENCE_SECONDS in all. Any other failure is raised."""
     waited = 0.0
     while True:
         try:
-            return _submit_once(node, key, term, phlo_limit, vabn)
+            return submit()
         except Exception as exc:
             refusal = queue_refusal(exc)
             if refusal is None:
                 raise
-            if not retry_refusals or waited + refusal.retry_after > REFUSAL_PATIENCE_SECONDS:
+            if waited + refusal.retry_after > REFUSAL_PATIENCE_SECONDS:
                 raise refusal from exc
             time.sleep(refusal.retry_after)
             waited += refusal.retry_after
