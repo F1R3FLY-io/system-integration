@@ -19,6 +19,8 @@ import re
 import shlex
 import subprocess
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,6 +34,7 @@ from test.infra import compose as compose_mod  # noqa: E402
 from test.infra.compose import NODE_LOG_SINK_ARGS, generate_compose  # noqa: E402
 from test.infra.config import NodeConfig, ResourcePaths, ShardConfig  # noqa: E402
 from test.infra.keys import VALIDATOR1_ID, VALIDATOR2_ID  # noqa: E402
+from test.infra.log_events import record_timestamp  # noqa: E402
 from test.infra.providers import docker as docker_mod  # noqa: E402
 from test.infra.providers.docker import DockerNodeHandle  # noqa: E402
 from test.infra.types import NodeRole, PortMapping  # noqa: E402
@@ -216,6 +219,8 @@ def _fake_docker(monkeypatch, files: list, file_text: str, stdout_text: str):
 
     def fake(*args, **_kw):
         calls.append(args)
+        if args[:1] == ("inspect",):
+            return subprocess.CompletedProcess(args, 0, "0|running", "")
         if args[:1] == ("exec",) and "ls -1t" in args[-1]:
             listing = "\n".join(files)
             return subprocess.CompletedProcess(args, 0 if files else 1, listing, "")
@@ -257,6 +262,21 @@ def test_stdout_sink_logs_fall_back_to_docker_logs(monkeypatch):
     assert any(c[:1] == ("logs",) for c in calls)
 
 
+def _now() -> str:
+    """The current time as the node and Docker write it, then let the clock move.
+
+    The scan window opens one microsecond before its test starts, so a line
+    logged before a test begins must carry an earlier time than that start.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    time.sleep(0.001)
+    return stamp
+
+
+def _record(level: str, message: str) -> str:
+    return f'{{"timestamp":"{_now()}","level":"{level}","message":"{message}"}}\n'
+
+
 class _RotatingFileSink:
     """Model the bounded writer's rename/reopen between Docker's ls and cat."""
 
@@ -264,18 +284,29 @@ class _RotatingFileSink:
     retired = live + ".00000000000000000000"
 
     def __init__(self, monkeypatch):
-        self.files = {self.live: "INFO startup\n"}
+        self.files = {self.live: _record("INFO", "startup")}
         self.before_cat = None
         self.cat_status = 0
         self.fallback_calls = 0
         self.running = True
         self.copy_status = 0
+        self.stdout = "INFO stdout startup only\n"
         self.stderr = ""
+        self.stream_written = _now()
         monkeypatch.setattr(docker_mod, "_docker", self.docker)
 
     def rotate(self, new_text):
         self.files[self.retired] = self.files.pop(self.live)
         self.files[self.live] = new_text
+
+    def crash(self, stderr):
+        self.stderr = stderr
+        self.stream_written = _now()
+
+    def stream(self, text, stamped):
+        if not stamped:
+            return text
+        return "".join(f"{self.stream_written} {line}" for line in text.splitlines(True))
 
     def docker(self, *args, **_kw):
         if args[:1] == ("inspect",):
@@ -285,7 +316,10 @@ class _RotatingFileSink:
             return subprocess.CompletedProcess(args, 1, "", "container is not running")
         if args[:1] == ("cp",):
             if self.copy_status:
-                raise subprocess.CalledProcessError(self.copy_status, args)
+                return subprocess.CompletedProcess(args, self.copy_status, "", "permission denied")
+            if not self.files:
+                missing = f"Error response from daemon: Could not find the file {args[1]}"
+                return subprocess.CompletedProcess(args, 1, "", missing)
             for name, text in self.files.items():
                 (Path(args[2]) / Path(name).name).write_text(text)
             return subprocess.CompletedProcess(args, 0, "", "")
@@ -300,7 +334,10 @@ class _RotatingFileSink:
             return subprocess.CompletedProcess(args, status, text, "")
         if args[:1] == ("logs",):
             self.fallback_calls += 1
-            return subprocess.CompletedProcess(args, 0, "INFO stdout startup only\n", self.stderr)
+            stamped = "--timestamps" in args
+            return subprocess.CompletedProcess(
+                args, 0, self.stream(self.stdout, stamped), self.stream(self.stderr, stamped)
+            )
         raise AssertionError(f"unexpected docker call {args}")
 
 
@@ -309,14 +346,14 @@ class _RotatingFileSink:
 def test_per_test_scan_does_not_replay_allowed_warning_after_first_rotation(
     monkeypatch, new_warning, fresh_text
 ):
-    """A successful cat of the reopened live path must not shrink the baseline.
+    """A rotation racing a log read must not replay an earlier test's lines.
 
     Drive the actual autouse fixture through an allowing test and a strict
-    test. The first rotation races the strict test's setup snapshot; cat exits
+    test. The first rotation races the strict test's teardown read; cat exits
     zero even though the earlier log is now at a path missing from its argv.
     """
     conftest = importlib.import_module("test.conftest")
-    monkeypatch.setattr(conftest, "_scanned_log_offsets", {})
+    monkeypatch.setattr(conftest, "_judged_through", {})
     monkeypatch.setattr(conftest, "_last_scan_allowances", {})
     sink = _RotatingFileSink(monkeypatch)
     handle = _handle()
@@ -330,16 +367,17 @@ def test_per_test_scan_does_not_replay_allowed_warning_after_first_rotation(
         return scan
 
     earlier = begin_test("ComputationOutOfPhlogistons")
-    old_warning = "WARN old deploy: Computation ran out of phlogistons\n"
-    sink.files[sink.live] += old_warning
+    sink.files[sink.live] += _record("WARN", "old deploy: Computation ran out of phlogistons")
     with pytest.raises(StopIteration):
         next(earlier)
 
-    sink.before_cat = lambda: sink.rotate(fresh_text)
     later = begin_test()
-    sink.files[sink.live] += "INFO strict test deploy\n"
+    sink.before_cat = lambda: sink.rotate(fresh_text)
+    last = _record("INFO", "strict test deploy")
+    sink.files[sink.live] += last
     if new_warning:
-        sink.files[sink.live] += "WARN new deploy: Computation ran out of phlogistons\n"
+        last = _record("WARN", "new deploy: Computation ran out of phlogistons")
+        sink.files[sink.live] += last
         with pytest.raises(pytest.fail.Exception) as failure:
             next(later)
         assert "new deploy" in str(failure.value)
@@ -350,9 +388,7 @@ def test_per_test_scan_does_not_replay_allowed_warning_after_first_rotation(
             next(later)
     assert sink.fallback_calls == 0
     assert conftest._last_scan_allowances[handle.name] == frozenset()
-    assert conftest._scanned_log_offsets[handle.name] == sum(
-        len(text.splitlines()) for text in sink.files.values()
-    )
+    assert conftest._judged_through[handle.name] == record_timestamp(last)
 
 
 def test_empty_live_file_does_not_change_log_source(monkeypatch):
@@ -388,13 +424,13 @@ def test_live_file_precedes_rotated_files_even_when_mtimes_tie(monkeypatch):
     sink = _RotatingFileSink(monkeypatch)
     # A tied ls -t can put the numbered predecessor before the live file.
     sink.files[sink.retired] = "INFO old\n"
-    assert _handle().logs() == "INFO old\nINFO startup\n"
+    assert _handle().logs() == "INFO old\n" + sink.files[sink.live]
 
 
 @pytest.fixture
 def log_scan(monkeypatch):
     conftest = importlib.import_module("test.conftest")
-    monkeypatch.setattr(conftest, "_scanned_log_offsets", {})
+    monkeypatch.setattr(conftest, "_judged_through", {})
     monkeypatch.setattr(conftest, "_last_scan_allowances", {})
 
     def begin(provider, *allowances):
@@ -429,17 +465,17 @@ def test_stopped_container_panic_fails_active_and_retired_scans(
     if not new_node:
         provider._active_handles.append(handle)
         earlier = log_scan(provider, "ComputationOutOfPhlogistons")
-        sink.files[sink.live] += "WARN old deploy: Computation ran out of phlogistons\n"
+        sink.files[sink.live] += _record("WARN", "old deploy: Computation ran out of phlogistons")
         with pytest.raises(StopIteration):
             next(earlier)
-        sink.rotate("INFO next hour\n")
+        sink.rotate(_record("INFO", "next hour"))
 
     strict = log_scan(provider)
     if new_node:
         provider._active_handles.append(handle)
     handle.logs()  # Observe the file sink before the process exits.
-    sink.files[sink.live] += "INFO last file event\n"
-    sink.stderr = "thread 'main' panicked at casper/src/lib.rs\n"
+    sink.files[sink.live] += _record("INFO", "last file event")
+    sink.crash("thread 'main' panicked at casper/src/lib.rs\n")
     sink.running = False
     if retire == "remove_node":
         provider.remove_node(handle)
@@ -473,20 +509,43 @@ def test_unreadable_stopped_logs_fail_scanning(monkeypatch, log_scan, retire):
     assert provider.retired_log_snapshots == []
 
 
-def test_failed_setup_read_does_not_reset_log_boundary(monkeypatch, log_scan):
+def test_a_node_stopped_before_any_read_keeps_its_file_logs(monkeypatch, log_scan):
+    sink = _RotatingFileSink(monkeypatch)
+    provider = _scan_provider()
+    handle = _handle()
+    provider._active_handles.append(handle)
+    strict = log_scan(provider)
+    sink.files[sink.live] += _record("WARN", "file deploy: Computation ran out of phlogistons")
+    sink.running = False
+    with pytest.raises(pytest.fail.Exception) as failure:
+        next(strict)
+    assert "file deploy" in str(failure.value)
+
+
+def test_a_node_that_exits_before_opening_its_file_sink_yields_its_stdout(monkeypatch):
+    sink = _RotatingFileSink(monkeypatch)
+    sink.files.clear()
+    sink.crash("config error: unknown key\n")
+    sink.running = False
+    assert _handle().logs().endswith("config error: unknown key\n")
+
+
+def test_unreadable_logs_at_setup_do_not_open_the_window_early(monkeypatch, log_scan):
     sink = _RotatingFileSink(monkeypatch)
     provider = _scan_provider()
     handle = _handle()
     provider._active_handles.append(handle)
     earlier = log_scan(provider, "ComputationOutOfPhlogistons")
-    sink.files[sink.live] += "WARN old deploy: Computation ran out of phlogistons\n"
+    sink.files[sink.live] += _record("WARN", "old deploy: Computation ran out of phlogistons")
     with pytest.raises(StopIteration):
         next(earlier)
     sink.cat_status = 1
-    with pytest.raises(
-        pytest.fail.Exception, match="Cannot establish log scan boundary"
-    ) as failure:
-        log_scan(provider)
+    strict = log_scan(provider)
+    sink.cat_status = 0
+    sink.files[sink.live] += _record("WARN", "new deploy: Computation ran out of phlogistons")
+    with pytest.raises(pytest.fail.Exception) as failure:
+        next(strict)
+    assert "new deploy" in str(failure.value)
     assert "old deploy" not in str(failure.value)
 
 
@@ -494,12 +553,15 @@ def test_stopped_logs_preserve_file_prefix_and_tail(monkeypatch):
     sink = _RotatingFileSink(monkeypatch)
     handle = _handle()
     prefix = handle.logs()
-    sink.rotate("INFO newest file\n")
+    sink.rotate(_record("INFO", "newest file"))
     prefix += sink.files[sink.live]
-    sink.stderr = "thread 'main' panicked at casper/src/lib.rs\n"
+    panic = "thread 'main' panicked at casper/src/lib.rs\n"
+    sink.crash(panic)
     sink.running = False
-    assert handle.logs() == prefix + "INFO stdout startup only\n" + sink.stderr
-    assert handle.logs(tail=1) == sink.stderr.rstrip("\n")
+    stamp = sink.stream_written
+    assert handle.logs() == f"{prefix}{stamp} INFO stdout startup only\n{stamp} {panic}"
+    assert handle.logs(tail=1) == f"{stamp} {panic}".rstrip("\n")
+    assert record_timestamp(handle.logs(tail=1)) is not None
 
 
 @pytest.fixture
@@ -548,7 +610,7 @@ def standalone_recreation(monkeypatch, tmp_path):
             return subprocess.CompletedProcess(args, state.run_status, "", "startup failed")
         state.present = True
         sink.running = True
-        sink.files[sink.live] += "INFO replacement started\n"
+        sink.files[sink.live] += _record("INFO", "replacement started")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(docker_mod, "_docker", docker)
@@ -572,7 +634,7 @@ def test_recreated_standalone_teardown_scans_retired_replacement(
         original, NodeConfig(role=NodeRole.STANDALONE), wait_running=False
     )
     if unexpected:
-        sink.files[sink.live] += "WARN replacement: Computation ran out of phlogistons\n"
+        sink.files[sink.live] += _record("WARN", "replacement: Computation ran out of phlogistons")
     sink.running = not stopped
     provider.destroy_standalone(replacement)
 
@@ -620,8 +682,8 @@ def test_failed_recreation_retires_original_logs(
     provider._active_handles.append(original)
     scan = log_scan(provider)
     if unexpected:
-        sink.files[sink.live] += (
-            "WARN original before failure: Computation ran out of phlogistons\n"
+        sink.files[sink.live] += _record(
+            "WARN", "original before failure: Computation ran out of phlogistons"
         )
 
     def fail(*_args):
@@ -657,7 +719,7 @@ def test_failed_recreation_retains_panic_emitted_during_stop(
 
     def stop_with_panic():
         stop()
-        sink.stderr = "thread 'main' panicked at casper/src/lib.rs\n"
+        sink.crash("thread 'main' panicked at casper/src/lib.rs\n")
 
     monkeypatch.setattr(original, "stop", stop_with_panic)
     state.run_status = 1
@@ -675,12 +737,14 @@ def test_failed_recreation_preserves_prior_log_ownership(
     provider, original, sink, state = standalone_recreation
     provider._active_handles.append(original)
     earlier = log_scan(provider, "ComputationOutOfPhlogistons")
-    sink.files[sink.live] += "WARN earlier allowed: Computation ran out of phlogistons\n"
+    sink.files[sink.live] += _record("WARN", "earlier allowed: Computation ran out of phlogistons")
     with pytest.raises(StopIteration):
         next(earlier)
     current = log_scan(provider)
     if unexpected:
-        sink.files[sink.live] += "WARN current failure: Computation ran out of phlogistons\n"
+        sink.files[sink.live] += _record(
+            "WARN", "current failure: Computation ran out of phlogistons"
+        )
     state.run_status = 1
     with pytest.raises(RuntimeError, match=r"docker run \(recreate\) failed"):
         provider.recreate_standalone(original, NodeConfig(role=NodeRole.STANDALONE))
@@ -712,7 +776,7 @@ def test_failed_snapshot_keeps_original_available_for_scanning(standalone_recrea
     provider._active_handles.append(original)
     scan = log_scan(provider)
     sink.copy_status = 1
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(RuntimeError, match="Could not copy file logs"):
         provider.recreate_standalone(original, NodeConfig(role=NodeRole.STANDALONE))
     assert provider.active_handles == [original]
     assert state.present
@@ -746,7 +810,7 @@ def test_recreation_preserves_log_prefix_ownership(standalone_recreation, log_sc
     provider, original, sink, state = standalone_recreation
     provider._active_handles.append(original)
     earlier = log_scan(provider, "ComputationOutOfPhlogistons")
-    sink.files[sink.live] += "WARN earlier allowed: Computation ran out of phlogistons\n"
+    sink.files[sink.live] += _record("WARN", "earlier allowed: Computation ran out of phlogistons")
     with pytest.raises(StopIteration):
         next(earlier)
 
@@ -755,7 +819,7 @@ def test_recreation_preserves_log_prefix_ownership(standalone_recreation, log_sc
         original, NodeConfig(role=NodeRole.STANDALONE), wait_running=False
     )
     if unexpected:
-        sink.files[sink.live] += "WARN replacement: Computation ran out of phlogistons\n"
+        sink.files[sink.live] += _record("WARN", "replacement: Computation ran out of phlogistons")
     sink.running = False
     provider.destroy_standalone(replacement)
     if unexpected:
@@ -781,13 +845,13 @@ def test_standalone_retirement_preserves_log_read_errors(standalone_recreation, 
 
 def test_retirement_during_test_resets_boundary_for_reused_name(monkeypatch, log_scan):
     sink = _RotatingFileSink(monkeypatch)
-    sink.files[sink.live] += "INFO original prefix\n"
+    sink.files[sink.live] += _record("INFO", "original prefix")
     provider = _scan_provider()
     original = _handle()
     provider._active_handles.append(original)
     scan = log_scan(provider)
     provider.remove_node(original)
-    sink.files[sink.live] = "WARN replacement: Computation ran out of phlogistons\n"
+    sink.files[sink.live] = _record("WARN", "replacement: Computation ran out of phlogistons")
     provider._active_handles.append(_handle())
     with pytest.raises(pytest.fail.Exception, match="replacement"):
         next(scan)
@@ -805,15 +869,17 @@ def test_pending_retirement_keeps_owner_when_name_is_reused(
     earlier = log_scan(provider, *(() if current_allows_warning else allowance))
     with pytest.raises(StopIteration):
         next(earlier)
-    sink.files[sink.live] += "WARN previous teardown: Computation ran out of phlogistons\n"
+    sink.files[sink.live] += _record(
+        "WARN", "previous teardown: Computation ran out of phlogistons"
+    )
     provider.remove_node(original)
-    sink.files[sink.live] = "INFO replacement prefix\n"
+    sink.files[sink.live] = _record("INFO", "replacement prefix")
     provider._active_handles.append(_handle())
     current = log_scan(provider, *(allowance if current_allows_warning else ()))
-    sink.files[sink.live] += "WARN replacement: Computation ran out of phlogistons\n"
+    sink.files[sink.live] += _record("WARN", "replacement: Computation ran out of phlogistons")
     with pytest.raises(pytest.fail.Exception) as failure:
         next(current)
     message = str(failure.value)
     assert ("previous teardown" in message) == current_allows_warning
-    assert ("WARN replacement" in message) != current_allows_warning
+    assert ("replacement: Computation" in message) != current_allows_warning
     assert "1 total" in message

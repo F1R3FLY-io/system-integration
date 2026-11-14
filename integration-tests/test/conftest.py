@@ -6,12 +6,12 @@ All infrastructure logic lives in infra/ modules.
 
 from __future__ import annotations
 
-import itertools
 import logging
 import os
 import time
 import uuid
 from collections.abc import Iterator
+from datetime import datetime, timezone
 
 # Disable gRPC's pthread_atfork handlers before the gRPC C-core loads (pulled in
 # transitively by the .infra imports below via pyf1r3fly.client). The test
@@ -679,19 +679,12 @@ def _custom_shard_cascade_guard(request):
 
 # Cross-test log-scan bookkeeping (per pytest process; each xdist worker
 # owns its provider, so plain module globals are correct). Keyed by node
-# name: how many log lines earlier per-test scans have already judged,
-# and the allowance set of the last test that judged them. Consumed (and
-# removed) by the retired-snapshot scan so a reused node name after a
-# shard teardown starts fresh.
-_scanned_log_offsets: dict = {}
+# name: the time of the last log record earlier per-test scans have
+# already judged, and the allowance set of the last test that judged it.
+# Consumed (and removed) by the retired-snapshot scan so a reused node
+# name after a shard teardown starts fresh.
+_judged_through: dict = {}
 _last_scan_allowances: dict = {}
-
-
-def _count_lines(lines, counter):
-    """Yield ``lines`` unchanged while tallying them into ``counter[0]``."""
-    for line in lines:
-        counter[0] += 1
-        yield line
 
 
 @pytest.fixture(autouse=True)
@@ -717,39 +710,31 @@ def check_node_logs_after_test(request, provider):
     Provider-agnostic: works with Docker, Subprocess, K8s, or any
     future provider that implements the NodeHandle protocol.
 
-    Per-test offset: the node log is cumulative and ``shared_shard`` is
+    Per-test window: the node log is cumulative and ``shared_shard`` is
     session-scoped, so a forbidden pattern produced by one test — even a
     test that legitimately opts out via ``allow_forbidden_patterns`` —
     would otherwise re-trip every later test that inherits the same log.
-    Snapshot each active node's current log line-count BEFORE the test
-    runs and scan only the lines added during the test at teardown.
+    Only records logged after the test started are scanned. The window is
+    keyed by record timestamps, not line counts: the node rotates its log
+    file, and a line count taken while a rotation renamed the file left
+    the window open over earlier tests' lines.
     """
-    start_offsets = {}
     retired_before_test = {
         id(snapshot) for snapshot in getattr(provider, "retired_log_snapshots", [])
     }
-    try:
-        for handle in provider.active_handles:
-            try:
-                il = getattr(handle, "iter_log_lines", None)
-                start_offsets[handle.name] = (
-                    sum(1 for _ in il()) if il is not None else len(handle.logs().splitlines())
-                )
-            except Exception as exc:
-                pytest.fail(
-                    f"Cannot establish log scan boundary for {handle.name}: {exc}", pytrace=False
-                )
-    except Exception:
-        pass
-
-    yield
-
+    active_at_setup = {handle.name for handle in getattr(provider, "active_handles", [])}
     from .infra.log_events import (
+        LogWindow,
         format_errors,
+        judged_before,
         record_scanned,
         scan_lines_for_forbidden,
         scan_retired_snapshot,
     )
+
+    window_opened = judged_before(datetime.now(timezone.utc))
+
+    yield
 
     # Collect opt-out keys from this test's markers.
     allowed = frozenset()
@@ -775,22 +760,22 @@ def check_node_logs_after_test(request, provider):
     # name (dedicated shard torn down, session shard created — container
     # names are identical). The retired entries must be popped before the
     # active-handle loop below writes fresh bookkeeping for the same
-    # names, or the retired snapshot would be scanned with the new
-    # node's offset.
+    # names, or the retired snapshot would be judged against the new
+    # node's judged-through time.
     for snapshot in getattr(provider, "retired_log_snapshots", []):
-        current_offset = None
-        if id(snapshot) not in retired_before_test:
-            current_offset = start_offsets.pop(snapshot.name, None)
+        current_opened = None
+        if id(snapshot) not in retired_before_test and snapshot.name in active_at_setup:
+            current_opened = window_opened
         if getattr(snapshot, "read_error", None) is not None:
             scan_errors.append(f"{snapshot.name} (retired): {snapshot.read_error}")
         forbidden.extend(
             scan_retired_snapshot(
                 snapshot.name,
                 snapshot.log_text,
-                _scanned_log_offsets,
+                _judged_through,
                 _last_scan_allowances,
                 allowed,
-                current_offset=current_offset,
+                current_opened=current_opened,
             )
         )
     if hasattr(provider, "clear_retired_log_snapshots"):
@@ -798,32 +783,20 @@ def check_node_logs_after_test(request, provider):
 
     for handle in provider.active_handles:
         try:
-            # Scan only the lines THIS test produced: skip the prefix that
-            # already existed at setup. A node attached mid-test has no
-            # recorded offset (defaults to 0), so its whole log — all of which
-            # is from this test — is scanned.
-            offset = start_offsets.get(handle.name, 0)
             # Stream the log file line-by-line when the provider supports it
             # (subprocess) so a large node log isn't loaded whole + splitlines
             # into memory during the post-test scan. Fall back to the string
             # API for providers without a streaming iterator.
             iter_lines = getattr(handle, "iter_log_lines", None)
-            scanned = 0
-            if iter_lines is not None:
-                new_lines = itertools.islice(iter_lines(), offset, None)
-                counted = _count_lines(new_lines, counter := [0])
-                forbidden.extend(scan_lines_for_forbidden(counted, handle.name, allowed))
-                scanned = counter[0]
-            else:
-                tail = handle.logs().splitlines()[offset:]
-                forbidden.extend(scan_lines_for_forbidden(tail, handle.name, allowed))
-                scanned = len(tail)
+            lines = iter_lines() if iter_lines is not None else handle.logs().splitlines()
+            window = LogWindow(window_opened)
+            forbidden.extend(scan_lines_for_forbidden(window.lines(lines), handle.name, allowed))
             record_scanned(
-                handle.name, offset, scanned, _scanned_log_offsets, _last_scan_allowances, allowed
+                handle.name, window.last_logged, _judged_through, _last_scan_allowances, allowed
             )
         except Exception as exc:
             # Fail closed: a failed scan records nothing. The judged-through
-            # offset must not advance (the window was not judged), and this
+            # time must not advance (the window was not judged), and this
             # test's allowances must not be attached to lines it never
             # judged — accumulating allowances across failed scans could
             # hide a forbidden event produced under a stricter test.
