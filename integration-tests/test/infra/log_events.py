@@ -20,7 +20,8 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, Generator, Iterable, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Dict, FrozenSet, Generator, Iterable, Iterator, List, Optional
 
 # ── Structured event queries ───────────────────────────────────────────
 
@@ -535,40 +536,103 @@ def scan_lines_for_forbidden(
     return matches
 
 
+_TIME = r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})"
+# `docker logs --timestamps` prefixes each line with the time it was written.
+_STREAM_TIMESTAMP = re.compile(rf"^{_TIME} ")
+_RECORD_TIMESTAMP = re.compile(rf'"timestamp":"{_TIME}"')
+
+
+def record_timestamp(line: str) -> Optional[datetime]:
+    """The time a log line was logged, or None for a line that carries none."""
+    match = _STREAM_TIMESTAMP.match(line) or _RECORD_TIMESTAMP.search(line)
+    if match is None:
+        return None
+    seconds, fraction, zone = match.groups()
+    micros = (fraction or "")[:6].ljust(6, "0")
+    offset = "+00:00" if zone == "Z" else zone
+    return datetime.fromisoformat(f"{seconds}.{micros}{offset}")
+
+
+def judged_before(moment: datetime) -> datetime:
+    """The judged-through time that opens a window at ``moment``."""
+    return moment.astimezone(timezone.utc) - timedelta(microseconds=1)
+
+
+class LogWindow:
+    """Selects the lines a node logged after a judged-through time.
+
+    The window is keyed by each record's own timestamp, so it does not move
+    when the node rotates its log or evicts rotated files. A line without a
+    timestamp (a panic written to stderr, say) was logged before the next
+    record, so it is left out only when that record is; a line no record
+    follows is kept, so an unattributable line is judged rather than skipped.
+
+    With ``until``, the window also ends there: records after it are left out,
+    and so are trailing lines no record follows, which belong to the window
+    that starts at ``until``.
+    """
+
+    def __init__(
+        self, judged_through: Optional[datetime], until: Optional[datetime] = None
+    ) -> None:
+        self._judged_through = judged_through
+        self._until = until
+        self.last_logged: Optional[datetime] = None
+
+    def lines(self, lines: Iterable[str]) -> Iterator[str]:
+        pending: List[str] = []
+        for line in lines:
+            stamp = record_timestamp(line)
+            if stamp is None:
+                pending.append(line)
+                continue
+            self.last_logged = stamp
+            if (self._judged_through is not None and stamp <= self._judged_through) or (
+                self._until is not None and stamp > self._until
+            ):
+                pending.clear()
+                continue
+            yield from pending
+            pending.clear()
+            yield line
+        if self._until is None:
+            yield from pending
+
+
 def record_scanned(
     name: str,
-    offset: int,
-    scanned: int,
-    offsets: Dict[str, int],
+    last_logged: Optional[datetime],
+    judged: Dict[str, datetime],
     owners: Dict[str, FrozenSet[str]],
     allowed: FrozenSet[str],
 ) -> None:
     """Record a SUCCESSFUL per-test scan for later retirement judging.
 
-    ``offsets[name]`` becomes the judged-through line count and
+    ``judged[name]`` becomes the time of the last record the scan read and
     ``owners[name]`` the allowance set the lines were judged under. Call
     only after a completed scan — a failed scan must fail closed by
     recording nothing (the window was not judged, and accumulating
     allowances across failed scans could hide a forbidden event produced
     under a stricter test).
     """
-    offsets[name] = offset + scanned
+    if last_logged is not None and (name not in judged or last_logged > judged[name]):
+        judged[name] = last_logged
     owners[name] = allowed
 
 
 def scan_retired_snapshot(
     name: str,
     log_text: str,
-    offsets: Dict[str, int],
+    judged: Dict[str, datetime],
     owners: Dict[str, FrozenSet[str]],
     current_allowed: FrozenSet[str],
-    current_offset: Optional[int] = None,
+    current_opened: Optional[datetime] = None,
 ) -> List[LogError]:
     """Judge a retired node's unjudged log tail under its OWNER's allowances.
 
-    The snapshot holds the node's full cumulative log; the prefix through
-    ``offsets[name]`` was already judged by per-test scans under their own
-    tests' allowances and is skipped (re-judging it would mis-attribute
+    The snapshot holds the node's full cumulative log; the records through
+    ``judged[name]`` were already judged by per-test scans under their own
+    tests' allowances and are skipped (re-judging them would mis-attribute
     lines to the consuming test). The remaining teardown-window lines
     belong to the node's last owning test and are judged under THAT
     test's recorded allowances only — the consuming test's allowances
@@ -576,22 +640,25 @@ def scan_retired_snapshot(
     teardown event. When no owner is recorded, ``current_allowed`` covers
     the whole unjudged log of a transient node created during this test.
 
-    With ``current_offset``, the node was active at this test's setup and
-    retired during its body. Only the lines before that setup boundary
-    belong to the prior owner. Later lines use the current allowances.
+    With ``current_opened``, the node was active at this test's setup and
+    retired during its body. Only the records logged before this test's
+    window opened belong to the prior owner. Later lines use the current
+    allowances.
 
     Pops the bookkeeping entries, so a new node reusing the retired name
     starts fresh. Callers must invoke this BEFORE recording the current
     test's scans (see conftest ordering comment).
     """
-    offset = offsets.pop(name, 0)
+    judged_through = judged.pop(name, None)
     owner_allowances = owners.pop(name, None)
     effective = current_allowed if owner_allowances is None else owner_allowances
     lines = log_text.splitlines()
-    if current_offset is None:
-        return scan_lines_for_forbidden(lines[offset:], name, effective)
-    return scan_lines_for_forbidden(lines[offset:current_offset], name, effective) + (
-        scan_lines_for_forbidden(lines[max(offset, current_offset) :], name, current_allowed)
+    if current_opened is None:
+        return scan_lines_for_forbidden(LogWindow(judged_through).lines(lines), name, effective)
+    prior = LogWindow(judged_through, until=current_opened).lines(lines)
+    current = LogWindow(current_opened).lines(lines)
+    return scan_lines_for_forbidden(prior, name, effective) + scan_lines_for_forbidden(
+        current, name, current_allowed
     )
 
 

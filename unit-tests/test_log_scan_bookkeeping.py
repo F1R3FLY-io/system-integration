@@ -28,31 +28,39 @@ SPEC.loader.exec_module(log_events)
 
 record_scanned = log_events.record_scanned
 scan_retired_snapshot = log_events.scan_retired_snapshot
+stamp = log_events.record_timestamp
+
+
+def _record(time: str, level: str, message: str) -> str:
+    return f'{{"timestamp":"2026-11-12T{time}Z","level":"{level}","message":"{message}"}}'
+
 
 PHLO_KEY = "ComputationOutOfPhlogistons"
-PHLO_LINE = "WARN Computation ran out of phlogistons"
+PHLO_LINE = _record("00:00:01.000000", "WARN", "Computation ran out of phlogistons")
 PANIC_KEY = "Panic"
 PANIC_LINE = "thread 'main' panicked at casper/src/lib.rs"
-CLEAN_LINE = "INFO block finalized"
+CLEAN_LINE = _record("00:00:02.000000", "INFO", "block finalized")
+LATE_PHLO_LINE = _record("00:00:03.000000", "WARN", "Computation ran out of phlogistons")
 
 
 class JudgedPrefixIsSkipped(unittest.TestCase):
     """The attribution-leak fix: judged lines are never re-judged."""
 
     def test_allowed_lines_in_judged_prefix_do_not_resurface(self):
-        offsets, owners = {}, {}
-        # The owning test judged 2 lines (one of them PHLO, allowed there).
-        record_scanned("v1", 0, 2, offsets, owners, frozenset({PHLO_KEY}))
+        judged, owners = {}, {}
+        # The owning test judged both records (one of them PHLO, allowed there).
+        record_scanned("v1", stamp(CLEAN_LINE), judged, owners, frozenset({PHLO_KEY}))
         snapshot = "\n".join([PHLO_LINE, CLEAN_LINE])
-        errors = scan_retired_snapshot("v1", snapshot, offsets, owners, frozenset())
+        errors = scan_retired_snapshot("v1", snapshot, judged, owners, frozenset())
         self.assertEqual(errors, [])
 
     def test_forbidden_line_in_judged_prefix_is_not_double_reported(self):
-        offsets, owners = {}, {}
+        judged, owners = {}, {}
         # A panic in the judged prefix already failed its own test; the
         # retirement scan must not report it a second time.
-        record_scanned("v1", 0, 1, offsets, owners, frozenset())
-        errors = scan_retired_snapshot("v1", PANIC_LINE, offsets, owners, frozenset())
+        record_scanned("v1", stamp(CLEAN_LINE), judged, owners, frozenset())
+        snapshot = "\n".join([PHLO_LINE, PANIC_LINE, CLEAN_LINE])
+        errors = scan_retired_snapshot("v1", snapshot, judged, owners, frozenset({PHLO_KEY}))
         self.assertEqual(errors, [])
 
 
@@ -61,49 +69,53 @@ class TeardownWindowUsesOwnerAllowances(unittest.TestCase):
     another test's teardown lines, and the owner's always do."""
 
     def test_owner_allowance_covers_teardown_lines(self):
-        offsets, owners = {}, {}
-        record_scanned("v1", 0, 1, offsets, owners, frozenset({PHLO_KEY}))
-        snapshot = "\n".join([CLEAN_LINE, PHLO_LINE])  # PHLO in the tail
-        errors = scan_retired_snapshot("v1", snapshot, offsets, owners, frozenset())
+        judged, owners = {}, {}
+        record_scanned("v1", stamp(CLEAN_LINE), judged, owners, frozenset({PHLO_KEY}))
+        snapshot = "\n".join([CLEAN_LINE, LATE_PHLO_LINE])  # PHLO in the tail
+        errors = scan_retired_snapshot("v1", snapshot, judged, owners, frozenset())
         self.assertEqual(errors, [])
 
     def test_consuming_test_allowance_cannot_hide_teardown_event(self):
-        offsets, owners = {}, {}
+        judged, owners = {}, {}
         # Owner allowed nothing; the CONSUMING test allows PHLO. A PHLO
         # teardown line must still be reported (review finding: the old
         # union of both allowance sets hid exactly this).
-        record_scanned("v1", 0, 1, offsets, owners, frozenset())
-        snapshot = "\n".join([CLEAN_LINE, PHLO_LINE])
-        errors = scan_retired_snapshot("v1", snapshot, offsets, owners, frozenset({PHLO_KEY}))
+        record_scanned("v1", stamp(CLEAN_LINE), judged, owners, frozenset())
+        snapshot = "\n".join([CLEAN_LINE, LATE_PHLO_LINE])
+        errors = scan_retired_snapshot("v1", snapshot, judged, owners, frozenset({PHLO_KEY}))
         self.assertEqual(len(errors), 1)
         self.assertIn(PHLO_KEY, errors[0].message)
 
     def test_forbidden_teardown_line_is_reported(self):
-        offsets, owners = {}, {}
-        record_scanned("v1", 0, 1, offsets, owners, frozenset({PHLO_KEY}))
+        judged, owners = {}, {}
+        record_scanned("v1", stamp(CLEAN_LINE), judged, owners, frozenset({PHLO_KEY}))
         snapshot = "\n".join([CLEAN_LINE, PANIC_LINE])
-        errors = scan_retired_snapshot("v1", snapshot, offsets, owners, frozenset())
+        errors = scan_retired_snapshot("v1", snapshot, judged, owners, frozenset())
         self.assertEqual(len(errors), 1)
         self.assertIn(PANIC_KEY, errors[0].message)
 
+    OLD_GAP = _record("00:00:03.000000", "WARN", "old gap: Computation ran out of phlogistons")
+    CURRENT = _record("00:00:05.000000", "WARN", "current: Computation ran out of phlogistons")
+    OPENED = stamp(_record("00:00:04.000000", "INFO", "current test window opens"))
+
     def test_current_window_does_not_inherit_prior_owner_allowance(self):
-        offsets, owners = {}, {}
-        record_scanned("v1", 0, 1, offsets, owners, frozenset({PHLO_KEY}))
-        snapshot = "\n".join([CLEAN_LINE, PHLO_LINE + " old gap", PHLO_LINE + " current"])
+        judged, owners = {}, {}
+        record_scanned("v1", stamp(CLEAN_LINE), judged, owners, frozenset({PHLO_KEY}))
+        snapshot = "\n".join([CLEAN_LINE, self.OLD_GAP, self.CURRENT])
         errors = scan_retired_snapshot(
-            "v1", snapshot, offsets, owners, frozenset(), current_offset=2
+            "v1", snapshot, judged, owners, frozenset(), current_opened=self.OPENED
         )
         self.assertEqual(len(errors), 1)
         self.assertIn("current", errors[0].message)
-        self.assertEqual(offsets, {})
+        self.assertEqual(judged, {})
         self.assertEqual(owners, {})
 
     def test_current_allowance_does_not_cover_prior_teardown_gap(self):
-        offsets, owners = {}, {}
-        record_scanned("v1", 0, 1, offsets, owners, frozenset())
-        snapshot = "\n".join([CLEAN_LINE, PHLO_LINE + " old gap", PHLO_LINE + " current"])
+        judged, owners = {}, {}
+        record_scanned("v1", stamp(CLEAN_LINE), judged, owners, frozenset())
+        snapshot = "\n".join([CLEAN_LINE, self.OLD_GAP, self.CURRENT])
         errors = scan_retired_snapshot(
-            "v1", snapshot, offsets, owners, frozenset({PHLO_KEY}), current_offset=2
+            "v1", snapshot, judged, owners, frozenset({PHLO_KEY}), current_opened=self.OPENED
         )
         self.assertEqual(len(errors), 1)
         self.assertIn("old gap", errors[0].message)
@@ -123,17 +135,18 @@ class TransientNodesKeepFullCoverage(unittest.TestCase):
 
 class BookkeepingLifecycle(unittest.TestCase):
     def test_retirement_pops_entries_so_a_reused_name_starts_fresh(self):
-        offsets, owners = {}, {}
-        record_scanned("v1", 0, 5, offsets, owners, frozenset({PHLO_KEY}))
-        scan_retired_snapshot("v1", "", offsets, owners, frozenset())
-        self.assertNotIn("v1", offsets)
+        judged, owners = {}, {}
+        record_scanned("v1", stamp(CLEAN_LINE), judged, owners, frozenset({PHLO_KEY}))
+        scan_retired_snapshot("v1", "", judged, owners, frozenset())
+        self.assertNotIn("v1", judged)
         self.assertNotIn("v1", owners)
 
-    def test_repeated_scans_accumulate_offsets_and_replace_owner(self):
-        offsets, owners = {}, {}
-        record_scanned("v1", 0, 3, offsets, owners, frozenset({PHLO_KEY}))
-        record_scanned("v1", 3, 2, offsets, owners, frozenset())
-        self.assertEqual(offsets["v1"], 5)
+    def test_repeated_scans_advance_judged_time_and_replace_owner(self):
+        judged, owners = {}, {}
+        record_scanned("v1", stamp(LATE_PHLO_LINE), judged, owners, frozenset({PHLO_KEY}))
+        record_scanned("v1", stamp(CLEAN_LINE), judged, owners, frozenset())
+        record_scanned("v1", None, judged, owners, frozenset())
+        self.assertEqual(judged["v1"], stamp(LATE_PHLO_LINE))
         # Replacement, not union: a later test's allowances do not stack
         # onto earlier ones (accumulation could hide a stricter test's
         # forbidden event at retirement).
@@ -163,7 +176,7 @@ class ConftestWiringIsTheRealOne(unittest.TestCase):
         # advance, no allowance accumulation.
         tail = self.CONFTEST[self.CONFTEST.index("# Fail closed:") :]
         except_block = tail[: tail.index("if forbidden:")]
-        self.assertNotIn("_scanned_log_offsets[", except_block)
+        self.assertNotIn("_judged_through[", except_block)
         self.assertNotIn("_last_scan_allowances[", except_block)
 
 
