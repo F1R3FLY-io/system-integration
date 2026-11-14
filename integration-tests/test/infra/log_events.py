@@ -566,10 +566,17 @@ class LogWindow:
     timestamp (a panic written to stderr, say) was logged before the next
     record, so it is left out only when that record is; a line no record
     follows is kept, so an unattributable line is judged rather than skipped.
+
+    With ``until``, the window also ends there: records after it are left out,
+    and so are trailing lines no record follows, which belong to the window
+    that starts at ``until``.
     """
 
-    def __init__(self, judged_through: Optional[datetime]) -> None:
+    def __init__(
+        self, judged_through: Optional[datetime], until: Optional[datetime] = None
+    ) -> None:
         self._judged_through = judged_through
+        self._until = until
         self.last_logged: Optional[datetime] = None
 
     def lines(self, lines: Iterable[str]) -> Iterator[str]:
@@ -580,13 +587,16 @@ class LogWindow:
                 pending.append(line)
                 continue
             self.last_logged = stamp
-            if self._judged_through is not None and stamp <= self._judged_through:
+            if (self._judged_through is not None and stamp <= self._judged_through) or (
+                self._until is not None and stamp > self._until
+            ):
                 pending.clear()
                 continue
             yield from pending
             pending.clear()
             yield line
-        yield from pending
+        if self._until is None:
+            yield from pending
 
 
 def record_scanned(
@@ -616,6 +626,7 @@ def scan_retired_snapshot(
     judged: Dict[str, datetime],
     owners: Dict[str, FrozenSet[str]],
     current_allowed: FrozenSet[str],
+    current_opened: Optional[datetime] = None,
 ) -> List[LogError]:
     """Judge a retired node's unjudged log tail under its OWNER's allowances.
 
@@ -626,9 +637,13 @@ def scan_retired_snapshot(
     belong to the node's last owning test and are judged under THAT
     test's recorded allowances only — the consuming test's allowances
     never apply to another test's lines, so they cannot hide a forbidden
-    teardown event. ``current_allowed`` is used only when no owner is
-    recorded: a transient node attached and detached within the current
-    test, whose whole log belongs to the current test.
+    teardown event. When no owner is recorded, ``current_allowed`` covers
+    the whole unjudged log of a transient node created during this test.
+
+    With ``current_opened``, the node was active at this test's setup and
+    retired during its body. Only the records logged before this test's
+    window opened belong to the prior owner. Later lines use the current
+    allowances.
 
     Pops the bookkeeping entries, so a new node reusing the retired name
     starts fresh. Callers must invoke this BEFORE recording the current
@@ -637,8 +652,14 @@ def scan_retired_snapshot(
     judged_through = judged.pop(name, None)
     owner_allowances = owners.pop(name, None)
     effective = current_allowed if owner_allowances is None else owner_allowances
-    tail = LogWindow(judged_through).lines(log_text.splitlines())
-    return scan_lines_for_forbidden(tail, name, effective)
+    lines = log_text.splitlines()
+    if current_opened is None:
+        return scan_lines_for_forbidden(LogWindow(judged_through).lines(lines), name, effective)
+    prior = LogWindow(judged_through, until=current_opened).lines(lines)
+    current = LogWindow(current_opened).lines(lines)
+    return scan_lines_for_forbidden(prior, name, effective) + scan_lines_for_forbidden(
+        current, name, current_allowed
+    )
 
 
 def format_errors(errors: List[LogError], max_display: int = 30) -> str:
