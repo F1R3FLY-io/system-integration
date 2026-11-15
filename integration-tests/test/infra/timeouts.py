@@ -44,9 +44,13 @@ class TimeoutHierarchy:
 
     @property
     def epoch_transition(self) -> int:
-        """Max seconds for a multi-block consensus transition (epoch-boundary
-        withdrawer move, quarantine payout) to complete."""
+        """Max seconds for an epoch boundary to move pending withdrawers out of
+        the active set."""
         return self._scaled(self._config.epoch_transition)
+
+    def blocks(self, count: int) -> int:
+        """Max seconds for the shard to produce ``count`` blocks."""
+        return int(count * self._config.block_interval * self._config.scale)
 
     @property
     def poll_interval(self) -> float:

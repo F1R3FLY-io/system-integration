@@ -20,7 +20,7 @@ The test is structured to fail loudly on three classes of regression:
 
 Single comprehensive test that:
 
-1. Starts a `_BackgroundLoad` thread on V1/V2/V3 (round-robin deploys, ~2.5 s per producer) so the fresh shard's chain advances — and merges — from the start.
+1. Starts a `BackgroundLoad` thread (`own_key_sends`, `infra/background_load.py`) on V1/V2/V3 (round-robin deploys, ~2.5 s per producer) so the fresh shard's chain advances — and merges — from the start.
 2. Polls v1 until the DAG has at least `_MIN_PRE_ATTACH_DEPTH` (12) blocks. Without depth, the forward-horizon collapses to ~genesis and the new code paths emit early — the test would silently turn into a thinner check.
 3. Polls v1's recent window (`_MULTI_PARENT_SCAN_DEPTH` = 24) until a **finalized** multi-parent merge block exists, and records it (most recent finalized merge wins, keeping it near the forward horizon). Finalized-only is load-bearing: a finalized pre-attach block is inside the observer's genesis→LFB bulk-sync range, so the later visibility check proves LFS coverage — an unfinalized tip could instead arrive via post-attach gossip, or be orphaned and never arrive at all.
 4. Immediately attaches a transient observer via `with observer_shard.add_observer() as observer:` — attaching right after the precondition keeps the recorded merge block within the forward-horizon depth of the LFB. (Context-managed: removed and its volume cleaned up on exit; the provider snapshots the retiring observer's full log at that moment, so its errors still reach the log scanner.)
@@ -69,7 +69,7 @@ The autouse fixture `check_node_logs_after_test` in `conftest.py` runs at test t
 - Dedicated module-scoped `observer_shard` fixture (3 validators, heartbeat, no readonly), `isolated_shard`-marked
 - `check_node_logs_after_test` autouse fixture for forbidden-log detection (see [ARCHITECTURE.md § 7](ARCHITECTURE.md#7-log-scanning))
 - `Shard.add_observer()` (context-managed transient observer)
-- Local `_BackgroundLoad` class — copy of the pattern in `test_bonding_validators` so cadence/failure-tolerance knobs stay explicit at the call site
+- `BackgroundLoad` with `own_key_sends` (`infra/background_load.py`), shared with `test_bonding_validators`; the cadence is set at the call site
 - `Node.deploy_string()`, `Node.last_finalized_block()`, `Node.get_blocks()`, `Node.get_block()`
 - `assert_all_nodes_agree_on_block()`, `assert_block_finalized_on_all_nodes()`, `assert_bonds_map_consistent_across_nodes()` from assertions
 - `wait_for_block_visible()`, `poll_until()`, `all_blocks_visible()`, `get_blocks_if_enough()` from polling

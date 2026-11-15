@@ -44,7 +44,7 @@ from f1r3fly.client import F1r3flyClientException
 from f1r3fly.token_amount import parse as parse_amount
 
 from ...infra.assertions import assert_bonds_map_consistent_across_nodes
-from ...infra.config import ShardConfig
+from ...infra.config import SHORT_EPOCH_CLI_OPTIONS, SHORT_EPOCH_LENGTH, ShardConfig
 from ...infra.keys import (
     VALIDATOR1_ID,
     VALIDATOR2_ID,
@@ -60,11 +60,8 @@ pytestmark = pytest.mark.xdist_group("custom")
 _BOND_AMOUNT = 100
 
 # The whole test is built around block #4 being an epoch boundary, so the
-# epoch is pinned explicitly on the shard AND the joiner below — never
-# inherited from conf/rust.conf (which carries a long epoch for suites
-# that never bond, and drifted to 50 while this test assumed 4).
-_EPOCH_LENGTH = 4
-_QUARANTINE_LENGTH = 10
+# short epoch is passed to the shard AND the joiner below.
+_EPOCH_LENGTH = SHORT_EPOCH_LENGTH
 
 
 def _expect(node, block_hash: str):
@@ -220,8 +217,7 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
         extra_wallets=extra_wallets,
         global_cli_options={
             "--synchrony-constraint-threshold": "0",
-            "--epoch-length": str(_EPOCH_LENGTH),
-            "--quarantine-length": str(_QUARANTINE_LENGTH),
+            **SHORT_EPOCH_CLI_OPTIONS,
         },
     )
     shard = Shard.create(provider, config, timeouts)
@@ -240,8 +236,7 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
             cli_flags={"--heartbeat-disabled"},
             cli_options={
                 "--synchrony-constraint-threshold": "0",
-                "--epoch-length": str(_EPOCH_LENGTH),
-                "--quarantine-length": str(_QUARANTINE_LENGTH),
+                **SHORT_EPOCH_CLI_OPTIONS,
             },
         )
         all_nodes = [v1, v2, v3, joiner, ro]

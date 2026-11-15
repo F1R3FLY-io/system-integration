@@ -11,7 +11,7 @@ not a ``docker.Container``.
 from __future__ import annotations
 
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from f1r3fly.client import F1r3flyClient
 from f1r3fly.const import DEFAULT_PHLO_LIMIT, DEFAULT_PHLO_PRICE
@@ -108,6 +108,16 @@ class Node:
         session directory."""
         return getattr(self._handle, "data_dir", None)
 
+    def p2p_address(self) -> Tuple[str, int]:
+        return self._handle.p2p_address()
+
+    def tls_certificate(self) -> bytes:
+        return self._handle.tls_certificate()
+
+    @property
+    def p2p_reply_host(self) -> str:
+        return self._handle.p2p_reply_host
+
     # ── HTTP API helpers ──
 
     def http_get(self, path: str, timeout: int = 60):
@@ -125,6 +135,20 @@ class Node:
 
         url = f"{self.http_url}/api{path}"
         resp = requests.get(url, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+
+    @property
+    def admin_url(self) -> str:
+        return f"http://{self.grpc_host}:{self.ports.admin}"
+
+    def validator_liveness(self, timeout: int = 30) -> dict:
+        """GET the admin API's validator liveness report: this node's view
+        of every validator's bucket, its own next decision, and what its
+        last finalized block records of claims and ejections."""
+        import requests
+
+        resp = requests.get(f"{self.admin_url}/api/validator-liveness", timeout=timeout)
         resp.raise_for_status()
         return resp.json()
 

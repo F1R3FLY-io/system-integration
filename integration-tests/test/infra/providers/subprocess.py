@@ -33,7 +33,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_binary
 from ..genesis import write_wallets
@@ -98,6 +98,7 @@ class SubprocessNodeHandle:
         log_fh,
         spawn_args: List[str],
         spawn_env: dict,
+        tls_certificate_path: Path,
         identity: Optional[ValidatorIdentity] = None,
         volume_name: Optional[str] = None,
         use_shard_conf: bool = False,
@@ -106,6 +107,7 @@ class SubprocessNodeHandle:
         self._ports = ports
         self._role = role
         self._data_dir = data_dir
+        self._tls_certificate_path = tls_certificate_path
         self._log_path = log_path
         self._proc = proc
         # Hold the open file handle so logs() can read it via the path; we
@@ -142,6 +144,16 @@ class SubprocessNodeHandle:
         # own. Returns a session-scoped string so callers that key off
         # network_name (e.g. add_node) still get something deterministic.
         return f"subprocess-{self._data_dir.parent.name}"
+
+    def p2p_address(self) -> Tuple[str, int]:
+        return ("127.0.0.1", self._ports.protocol)
+
+    def tls_certificate(self) -> bytes:
+        return self._tls_certificate_path.read_bytes()
+
+    @property
+    def p2p_reply_host(self) -> str:
+        return "127.0.0.1"
 
     @property
     def role(self) -> NodeRole:
@@ -550,8 +562,15 @@ class SubprocessProvider:
             log_fh=log_fh,
             spawn_args=cmd,
             spawn_env=env,
+            tls_certificate_path=self._tls_certificate_path(cert_subdir, data_dir),
             identity=identity,
         )
+
+    def _tls_certificate_path(self, cert_subdir: Optional[str], data_dir: Path) -> Path:
+        # Without a shipped keypair the node generates one in its data dir.
+        if cert_subdir is None:
+            return data_dir / "node.certificate.pem"
+        return Path(self._paths.certs_dir) / cert_subdir / "node.certificate.pem"
 
     # ── Shard lifecycle ─────────────────────────────────────────────
 
@@ -1028,6 +1047,7 @@ class SubprocessProvider:
             log_fh=log_fh,
             spawn_args=cmd,
             spawn_env=env,
+            tls_certificate_path=self._tls_certificate_path(cert_subdir, data_dir),
             volume_name=volume_name,
             use_shard_conf=use_shard_conf,
         )
@@ -1349,7 +1369,8 @@ class SubprocessProvider:
             # minimal handle that supports logs/is_running/stop/remove, which
             # is enough for tests that just want to query an existing shard.
             # Ports are recovered by parsing the cmdline.
-            ports = _ports_from_cmdline(pid)
+            cmdline = _cmdline(pid)
+            ports = _ports_from_cmdline(cmdline) if cmdline else None
             if ports is None:
                 logger.warning(
                     "adopt_session: couldn't recover ports for pid %d; skipping",
@@ -1364,6 +1385,7 @@ class SubprocessProvider:
                 data_dir=role_dir,
                 log_path=log_path,
                 pid=pid,
+                tls_certificate_path=_tls_certificate_path_from_cmdline(cmdline, role_dir),
             )
             handles.append(handle)
 
@@ -1443,7 +1465,7 @@ _PORT_FLAG_RX = re.compile(
 )
 
 
-def _ports_from_cmdline(pid: int) -> Optional[PortMapping]:
+def _cmdline(pid: int) -> Optional[str]:
     try:
         result = subprocess.run(
             ["ps", "-p", str(pid), "-o", "args="],
@@ -1453,9 +1475,20 @@ def _ports_from_cmdline(pid: int) -> Optional[PortMapping]:
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
-    cmdline = (result.stdout or "").strip()
-    if not cmdline:
-        return None
+    return (result.stdout or "").strip() or None
+
+
+_TLS_CERTIFICATE_FLAG_RX = re.compile(r"--tls-certificate-path\s+(\S+)")
+
+
+def _tls_certificate_path_from_cmdline(cmdline: str, data_dir: Path) -> Path:
+    match = _TLS_CERTIFICATE_FLAG_RX.search(cmdline)
+    if match is None:
+        return data_dir / "node.certificate.pem"
+    return Path(match.group(1))
+
+
+def _ports_from_cmdline(cmdline: str) -> Optional[PortMapping]:
     found: dict = {}
     for m in _PORT_FLAG_RX.finditer(cmdline):
         for k, v in m.groupdict().items():
@@ -1490,12 +1523,14 @@ class _AdoptedHandle(SubprocessNodeHandle):
         data_dir: Path,
         log_path: Path,
         pid: int,
+        tls_certificate_path: Path,
     ) -> None:
         # Bypass parent __init__ — we don't have a Popen.
         self._name = name
         self._ports = ports
         self._role = role
         self._data_dir = data_dir
+        self._tls_certificate_path = tls_certificate_path
         self._log_path = log_path
         self._proc = None  # not a Popen
         self._log_fh = None

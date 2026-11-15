@@ -50,7 +50,6 @@ before downstream shared tests run.
 """
 
 import logging
-import threading
 from typing import List, Optional
 
 import pytest
@@ -62,7 +61,8 @@ from ...infra.assertions import (
     assert_block_finalized_on_all_nodes,
     assert_bonds_map_consistent_across_nodes,
 )
-from ...infra.config import ShardConfig
+from ...infra.background_load import BackgroundLoad, own_key_sends
+from ...infra.config import SHORT_EPOCH_CLI_OPTIONS, SHORT_EPOCH_LENGTH, ShardConfig
 from ...infra.keys import (
     VALIDATOR1_ID,
     VALIDATOR2_ID,
@@ -85,10 +85,7 @@ pytestmark = [
 
 _BOND_AMOUNT = 100
 
-# Matches the epoch `bonding_shard` boots with (the fixture passes
-# --epoch-length explicitly; conf/rust.conf carries a longer one for suites
-# that never bond).
-_EPOCH_LENGTH = 4
+_EPOCH_LENGTH = SHORT_EPOCH_LENGTH
 
 # Background-load knobs. Interval is per-producer; with 3 producers
 # rotating round-robin, effective shard-wide cadence is ~3× this.
@@ -131,103 +128,14 @@ def bonding_shard(provider, timeouts):
         include_readonly=True,
         extra_wallets=extra_wallets,
         # This suite waits for a joiner to activate at an epoch boundary, so
-        # the shard needs a short epoch. Set explicitly rather than inherited
-        # from conf/rust.conf (which carries a long epoch for suites that
-        # never bond), so the two cannot drift — matches `_EPOCH_LENGTH`.
-        global_cli_options={"--epoch-length": "4", "--quarantine-length": "10"},
+        # the shard needs a short epoch.
+        global_cli_options=dict(SHORT_EPOCH_CLI_OPTIONS),
     )
     shard = Shard.create(provider, config, timeouts)
     try:
         yield shard
     finally:
         shard.destroy()
-
-
-class _BackgroundLoad:
-    """Round-robin deploy generator across the active validators.
-
-    Drives the joiner's forward-horizon rspace history sync to be
-    non-trivial: with quiet validators the joiner sees only a thin
-    slice of post-LFB activity and the new code paths fire on a
-    shallow input. With background load, V1/V2/V3 produce blocks
-    concurrently throughout bonding, deepening the horizon the
-    joiner must sync.
-
-    Self-contained on the test (not promoted to a shared fixture).
-    """
-
-    def __init__(
-        self,
-        producers: List,
-        identities: List,
-        interval: float = _BG_LOAD_INTERVAL,
-    ) -> None:
-        if len(producers) != len(identities):
-            raise ValueError("producers and identities must be same length")
-        self._producers = producers
-        self._identities = identities
-        self._interval = interval
-        self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._counter = 0
-        self._errors = 0
-        self._deploy_ids: List[str] = []
-        self._lock = threading.Lock()
-
-    def deploy_ids(self) -> List[str]:
-        """Snapshot of every deploy id this loop successfully submitted."""
-        with self._lock:
-            return list(self._deploy_ids)
-
-    def start(self) -> None:
-        if self._thread is not None:
-            raise RuntimeError("BackgroundLoad already started")
-        self._thread = threading.Thread(
-            target=self._run,
-            daemon=True,
-            name="bonding-bg-load",
-        )
-        self._thread.start()
-
-    def stop(self, join_timeout: float = 10.0) -> None:
-        if self._thread is None:
-            return
-        self._stop.set()
-        self._thread.join(timeout=join_timeout)
-        logging.info(
-            "Background load stopped: %d deploys sent, %d errors",
-            self._counter,
-            self._errors,
-        )
-        self._thread = None
-
-    def _run(self) -> None:
-        while not self._stop.is_set():
-            idx = self._counter % len(self._producers)
-            node = self._producers[idx]
-            identity = self._identities[idx]
-            try:
-                deploy_id = node.deploy_string(
-                    f'@"bg-load-{self._counter}"!({self._counter})',
-                    identity.private_key(),
-                    phlo_limit=_BG_LOAD_PHLO_LIMIT,
-                    phlo_price=1,
-                )
-                with self._lock:
-                    self._deploy_ids.append(deploy_id)
-            except Exception as e:
-                # Background load is noise, not the assertion target.
-                # Log and keep going so transient deploy errors don't
-                # mask the test's real signal.
-                self._errors += 1
-                logging.warning(
-                    "Background load deploy %d failed on %s: %s",
-                    self._counter,
-                    node.name,
-                    e,
-                )
-            self._counter += 1
-            self._stop.wait(self._interval)
 
 
 def _dump_block_search_diagnostic(
@@ -313,7 +221,7 @@ def _bond_lifecycle(
     proposer_node,
     joiner_identity,
     expected_bonds_after: int,
-    bg_load: Optional["_BackgroundLoad"] = None,
+    bg_load: Optional[BackgroundLoad] = None,
 ) -> None:
     """Run the full bonding lifecycle for one joiner.
 
@@ -710,9 +618,13 @@ def test_bonding_validators(bonding_shard, timeouts) -> None:
     v2 = bonding_shard.node("validator2")
     v3 = bonding_shard.node("validator3")
 
-    bg_load = _BackgroundLoad(
-        producers=[v1, v2, v3],
-        identities=[VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID],
+    bg_load = BackgroundLoad(
+        [v1, v2, v3],
+        own_key_sends(
+            [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID], phlo_limit=_BG_LOAD_PHLO_LIMIT
+        ),
+        interval=_BG_LOAD_INTERVAL,
+        name="bonding-bg-load",
     )
     bg_load.start()
     try:

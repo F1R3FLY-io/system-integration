@@ -154,7 +154,7 @@ class Shard:
 
         Example::
 
-            with shard.add_joiner(VALIDATOR4_ID, cli_options={"--epoch-length": "4"}) as joiner:
+            with shard.add_joiner(VALIDATOR4_ID, cli_options=SHORT_EPOCH_CLI_OPTIONS) as joiner:
                 joiner.deploy_string(bond_rholang, VALIDATOR4_ID.private_key())
         """
         from .config import NodeConfig

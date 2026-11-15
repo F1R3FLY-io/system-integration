@@ -155,3 +155,21 @@ Priority for new tests should be based on attack surface and production risk.
 3. Port remaining 5 active tests
 4. Evaluate and potentially enable `test_slash_invalid_validator_approve_evil_block`
 5. Consider new tests for uncovered offense types based on priority
+
+---
+
+## Status — three tests on a live shard, judged against the current slashing rule
+
+This plan is historical. The 6-test revival landed first, then an expansion phase added 13 more tests covering the H1–H5 / M1–M6 / B1 threat coverage gaps (19 total), each on its own heartbeat-off shard.
+
+The node now slashes only equivocation: every other offence is judged against the receiving node's own state, so the block is rejected and its sender keeps its stake. The 19 tests are consolidated into three on a shard configured as production runs it — heartbeat on, the shard's fault-tolerance threshold and epoch, four validators of distinct stake and an observer — asserting what the network must agree on: the same verdict on every node, a slash finalized everywhere, and finalized stake and committee identical across nodes. See [test_slash.md](../integration-tests/test/docs/test_slash.md).
+
+- `integration-tests/test/tests/custom/test_slash.py` — the three tests
+- `integration-tests/test/infra/p2p_client.py` — `NodeClient`, `p2p_protocol_client`, `generate_block_hash`, `slash_evidence`
+- `Node.p2p_address()` / `.tls_certificate()` / `.p2p_reply_host` — implemented by each provider
+- `integration-tests/test/infra/polling.py` — `wait_for_log_match`
+- `integration-tests/test/docs/test_slash.md` — per-test docs
+
+M7 (`test_slash_censoring_proposer_eventually_slashes`, T-37 / T-12PF) is deferred — the Rust binary has no runtime proposer-fairness detector and the threat model classifies T-12PF as a *boundary assumption* (per `slashing-traceability.md` finding 88 = `model_boundary`, "No source bug confirmed").
+
+Implementation log: see `f1r3node-rust/docs/work-logs/` for the work-log entries that capture forge mechanics, post-state self-consistency analysis, and per-test debug iterations.

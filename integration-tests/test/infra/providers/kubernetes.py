@@ -16,7 +16,7 @@ When implemented, this provider will:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 from ..config import NodeConfig, ShardConfig
 from ..types import PortMapping
@@ -50,6 +50,21 @@ class K8sNodeHandle:
     @property
     def network_name(self) -> str:
         return self._namespace
+
+    def p2p_address(self) -> Tuple[str, int]:
+        raise NotImplementedError("Implement via `kubectl port-forward` to the pod's 40400.")
+
+    def tls_certificate(self) -> bytes:
+        raise NotImplementedError(
+            "Implement via `kubectl exec <pod> -n <ns> -- cat /var/lib/rnode/node.certificate.pem`."
+        )
+
+    @property
+    def p2p_reply_host(self) -> str:
+        raise NotImplementedError(
+            "Implement with an address pods can dial back to, such as a Service fronting "
+            "the test process."
+        )
 
     def logs(self, tail: Optional[int] = None) -> str:
         raise NotImplementedError("Implement via `kubectl logs <pod> -n <ns> [--tail N]`.")

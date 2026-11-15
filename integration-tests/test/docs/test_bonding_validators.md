@@ -66,7 +66,7 @@ failures in earlier phases. All three phases run as a single test.
 Three-phase test wrapped in a `try/finally` around a background-load
 thread.
 
-**Background load** — A daemon thread (`_BackgroundLoad`) sends round-robin
+**Background load** — A daemon thread (`BackgroundLoad` with `own_key_sends`, `infra/background_load.py`) sends round-robin
 deploys to V1/V2/V3 every 2.0s per producer (~1.5 deploys/sec shard-wide).
 This drives concurrent block production while the joiners sync, so the
 joiners' LFS forward-horizon contains a non-trivial number of side-branch
@@ -218,8 +218,8 @@ forward-horizon gap surfaces `UnknownRootError` cascades under the bg-load
   readonly with V4/V5 vaults pre-seeded, destroyed at teardown
 - `Shard.attach_joiner(...)` (Phases A, B) / `Shard.attach_observer()`
   (Phase C)
-- `_BackgroundLoad` (test-local) — daemon thread, round-robin deploys at
-  `_BG_LOAD_INTERVAL` (2.0s per producer)
+- `BackgroundLoad` with `own_key_sends` (`infra/background_load.py`) — daemon
+  thread, round-robin deploys at `_BG_LOAD_INTERVAL` (2.0s per producer)
 - `Node.deploy_rho_file("bond.rho", ...)` with substitutions
 - `wait_for_block_visible`, `wait_for_deploy_included`,
   `wait_for_deploy_finalized`, `poll_until`

@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 import typing_extensions
 
@@ -68,6 +68,21 @@ class NodeHandle(typing_extensions.Protocol):
     @property
     def network_name(self) -> str:
         """Docker network or K8s namespace this node belongs to."""
+        ...
+
+    def p2p_address(self) -> Tuple[str, int]:
+        """Host and port at which the test process reaches the node's P2P
+        transport."""
+        ...
+
+    def tls_certificate(self) -> bytes:
+        """PEM certificate the node presents on its P2P transport."""
+        ...
+
+    @property
+    def p2p_reply_host(self) -> str:
+        """Address the node dials to reach a P2P server run by the test
+        process."""
         ...
 
     def logs(self, tail: Optional[int] = None) -> str:
