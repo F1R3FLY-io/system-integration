@@ -43,6 +43,7 @@ from ...infra.assertions import (
     assert_deploy_block_finalized_on_all_nodes,
     collect_forensics,
     common_finalized_anchor,
+    resolve_deploy_verdicts,
 )
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID, VALIDATOR4_ID
@@ -57,6 +58,7 @@ from ...infra.p2p_client import (
 from ...infra.polling import poll_until, wait_for_block_visible, wait_for_log_match
 from ...infra.providers.docker import DockerProvider
 from ...infra.shard import Shard
+from ...infra.types import ValidatorIdentity
 
 pytestmark = pytest.mark.xdist_group("custom")
 
@@ -744,6 +746,143 @@ def test_equivocation_is_slashed_network_wide(provider, timeouts) -> None:
         finally:
             v1.unpause()
             v2.unpause()
+
+
+def _child_by(client: NodeClient, node: Node, identity, parent: bytes) -> Optional[str]:
+    """The hash of a recent block on ``node`` that ``identity`` built on
+    ``parent``, once there is one."""
+    for info in node.get_blocks(10):
+        if info.sender != identity.public_hex:
+            continue
+        if parent in _fetch(client, info.blockHash, node).header.parentsHashList:
+            return info.blockHash
+    return None
+
+
+def _assert_bucket_records_agreed(nodes: Sequence[Node], timeouts) -> None:
+    """Every node's liveness report records the same bucket state at the same
+    finalized block."""
+
+    def _agreed():
+        records = {node.name: node.validator_liveness()["finalizedState"] for node in nodes}
+        if len({record["blockHash"] for record in records.values()}) != 1:
+            return None
+        first = next(iter(records.values()))
+        differing = {name: record for name, record in records.items() if record != first}
+        assert not differing, f"bucket records differ at one finalized block: {records}"
+        return True
+
+    poll_until(
+        predicate=_agreed,
+        timeout=timeouts.finalization * 5,
+        interval=timeouts.poll_interval,
+        description="the same bucket records on every node",
+    )
+
+
+@pytest.mark.timeout(2400)
+@pytest.mark.allow_forbidden_patterns("RecordingInvalidBlock")
+def test_twins_are_judged_alike_whichever_arrives_first(provider, timeouts) -> None:
+    """v1 runs two nodes with one key, and each proposes a block carrying its
+    own deploy at the same sequence number, then goes quiet. v2 and v3
+    receive v1's block first, and v2 builds on it; v4 receives the other
+    node's block first. A node learns of a block from an announcement and
+    then asks the announcer for it, so a node receives a block only from the
+    test while every node holding it is paused, and each node's order is
+    exact.
+
+    Whichever twin a node received first, every node accepts v2's block,
+    finalizes v1's block and its deploy, slashes v1 once, and records the
+    same bucket state at one finalized block. v4 holds v1's deploy only in the
+    block it recorded as the equivocation.
+    """
+    with _live_shard(provider, timeouts, "twin-order", attackers=("validator1",)) as (
+        shard,
+        client,
+    ):
+        v1, v2 = shard.node("validator1"), shard.node("validator2")
+        v3, v4 = shard.node("validator3"), shard.node("validator4")
+        ro, boot = shard.readonly, shard.boot
+        start = ro.last_finalized_block().blockInfo.blockNumber
+        double = shard.attach_joiner(
+            ValidatorIdentity(
+                name="validator1-double",
+                private_hex=VALIDATOR1_ID.private_hex,
+                public_hex=VALIDATOR1_ID.public_hex,
+            ),
+            cli_options={"--heartbeat-disabled": ""},
+        )
+        lfb = ro.last_finalized_block().blockInfo.blockHash
+        wait_for_block_visible(double, lfb, timeouts.finalization * 3)
+        everyone = [v1, double, v2, v3, v4, ro, boot]
+        equivocation = "IgnorableEquivocation|AdmissibleEquivocation"
+        try:
+            for node in (double, v2, v3, v4, ro, boot):
+                node.pause()
+            v1.deploy_string(_HELLO, VALIDATOR1_ID.private_key())
+            proposed = _fetch(client, v1.propose(), v1)
+            v1.pause()
+            double.unpause()
+            double.deploy_string(_HELLO, VALIDATOR1_ID.private_key())
+            twin = _fetch(client, double.propose(), double)
+            double.pause()
+            assert twin.seqNum == proposed.seqNum, (
+                f"v1's second node proposed at sequence number {twin.seqNum}, not "
+                f"{proposed.seqNum}: it held v1's block before proposing"
+            )
+
+            for node in (v2, v3):
+                node.unpause()
+            for node in (v2, v3):
+                client.send_block(proposed, node)
+            for node in (v2, v3):
+                wait_for_block_visible(node, proposed.blockHash.hex(), timeouts.finalization)
+            built_on = poll_until(
+                predicate=lambda: _child_by(client, v2, VALIDATOR2_ID, proposed.blockHash),
+                timeout=timeouts.finalization * 3,
+                interval=timeouts.poll_interval,
+                description="v2's block built on v1's proposed block",
+            )
+            _inject(client, twin, [v3], _recorded(twin.blockHash, equivocation), timeouts)
+
+            for node in (v2, v3):
+                node.pause()
+            v4.unpause()
+            client.send_block(twin, v4)
+            wait_for_block_visible(v4, twin.blockHash.hex(), timeouts.finalization)
+            for node in (v2, v3, ro, boot):
+                node.unpause()
+            wait_for_log_match(
+                v4, _recorded(proposed.blockHash, equivocation), timeouts.finalization * 3
+            )
+
+            running = [v2, v3, v4, ro, boot]
+            for block_hash in (built_on, proposed.blockHash.hex()):
+                assert_block_finalized_on_all_nodes(
+                    running, block_hash, timeout=timeouts.finalization * 5
+                )
+            sig = proposed.body.deploys[0].deploy.sig.hex()
+            verdicts = resolve_deploy_verdicts(
+                running, [sig], timeouts.finalization * 5, label="v1's proposed deploy"
+            )
+            assert verdicts.finalized == [sig], (
+                f"v1's proposed deploy is finalized on every node: {verdicts.summary()}"
+            )
+            stake = dict(_GENESIS_BONDS, **{VALIDATOR1_ID.public_hex: 0})
+            _assert_slashed_once_everywhere(
+                client,
+                ro,
+                running,
+                VALIDATOR1_ID,
+                _evidence(proposed, twin),
+                stake,
+                start,
+                timeouts,
+            )
+            _assert_bucket_records_agreed([v2, v3, v4, ro], timeouts)
+        finally:
+            for node in everyone:
+                node.unpause()
 
 
 @pytest.mark.timeout(2400)

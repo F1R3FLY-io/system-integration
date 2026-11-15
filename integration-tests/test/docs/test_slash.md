@@ -10,7 +10,7 @@ Each test checks the outcome the way the network must agree on it: every receivi
 
 Runs under the subprocess and Docker providers. Under Docker the nodes reply to the client through the network gateway, which works only with native Linux networking, so the suite skips on other hosts there.
 
-## Tests (6)
+## Tests (7)
 
 ### `test_rejected_offences_do_not_punish` (4 shards)
 
@@ -18,7 +18,7 @@ v1 and v2 are attackers: they propose only when the test tells them to (`--heart
 
 | Offence | Sender | Verdict |
 |---------|--------|---------|
-| declared hash does not match the content | v1 | ignored without a verdict (`Ignoring block … because block hash`) |
+| declared hash does not match the content | v1 | refused on receipt without a log line (each judge's `block_integrity_rejected{reason="hash-mismatch"}` rises) |
 | sequence number 1000 above the previous block's | v1 | `InvalidSequenceNumber` |
 | block number not one above its parents' | v1 | `InvalidBlockNumber` |
 | block built on v1's rejected block | v2 | held by block ingest until the rejected block arrives, so never admitted (each judge's `block_ingest_held` rises) |
@@ -34,10 +34,24 @@ Then: the chain keeps finalizing, no forged block and no slash finalizes, finali
 ### `test_equivocation_is_slashed_network_wide`
 
 1. v1 moves on, then signs a sibling of its previous block and goes quiet; only v2 receives the sibling (`IgnorableEquivocation`).
-2. v2 signs a sibling of its latest block and goes quiet; v3 first receives a block built on v2's sibling, asks for the sibling as a dependency, then receives it (`AdmissibleEquivocation`).
+2. v2 signs a sibling of its latest block and goes quiet; v3 first receives a block built on v2's sibling and holds it until the sibling arrives (v3's `block_ingest_held` rises), then receives the sibling (`AdmissibleEquivocation`).
 3. v3's next block slashes v1 again; v4 and the observer reject it (`UnauthorizedSlashDeploy`, v1 has no stake left) and it never finalizes. v3 then stays silent; v4 holds the stake that keeps finalizing.
 
 After each slash: it finalizes on every running node; finalized stake and the committee agree everywhere; every honest validator still gets blocks finalized. Honest proposers that see the evidence first may each slash in parallel blocks, and the merge keeps one; no block may slash again on top of a block that already did.
+
+### `test_twins_are_judged_alike_whichever_arrives_first`
+
+Two nodes receive an equivocator's twins in opposite orders. The verdicts on the twins differ by node, and everything that follows from them must not.
+
+v1 is the attacker and runs two nodes with one key: v1 and a joiner, `validator1-double`, with its heartbeat disabled. Each node proposes a block that carries its own deploy at the same sequence number, so the node makes both twins. A node learns of a block from an announcement and then asks the announcer for it. So the test pauses every node that holds a twin while it gives that twin to another node, and each node's order is exact:
+
+1. Every node except v1 is paused. v1 proposes a block, the test fetches it, and v1 is paused for the rest of the test.
+2. The second node runs and proposes the twin at the same sequence number. The test fetches it, and the second node is paused for the rest of the test.
+3. v2 and v3 receive the proposed block, and v2 builds a block on it. Then v3 receives the twin (`IgnorableEquivocation`).
+4. v2 and v3 are paused, and v4 receives the twin first.
+5. Every node except v1 and the second node runs. v4 fetches v2's block and the proposed block, and records the proposed block as the equivocation (`AdmissibleEquivocation`).
+
+Then on every running node: v2's block and the proposed block are finalized, and the proposed block's deploy is `Finalized`. v1 is slashed once, and finalized stake and the committee agree. Every node's liveness report (`/api/validator-liveness`) records the same bucket state at the same finalized block.
 
 ### `test_uneven_proposing_is_not_punished`
 
@@ -45,7 +59,7 @@ v2 stays silent for 40 blocks while the others propose, then returns. Nobody is 
 
 ## Key assertions
 
-- **Verdict:** each receiving node logs `Recording invalid block <hash[:10]>... for <Variant>.`, or `Ignoring block` for a hash mismatch.
+- **Verdict:** each receiving node logs `Recording invalid block <hash[:10]>... for <Variant>.` A verdict the node does not log is read from its `/metrics` (`infra/metrics.metric_value`): `block_integrity_rejected` for a hash mismatch, `block_ingest_held` for a block held until a block it cites arrives.
 - **Finalized slash:** slashes are read from blocks every node has finalized (`slash_evidence`), keyed by the hashes of the two blocks their evidence names, which pyf1r3fly recomputes from the commitments.
 - **Stake:** read from the finalized state (`readonly.pos.get_bonds()`). A block's `bonds` field is the committee at its finalized floor and does not show its own slash.
 - **Committee:** the bonds field of a block every node has finalized, identical on every node.

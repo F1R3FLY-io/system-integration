@@ -50,7 +50,7 @@ Each test builds its own `ShardConfig` and calls `provider.create_shard(...)`. U
 | 1 | [test_observer_overload](test_observer_overload.md) | Observer rejects excess exploratory deploys with bounded memory and recovers API capacity |
 | 1 | [test_readonly_catchup_bounded](test_readonly_catchup_bounded.md) | Readonly catch-up keeps API latency and memory bounded while converging to canonical state |
 | 1 | [test_shard_degradation](test_shard_degradation.md) | Production-readiness gate: 150 deploys, sustained load |
-| 3 | [test_slash](test_slash.md) | Forged blocks injected over P2P into a production-configured shard: rejected offences punish nobody, equivocations are slashed once network-wide, uneven proposing is not punished |
+| 4 | [test_slash](test_slash.md) | Forged blocks injected over P2P into a production-configured shard: rejected offences punish nobody, equivocations are slashed once network-wide, twins that arrive in opposite orders are judged alike, uneven proposing is not punished |
 | 1 | [test_slow_peer_notification](test_slow_peer_notification.md) | A slow low-stake peer does not block deploy finalization while quorum remains available |
 | 1 | [test_joiner_self_proposes_at_epoch_boundary](test_joiner_self_proposes_at_epoch_boundary.md) | Negative-control for the joiner-bond-drop bug: deterministic single-node propose does NOT reproduce it; rules out architectural-shape-alone hypothesis |
 | 1 | [test_synchrony_constraint](test_synchrony_constraint.md) | Per-validator synchrony constraint threshold enforcement |
