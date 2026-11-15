@@ -59,7 +59,7 @@ from ...infra.shard import Shard
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.xdist_group("custom")
+pytestmark = pytest.mark.xdist_group("liveness")
 
 _GENESIS = (
     (VALIDATOR1_ID, 500),

@@ -60,7 +60,7 @@ from ...infra.providers.docker import DockerProvider
 from ...infra.shard import Shard
 from ...infra.types import ValidatorIdentity
 
-pytestmark = pytest.mark.xdist_group("custom")
+pytestmark = pytest.mark.xdist_group("slash")
 
 _BONDS = [(VALIDATOR1_ID, 100), (VALIDATOR2_ID, 200), (VALIDATOR3_ID, 300), (VALIDATOR4_ID, 400)]
 _GENESIS_BONDS = {identity.public_hex: stake for identity, stake in _BONDS}

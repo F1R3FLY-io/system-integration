@@ -78,7 +78,7 @@ from ...infra.polling import (
 )
 from ...infra.shard import Shard
 
-pytestmark = pytest.mark.xdist_group("custom")
+pytestmark = pytest.mark.xdist_group("lifecycle")
 
 # ── Shard parameters ───────────────────────────────────────────────────────
 _GENESIS_STAKE = 100
