@@ -393,12 +393,14 @@ class Node:
         """Get blocks on the main chain. Returns List[LightBlockInfo]."""
         return self._external_client().show_main_chain(depth)
 
-    def preview_private_names(self, timestamp: int, name_qty: int = 1):
-        """Preview unforgeable names for a deployer key + timestamp."""
+    def preview_private_names(self, timestamp: int, valid_after_block_no: int, name_qty: int = 1):
+        """Preview unforgeable names for a deployer key, timestamp and valid-after block."""
         from f1r3fly.crypto import PublicKey
 
         pub_key = PublicKey.from_hex(self._identity.public_hex)
-        return self._external_client().previewPrivateNames(pub_key, timestamp, name_qty)
+        return self._external_client().previewPrivateNames(
+            pub_key, timestamp, valid_after_block_no, name_qty
+        )
 
     def get_event_data(self, block_hash: str, force_replay: bool = False):
         """Get block execution trace. Returns EventInfoResponse."""

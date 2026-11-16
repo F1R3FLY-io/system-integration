@@ -38,7 +38,7 @@ All block info assertions use `_assert_light_block_info()` which validates every
 - All addresses unique
 
 ### test_prepare_deploy
-`GET /api/prepare-deploy` on **V1 and V2**. Deploys 3 contracts, polls until `seqNumber >= 3` on both nodes. Also tests `POST` with deployer params: verifies `nameQty=2` returns exactly 2 names.
+`GET /api/prepare-deploy` on **V1 and V2**. Deploys 3 contracts, polls until `seqNumber >= 3` on both nodes. Also tests `POST` with deployer params (deployer, timestamp, `validAfterBlockNumber`): verifies `nameQty=2` returns exactly 2 names.
 
 ### test_last_finalized_block
 `GET /api/last-finalized-block` on **all nodes**. Asserts:
@@ -120,7 +120,7 @@ POST `/api/data-at-name` and GET `/api/transactions/{hash}` both return 404.
 gRPC `showMainChain` on V1. Asserts >= 2 blocks, descending block numbers, valid hashes.
 
 ### test_preview_private_names
-gRPC `previewPrivateNames` on V1. Asserts 3 unique names generated, deterministic across calls.
+gRPC `previewPrivateNames` on V1 for a timestamp and valid-after block. Asserts 3 unique names generated, deterministic across calls.
 
 ### test_get_event_data
 gRPC `getEventByHash` on **readonly**. Asserts block execution trace returned with deploys and events for a finalized block.
