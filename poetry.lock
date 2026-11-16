@@ -1159,8 +1159,8 @@ dev = ["grpcio-tools (>=1.60.0)", "isort (>=5.12.0)", "mypy (>=1.7.0)", "mypy-pr
 [package.source]
 type = "git"
 url = "https://github.com/F1R3FLY-io/pyf1r3fly.git"
-reference = "014d105befbfd0435958e364e830e89edbb27ada"
-resolved_reference = "014d105befbfd0435958e364e830e89edbb27ada"
+reference = "bff23e47c58e582c66e7832c9a6c866090ba7182"
+resolved_reference = "bff23e47c58e582c66e7832c9a6c866090ba7182"
 
 [[package]]
 name = "pygments"
@@ -1680,4 +1680,4 @@ test = ["pytest", "websockets"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "ff3ead29e453cf47a1f8c87a97fddbfbec3d497251ee91f27d92110fb1b55a02"
+content-hash = "ad160e1b34dfa5f6403d00ece15943782e9b4b0e20f35200e7a65d236fe29068"
