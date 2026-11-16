@@ -4,7 +4,8 @@ to confirm the shard executed it correctly.
 A workload builds the term for deploy ``index`` signed by ``key``. Workloads
 whose deploys touch shared state install it in ``prepare`` and confirm the
 result in ``verify``, so a run that finalized every deploy but produced the
-wrong state is not reported as capacity.
+wrong state is not reported as capacity. A deploy's own result is read by
+``observe`` at the block it finalized in.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from f1r3fly.deploy import DeployError, check_deploy_succeeded
 from f1r3fly.par import par_value
@@ -44,14 +45,10 @@ def check_execution(readonly, finalized: Dict[str, int]) -> Tuple[List[str], dic
     problems = []
     costs = []
     for deploy_id in _sample(finalized):
-        block_hash = _canonical_block(readonly, deploy_id)
         try:
-            block = readonly.get_block(block_hash)
-            check_deploy_succeeded(block, deploy_id)
+            costs.append(executed_cost(readonly, deploy_id, _canonical_block(readonly, deploy_id)))
         except DeployError as exc:
             problems.append(str(exc))
-            continue
-        costs.append(next(d.cost for d in block.deploys if d.sig == deploy_id))
     cost = {
         "sampled": len(costs),
         "phlo_mean": round(statistics.fmean(costs)) if costs else None,
@@ -59,6 +56,14 @@ def check_execution(readonly, finalized: Dict[str, int]) -> Tuple[List[str], dic
     }
     logging.info("  execution check: %d problems; cost %s", len(problems), cost)
     return problems, cost
+
+
+def executed_cost(node, deploy_id: str, block_hash: str) -> int:
+    """The cost of a deploy that executed in ``block_hash``; DeployError when
+    it is not in the block, errored, or cost nothing."""
+    block = node.get_block(block_hash)
+    check_deploy_succeeded(block, deploy_id)
+    return next(d.cost for d in block.deploys if d.sig == deploy_id)
 
 
 def _canonical_block(node, deploy_id: str) -> str:
@@ -69,9 +74,9 @@ def _canonical_block(node, deploy_id: str) -> str:
     return block_hash
 
 
-def _deploy_value(node, deploy_id: str):
-    """What the deploy sent on its deploy-id channel, read at its own block."""
-    data = node.get_deploy_data(deploy_id, block_hash=_canonical_block(node, deploy_id))
+def _deploy_value(node, deploy_id: str, block_hash: str):
+    """What the deploy sent on its deploy-id channel, read at ``block_hash``."""
+    data = node.get_deploy_data(deploy_id, block_hash=block_hash)
     if data is None or len(data.par) == 0:
         return None
     return par_value(data.par[0])
@@ -120,6 +125,12 @@ class Workload:
     def term(self, index: int, key) -> Tuple[str, int]:
         raise NotImplementedError
 
+    def observe(self, node, deploy_id: str, index: int, block_hash: str) -> Optional[str]:
+        """What is wrong with deploy ``index``'s own result, read on ``node``
+        at the block it finalized in, or None. Kinds with no result of their
+        own have nothing to read."""
+        return None
+
     def verify(self, readonly, finalized: Dict[str, int]) -> List[str]:
         """Problems found in the state the finalized deploys produced.
 
@@ -166,22 +177,11 @@ class TransferWorkload(Workload):
         )
         return term, TRANSFER_PHLO_LIMIT
 
-    def verify(self, readonly, finalized: Dict[str, int]) -> List[str]:
-        sample = _sample(finalized)
-        vault = VaultAPI(readonly._external_client())
-        problems = []
-        for deploy_id in sample:
-            result = vault.read_transfer_result(
-                deploy_id, block_hash=_canonical_block(readonly, deploy_id)
-            )
-            if not result.success:
-                problems.append(f"transfer {deploy_id[:16]} failed: {result.reason}")
-        logging.info(
-            "  transfer check: %d of %d sampled transfers failed",
-            len(problems),
-            len(sample),
+    def observe(self, node, deploy_id: str, index: int, block_hash: str) -> Optional[str]:
+        result = VaultAPI(node._external_client()).read_transfer_result(
+            deploy_id, block_hash=block_hash
         )
-        return problems
+        return None if result.success else f"transfer failed: {result.reason}"
 
 
 class ContentionWorkload(Workload):
@@ -304,14 +304,11 @@ class InstallWorkload(Workload):
     def term(self, index: int, key) -> Tuple[str, int]:
         return _INSTALL_TERM, self._PHLO_LIMIT
 
-    def verify(self, readonly, finalized: Dict[str, int]) -> List[str]:
-        problems = []
-        for deploy_id in _sample(finalized):
-            uri = _deploy_value(readonly, deploy_id)
-            if not (isinstance(uri, str) and uri.startswith("rho:id:")):
-                problems.append(f"install {deploy_id[:16]} reported {uri!r}, not a registry URI")
-        logging.info("  install check: %d problems", len(problems))
-        return problems
+    def observe(self, node, deploy_id: str, index: int, block_hash: str) -> Optional[str]:
+        uri = _deploy_value(node, deploy_id, block_hash)
+        if isinstance(uri, str) and uri.startswith("rho:id:"):
+            return None
+        return f"reported {uri!r}, not a registry URI"
 
 
 class CallWorkload(Workload):
@@ -336,7 +333,7 @@ class CallWorkload(Workload):
             [_INSTALL_TERM] * self._contracts, InstallWorkload._PHLO_LIMIT
         )
         for deploy_id in deploy_ids:
-            uri = _deploy_value(setup.node, deploy_id)
+            uri = _deploy_value(setup.node, deploy_id, _canonical_block(setup.node, deploy_id))
             if not (isinstance(uri, str) and uri.startswith("rho:id:")):
                 raise AssertionError(f"contract install reported {uri!r}, not a registry URI")
             self._uris.append(uri)
@@ -352,16 +349,9 @@ class CallWorkload(Workload):
         )
         return term, self._PHLO_LIMIT
 
-    def verify(self, readonly, finalized: Dict[str, int]) -> List[str]:
-        problems = []
-        for deploy_id in _sample(finalized):
-            reply = _deploy_value(readonly, deploy_id)
-            if reply != finalized[deploy_id] + 1:
-                problems.append(
-                    f"call {deploy_id[:16]} replied {reply!r}, not {finalized[deploy_id] + 1}"
-                )
-        logging.info("  call check: %d problems", len(problems))
-        return problems
+    def observe(self, node, deploy_id: str, index: int, block_hash: str) -> Optional[str]:
+        reply = _deploy_value(node, deploy_id, block_hash)
+        return None if reply == index + 1 else f"replied {reply!r}, not {index + 1}"
 
 
 class PayloadWorkload(Workload):
@@ -416,6 +406,9 @@ class MixWorkload(Workload):
         kind = self.kind(index)
         self._kind_of_index[index] = kind
         return self._parts[kind].term(index, key)
+
+    def observe(self, node, deploy_id: str, index: int, block_hash: str) -> Optional[str]:
+        return self._parts[self.kind(index)].observe(node, deploy_id, index, block_hash)
 
     def verify(self, readonly, finalized: Dict[str, int]) -> List[str]:
         problems = []

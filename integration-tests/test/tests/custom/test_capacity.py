@@ -19,8 +19,10 @@ load it is measured under. The ramp continues until a step fails; the highest
 rate without pressure is reported as sustained. Load then stops, the shard
 drains until finality passes every window the ramp signed, and the workload
 checks the state its finalized deploys produced. Finality that stops
-advancing while draining is a stall. Every deploy's record is written beside
-CAPACITY_OUT, as ``<out>-deploys.jsonl``.
+advancing while draining is a stall. Each deploy's execution and own result
+are read on the read-only node when it finalizes there, while the node still
+holds its block. Every deploy's record is written beside CAPACITY_OUT, as
+``<out>-deploys.jsonl``.
 
 The shard this test builds is test_load's, with a deploy queue in front of
 each validator. CAPACITY_RESUBMIT=1 makes the senders behave as clients that

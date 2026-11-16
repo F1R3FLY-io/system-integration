@@ -13,7 +13,7 @@ import math
 import re
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -777,8 +777,14 @@ class LifecycleTracker:
         self._cycle_seconds: Dict[str, List[float]] = {name: [] for name in nodes}
         # deploy -> highest merge-rejection count any node's status reported.
         self._rejections: Dict[str, int] = {}
+        self._finalized_listeners: Dict[str, Callable[[DeployRecord, str], None]] = {}
         self._sweep_threads: List[threading.Thread] = []
         self._stop_event = threading.Event()
+
+    def on_finalized(self, name: str, listener: Callable[[DeployRecord, str], None]) -> None:
+        """Call ``listener(record, block_hash)`` when node ``name`` first reports
+        a deploy Finalized. It runs on that node's sweep thread."""
+        self._finalized_listeners[name] = listener
 
     def start_lfb_monitor(self):
         """Start one background status-sweep thread per tracked node."""
@@ -1045,12 +1051,19 @@ class LifecycleTracker:
                 self._apply_late_state(outcome, status, now, finalized_state, terminal_states)
                 return
         if status.state == finalized_state:
+            first_report = None
             with self._lock:
-                if deploy_id in self._records:
+                record = self._records.get(deploy_id)
+                if record is not None:
                     reported = self._node_finalization.setdefault(deploy_id, {})
-                    reported.setdefault(name, now)
+                    if name not in reported:
+                        reported[name] = now
+                        first_report = record
                     if len(reported) == len(self._nodes):
                         self._finalization[deploy_id] = max(reported.values())
+            listener = self._finalized_listeners.get(name)
+            if first_report is not None and listener is not None:
+                listener(first_report, status.latestBlockHash.hex())
         elif status.state in terminal_states:
             with self._lock:
                 if deploy_id in self._records:

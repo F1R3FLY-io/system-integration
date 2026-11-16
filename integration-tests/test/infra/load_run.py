@@ -21,6 +21,7 @@ import logging
 import statistics
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import requests
@@ -39,7 +40,7 @@ from .metrics import (
     scrape_gauges,
 )
 from .polling import wait_for_lfb_converged
-from .workloads import SetupContext, Workload, check_execution
+from .workloads import SetupContext, Workload, executed_cost
 
 # Rise per minute, from a step's first half to its second, beyond which a depth
 # is still growing.
@@ -455,6 +456,17 @@ def _final_latencies(tracker: LifecycleTracker, phase: str) -> dict:
     }
 
 
+def _read_outcome(node, workload: Workload, record, block_hash: str):
+    """A finalized deploy read on ``node`` at its block: (what is wrong with
+    it, or None; its cost, or None when it could not be read)."""
+    try:
+        cost = executed_cost(node, record.deploy_id, block_hash)
+        problem = workload.observe(node, record.deploy_id, record.index, block_hash)
+    except Exception as exc:
+        return f"{record.kind} {record.deploy_id[:16]}: {exc}", None
+    return (None if problem is None else f"{record.kind} {record.deploy_id[:16]}: {problem}"), cost
+
+
 def _converge(nodes: Sequence, timeout: float) -> Tuple[Optional[dict], Optional[str]]:
     """Every node's LFB once all are within 5 of each other, or why they were
     not within ``timeout``."""
@@ -535,6 +547,16 @@ def run_load(
     deploy_lifespan = int(shard_status["deployLifespan"])
     max_parent_depth = int(shard_status["maxParentDepth"])
     tracker = LifecycleTracker({n.name: n for n in shard.all_nodes})
+    # Nodes prune finalized blocks, so each deploy's outcome is read when the
+    # read-only node finalizes it, not after the drain.
+    readers = ThreadPoolExecutor(max_workers=4)
+    outcome_reads = []
+    tracker.on_finalized(
+        readonly.name,
+        lambda record, block_hash: outcome_reads.append(
+            readers.submit(_read_outcome, readonly, workload, record, block_hash)
+        ),
+    )
     tracker.start_lfb_monitor()
     sampler = HealthSampler(shard.all_nodes, validators[0], validators)
     sampler.start()
@@ -657,6 +679,7 @@ def run_load(
             resubmitter.close()
         sampler.stop()
         tracker.shutdown()
+        readers.shutdown(wait=True)
 
     # Every finalized deploy, tails included: they all changed state.
     finalized = {
@@ -664,8 +687,18 @@ def run_load(
         for r in tracker.get_results()
         if r.finalization_time is not None
     }
-    execution_problems, cost = check_execution(readonly, finalized)
-    problems = execution_problems + (
+    outcomes = [read.result() for read in outcome_reads]
+    costs = [c for _, c in outcomes if c is not None]
+    cost = {
+        "read": len(outcomes),
+        "phlo_mean": round(statistics.fmean(costs)) if costs else None,
+        "phlo_max": max(costs, default=None),
+    }
+    outcome_problems = [p for p, _ in outcomes if p is not None]
+    logging.info(
+        "  outcomes read at finalization: %d problems; cost %s", len(outcome_problems), cost
+    )
+    problems = outcome_problems + (
         workload.verify(readonly, finalized)
         if settled
         else ["deploys without an outcome after the drain; state not checked"]
