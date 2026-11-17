@@ -108,11 +108,20 @@ Each node uses six internal ports (40400-40405). The host port mapping varies by
 
 Standalone uses 40400-40405 directly. Validator4 uses 40440-40445.
 
-**Which port to dial.** `rust-client` and the integration harness use the
-internal gRPC port (40402 and its per-node offsets) for deploys and proposes;
-the external gRPC port (40401) exists for clients outside the compose network.
-HTTP (40403) serves the REST API, and exploratory queries — balances, bonds,
-PoS state — are served **only** by `rnode.readonly` on 40453.
+**Deploy queues.** Every validator (and the standalone node) runs behind a
+deploy queue, `rnode.deploy-queueN` (`rnode.deploy-queue` for standalone), a
+second container from the node image. The queue owns the validator's gRPC ext
+and HTTP host ports (40411/40413, 40421/40423, 40431/40433, 40441/40443;
+40401/40403 for standalone). It answers deploys and their status itself and
+sends every other request on to its validator. See the node repository's
+`docs/node/deploy-queue.md`.
+
+**Which port to dial.** Deploys go to a validator's queue: gRPC ext (40411
+and its offsets) or HTTP (40413 and its offsets). The internal gRPC port (40402
+and its per-node offsets) reaches the validator directly; `rust-client` and the
+integration harness use it for proposes, and a deploy sent there bypasses the
+queue. HTTP (40403) serves the REST API, and exploratory queries — balances,
+bonds, PoS state — are served **only** by `rnode.readonly` on 40453.
 
 ---
 

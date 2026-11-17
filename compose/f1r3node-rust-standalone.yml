@@ -9,6 +9,8 @@
 # Or directly:
 #   docker compose --env-file ../.env.node -f compose/f1r3node-rust-standalone.yml up -d
 #
+# Clients deploy through the deploy queue, which owns host ports 40401 (gRPC)
+# and 40403 (HTTP) and sends every other request on to the node.
 
 name: f1r3fly-rust-standalone
 
@@ -28,9 +30,7 @@ services:
       - --allow-private-addresses
     ports:
       - "40400:40400"
-      - "40401:40401"
       - "40402:40402"
-      - "40403:40403"
       - "40404:40404"
       - "40405:40405"
     volumes:
@@ -54,8 +54,42 @@ services:
       retries: 5
       start_period: 60s
 
+  deploy-queue:
+    image: ${F1R3FLY_NODE_IMAGE:-f1r3flyindustries/f1r3fly-rust:latest}
+    user: root
+    restart: always
+    networks:
+      - f1r3fly-standalone
+    container_name: rnode.deploy-queue
+    entrypoint: ["/opt/docker/bin/deploy-queue"]
+    command:
+      - --node-grpc=http://${STANDALONE_HOST:-rnode.standalone}:40401
+      - --node-http=http://${STANDALONE_HOST:-rnode.standalone}:40403
+      - --data-dir=/var/lib/deploy-queue
+    depends_on:
+      - standalone
+    ports:
+      - "40401:40401"
+      - "40403:40403"
+    volumes:
+      - deploy-queue-data:/var/lib/deploy-queue
+    environment:
+      - RUST_LOG
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:40403/queue/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
 volumes:
   standalone-data:
+  deploy-queue-data:
 
 networks:
   f1r3fly-standalone:

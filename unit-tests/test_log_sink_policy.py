@@ -83,10 +83,13 @@ def test_deployment_conf_selects_stdout(conf):
 
 
 def test_node_compose_services_are_all_found():
-    """Guard the discovery helper: five variants, eleven node services."""
+    """Guard the discovery helper: five variants, eleven nodes and the seven
+    deploy queues in front of their validators, all from the node image."""
     services = _node_services()
     assert len({f for f, _, _ in services}) == 5
-    assert len(services) == 11
+    queues = [name for _, name, _ in services if name.startswith("deploy-queue")]
+    assert len(queues) == 7
+    assert len(services) - len(queues) == 11
 
 
 @pytest.mark.parametrize(
@@ -357,7 +360,7 @@ def test_per_test_scan_does_not_replay_allowed_warning_after_first_rotation(
     monkeypatch.setattr(conftest, "_last_scan_allowances", {})
     sink = _RotatingFileSink(monkeypatch)
     handle = _handle()
-    provider = SimpleNamespace(active_handles=[handle])
+    provider = SimpleNamespace(active_handles=[handle], node_logs_available=True)
 
     def begin_test(*allowances):
         markers = [SimpleNamespace(args=allowances)] if allowances else []

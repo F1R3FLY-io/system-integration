@@ -11,6 +11,8 @@ not a ``docker.Container``.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Dict, Optional
 
 from f1r3fly.client import F1r3flyClient
@@ -34,6 +36,32 @@ _GRPC_OPTIONS = (
     ("grpc.max_send_message_length", 64 * 1024 * 1024),
     ("grpc.max_receive_message_length", 64 * 1024 * 1024),
 )
+
+
+class DeployClock:
+    """Millisecond timestamps that strictly increase per deployer key.
+
+    A deploy's unforgeable names derive from its deployer and timestamp, so
+    two deploys signed by one key in the same millisecond would share them.
+    """
+
+    def __init__(self, now_millis=lambda: int(time.time() * 1000)) -> None:
+        self._now_millis = now_millis
+        self._last: Dict[bytes, int] = {}
+        self._lock = threading.Lock()
+
+    def next(self, private_key: PrivateKey) -> int:
+        deployer = private_key.get_public_key().to_bytes()
+        with self._lock:
+            stamp = self._now_millis()
+            last = self._last.get(deployer)
+            if last is not None and stamp <= last:
+                stamp = last + 1
+            self._last[deployer] = stamp
+            return stamp
+
+
+DEPLOY_CLOCK = DeployClock()
 
 
 class Node:
@@ -228,6 +256,7 @@ class Node:
         ``valid_after_block_no`` defaults to the current latest block
         number (auto-filled). Pass an explicit value to override.
         """
+        timestamp_millis = DEPLOY_CLOCK.next(private_key)
         if valid_after_block_no is not None:
             return self._external_client().deploy(
                 key=private_key,
@@ -235,6 +264,7 @@ class Node:
                 phlo_price=phlo_price,
                 phlo_limit=phlo_limit,
                 valid_after_block_no=valid_after_block_no,
+                timestamp_millis=timestamp_millis,
                 shard_id=shard_id,
             )
         return self._external_client().deploy_with_vabn_filled(
@@ -242,6 +272,7 @@ class Node:
             term=rholang_code,
             phlo_price=phlo_price,
             phlo_limit=phlo_limit,
+            timestamp_millis=timestamp_millis,
             shard_id=shard_id,
         )
 

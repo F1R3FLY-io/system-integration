@@ -179,26 +179,26 @@ Same as dev — tests need 2/3 finalization to verify shard recovery from valida
 
 The values above describe the knobs this document explains; they are not a
 complete picture of the shipped shard. `conf/rust.conf` sets
-`fault-tolerance-threshold = 0.1` and does **not** set
-`max-number-of-parents` or `synchrony-constraint-threshold` at all — those come
-from the node's `defaults.conf`. What it does set, and what this document does
-not otherwise cover:
+`fault-tolerance-threshold = 0.1`, the genesis ceremony and the epoch
+parameters below, and logging. Everything else, including the cadence, comes
+from the node's `defaults.conf`:
 
-| Setting | Shipped value | Why it matters |
-|---|---|---|
-| `casper.heartbeat.check-interval` | 3 seconds | How often the proposer loop evaluates whether to propose |
-| `casper.heartbeat.max-lfb-age` | 3 seconds | LFB age above which stale-recovery may fire |
-| `casper.heartbeat.self-propose-cooldown` | 3 seconds | Minimum gap between a validator's own proposals |
-| `casper.max-parent-depth` | 25 | Adjudication horizon; also the deploy-lifecycle citability horizon. Times `check-interval` it must cover the node's 58s block re-request span |
-| `protocol-client.network-timeout` | 3 seconds | Kept at or below `check-interval` so one unreachable peer costs a proposal round at most one timeout |
-| `casper.genesis-block-data.epoch-length` | 50 | Bonds, withdrawals and payouts apply only at an epoch boundary |
-| `casper.genesis-block-data.quarantine-length` | 10 | Delay before an unbonded validator's stake is paid out |
+| Setting | Value | Source | Why it matters |
+|---|---|---|---|
+| `casper.heartbeat.check-interval` | 3 seconds | node default | How often the proposer loop evaluates whether to propose |
+| `casper.heartbeat.max-lfb-age` | 3 seconds | node default | LFB age above which stale-recovery may fire |
+| `casper.heartbeat.self-propose-cooldown` | 3 seconds | node default | Minimum gap between a validator's own proposals |
+| `casper.max-parent-depth` | 25 | node default | Adjudication horizon; also the deploy-lifecycle citability horizon. Times `check-interval` it must cover the node's block re-request span |
+| `casper.deploy-lifespan` | 300 | node default | Heights a signed deploy stays includable after its `validAfterBlockNumber` |
+| `protocol-client.network-timeout` | 3 seconds | node default | At or below `check-interval`, so one unreachable peer costs a proposal round at most one timeout |
+| `casper.genesis-block-data.epoch-length` | 50 | `conf/rust.conf` | Bonds, withdrawals and payouts apply only at an epoch boundary |
+| `casper.genesis-block-data.quarantine-length` | 10 | `conf/rust.conf` | Delay before an unbonded validator's stake is paid out |
 
 ### Changing `check-interval` can stop the node from starting
 
-`casper.heartbeat.stale-recovery-min-interval` is **not** set in
-`conf/rust.conf`, so the node derives it as `check-interval × 1.5` — 4.5
-seconds at the shipped 3-second tick. The node rejects a configuration where
+`casper.heartbeat.stale-recovery-min-interval` is **not** set, so the node
+derives it as `check-interval × 1.5` — 4.5 seconds at the shipped 3-second
+tick. The node rejects a configuration where
 that interval is at or below `check-interval`, and the rejection is fatal: it
 fails during config validation, before the node starts.
 
@@ -210,7 +210,7 @@ prefer raising both together or leaving it derived.
 
 ## Related
 
-- `conf/rust.conf` — where these values are set for the docker shard
+- `conf/rust.conf` — the docker shard's overrides of the node defaults
 - `node/src/main/resources/defaults.conf` — hardcoded defaults (FTT=0.67)
 - `casper/src/rust/finality/finalizer.rs` — finalization algorithm, FT formula, and FT caching
 - `casper/src/rust/safety/clique_oracle.rs` — weight map calculation
