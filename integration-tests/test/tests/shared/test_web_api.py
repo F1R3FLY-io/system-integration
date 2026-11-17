@@ -353,6 +353,7 @@ def test_prepare_deploy(shared_shard, timeouts) -> None:
         {
             "deployer": pub_key,
             "timestamp": 1,
+            "validAfterBlockNumber": 0,
             "nameQty": 2,
         },
     )
@@ -1010,7 +1011,7 @@ def test_preview_private_names(shared_shard) -> None:
     timestamp = 1700000000000
 
     # Request 3 names
-    response = v1.preview_private_names(timestamp=timestamp, name_qty=3)
+    response = v1.preview_private_names(timestamp=timestamp, valid_after_block_no=0, name_qty=3)
 
     ids = list(response.payload.ids)
     assert len(ids) == 3, f"expected 3 names, got {len(ids)}"
@@ -1023,7 +1024,7 @@ def test_preview_private_names(shared_shard) -> None:
     assert len(set(bytes(n) for n in ids)) == 3, "all 3 names should be unique"
 
     # Deterministic: same inputs produce same outputs
-    response2 = v1.preview_private_names(timestamp=timestamp, name_qty=3)
+    response2 = v1.preview_private_names(timestamp=timestamp, valid_after_block_no=0, name_qty=3)
     ids2 = list(response2.payload.ids)
     for i in range(3):
         assert bytes(ids[i]) == bytes(ids2[i]), f"name {i} not deterministic across calls"
