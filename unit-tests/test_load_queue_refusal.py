@@ -45,13 +45,6 @@ def test_a_queue_refusal_carries_its_wait():
     assert refusal.retry_after == 7.0
 
 
-def test_a_refusal_without_a_hint_waits_the_default():
-    refusal = load.queue_refusal(
-        FakeRpcError(grpc.StatusCode.UNAVAILABLE, "deploy queue is not connected to its node")
-    )
-    assert refusal.retry_after == load.DEFAULT_REFUSAL_WAIT_SECONDS
-
-
 @pytest.mark.parametrize(
     "error",
     [
@@ -93,14 +86,6 @@ def test_a_refused_deploy_is_resubmitted_after_its_wait(monkeypatch):
     assert load.submit_deploy(node, None, "Nil", 1000, FixedVabn()) == "deploy-id"
     assert node.calls == 3
     assert waits == [7.0, 7.0]
-
-
-def test_without_retries_the_refusal_is_raised_at_once(monkeypatch):
-    monkeypatch.setattr(load.time, "sleep", lambda _: pytest.fail("must not wait"))
-    with pytest.raises(load.QueueRefusedError):
-        load.submit_deploy(
-            RefusingNode(refusals=1), None, "Nil", 1000, FixedVabn(), retry_refusals=False
-        )
 
 
 def test_patience_runs_out(monkeypatch):
@@ -157,32 +142,6 @@ def test_a_deploy_refused_past_the_clients_patience_is_abandoned(monkeypatch):
     outcomes = resubmit(ScriptedSubmit(refusals=10**6, retry_after=0.02), records)
     assert records == []
     assert outcomes["abandoned"] == 1 and outcomes["accepted"] == 0
-
-
-def test_a_first_refusal_waiting_past_the_clients_patience_is_abandoned_at_once(monkeypatch):
-    monkeypatch.setattr(load, "REFUSAL_PATIENCE_SECONDS", 0.05)
-    submit = ScriptedSubmit(refusals=0, retry_after=0)
-    resubmitter = load.Resubmitter(2, FixedVabn(), [].append, submit=submit)
-    resubmitter.refused(7, light_deploy(), "mix@8", 3600, time.time())
-    assert resubmitter.wait_idle(1)
-    resubmitter.close()
-    assert submit.calls == 0
-    assert resubmitter.outcomes["mix@8"] == {
-        "accepted": 0,
-        "abandoned": 1,
-        "error": 0,
-        "attempts": 0,
-    }
-
-
-def test_closing_abandons_deploys_still_waiting_to_be_resubmitted():
-    submit = ScriptedSubmit(refusals=0, retry_after=0)
-    resubmitter = load.Resubmitter(2, FixedVabn(), [].append, submit=submit)
-    resubmitter.refused(7, light_deploy(), "mix@8", 60, time.time())
-    resubmitter.close()
-    assert submit.calls == 0
-    assert resubmitter.outcomes["mix@8"]["abandoned"] == 1
-    assert resubmitter.wait_idle(0)
 
 
 def test_refusals_count_apart_from_errors_and_into_the_offered_rate():

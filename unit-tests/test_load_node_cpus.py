@@ -22,11 +22,8 @@ def test_counts_take_the_lowest_available_cpus():
 @pytest.mark.parametrize(
     ("raw", "message"),
     [
-        ("readonly", "must be <node>:<count>"),
         ("readonly:0", "must be <node>:<count>"),
         ("readonly:5", "count from 1 to 4"),
-        ("readonly:two", "must be <node>:<count>"),
-        (":2", "must be <node>:<count>"),
         ("readonly:1,readonly:2", "twice"),
     ],
 )

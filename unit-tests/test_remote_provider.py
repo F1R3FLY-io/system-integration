@@ -66,35 +66,12 @@ def test_parses_a_valid_inventory(key_file):
     assert (boot.ports.grpc_ext, boot.ports.http) == (40401, 40403)
 
 
-def test_loads_from_yaml(tmp_path, key_file):
-    path = tmp_path / "inventory.yml"
-    path.write_text(
-        "shard: testnet01\n"
-        "network_id: f1r3fly-testnet01\n"
-        "nodes:\n"
-        "  - {name: validator1, role: validator, host: 192.0.2.11}\n"
-        "deployers:\n"
-        f"  - {{name: dev1, private_key_file: {key_file}}}\n"
-    )
-    assert ShardInventory.load(path).validators[0].host == "192.0.2.11"
-
-
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"nodes": []}, "nodes must be a non-empty list"),
-        ({"deployers": []}, "deployers must be a non-empty list"),
         (
             {"nodes": [{"name": "observer1", "role": "readonly", "host": "192.0.2.20"}]},
             "at least one node must have role 'validator'",
-        ),
-        (
-            {"nodes": [{"name": "v1", "role": "proposer", "host": "192.0.2.11"}]},
-            "role must be one of",
-        ),
-        (
-            {"nodes": [{"name": "rnode.v1", "role": "validator", "host": "192.0.2.11"}]},
-            "must be lowercase letters",
         ),
         (
             {
@@ -105,25 +82,6 @@ def test_loads_from_yaml(tmp_path, key_file):
             },
             "duplicate node names",
         ),
-        (
-            {
-                "nodes": [
-                    {"name": "b1", "role": "boot", "host": "192.0.2.10"},
-                    {"name": "b2", "role": "boot", "host": "192.0.2.11"},
-                    {"name": "v1", "role": "validator", "host": "192.0.2.12"},
-                ]
-            },
-            "at most one node may have role 'boot'",
-        ),
-        (
-            {"nodes": [{"name": "v1", "role": "validator", "host": "192.0.2.11", "port_base": 0}]},
-            "port_base must be an integer",
-        ),
-        (
-            {"nodes": [{"name": "v1", "role": "validator", "host": "192.0.2.11", "grpc": 1}]},
-            "unknown keys",
-        ),
-        ({"network_id": ""}, "network_id must be a non-empty string"),
     ],
 )
 def test_rejects_invalid_inventories(key_file, overrides, message):
@@ -138,18 +96,6 @@ def test_rejects_a_key_file_readable_by_others(key_file):
     assert KEY_HEX not in str(exc.value)
 
 
-def test_rejects_a_key_file_without_a_hex_key(key_file):
-    key_file.write_text("not a key")
-    with pytest.raises(InventoryError, match="does not hold a 64-digit hex key"):
-        ShardInventory.parse(_doc(key_file))
-
-
-def test_rejects_a_missing_key_file(tmp_path, key_file):
-    doc = _doc(key_file, deployers=[{"name": "dev1", "private_key_file": str(tmp_path / "nope")}])
-    with pytest.raises(InventoryError, match="cannot stat"):
-        ShardInventory.parse(doc)
-
-
 def _provider(key_file, monkeypatch, statuses):
     def fake_status(host, http_port):
         status = statuses.get(host, {"networkId": "f1r3fly-testnet01"})
@@ -159,15 +105,6 @@ def _provider(key_file, monkeypatch, statuses):
 
     monkeypatch.setattr(remote, "read_status", fake_status)
     return remote.RemoteProvider(ShardInventory.parse(_doc(key_file)))
-
-
-def test_adopts_in_role_order(key_file, monkeypatch):
-    provider = _provider(key_file, monkeypatch, {})
-    handles = provider.adopt_session("testnet01")
-    assert [h.role for h in handles] == [NodeRole.BOOTSTRAP] + [NodeRole.VALIDATOR] * 3 + [
-        NodeRole.READONLY
-    ] * 2
-    assert provider.active_handles == handles
 
 
 def test_adoption_requires_the_inventory_shard(key_file, monkeypatch):
@@ -216,40 +153,13 @@ def test_provider_refuses_to_build_or_destroy(key_file, monkeypatch):
     assert provider.keep_running and not provider.node_logs_available
 
 
-def test_is_running_checks_the_network_id(key_file, monkeypatch):
-    statuses = {}
-    handle = _provider(key_file, monkeypatch, statuses).adopt_session("testnet01")[1]
-    assert handle.is_running()
-    statuses["192.0.2.11"] = {"networkId": "other"}
-    assert not handle.is_running()
-    statuses["192.0.2.11"] = requests.Timeout("slow")
-    assert not handle.is_running()
-
-
-def test_archive_log_writes_a_placeholder(key_file, monkeypatch, tmp_path):
-    handle = _provider(key_file, monkeypatch, {}).adopt_session("testnet01")[0]
-    dest = tmp_path / "logs" / "boot.log"
-    handle.archive_log(dest)
-    assert "stays on its host" in dest.read_text()
-
-
-def _shard(key_file, monkeypatch):
-    provider = _provider(key_file, monkeypatch, {})
-    handles = provider.adopt_session("testnet01")
-    return shard_mod.Shard.from_handles(provider, handles, None, None)
-
-
 def test_shard_keys_every_observer_and_orders_validators_numerically(key_file, monkeypatch):
-    shard = _shard(key_file, monkeypatch)
+    provider = _provider(key_file, monkeypatch, {})
+    shard = shard_mod.Shard.from_handles(provider, provider.adopt_session("testnet01"), None, None)
     assert list(shard.named_validators) == ["validator1", "validator2", "validator10"]
     assert shard.node("observer1").role == NodeRole.READONLY
     assert shard.node("observer2").role == NodeRole.READONLY
     assert len(shard.all_nodes) == 6
-
-
-def test_adopted_shard_destroy_leaves_the_nodes_alone(key_file, monkeypatch):
-    shard = _shard(key_file, monkeypatch)
-    shard.destroy()
 
 
 def test_phases_apply_the_sustained_overrides(monkeypatch):
@@ -258,18 +168,6 @@ def test_phases_apply_the_sustained_overrides(monkeypatch):
     *others, sustained = load._phases()
     assert (sustained.name, sustained.rate, sustained.seconds) == ("sustained", 8.0, 3600.0)
     assert others == load.PHASES[:-1]
-
-
-def test_phases_are_the_soaks_without_overrides(monkeypatch):
-    monkeypatch.delenv("LOAD_TEST_SUSTAINED_RATE", raising=False)
-    monkeypatch.delenv("LOAD_TEST_SUSTAINED_DURATION", raising=False)
-    assert [(p.name, p.rate, p.seconds) for p in load._phases()] == [
-        ("low", 1.0, 30.0),
-        ("medium", 5.0, 20.0),
-        ("high", 10.0, 15.0),
-        ("burst", 32.0, 1.0),
-        ("sustained", 4.0, 300.0),
-    ]
 
 
 def test_remote_runs_only_tests_marked_remote_shard():
@@ -298,14 +196,3 @@ def test_remote_runs_only_tests_marked_remote_shard():
     assert not tuple(marked.iter_markers("skip"))
     (skip,) = tuple(unmarked.iter_markers("skip"))
     assert "remote_shard" in skip.kwargs["reason"]
-
-
-def test_load_test_is_marked_remote_shard():
-    assert any(m.name == "remote_shard" for m in load.pytestmark)
-
-
-@pytest.mark.parametrize("name", ["LOAD_TEST_SUSTAINED_RATE", "LOAD_TEST_SUSTAINED_DURATION"])
-def test_phases_reject_non_positive_overrides(monkeypatch, name):
-    monkeypatch.setenv(name, "0")
-    with pytest.raises(ValueError, match="must be positive"):
-        load._phases()

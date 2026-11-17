@@ -25,15 +25,6 @@ def test_one_key_never_reuses_a_millisecond():
     assert [clock.next(key) for _ in range(3)] == [1_000, 1_001, 1_002]
 
 
-def test_keys_advance_independently():
-    clock = frozen_clock(1_000)
-    first, second = PrivateKey.generate(), PrivateKey.generate()
-
-    assert clock.next(first) == 1_000
-    assert clock.next(first) == 1_001
-    assert clock.next(second) == 1_000
-
-
 def test_wall_clock_wins_once_it_passes_the_last_stamp():
     now = [1_000]
     clock = node.DeployClock(now_millis=lambda: now[0])

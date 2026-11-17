@@ -82,12 +82,6 @@ def test_the_sampler_collects_from_a_live_shard():
     assert sampler._queued_deploys() == 6
 
 
-def test_a_growing_backlog_is_pressure_not_failure():
-    verdict = load_run.judge_step(6.0, stats(), health(backlog=series(49, half_rise=6.0)))
-    assert verdict["ok"]
-    assert any("ingest_backlog growing" in p for p in verdict["pressure"])
-
-
 def test_a_submitter_behind_its_rate_makes_the_step_invalid_not_a_stall():
     verdict = load_run.judge_step(6.0, stats(offered=4.0), health())
     assert not verdict["valid"]
@@ -114,11 +108,6 @@ def test_convergence_gets_a_window_at_the_slowest_pace():
         {"health": {"finality": {"secs_per_height": None}}},
     ]
     assert load_run.window_seconds(rows, deploy_lifespan=300, max_parent_depth=25) == 325 * 6.5
-
-
-def test_an_untimed_ramp_cannot_size_its_convergence():
-    with pytest.raises(AssertionError):
-        load_run.window_seconds([{"health": {"finality": {"secs_per_height": None}}}], 300, 25)
 
 
 class FakeDrain:

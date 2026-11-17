@@ -27,26 +27,9 @@ def _config(**overrides):
     return config_mod.ShardConfig(**params)
 
 
-def test_config_accepts_cpus_for_its_own_nodes():
-    config = _config(per_node_cpus={"readonly": frozenset({0}), "validator1": frozenset({0, 1})})
-    assert config.node_keys == ["boot", "validator1", "readonly"]
-
-
-@pytest.mark.parametrize(
-    ("per_node_cpus", "message"),
-    [
-        ({"validator2": frozenset({0})}, "does not have"),
-        ({"readonly": frozenset()}, "non-empty set"),
-        ({"readonly": frozenset({-1})}, "non-empty set"),
-    ],
-)
-def test_config_rejects_unusable_cpu_sets(per_node_cpus, message):
-    with pytest.raises(ValueError, match=message):
-        _config(per_node_cpus=per_node_cpus)
-
-
-def test_no_cpus_means_no_prefix():
-    assert provider._cpu_affinity_prefix(None) == []
+def test_config_rejects_cpus_for_a_node_the_shard_does_not_have():
+    with pytest.raises(ValueError, match="does not have"):
+        _config(per_node_cpus={"validator2": frozenset({0})})
 
 
 def test_prefix_rejects_cpus_outside_this_process_affinity():

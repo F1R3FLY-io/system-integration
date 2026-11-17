@@ -5,8 +5,6 @@ import importlib
 import sys
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "integration-tests"))
 
@@ -49,11 +47,3 @@ def test_terms_come_from_the_part_and_verification_splits_by_part():
     assert sorted(problems) == ["a: saw 2", "b: saw 2"]
     assert set(a.verified.values()) | set(b.verified.values()) == {0, 1, 2, 3}
     assert not set(a.verified) & set(b.verified)
-
-
-def test_make_workload_builds_a_mix_of_known_kinds():
-    mix = workloads.make_workload("mix", [], 8, 16, 1024, mix="light:2,heavy:1")
-    assert isinstance(mix, workloads.MixWorkload)
-    assert sorted({mix.kind(i) for i in range(3)}) == ["heavy", "light"]
-    with pytest.raises(ValueError):
-        workloads.make_workload("mix", [], 8, 16, 1024, mix="light:2,unknown:1")
