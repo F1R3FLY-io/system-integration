@@ -560,9 +560,7 @@ def run_load(
     tracker.start_lfb_monitor()
     sampler = HealthSampler(shard.all_nodes, validators[0], validators)
     sampler.start()
-    # The tip is read from an observer: a validator under load is slow to
-    # answer queries, and a failed read would fail the deploy it signs.
-    vabn = VabnSource(readonly)
+    vabn = VabnSource(validators)
     resubmitter = (
         Resubmitter(
             OpenLoopSubmitter.workers_for(max(s.rate for s in steps)), vabn, tracker.track_deploy

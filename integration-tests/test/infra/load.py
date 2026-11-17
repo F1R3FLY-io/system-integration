@@ -184,20 +184,36 @@ def current_block_number(node, monitor=None) -> int:
 class VabnSource:
     """The validAfterBlockNumber every submitter thread signs with.
 
-    Re-reads the tip at most every VABN_REFRESH_INTERVAL seconds, and takes
+    Signs with the highest tip among ``validators``: each validator checks
+    expiry against its own tip, so the most advanced one sets the bound. A
+    validator too loaded to answer is left out of that read; the read fails
+    only when none answers.
+    Re-reads the tips at most every VABN_REFRESH_INTERVAL seconds, and takes
     the node's own height from an expiration rejection, which is fresher.
-    One thread reads the tip at a time; the others wait for its answer
+    One thread reads the tips at a time; the others wait for its answer
     rather than each opening a read of their own, which a loaded node
     answers by closing the connection.
     """
 
-    def __init__(self, node, monitor=None):
-        self._node = node
+    def __init__(self, validators: Sequence, monitor=None):
+        self._validators = list(validators)
         self._monitor = monitor
         self._lock = threading.Lock()
         self._refresh = threading.Lock()
-        self._value = max(0, current_block_number(node, monitor) - 1)
+        self._value = self._highest_tip_vabn()
         self._read_at = time.time()
+
+    def _highest_tip_vabn(self) -> int:
+        tips = []
+        failures = []
+        for node in self._validators:
+            try:
+                tips.append(current_block_number(node, self._monitor))
+            except AssertionError as exc:
+                failures.append(exc)
+        if not tips:
+            raise failures[0]
+        return max(0, max(tips) - 1)
 
     def _fresh(self) -> bool:
         return time.time() - self._read_at <= VABN_REFRESH_INTERVAL
@@ -210,7 +226,7 @@ class VabnSource:
             with self._lock:
                 if self._fresh():
                     return self._value
-            value = max(0, current_block_number(self._node, self._monitor) - 1)
+            value = self._highest_tip_vabn()
             with self._lock:
                 self._value = max(self._value, value)
                 self._read_at = time.time()

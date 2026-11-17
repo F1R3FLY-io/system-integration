@@ -6,7 +6,7 @@ rejection proves nothing was accepted — the vabn-expiration message.
 regex must match the node's actual wording exactly: silent drift on
 either side would stop retries (degrading to the pre-fix failure mode)
 without any visible signal. These tests pin the shape against the
-verbatim rejection captured from soak preflight 31919610258.
+verbatim rejection the node and the deploy queue both send.
 """
 
 import importlib.util
@@ -23,8 +23,9 @@ SPEC.loader.exec_module(polling)
 
 parse_vabn_expiration = polling.parse_vabn_expiration
 
-# Verbatim node rejection from soak preflight run 31919610258.
-CAPTURED = "Deploy validAfterBlockNumber 157 has expired at block 207 with deploy lifespan 50."
+CAPTURED = (
+    "deploy_expired: validAfterBlockNumber 157 has expired at block 207 with deploy lifespan 50."
+)
 
 
 def test_captured_node_wording_matches_and_yields_current_height():
@@ -50,12 +51,16 @@ def test_ambiguous_transport_failures_do_not_authorize_a_retry():
         # Round-4 review negatives: the prefix alone, without the
         # lifespan suffix, must not authorize a retry.
         "validAfterBlockNumber 1 has expired at block 51, but submission status is unknown",
-        "Deploy validAfterBlockNumber 7 has expired at block 90",
+        "deploy_expired: validAfterBlockNumber 7 has expired at block 90",
+        # A rejection without the deploy_expired kind is not the typed refusal.
+        "Deploy validAfterBlockNumber 157 has expired at block 207 with deploy lifespan 50.",
         "",
     ]:
         assert parse_vabn_expiration(message) is None, message
 
 
 def test_height_zero_edge_parses():
-    message = "Deploy validAfterBlockNumber 0 has expired at block 51 with deploy lifespan 50."
+    message = (
+        "deploy_expired: validAfterBlockNumber 0 has expired at block 51 with deploy lifespan 50."
+    )
     assert parse_vabn_expiration(message) == 51

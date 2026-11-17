@@ -324,9 +324,7 @@ def test_deploy_throughput_and_finalization(
             node, key = pairs[index % len(pairs)]
             return PlannedDeploy(node, key, light_term(index), light_phlo, "light")
 
-        # The tip is read from an observer: a validator under load is slow to
-        # answer queries, and a failed read would fail the deploy it signs.
-        vabn = VabnSource(readonly, resource_monitor)
+        vabn = VabnSource(validators, resource_monitor)
         tracker = LifecycleTracker(
             {n.name: n for n in shard.all_nodes}, inclusion_timeout=timeouts.deploy_inclusion
         )
