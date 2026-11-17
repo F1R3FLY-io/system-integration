@@ -3,7 +3,7 @@
 test_heartbeat_timing feeds f1r3node-rust scripts/bench/summarize-issue24-phases.sh,
 which parses its output with fixed patterns. These tests pin, without a node:
 the phase line still matches the summarizer's awk gate and jq capture, the
-repeated phase is test_load's high phase, N parses from the environment, and the
+repeated phase is light deploys at 10/s for 15 s, N parses from the environment, and the
 test stays out of every default selection unless HEARTBEAT_TIMING=1.
 """
 
@@ -18,7 +18,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "integration-tests"))
 
 harness = importlib.import_module("test.tests.custom.test_heartbeat_timing")
-load = importlib.import_module("test.tests.custom.test_load")
 
 # Copied from summarize-issue24-phases.sh (f1r3node-rust dev): the awk line
 # gate and the jq capture that turns the line into a record.
@@ -49,13 +48,8 @@ def test_phase_line_matches_the_summarizer():
     }
 
 
-def test_repeated_phase_is_the_load_test_high_phase():
-    assert harness.HIGH_PHASE is next(p for p in load.PHASES if p["name"] == "high")
-    assert {k: harness.HIGH_PHASE[k] for k in ("rate", "duration", "workers")} == {
-        "rate": 10,
-        "duration": 15,
-        "workers": 3,
-    }
+def test_repeated_phase_is_the_high_phase():
+    assert harness.HIGH_PHASE == {"name": "high", "rate": 10, "duration": 15}
 
 
 def test_shard_is_the_load_test_shard():

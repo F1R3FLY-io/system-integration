@@ -25,6 +25,7 @@ session-scoped data-dir base.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import re
@@ -33,19 +34,32 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import AbstractSet, Dict, List, Optional, Sequence, Tuple
 
-from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_binary
+from ..config import (
+    NodeConfig,
+    ResourcePaths,
+    ShardConfig,
+    resolve_deploy_queue_binary,
+    resolve_node_binary,
+)
 from ..genesis import write_wallets
 from ..keys import BOOTSTRAP_NODE_ID
 from ..ports import PortAllocator
 from ..run_outcome import current_test_failed
 from ..timeouts import TimeoutHierarchy
-from ..types import NodeRole, PortMapping, ValidatorIdentity
+from ..types import (
+    DEPLOY_QUEUE_PREFIX,
+    NodeRole,
+    PortMapping,
+    ValidatorIdentity,
+    deploy_queue_key,
+)
 from .base import (
     RetiredLogSnapshot,
     archive_handles,
     archive_root_for,
+    wait_for_deploy_queues,
     wait_for_handles_or_archive,
 )
 
@@ -66,6 +80,23 @@ _DATA_DIR_BASENAME = ".subprocess-data"
 # discovery (every spawned `node run` command line contains this token via
 # its `--data-dir` value, but the basename is the most reliable scan key).
 _DATA_DIR_SCAN_TOKEN = _DATA_DIR_BASENAME
+
+
+def _cpu_affinity_prefix(cpus: Optional[AbstractSet[int]]) -> List[str]:
+    """Command prefix that starts a node on ``cpus``, or nothing for every CPU.
+
+    The node reads its CPU count from its affinity at startup, so the affinity
+    must hold from the first instruction rather than be applied afterwards.
+    """
+    if cpus is None:
+        return []
+    allowed = os.sched_getaffinity(0)
+    if not cpus or not set(cpus) <= allowed:
+        raise ValueError(
+            f"cpus {sorted(cpus)} must be a non-empty subset of the CPUs this "
+            f"process may use, {sorted(allowed)}"
+        )
+    return ["taskset", "--cpu-list", ",".join(map(str, sorted(cpus)))]
 
 
 def _parse_ps_time(value: str) -> float:
@@ -396,6 +427,9 @@ class SubprocessProvider:
 
         self._active_handles: List[SubprocessNodeHandle] = []
         self._retired_log_snapshots: List[RetiredLogSnapshot] = []
+        # Deploy queues by the name of the validator they front: the queue's
+        # process and the port block its validator's client ports moved to.
+        self._deploy_queues: Dict[str, Tuple[SubprocessNodeHandle, PortMapping]] = {}
         self._standalone_counter = 0
         self._joiner_counter = 0
         self._shard_counter = 0
@@ -413,6 +447,10 @@ class SubprocessProvider:
     @property
     def keep_running(self) -> bool:
         return self._keep_running
+
+    @property
+    def node_logs_available(self) -> bool:
+        return True
 
     @property
     def _archive_dir(self) -> Path:
@@ -483,16 +521,24 @@ class SubprocessProvider:
         cert_subdir: Optional[str],
         identity: Optional[ValidatorIdentity] = None,
         extra_env: Optional[dict] = None,
+        cpus: Optional[AbstractSet[int]] = None,
+        client_ports: Optional[PortMapping] = None,
     ) -> SubprocessNodeHandle:
         """Spawn a node process. ``cli_args`` is the list of arguments AFTER
         ``run`` (i.e. flags like ``--data-dir``, ``--bootstrap``, etc.).
         ``cert_subdir``, if set, points the node at the pre-generated TLS
-        keypair under ``paths.certs_dir/<cert_subdir>/``."""
+        keypair under ``paths.certs_dir/<cert_subdir>/``. ``cpus``, if set,
+        are the host CPUs the node runs on, restarts included.
+        ``client_ports``, if set, is the block whose gRPC external and HTTP
+        ports the node listens on instead of those in ``ports``: a deploy
+        queue serves those of ``ports``."""
         data_dir = self._session_root / role_key
         data_dir.mkdir(parents=True, exist_ok=True)
         log_path = self._session_root / f"{role_key}.log"
+        listen = client_ports or ports
 
         cmd: List[str] = [
+            *_cpu_affinity_prefix(cpus),
             str(self._binary),
             "run",
             "--config-file",
@@ -504,11 +550,11 @@ class SubprocessProvider:
             "--protocol-port",
             str(ports.protocol),
             "--api-port-grpc-external",
-            str(ports.grpc_ext),
+            str(listen.grpc_ext),
             "--api-port-grpc-internal",
             str(ports.grpc_int),
             "--api-port-http",
-            str(ports.http),
+            str(listen.http),
             "--api-port-admin-http",
             str(ports.admin),
             "--discovery-port",
@@ -552,6 +598,72 @@ class SubprocessProvider:
             spawn_env=env,
             identity=identity,
         )
+
+    def _deploy_queue_binary(self) -> Path:
+        binary = Path(resolve_deploy_queue_binary(self._paths.repo_root))
+        if not binary.exists() or not os.access(binary, os.X_OK):
+            raise RuntimeError(
+                f"Deploy queue binary not found or not executable at {binary}. "
+                "Build it first:\n"
+                "  cd services/f1r3node-rust && cargo build --release -p deploy-queue\n"
+                "Or set F1R3FLY_DEPLOY_QUEUE_BINARY=/path/to/deploy-queue to override."
+            )
+        return binary
+
+    def _spawn_deploy_queue(
+        self, slot: int, ports: PortMapping, node_client_ports: PortMapping
+    ) -> SubprocessNodeHandle:
+        """Spawn the deploy queue in front of ``validator{slot}``.
+
+        The queue listens on the validator's advertised client ports
+        (``ports``) and reaches the node on ``node_client_ports``.
+        """
+        role_key = deploy_queue_key(slot)
+        data_dir = self._session_root / role_key
+        data_dir.mkdir(parents=True, exist_ok=True)
+        log_path = self._session_root / f"{role_key}.log"
+        cmd = [
+            str(self._deploy_queue_binary()),
+            f"--node-grpc=http://127.0.0.1:{node_client_ports.grpc_ext}",
+            f"--node-http=http://127.0.0.1:{node_client_ports.http}",
+            f"--data-dir={data_dir}",
+            f"--grpc-listen=127.0.0.1:{ports.grpc_ext}",
+            f"--http-listen=127.0.0.1:{ports.http}",
+        ]
+        env = os.environ.copy()
+        log_fh = open(log_path, "w")
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+        )
+        # A node handle only for its process control and log archive; the
+        # queue never joins the shard's nodes, so its role is never read.
+        return SubprocessNodeHandle(
+            name=self._node_name(role_key),
+            ports=ports,
+            role=NodeRole.VALIDATOR,
+            data_dir=data_dir,
+            log_path=log_path,
+            proc=proc,
+            log_fh=log_fh,
+            spawn_args=cmd,
+            spawn_env=env,
+        )
+
+    def _retire_deploy_queue(self, validator: SubprocessNodeHandle, archive_dir: Path) -> None:
+        """Archive, stop and remove the queue in front of ``validator``, if any."""
+        entry = self._deploy_queues.pop(validator.name, None)
+        if entry is None:
+            return
+        queue, node_client_ports = entry
+        archive_handles([queue], archive_dir)
+        try:
+            queue.remove()
+        finally:
+            self._ports.release(node_client_ports)
 
     # ── Shard lifecycle ─────────────────────────────────────────────
 
@@ -614,6 +726,7 @@ class SubprocessProvider:
             ports=port_map["boot"],
             cli_args=boot_cli,
             cert_subdir="bootstrap",
+            cpus=config.per_node_cpus.get("boot"),
         )
         handles.append(boot_handle)
 
@@ -647,16 +760,23 @@ class SubprocessProvider:
                 v_cli.append("--heartbeat-disabled")
             v_cli += _extra_cli(role_key)
 
-            handles.append(
-                self._spawn(
-                    role_key=role_key,
-                    role=NodeRole.VALIDATOR,
-                    ports=port_map[role_key],
-                    cli_args=v_cli,
-                    cert_subdir=cert_subdir,
-                    identity=identity,
-                )
+            node_client_ports = self._ports.allocate() if config.deploy_queue else None
+            validator = self._spawn(
+                role_key=role_key,
+                role=NodeRole.VALIDATOR,
+                ports=port_map[role_key],
+                cli_args=v_cli,
+                cert_subdir=cert_subdir,
+                identity=identity,
+                cpus=config.per_node_cpus.get(role_key),
+                client_ports=node_client_ports,
             )
+            handles.append(validator)
+            if node_client_ports is not None:
+                self._deploy_queues[validator.name] = (
+                    self._spawn_deploy_queue(slot, port_map[role_key], node_client_ports),
+                    node_client_ports,
+                )
 
         # ── Readonly observer (optional) ──
         if config.include_readonly:
@@ -676,16 +796,25 @@ class SubprocessProvider:
                     ports=port_map["readonly"],
                     cli_args=ro_cli,
                     cert_subdir=None,  # readonly auto-generates its own cert
+                    cpus=config.per_node_cpus.get("readonly"),
                 )
             )
 
         # ── Wait for all to reach Running ──
         if wait_running:
-            wait_for_handles_or_archive(
-                handles,
-                self._archive_dir / f"shard{self._shard_counter}",
-                self._timeouts.node_startup,
-            )
+            archive_dir = self._archive_dir / f"shard{self._shard_counter}"
+            queues = [
+                self._deploy_queues[h.name][0] for h in handles if h.name in self._deploy_queues
+            ]
+            try:
+                wait_for_handles_or_archive(handles, archive_dir, self._timeouts.node_startup)
+                wait_for_deploy_queues(
+                    [f"http://{q.grpc_host}:{q.ports.http}/queue/status" for q in queues],
+                    self._timeouts.node_startup,
+                )
+            except Exception:
+                archive_handles(handles + queues, archive_dir)
+                raise
 
         self._active_handles.extend(handles)
         return handles
@@ -751,9 +880,11 @@ class SubprocessProvider:
                 self._session_root,
             )
             return
-        archive_handles(handles, self._archive_dir / f"shard{self._shard_counter}")
+        archive_dir = self._archive_dir / f"shard{self._shard_counter}"
+        archive_handles(handles, archive_dir)
         for h in handles:
             try:
+                self._retire_deploy_queue(h, archive_dir)
                 h.remove()
             finally:
                 if h in self._active_handles:
@@ -1156,6 +1287,13 @@ class SubprocessProvider:
         # into a `leftover` subdir so it's clearly separate from the per-shard
         # archives written by the normal destroy path.
         archive_handles(list(self._active_handles), self._archive_dir / "leftover")
+        for _, (queue, node_client_ports) in list(self._deploy_queues.items()):
+            archive_handles([queue], self._archive_dir / "leftover")
+            try:
+                queue.remove()
+            finally:
+                self._ports.release(node_client_ports)
+        self._deploy_queues.clear()
         # Stop all known handles first (graceful → escalate inside _stop_once).
         for h in list(self._active_handles):
             try:
@@ -1329,8 +1467,14 @@ class SubprocessProvider:
             )
 
         # Each subdir corresponds to a role (boot, validator1, …, readonly).
+        # Deploy queue dirs are not nodes: a validator behind a queue takes its
+        # client ports from the queue.
         role_dirs = sorted(
-            [d for d in session_dir.iterdir() if d.is_dir() and d.name != "genesis"],
+            [
+                d
+                for d in session_dir.iterdir()
+                if d.is_dir() and d.name != "genesis" and not d.name.startswith(DEPLOY_QUEUE_PREFIX)
+            ],
             key=lambda d: _role_sort_key(d.name),
         )
 
@@ -1345,17 +1489,19 @@ class SubprocessProvider:
                     role_dir,
                 )
                 continue
-            # We don't have the original Popen, ports, or identity. Build a
-            # minimal handle that supports logs/is_running/stop/remove, which
-            # is enough for tests that just want to query an existing shard.
-            # Ports are recovered by parsing the cmdline.
-            ports = _ports_from_cmdline(pid)
+            # Without the original Popen, ports and identity are recovered
+            # from the node's command line.
+            cmdline = _process_cmdline(pid)
+            ports = _ports_from_cmdline(cmdline) if cmdline else None
             if ports is None:
                 logger.warning(
                     "adopt_session: couldn't recover ports for pid %d; skipping",
                     pid,
                 )
                 continue
+            slot = role_key[len("validator") :]
+            if role_key.startswith("validator") and slot.isdigit():
+                ports = _with_queue_client_ports(ports, session_dir / deploy_queue_key(int(slot)))
             log_path = session_dir / f"{role_key}.log"
             handle = _AdoptedHandle(
                 name=self._node_name(role_key),
@@ -1364,6 +1510,7 @@ class SubprocessProvider:
                 data_dir=role_dir,
                 log_path=log_path,
                 pid=pid,
+                identity=_identity_from_cmdline(cmdline, role_key),
             )
             handles.append(handle)
 
@@ -1443,10 +1590,16 @@ _PORT_FLAG_RX = re.compile(
 )
 
 
-def _ports_from_cmdline(pid: int) -> Optional[PortMapping]:
+_VALIDATOR_KEY_RX = re.compile(
+    r"--validator-public-key[=\s]+(?P<public>[0-9a-fA-F]+)|"
+    r"--validator-private-key[=\s]+(?P<private>[0-9a-fA-F]+)"
+)
+
+
+def _process_cmdline(pid: int) -> Optional[str]:
     try:
         result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "args="],
+            ["ps", "-ww", "-p", str(pid), "-o", "args="],
             capture_output=True,
             text=True,
             timeout=5,
@@ -1454,8 +1607,47 @@ def _ports_from_cmdline(pid: int) -> Optional[PortMapping]:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
     cmdline = (result.stdout or "").strip()
-    if not cmdline:
+    return cmdline or None
+
+
+def _identity_from_cmdline(cmdline: str, name: str) -> Optional[ValidatorIdentity]:
+    """The validator identity a node was started with, which its public key flag marks.
+
+    The bootstrap carries a private key without a public one (it signs the
+    genesis ceremony) and, as when it was spawned, has no identity.
+    """
+    found: dict = {}
+    for m in _VALIDATOR_KEY_RX.finditer(cmdline):
+        for k, v in m.groupdict().items():
+            if v is not None:
+                found[k] = v
+    if "public" not in found:
         return None
+    if "private" not in found:
+        raise ValueError(f"{name} was started with a validator public key but no private key")
+    return ValidatorIdentity(name=name, private_hex=found["private"], public_hex=found["public"])
+
+
+_QUEUE_LISTEN_RX = re.compile(r"--(?P<api>grpc|http)-listen[=\s]+\S+:(?P<port>\d+)")
+
+
+def _with_queue_client_ports(ports: PortMapping, queue_dir: Path) -> PortMapping:
+    """``ports`` with the client ports of the live deploy queue in ``queue_dir``.
+
+    A validator behind a queue listens on other client ports; tests reach it
+    through the queue. ``ports`` is returned unchanged when no queue runs there.
+    """
+    pid = _find_pid_for_data_dir(queue_dir) if queue_dir.is_dir() else None
+    cmdline = _process_cmdline(pid) if pid is not None else None
+    if cmdline is None:
+        return ports
+    listen = {m.group("api"): int(m.group("port")) for m in _QUEUE_LISTEN_RX.finditer(cmdline)}
+    if set(listen) != {"grpc", "http"}:
+        raise ValueError(f"deploy queue at {queue_dir} runs without both listen ports: {cmdline}")
+    return dataclasses.replace(ports, grpc_ext=listen["grpc"], http=listen["http"])
+
+
+def _ports_from_cmdline(cmdline: str) -> Optional[PortMapping]:
     found: dict = {}
     for m in _PORT_FLAG_RX.finditer(cmdline):
         for k, v in m.groupdict().items():
@@ -1490,6 +1682,7 @@ class _AdoptedHandle(SubprocessNodeHandle):
         data_dir: Path,
         log_path: Path,
         pid: int,
+        identity: Optional[ValidatorIdentity],
     ) -> None:
         # Bypass parent __init__ — we don't have a Popen.
         self._name = name
@@ -1501,7 +1694,7 @@ class _AdoptedHandle(SubprocessNodeHandle):
         self._log_fh = None
         self._spawn_args = []
         self._spawn_env = {}
-        self._identity = None
+        self._identity = identity
         self._adopted_pid = pid
 
     @property

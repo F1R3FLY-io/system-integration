@@ -17,6 +17,14 @@ class NodeRole(enum.Enum):
     STANDALONE = "standalone"
 
 
+DEPLOY_QUEUE_PREFIX = "deploy-queue"
+
+
+def deploy_queue_key(slot: int) -> str:
+    """The role key of the deploy queue in front of ``validator{slot}``."""
+    return f"{DEPLOY_QUEUE_PREFIX}{slot}"
+
+
 @dataclasses.dataclass(frozen=True)
 class PortMapping:
     """Maps the six node ports to host-accessible ports.

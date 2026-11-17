@@ -13,7 +13,7 @@ import math
 import re
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +208,22 @@ def scrape_metrics(node) -> Dict[str, float]:
     except Exception:
         pass
     return result
+
+
+def scrape_gauges(node, names: List[str]) -> Dict[str, float]:
+    """Current values of the named gauges from a node's /metrics, labels summed.
+
+    Raises when the endpoint cannot be read: a missing sample would otherwise
+    read as an idle node.
+    """
+    values: Dict[str, float] = {}
+    for line in node.http_get("/metrics", timeout=10).text.splitlines():
+        if line.startswith("#"):
+            continue
+        name = line.split("{", 1)[0].split(" ", 1)[0]
+        if name in names:
+            values[name] = values.get(name, 0.0) + float(line.rsplit(" ", 1)[1])
+    return values
 
 
 def compute_metric_deltas(
@@ -542,34 +558,6 @@ def format_node_metrics(metrics: Dict[str, float]) -> str:
 
 
 @dataclasses.dataclass
-class PhaseReport:
-    """Summary report for a single load test phase."""
-
-    name: str
-    deploys_submitted: int
-    deploy_failures: int
-    effective_rate: float
-    inclusion_p50: float
-    inclusion_p95: float
-    inclusion_p99: float
-    finalization_p50: float
-    finalization_p95: float
-    finalization_p99: float
-    unfinalized: int
-    lfb_start: int
-    lfb_end: int
-    lfb_rate_per_min: float
-    phase_duration: float
-    node_metrics: Optional[Dict[str, float]] = None
-    # Per-validator metric deltas for the phase, keyed by validator name.
-    # node_metrics (above) keeps the legacy v1-only view for callers that
-    # already consume it; node_metrics_by_validator is the broader picture
-    # that catches load on v2/v3 — important when v1 is mostly proposing
-    # while peers do the validation work.
-    node_metrics_by_validator: Optional[Dict[str, Dict[str, float]]] = None
-
-
-@dataclasses.dataclass
 class DeployRecord:
     """A single deploy submission record."""
 
@@ -578,6 +566,23 @@ class DeployRecord:
     validator_name: str
     phase: str
     index: int
+    kind: str = "light"
+    # The sending vault, and how often a deploy queue refused the deploy
+    # before it was accepted.
+    sender: str = ""
+    refusals: int = 0
+    # When the client first tried to submit a deploy a queue refused;
+    # submit_time is then the attempt that was accepted.
+    first_attempt: Optional[float] = None
+
+    def __post_init__(self):
+        if self.refusals > 0 and self.first_attempt is None:
+            raise ValueError("a refused deploy records when it was first attempted")
+
+    @property
+    def first_attempt_time(self) -> float:
+        """When the client first tried to submit this deploy."""
+        return self.submit_time if self.refusals == 0 else self.first_attempt
 
 
 @dataclasses.dataclass
@@ -651,6 +656,39 @@ def summarize_unfinalized(entries: List[UnfinalizedDeploy]) -> Dict[str, int]:
     for entry in entries:
         counts[entry.category] += 1
     return counts
+
+
+def log_unfinalized(phase_name: str, entries: List[UnfinalizedDeploy]) -> None:
+    """Log each unfinalized deploy of a phase and a per-category summary.
+
+    Silent when the phase finalized everything. The soak's parsers read the
+    ``Unfinalized (<phase>):`` and ``Unfinalized summary (<phase>):`` lines.
+    """
+    if not entries:
+        return
+    for e in entries:
+        if e.block_number is None:
+            inclusion = "not included"
+        else:
+            block = "block unresolved" if e.block_number == 0 else "block #%d" % e.block_number
+            offset = "" if e.included_at is None else " at +%.1fs" % (e.included_at - e.submit_time)
+            inclusion = "included (%s)%s" % (block, offset)
+        logging.info(
+            "  Unfinalized (%s): deploy=%s submitted=%s %s, outcome=%s",
+            phase_name,
+            e.deploy_id,
+            time.strftime("%H:%M:%S", time.localtime(e.submit_time)),
+            inclusion,
+            e.outcome,
+        )
+    counts = summarize_unfinalized(entries)
+    logging.info(
+        "  Unfinalized summary (%s): not_included=%d included_not_finalized=%d terminal=%d",
+        phase_name,
+        counts["not_included"],
+        counts["included_not_finalized"],
+        counts["terminal"],
+    )
 
 
 class LifecycleTracker:
@@ -736,8 +774,17 @@ class LifecycleTracker:
         # bounds its growth to one entry per unique block per phase.
         self._block_numbers: Dict[str, int] = {}
         self._max_block = 0
+        self._cycle_seconds: Dict[str, List[float]] = {name: [] for name in nodes}
+        # deploy -> highest merge-rejection count any node's status reported.
+        self._rejections: Dict[str, int] = {}
+        self._finalized_listeners: Dict[str, Callable[[DeployRecord, str], None]] = {}
         self._sweep_threads: List[threading.Thread] = []
         self._stop_event = threading.Event()
+
+    def on_finalized(self, name: str, listener: Callable[[DeployRecord, str], None]) -> None:
+        """Call ``listener(record, block_hash)`` when node ``name`` first reports
+        a deploy Finalized. It runs on that node's sweep thread."""
+        self._finalized_listeners[name] = listener
 
     def start_lfb_monitor(self):
         """Start one background status-sweep thread per tracked node."""
@@ -814,6 +861,8 @@ class LifecycleTracker:
                 # Don't compound a long sweep with the full inter-cycle
                 # pause — target ~1s between cycle STARTS.
                 elapsed = time.time() - cycle_start
+                with self._lock:
+                    self._cycle_seconds[name].append(elapsed)
                 self._stop_event.wait(timeout=max(0.0, 1.0 - elapsed))
         finally:
             # Don't block thread exit on probes still riding out their
@@ -855,12 +904,15 @@ class LifecycleTracker:
         the loop so lifecycle unit tests can drive a cycle synchronously
         (no thread, no inter-cycle wait).
         """
+        lfb = self._node_lfb(node)
         now = time.time()
         with self._lock:
             pending = [
                 did
-                for did in self._records
-                if name not in self._node_finalization.get(did, {}) and did not in self._terminal
+                for did, record in self._records.items()
+                if name not in self._node_finalization.get(did, {})
+                and did not in self._terminal
+                and self._may_report(name, record, lfb)
             ]
             if self._late_outcomes and now >= self._late_next_poll.get(name, 0.0):
                 self._late_next_poll[name] = now + self._late_poll_interval
@@ -929,6 +981,56 @@ class LifecycleTracker:
             self._enrich_inclusion(node, deploy_id, status, attempted)
         return len(pending), errors
 
+    @staticmethod
+    def _node_lfb(node) -> Optional[int]:
+        """The node's last finalized block number from its status endpoint, or
+        None when the read fails (the cycle then probes without the LFB gate)."""
+        try:
+            return int(node.api_get("/status", timeout=10)["lastFinalizedBlockNumber"])
+        except Exception as exc:
+            logger.debug("LFB read failed for %s: %s", node.name, exc)
+            return None
+
+    def _may_report(self, name: str, record: DeployRecord, lfb: Optional[int]) -> bool:
+        """Whether node ``name`` can answer anything new for ``record`` (lock held).
+
+        The submitting node is always asked, since it reports inclusion first.
+        Any other node can only report Finalized once its LFB has reached the
+        deploy's inclusion block, so asking earlier spends an RPC per deploy
+        per node per cycle for an answer that cannot change. A re-homed deploy
+        only moves to a later block, so the gate never hides a finalization.
+        """
+        if record.validator_name == name:
+            return True
+        inclusion = self._inclusion.get(record.deploy_id)
+        if inclusion is None:
+            return False
+        if lfb is None or inclusion[0] == 0:
+            return True
+        return inclusion[0] <= lfb
+
+    def rejection_counts(self) -> Dict[str, int]:
+        """Per tracked deploy that a merge rejected at least once: the highest
+        rejection count reported for it. Deploys never rejected are absent."""
+        with self._lock:
+            return dict(self._rejections)
+
+    def cycle_stats(self) -> Dict[str, Tuple[int, float, float]]:
+        """Per node: (cycles, mean seconds, max seconds) since the last call.
+
+        A sweep cycle that runs long stretches the time between a node
+        finalizing a deploy and the tracker seeing it, so these bound the
+        timing error of the latencies measured over the same window.
+        """
+        with self._lock:
+            stats = {
+                name: (len(c), sum(c) / len(c), max(c)) if c else (0, 0.0, 0.0)
+                for name, c in self._cycle_seconds.items()
+            }
+            for samples in self._cycle_seconds.values():
+                samples.clear()
+        return stats
+
     def _apply_state(self, name, deploy_id, status, finalized_state, terminal_states):
         """Fold one node's status response STATE into the bookkeeping maps.
 
@@ -940,17 +1042,28 @@ class LifecycleTracker:
         """
         now = time.time()
         with self._lock:
+            if deploy_id in self._records and status.rejectionCount:
+                self._rejections[deploy_id] = max(
+                    self._rejections.get(deploy_id, 0), status.rejectionCount
+                )
             outcome = self._late_outcomes.get(deploy_id, {}).get(name)
             if outcome is not None:
                 self._apply_late_state(outcome, status, now, finalized_state, terminal_states)
                 return
         if status.state == finalized_state:
+            first_report = None
             with self._lock:
-                if deploy_id in self._records:
+                record = self._records.get(deploy_id)
+                if record is not None:
                     reported = self._node_finalization.setdefault(deploy_id, {})
-                    reported.setdefault(name, now)
+                    if name not in reported:
+                        reported[name] = now
+                        first_report = record
                     if len(reported) == len(self._nodes):
                         self._finalization[deploy_id] = max(reported.values())
+            listener = self._finalized_listeners.get(name)
+            if first_report is not None and listener is not None:
+                listener(first_report, status.latestBlockHash.hex())
         elif status.state in terminal_states:
             with self._lock:
                 if deploy_id in self._records:
@@ -1072,7 +1185,12 @@ class LifecycleTracker:
                 {
                     "deploy_id": deploy_id,
                     "phase": record.phase,
+                    "kind": record.kind,
                     "validator": record.validator_name,
+                    "sender": record.sender,
+                    "refusals": record.refusals,
+                    "rejections": self._rejections.get(deploy_id, 0),
+                    "first_attempt": record.first_attempt_time,
                     "submit": record.submit_time,
                     "included": self._inclusion[deploy_id][1]
                     if deploy_id in self._inclusion
@@ -1107,6 +1225,7 @@ class LifecycleTracker:
                 {
                     "deploy_id": deploy_id,
                     "phase": record.phase,
+                    "kind": record.kind,
                     "validator": record.validator_name,
                     "submit": record.submit_time,
                     "included": self._late_included[deploy_id],
@@ -1163,6 +1282,7 @@ class LifecycleTracker:
                         name: NodeOutcome(finalized_at=reported.get(name)) for name in self._nodes
                     }
             self._records.clear()
+            self._rejections.clear()
             self._inclusion.clear()
             self._node_finalization.clear()
             self._finalization.clear()

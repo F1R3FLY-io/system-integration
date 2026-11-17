@@ -12,13 +12,19 @@ interact with ``Shard`` and ``Node``, never with the provider directly.
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import contextmanager
-from typing import Dict, Generator, List, Optional
+from typing import Dict, Generator, List, Optional, Tuple
 
 from .node import Node
 from .types import NodeRole, ValidatorIdentity
 
 logger = logging.getLogger(__name__)
+
+
+def _natural_key(key: str) -> Tuple[str, int]:
+    match = re.match(r"^(.*?)(\d+)$", key)
+    return (match.group(1), int(match.group(2))) if match else (key, 0)
 
 
 class Shard:
@@ -51,15 +57,15 @@ class Shard:
             role = handle.role
             if role == NodeRole.BOOTSTRAP:
                 key = "boot"
-            elif role == NodeRole.READONLY:
-                key = "readonly"
-            elif role == NodeRole.VALIDATOR:
-                # Derive slot number from container name suffix
-                # e.g., "rnode.test.abc123.validator2" → "validator2"
-                parts = handle.name.split(".")
-                key = parts[-1] if parts else handle.name
+            elif role in (NodeRole.VALIDATOR, NodeRole.READONLY):
+                # The name's last segment: "rnode.test.abc123.validator2" →
+                # "validator2", "rnode.test.abc123.readonly" → "readonly", and
+                # an adopted shard's "observer3" stays "observer3".
+                key = handle.name.split(".")[-1]
             else:
                 key = handle.name
+            if key in self._nodes:
+                raise ValueError(f"Two nodes share the key {key!r}: {handle.name}")
             self._nodes[key] = Node(
                 handle=handle,
                 role=role,
@@ -108,11 +114,27 @@ class Shard:
 
     @property
     def validators(self) -> List[Node]:
-        return [n for key, n in sorted(self._nodes.items()) if n.role == NodeRole.VALIDATOR]
+        return list(self.named_validators.values())
+
+    @property
+    def named_validators(self) -> Dict[str, Node]:
+        """Validators by key, numbered keys in numeric order (validator2 before validator10)."""
+        return {
+            key: self._nodes[key]
+            for key in sorted(
+                (k for k, n in self._nodes.items() if n.role == NodeRole.VALIDATOR),
+                key=_natural_key,
+            )
+        }
 
     @property
     def readonly(self) -> Optional[Node]:
-        return self._nodes.get("readonly")
+        """The first read-only node by name; adopted shards name them freely."""
+        readonly = sorted(
+            (k for k, n in self._nodes.items() if n.role == NodeRole.READONLY),
+            key=_natural_key,
+        )
+        return self._nodes[readonly[0]] if readonly else None
 
     @property
     def all_nodes(self) -> List[Node]:

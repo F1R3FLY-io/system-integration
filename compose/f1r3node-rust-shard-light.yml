@@ -21,6 +21,10 @@
 #   Bootstrap:   40400-40405
 #   Validator1:  40410-40415
 #   Validator2:  40420-40425
+#
+# A deploy queue fronts each validator and owns that validator's client ports
+# (4041x/4042x: 1 gRPC, 3 HTTP). Clients deploy through it; it sends every
+# other request on to its validator.
 
 name: f1r3fly-rust-light
 
@@ -41,6 +45,29 @@ x-rnode: &default-rnode
     options:
       max-size: 100m
       max-file: "3"
+
+x-deploy-queue: &default-deploy-queue
+  image: ${F1R3FLY_NODE_IMAGE:-f1r3flyindustries/f1r3fly-rust:latest}
+  user: root
+  restart: always
+  networks:
+    - f1r3fly
+  labels:
+    f1r3fly.topology: shard-light
+  entrypoint: ["/opt/docker/bin/deploy-queue"]
+  environment:
+    - RUST_LOG
+  logging:
+    driver: json-file
+    options:
+      max-size: 100m
+      max-file: "3"
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:40403/queue/status"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 30s
 
 services:
   # =================================================================
@@ -102,9 +129,7 @@ services:
       - --genesis-validator
     ports:
       - "40410:40400"
-      - "40411:40401"
       - "40412:40402"
-      - "40413:40403"
       - "40414:40404"
       - "40415:40405"
     volumes:
@@ -139,9 +164,7 @@ services:
       - --genesis-validator
     ports:
       - "40420:40400"
-      - "40421:40401"
       - "40422:40402"
-      - "40423:40403"
       - "40424:40404"
       - "40425:40405"
     volumes:
@@ -158,10 +181,45 @@ services:
       retries: 5
       start_period: 90s
 
+  # =================================================================
+  # DEPLOY QUEUES (one per validator)
+  # =================================================================
+  deploy-queue1:
+    <<: *default-deploy-queue
+    container_name: rnode.deploy-queue1
+    command:
+      - --node-grpc=http://${VALIDATOR1_HOST:-rnode.validator1}:40401
+      - --node-http=http://${VALIDATOR1_HOST:-rnode.validator1}:40403
+      - --data-dir=/var/lib/deploy-queue
+    depends_on:
+      - validator1
+    ports:
+      - "40411:40401"
+      - "40413:40403"
+    volumes:
+      - deploy-queue1-data:/var/lib/deploy-queue
+
+  deploy-queue2:
+    <<: *default-deploy-queue
+    container_name: rnode.deploy-queue2
+    command:
+      - --node-grpc=http://${VALIDATOR2_HOST:-rnode.validator2}:40401
+      - --node-http=http://${VALIDATOR2_HOST:-rnode.validator2}:40403
+      - --data-dir=/var/lib/deploy-queue
+    depends_on:
+      - validator2
+    ports:
+      - "40421:40401"
+      - "40423:40403"
+    volumes:
+      - deploy-queue2-data:/var/lib/deploy-queue
+
 volumes:
   boot-data:
   validator1-data:
   validator2-data:
+  deploy-queue1-data:
+  deploy-queue2-data:
 
 networks:
   f1r3fly:
