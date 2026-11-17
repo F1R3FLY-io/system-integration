@@ -572,6 +572,11 @@ def run_load(
     )
     index = 1_000_000
     rows: List[dict] = []
+    # Every status poll and outcome read logs its whole gRPC response at DEBUG;
+    # over a long run that grows the debug log by gigabytes a day.
+    client_log = logging.getLogger("f1r3fly.client")
+    client_level = client_log.level
+    client_log.setLevel(logging.INFO)
     logging.info(
         "Load: %s, steps %s, %d senders over %d validators, refused deploys %s",
         workload.name,
@@ -680,6 +685,7 @@ def run_load(
         sampler.stop()
         tracker.shutdown()
         readers.shutdown(wait=True)
+        client_log.setLevel(client_level)
 
     # Every finalized deploy, tails included: they all changed state.
     finalized = {
