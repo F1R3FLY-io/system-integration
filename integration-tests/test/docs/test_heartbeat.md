@@ -79,4 +79,4 @@ After receiving the expected response, verifies **all nodes** (validators + read
 ## Related
 
 - [Heartbeat proposer source](../../../services/f1r3node-rust/node/src/rust/instances/heartbeat_proposer.rs)
-- [test_shard_degradation](test_shard_degradation.md) — finalizer timeouts under sustained load (heartbeat interacts with propose backpressure)
+- [test_load](test_load.md) — finalizer timeouts under sustained load (heartbeat interacts with propose backpressure)

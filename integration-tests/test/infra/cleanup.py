@@ -21,9 +21,10 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import re
 import shutil
 import subprocess
-from typing import Set
+from typing import NamedTuple, Set
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,30 @@ logger = logging.getLogger(__name__)
 _CONTAINER_PREFIX = "rnode.test."
 _NETWORK_PREFIX = "f1r3fly-test-"
 _VOLUME_PREFIX = "test-"
+
+
+class SessionPatterns(NamedTuple):
+    container: re.Pattern
+    network: re.Pattern
+    volume: re.Pattern
+
+
+def session_patterns(session_id: str) -> SessionPatterns:
+    """Anchored name patterns for every Docker resource one session owns.
+
+    Shard resources are named by the shard scope ``<session>-s<n>``
+    (``compose.py``), standalone ones by the bare session id
+    (``docker.py``). ``session_id`` may itself be a shard scope, which then
+    matches that shard alone. The anchors keep a longer id that shares a
+    prefix from matching.
+    """
+    sid = re.escape(session_id)
+    scope = rf"{sid}(?:-s\d+)?"
+    return SessionPatterns(
+        container=re.compile(rf"^{re.escape(_CONTAINER_PREFIX)}(?P<scope>{scope})\."),
+        network=re.compile(rf"^{re.escape(_NETWORK_PREFIX)}{scope}(?:-standalone\d*)?$"),
+        volume=re.compile(rf"^{re.escape(_VOLUME_PREFIX)}(?:{scope}_|{sid}-standalone\d*-data$)"),
+    )
 
 
 def _docker(*args: str, check: bool = False) -> subprocess.CompletedProcess:
@@ -315,11 +340,9 @@ class DockerCleanupRegistry:
     def cleanup_session(cls, session_id: str) -> None:
         """Force-remove Docker resources for one specific session.
 
-        Reaps:
-          1. Containers ``rnode.test.<session_id>.*``
-          2. Networks ``f1r3fly-test-<session_id>`` (and per-test
-             ``f1r3fly-test-<session_id>-standalone<N>`` networks)
-          3. Volumes ``test-<session_id>_*``
+        Reaps every resource :func:`session_patterns` names: the session's
+        shard containers, networks and volumes (scope ``<session_id>-s<n>``)
+        and its standalone ones.
 
         Resources are filtered first by Docker's ``name=`` substring
         matcher (cheap narrowing) and then re-checked in Python with
@@ -327,20 +350,14 @@ class DockerCleanupRegistry:
         cannot collide. Idempotent — safe to invoke when no resources
         for this session exist. Other sessions are not touched.
         """
-        import re
-
-        container_re = re.compile(rf"^{re.escape(_CONTAINER_PREFIX)}{re.escape(session_id)}\.")
-        network_re = re.compile(
-            rf"^{re.escape(_NETWORK_PREFIX)}{re.escape(session_id)}" r"(-standalone\d+)?$"
-        )
-        volume_re = re.compile(rf"^{re.escape(_VOLUME_PREFIX)}{re.escape(session_id)}_")
+        container_re, network_re, volume_re = session_patterns(session_id)
 
         # Containers — force-remove also stops running ones.
         result = _docker(
             "ps",
             "-a",
             "--filter",
-            f"name={_CONTAINER_PREFIX}{session_id}.",
+            f"name={_CONTAINER_PREFIX}{session_id}",
             "--format",
             "{{.Names}}",
         )
@@ -368,7 +385,7 @@ class DockerCleanupRegistry:
             "volume",
             "ls",
             "--filter",
-            f"name={_VOLUME_PREFIX}{session_id}_",
+            f"name={_VOLUME_PREFIX}{session_id}",
             "--format",
             "{{.Name}}",
         )

@@ -10,6 +10,10 @@
 #   - A running shard network (bootstrap + validators on f1r3fly network)
 #   - Validator 4 must be bonded before it can participate in consensus
 #
+# A deploy queue fronts the validator and owns its client ports (40441 gRPC,
+# 40443 HTTP). Until the validator is bonded and creating blocks, the queue
+# refuses deploys.
+#
 # See: docs/adding-a-validator.md
 #
 
@@ -32,9 +36,7 @@ services:
       - --validator-private-key=${VALIDATOR4_PRIVATE_KEY:-5ff3514bf79a7d18e8dd974c699678ba63b7762ce8d78c532346e52f0ad219cd}
     ports:
       - "40440:40400"
-      - "40441:40401"
       - "40442:40402"
-      - "40443:40403"
       - "40444:40404"
       - "40445:40405"
     volumes:
@@ -58,8 +60,42 @@ services:
       retries: 5
       start_period: 90s
 
+  deploy-queue4:
+    image: ${F1R3FLY_NODE_IMAGE:-f1r3flyindustries/f1r3fly-rust:latest}
+    user: root
+    restart: always
+    networks:
+      - f1r3fly
+    container_name: rnode.deploy-queue4
+    entrypoint: ["/opt/docker/bin/deploy-queue"]
+    command:
+      - --node-grpc=http://${VALIDATOR4_HOST:-rnode.validator4}:40401
+      - --node-http=http://${VALIDATOR4_HOST:-rnode.validator4}:40403
+      - --data-dir=/var/lib/deploy-queue
+    depends_on:
+      - validator4
+    ports:
+      - "40441:40401"
+      - "40443:40403"
+    volumes:
+      - deploy-queue4-data:/var/lib/deploy-queue
+    environment:
+      - RUST_LOG
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:40403/queue/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
 volumes:
   validator4-data:
+  deploy-queue4-data:
 
 networks:
   f1r3fly:

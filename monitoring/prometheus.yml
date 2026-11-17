@@ -28,6 +28,24 @@ scrape_configs:
       - target_label: shard
         replacement: 'default'
 
+  - job_name: 'deploy-queue'
+    dns_sd_configs:
+      - names:
+          - 'rnode.deploy-queue'
+          - 'rnode.deploy-queue1'
+          - 'rnode.deploy-queue2'
+          - 'rnode.deploy-queue3'
+          - 'rnode.deploy-queue4'
+        type: A
+        port: 40403
+        refresh_interval: 15s
+    metrics_path: /queue/metrics
+    relabel_configs:
+      - source_labels: [__meta_dns_name]
+        target_label: instance
+      - target_label: shard
+        replacement: 'default'
+
   - job_name: 'cadvisor'
     static_configs:
       - targets: ['cadvisor:8080']

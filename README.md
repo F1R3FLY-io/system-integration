@@ -39,9 +39,11 @@ The nodes in a shard are not interchangeable, and sending a request to the wrong
 
 | I want to... | Send it to | Ports (default shard) |
 |---|---|---|
-| Submit a deploy (transfer, bond, contract) | **A bonded validator** — `rnode.validator1/2/3` | gRPC 40412, HTTP 40413 |
+| Submit a deploy (transfer, bond, contract) | **A bonded validator's deploy queue** — `rnode.deploy-queue1/2/3` | gRPC 40411, HTTP 40413 |
 | Run an exploratory query (balance, bonds, PoS state) | **The read-only node** — `rnode.readonly` | gRPC 40452, HTTP 40453 |
 | Read chain state (status, blocks, a deploy) | Any node | HTTP 40403 / 40413 / 40453 |
+
+Each validator runs behind a deploy queue that owns its client host ports (gRPC 40411 and HTTP 40413 for validator1, the same offsets for the others). The queue holds deploys and releases them as fast as its validator takes them, and refuses the excess with a retry-after; every other request passes through to the validator. A deploy sent to the validator's internal gRPC port (40412 and its offsets) bypasses the queue.
 
 Two rules are worth knowing before the first deploy:
 
