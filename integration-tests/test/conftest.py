@@ -226,15 +226,36 @@ def pytest_configure(config):
         "Best-effort resource ordering only — correctness never depends "
         "on it (isolated suites own dedicated shards).",
     )
+    config.addinivalue_line(
+        "markers",
+        "opt_in(env_var, value=None): collect this test only when env_var is "
+        "set (to value, when given). Otherwise it is deselected, not skipped.",
+    )
+
+
+def _opted_in(item) -> bool:
+    for marker in item.iter_markers("opt_in"):
+        env_var, *rest = marker.args
+        value = rest[0] if rest else marker.kwargs.get("value")
+        actual = os.environ.get(env_var)
+        if not (actual == value if value is not None else actual):
+            return False
+    return True
 
 
 @pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(config, items):
-    """Order isolated shards first and gate node-capability regressions.
+    """Deselect opt-in tests, order isolated shards first and gate
+    node-capability regressions.
 
     ``trylast`` so this runs after other plugins' collection hooks and
     the isolated-first ordering is not silently undone by them.
     """
+    deselected = [item for item in items if not _opted_in(item)]
+    if deselected:
+        items[:] = [item for item in items if _opted_in(item)]
+        config.hook.pytest_deselected(items=deselected)
+
     isolated = [item for item in items if tuple(item.iter_markers("isolated_shard"))]
     if isolated:
         isolated_set = set(isolated)

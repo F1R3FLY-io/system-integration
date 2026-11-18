@@ -405,6 +405,7 @@ Things that are safe:
 
 - **`pytest.skip()` inside a test** — runtime condition, environment-dependent (e.g., "skip on standalone where validator and readonly are the same node")
 - **`@pytest.mark.skip(reason=...)`** — class- or function-level skip. Prefer this over bare `skip()` if the condition is static.
+- **`@pytest.mark.opt_in("ENV_VAR")`** (or `opt_in("ENV_VAR", "1")`) — a harness that runs only on request, such as a long capacity ramp. It is deselected rather than skipped while the variable is unset, because the soak preflight fails any run that skips a test.
 - **`--deselect path::test` in CLI or CI** — known-broken test you want out of a specific run without touching source. See `tests/shared/test_convergence.py::test_network_converges_after_slow_deploy` as an example (triggers #437 shard stall).
 - **Delete the test** — feature removed or superseded.
 

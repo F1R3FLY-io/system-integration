@@ -54,10 +54,7 @@ from .test_load import PHASE_LINE_FORMAT, _load_shard_config
 
 pytestmark = [
     pytest.mark.xdist_group("custom"),
-    pytest.mark.skipif(
-        os.environ.get("HEARTBEAT_TIMING") != "1",
-        reason="opt-in issue #24 timing harness; set HEARTBEAT_TIMING=1",
-    ),
+    pytest.mark.opt_in("HEARTBEAT_TIMING", "1"),
 ]
 
 # Light deploys at 10/s for 15 s, each validator signing what it receives.
