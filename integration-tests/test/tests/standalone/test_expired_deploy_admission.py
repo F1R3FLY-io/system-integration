@@ -14,6 +14,8 @@ from typing import Tuple
 
 import pytest
 from f1r3fly.client import F1r3flyClientException
+from f1r3fly.pb.DeployServiceCommon_pb2 import DEPLOY_STATE_EXPIRED
+from f1r3fly.polling import DeployError
 from f1r3fly.util import create_deploy_data
 
 from ...infra.config import NodeConfig
@@ -22,10 +24,12 @@ from ...infra.node import Node
 from ...infra.polling import wait_for_deploy_finalized
 from ...infra.types import NodeRole
 
-# Attempts allowed for the accepted-case submission. The boundary is only one
-# block wide, so a heartbeat block landing between probing the boundary and
-# submitting against it flips the accepted case to expired; re-probe and retry
-# rather than widening the margin, which would stop testing the boundary.
+# Attempts allowed for the accepted case. Its window holds only the node's next
+# block, so a heartbeat block can take that block first: landing between the
+# probe and the submission it gets the deploy refused, and already choosing its
+# deploys when the deploy arrives it leaves the deploy to expire unincluded.
+# Re-probe and retry either race rather than widening the margin, which would
+# stop testing the boundary.
 _BOUNDARY_ATTEMPTS = 5
 
 _PHLO_PRICE = 1
@@ -90,24 +94,33 @@ def test_expired_deploy_rejected_at_admission(provider, timeouts) -> None:
         with pytest.raises(F1r3flyClientException, match="expired"):
             node.send_deploy(expired)
 
-        # One block past the boundary: admitted. Valid only while
+        # One block past the boundary: admitted and finalized. Valid only while
         # latest_block_number has not advanced, so re-derive it per attempt.
-        accepted_id = None
+        finalized_id = None
         for _ in range(_BOUNDARY_ATTEMPTS):
             height, lifespan = _current_boundary()
             inside = _deploy_at('@"inside-admission-window"!(1)', height - lifespan + 1)
             try:
                 accepted_id = node.send_deploy(inside)
-                break
             except F1r3flyClientException as exc:
                 if "expired" not in str(exc):
                     raise
-        assert accepted_id is not None, (
-            f"deploy one block past the expiry boundary was refused on every one of "
-            f"{_BOUNDARY_ATTEMPTS} attempts; the node proposes every second, so either "
-            f"the boundary is off by one or block production is outrunning submission"
+                continue
+            try:
+                wait_for_deploy_finalized(node, accepted_id, timeouts.finalization)
+            except DeployError:
+                status = node.deploy_status(accepted_id)
+                if status.state == DEPLOY_STATE_EXPIRED and not status.HasField("latestBlockHash"):
+                    continue
+                raise
+            finalized_id = accepted_id
+            break
+        assert finalized_id is not None, (
+            f"a deploy one block past the expiry boundary was refused, or admitted and "
+            f"expired with no block including it, on every one of {_BOUNDARY_ATTEMPTS} "
+            f"attempts; the node proposes every second, so either the boundary is off by "
+            f"one or no block takes a deploy that arrives in its only includable height"
         )
-        wait_for_deploy_finalized(node, accepted_id, timeouts.finalization)
 
         # The refused deploy must be absent from the DAG, not merely unfinalized.
         # match= keeps an unreachable node from passing this as an absence; the
