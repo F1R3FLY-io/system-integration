@@ -86,7 +86,7 @@ def _run_phase(submitters, tracker, start_index, monitor) -> Tuple[int, List[str
         HIGH_PHASE["duration"],
         start_index,
         plan,
-        VabnSource(submitters[0][0], monitor),
+        VabnSource([submitters[0][0]], monitor),
         HIGH_PHASE["name"],
         tracker.track_deploy,
     )
