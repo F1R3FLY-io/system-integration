@@ -64,10 +64,7 @@ from .test_load import _acquire_shard, _load_shard_config
 pytestmark = [
     pytest.mark.xdist_group("custom"),
     pytest.mark.remote_shard,
-    pytest.mark.skipif(
-        not os.environ.get("CAPACITY_WORKLOAD"),
-        reason="capacity ramps run for an hour or more; set CAPACITY_WORKLOAD to run one",
-    ),
+    pytest.mark.opt_in("CAPACITY_WORKLOAD"),
 ]
 
 
