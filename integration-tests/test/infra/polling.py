@@ -97,19 +97,20 @@ def poll_until(
     )
 
 
-# The node's vabn-expiration rejection, verbatim shape (captured from soak
-# preflight 31919610258):
-#   "Deploy validAfterBlockNumber 157 has expired at block 207 with deploy
-#    lifespan 50."
-# Retrying a submission is safe ONLY on this rejection — it is the node's
+# The vabn-expiration rejection, verbatim shape, as both the node and the
+# deploy queue word it:
+#   "deploy_expired: validAfterBlockNumber 157 has expired at block 207 with
+#    deploy lifespan 50."
+# Retrying a submission is safe ONLY on this rejection — it is the
 # guarantee that the deploy was NOT accepted, so a resend cannot
 # double-submit. The regex is the retry GATE, not just a height extractor:
 # anything that does not match this exact shape must be recorded as a
 # failure, never retried. unit-tests/test_vabn_expiration_matcher.py pins
-# the shape against the captured node wording, so silent drift on either
-# side fails a sub-second test instead of degrading retry behavior.
+# the shape, so silent drift on either side fails a sub-second test
+# instead of degrading retry behavior.
 VABN_EXPIRED_PATTERN = re.compile(
-    r"Deploy validAfterBlockNumber \d+ has expired at block (\d+) with deploy lifespan \d+"
+    r"deploy_expired: validAfterBlockNumber \d+ has expired at block (\d+) "
+    r"with deploy lifespan \d+"
 )
 
 
