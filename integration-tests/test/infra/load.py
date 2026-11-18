@@ -16,7 +16,7 @@ import math
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -30,6 +30,10 @@ from .polling import parse_vabn_expiration
 # once the DAG advances more than the 50-block deploy lifespan past their
 # vabn, and a loaded shard can clear 50 blocks in well under 30 seconds.
 VABN_REFRESH_INTERVAL = 5.0
+# How long one refresh waits for the validators' tips. A validator that has not
+# answered by then is left out of that refresh, so a loaded one cannot hold up
+# every submitter for the client's full request timeout.
+TIP_READ_DEADLINE = 3.0
 
 # Total time one deploy may wait on deploy-queue refusals before the refusal
 # counts as a submission failure.
@@ -185,9 +189,11 @@ class VabnSource:
     """The validAfterBlockNumber every submitter thread signs with.
 
     Signs with the highest tip among ``validators``: each validator checks
-    expiry against its own tip, so the most advanced one sets the bound. A
-    validator too loaded to answer is left out of that read; the read fails
-    only when none answers.
+    expiry against its own tip, so the most advanced one sets the bound. The
+    tips are read concurrently, and a validator that fails or has not answered
+    within TIP_READ_DEADLINE is left out of that read; the read fails only
+    when none answers. A validator whose read is still outstanding gets no
+    second one, so a stuck validator holds at most one reader thread.
     Re-reads the tips at most every VABN_REFRESH_INTERVAL seconds, and takes
     the node's own height from an expiration rejection, which is fresher.
     One thread reads the tips at a time; the others wait for its answer
@@ -200,19 +206,34 @@ class VabnSource:
         self._monitor = monitor
         self._lock = threading.Lock()
         self._refresh = threading.Lock()
+        self._reads = ThreadPoolExecutor(
+            max_workers=len(self._validators), thread_name_prefix="vabn-tip"
+        )
+        self._outstanding: Dict[int, Future] = {}
         self._value = self._highest_tip_vabn()
         self._read_at = time.time()
 
     def _highest_tip_vabn(self) -> int:
+        for index, node in enumerate(self._validators):
+            if index not in self._outstanding:
+                self._outstanding[index] = self._reads.submit(
+                    current_block_number, node, self._monitor
+                )
+        wait(self._outstanding.values(), timeout=TIP_READ_DEADLINE)
         tips = []
         failures = []
-        for node in self._validators:
+        for index, read in list(self._outstanding.items()):
+            if not read.done():
+                continue
+            del self._outstanding[index]
             try:
-                tips.append(current_block_number(node, self._monitor))
+                tips.append(read.result())
             except AssertionError as exc:
                 failures.append(exc)
         if not tips:
-            raise failures[0]
+            if failures:
+                raise failures[0]
+            raise AssertionError(f"no validator answered the tip read within {TIP_READ_DEADLINE}s")
         return max(0, max(tips) - 1)
 
     def _fresh(self) -> bool:

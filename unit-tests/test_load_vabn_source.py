@@ -83,6 +83,38 @@ def test_a_validator_that_does_not_answer_is_left_out_of_the_read():
     assert source.get() == 699
 
 
+class StuckNode:
+    """A node whose tip read does not answer until released."""
+
+    def __init__(self, name):
+        self.name = name
+        self.reads = 0
+        self.release = threading.Event()
+
+    def get_blocks(self, _depth):
+        self.reads += 1
+        self.release.wait(5)
+        return [Block(900)]
+
+
+def test_a_validator_slower_than_the_deadline_does_not_hold_up_the_read(monkeypatch):
+    monkeypatch.setattr(load, "TIP_READ_DEADLINE", 0.2)
+    stuck = StuckNode("validator1")
+    started = time.monotonic()
+    source = load.VabnSource([stuck, TipNode("validator2", 700)])
+    assert time.monotonic() - started < 1.0
+    assert source.get() == 699
+
+    source._read_at -= load.VABN_REFRESH_INTERVAL + 1
+    assert source.get() == 699
+    assert stuck.reads == 1, "a validator with a read outstanding gets no second one"
+
+    stuck.release.set()
+    time.sleep(0.1)
+    source._read_at -= load.VABN_REFRESH_INTERVAL + 1
+    assert source.get() == 899, "a late answer counts at the next refresh"
+
+
 def test_the_read_fails_when_no_validator_answers():
     with pytest.raises(AssertionError, match="validator1 became unreachable"):
         load.VabnSource([UnreachableNode("validator1"), UnreachableNode("validator2")])
