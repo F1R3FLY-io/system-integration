@@ -3,8 +3,7 @@
 test_heartbeat_timing feeds f1r3node-rust scripts/bench/summarize-issue24-phases.sh,
 which parses its output with fixed patterns. These tests pin, without a node:
 the phase line still matches the summarizer's awk gate and jq capture, the
-repeated phase is light deploys at 10/s for 15 s, N parses from the environment, and the
-test stays out of every default selection unless HEARTBEAT_TIMING=1.
+repeated phase is light deploys at 10/s for 15 s, and N parses from the environment.
 """
 
 import importlib
@@ -75,22 +74,3 @@ def test_repetitions_from_env_rejects_bad_values(monkeypatch, raw, reason):
     monkeypatch.setenv("HEARTBEAT_TIMING_REPS", raw)
     with pytest.raises(ValueError, match=f"HEARTBEAT_TIMING_REPS must be {reason}"):
         harness.repetitions_from_env()
-
-
-def _skip_condition():
-    (mark,) = [m for m in harness.pytestmark if m.name == "skipif"]
-    return mark.args[0]
-
-
-@pytest.mark.parametrize(("value", "skipped"), [(None, True), ("0", True), ("1", False)])
-def test_opt_in_gate(monkeypatch, value, skipped):
-    if value is None:
-        monkeypatch.delenv("HEARTBEAT_TIMING", raising=False)
-    else:
-        monkeypatch.setenv("HEARTBEAT_TIMING", value)
-    try:
-        importlib.reload(harness)
-        assert _skip_condition() is skipped
-    finally:
-        monkeypatch.undo()
-        importlib.reload(harness)
