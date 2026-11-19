@@ -239,7 +239,7 @@ def _assert_bond_rejected(
     # rejection to assert; resubmit until one of them is judged.
     deploy_id = _submit_pos_until_effective(
         all_nodes,
-        {"bond": lambda: proposer.pos.bond(key, amount)},
+        {"bond": lambda: proposer.pos.bond(key, amount, phlo_limit=_BOND_PHLO_LIMIT)},
         timeouts,
         f"bond-rejected[{expected_reason}]",
     )["bond"]
