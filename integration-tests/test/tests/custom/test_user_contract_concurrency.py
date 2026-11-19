@@ -70,6 +70,7 @@ from ...infra.assertions import (
 )
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.node import MAX_PHLO_LIMIT
 from ...infra.polling import wait_for_deploy_included
 from ...infra.shard import Shard
 
@@ -78,7 +79,7 @@ pytestmark = pytest.mark.xdist_group("custom")
 # ── Shard parameters (aligned with the lifecycle shard) ──────────────────────
 _GENESIS_STAKE = 100
 _WALLET_BALANCE = 50_000_000_000_000_000
-_PHLO_LIMIT = 100_000_000
+_PHLO_LIMIT = MAX_PHLO_LIMIT
 _PHLO_PRICE = 1
 
 # A dedicated funded deployer key per producer node: each concurrent op runs on
