@@ -32,6 +32,7 @@ from ...infra.bridge import (
 )
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.node import MAX_PHLO_LIMIT
 from ...infra.polling import deploy_and_read, poll_until, wait_for_block_visible
 from ...infra.shard import Shard
 
@@ -51,7 +52,7 @@ _LOCK_COUNT = 12
 # Each node must report Expired with rejections for a tolerated loss.
 # Log the loss rate on every run so movement toward the floor remains visible.
 _FINALIZE_FLOOR = 10
-_PHLO_LIMIT = 500_000_000
+_PHLO_LIMIT = MAX_PHLO_LIMIT
 
 
 def _lock_term(lock_uri: str, amount: int, recipient: str, from_addr: str) -> str:

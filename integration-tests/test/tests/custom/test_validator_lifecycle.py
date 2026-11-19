@@ -62,6 +62,7 @@ from ...infra.keys import (
     VALIDATOR5_ID,
     VALIDATOR6_ID,
 )
+from ...infra.node import MAX_PHLO_LIMIT
 from ...infra.polling import (
     poll_until,
     wait_for_block_visible,
@@ -92,7 +93,7 @@ _EPOCH_LENGTH = 4
 _QUARANTINE_LENGTH = 10
 
 _WALLET_BALANCE = 50_000_000_000_000_000  # joiners: cover phlo + stake
-_BOND_PHLO_LIMIT = 100_000_000
+_BOND_PHLO_LIMIT = MAX_PHLO_LIMIT
 _BOND_PHLO_PRICE = 1
 # Mode-A out-of-phlo: a phlo_limit large enough to precharge but far too small to run the
 # bond contract to completion, so the deploy runs out of phlo mid-execution and errors.

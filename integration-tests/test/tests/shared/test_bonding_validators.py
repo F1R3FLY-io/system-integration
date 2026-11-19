@@ -70,6 +70,7 @@ from ...infra.keys import (
     VALIDATOR4_ID,
     VALIDATOR5_ID,
 )
+from ...infra.node import MAX_PHLO_LIMIT
 from ...infra.polling import (
     poll_until,
     wait_for_block_visible,
@@ -108,7 +109,7 @@ _EPOCH_LENGTH = 4
 # during Phase A sub-phases 1-5 (~30s window), so total deploy count
 # stays bounded (~45 deploys).
 _BG_LOAD_INTERVAL = 2.0
-_BG_LOAD_PHLO_LIMIT = 100_000_000
+_BG_LOAD_PHLO_LIMIT = MAX_PHLO_LIMIT
 
 
 @pytest.fixture(scope="module")
@@ -368,7 +369,7 @@ def _bond_lifecycle(
         joiner.deploy_string(
             f'@"pre-bond-{joiner_identity.name}"!(0)',
             joiner_identity.private_key(),
-            phlo_limit=100_000_000,
+            phlo_limit=MAX_PHLO_LIMIT,
             phlo_price=1,
         )
     with pytest.raises(F1r3flyClientException, match="validator is not bonded"):
@@ -380,7 +381,7 @@ def _bond_lifecycle(
         rho_file_path="resources/wallets/bond.rho",
         private_key=joiner_identity.private_key(),
         substitutions={"%AMOUNT": str(_BOND_AMOUNT)},
-        phlo_limit=100_000_000,
+        phlo_limit=MAX_PHLO_LIMIT,
         phlo_price=1,
     )
     # Bond deploy needs a generous budget: under heartbeat-only
@@ -529,7 +530,7 @@ def _bond_lifecycle(
     joiner.deploy_string(
         f'@"joiner-active-{joiner_identity.name}"!(1)',
         joiner_identity.private_key(),
-        phlo_limit=100_000_000,
+        phlo_limit=MAX_PHLO_LIMIT,
         phlo_price=1,
     )
 
@@ -579,7 +580,7 @@ def _bond_lifecycle(
     v1.deploy_string(
         f'@"v1-after-{joiner_identity.name}"!(2)',
         VALIDATOR1_ID.private_key(),
-        phlo_limit=100_000_000,
+        phlo_limit=MAX_PHLO_LIMIT,
         phlo_price=1,
     )
 
@@ -639,7 +640,7 @@ def _bond_lifecycle(
         deploy_id = node.deploy_string(
             f'@"liveness-{node.name}-{joiner_identity.name}"!(1)',
             key.private_key(),
-            phlo_limit=100_000_000,
+            phlo_limit=MAX_PHLO_LIMIT,
             phlo_price=1,
         )
         wait_for_deploy_included(

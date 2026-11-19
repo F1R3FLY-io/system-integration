@@ -20,6 +20,7 @@ from f1r3fly.client import F1r3flyClientException
 
 from ...infra.assertions import assert_deploy_errored, assert_deploy_succeeded
 from ...infra.keys import VALIDATOR1_ID
+from ...infra.node import MAX_PHLO_LIMIT
 from ...infra.polling import poll_until, wait_for_deploy_included
 
 pytestmark = pytest.mark.xdist_group("shared")
@@ -45,7 +46,7 @@ def test_deploy_invalid_syntax_rejected(shared_shard, timeouts) -> None:
     deploy_id = v1.deploy_string(
         '@"valid-after-invalid"!(42)',
         v1_key,
-        phlo_limit=100_000_000,
+        phlo_limit=MAX_PHLO_LIMIT,
         phlo_price=1,
     )
 
@@ -121,7 +122,7 @@ def test_deploy_lookup_consistent_across_validators(shared_shard, timeouts) -> N
     deploy_id = v1.deploy_string(
         '@"deploy-lookup-test"!(1)',
         VALIDATOR1_ID.private_key(),
-        phlo_limit=100_000_000,
+        phlo_limit=MAX_PHLO_LIMIT,
         phlo_price=1,
     )
 

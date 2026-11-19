@@ -51,6 +51,7 @@ from ...infra.keys import (
     VALIDATOR3_ID,
     VALIDATOR4_ID,
 )
+from ...infra.node import MAX_PHLO_LIMIT
 from ...infra.polling import wait_for_block_visible
 from ...infra.shard import Shard
 
@@ -85,7 +86,7 @@ def _propose_with_filler(node, identity, label: str) -> str:
     node.deploy_string(
         f'@"filler-{label}"!(0)',
         identity.private_key(),
-        phlo_limit=100_000_000,
+        phlo_limit=MAX_PHLO_LIMIT,
         phlo_price=1,
     )
     return node.propose()
@@ -128,7 +129,7 @@ def _concurrent_propose_round(
             node.deploy_string(
                 f'@"round-{round_idx}-prop-{idx}"!({round_idx})',
                 identity.private_key(),
-                phlo_limit=100_000_000,
+                phlo_limit=MAX_PHLO_LIMIT,
                 phlo_price=1,
             )
             barrier.wait(timeout=max(0, deadline - time.monotonic()))
@@ -274,7 +275,7 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
             rho_file_path="resources/wallets/bond.rho",
             private_key=VALIDATOR4_ID.private_key(),
             substitutions={"%AMOUNT": str(_BOND_AMOUNT)},
-            phlo_limit=100_000_000,
+            phlo_limit=MAX_PHLO_LIMIT,
             phlo_price=1,
         )
         b4 = v1.propose()
@@ -396,7 +397,7 @@ def test_joiner_self_proposes_at_epoch_boundary(provider, timeouts) -> None:
                 joiner.deploy_string(
                     f'@"v4-prop-{i}"!({i})',
                     VALIDATOR4_ID.private_key(),
-                    phlo_limit=100_000_000,
+                    phlo_limit=MAX_PHLO_LIMIT,
                     phlo_price=1,
                 )
                 vb = joiner.propose()

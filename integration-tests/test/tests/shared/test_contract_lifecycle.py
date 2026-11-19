@@ -36,6 +36,7 @@ from ...infra.assertions import (
 )
 from ...infra.bridge import extract_bridge_uris, make_query_rho
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.node import MAX_PHLO_LIMIT
 from ...infra.polling import deploy_and_read, wait_for_deploy_finalized, wait_for_finalized
 
 pytestmark = pytest.mark.xdist_group("shared")
@@ -178,7 +179,7 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
                 validators[0],
                 VALIDATOR1_ID,
                 rho_file=BRIDGE_CONTRACT,
-                phlo_limit=500_000_000,
+                phlo_limit=MAX_PHLO_LIMIT,
             ): "bridge1",
             executor.submit(
                 _deploy,
@@ -186,7 +187,7 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
                 validators[1],
                 VALIDATOR2_ID,
                 rho_file=BRIDGE_CONTRACT,
-                phlo_limit=500_000_000,
+                phlo_limit=MAX_PHLO_LIMIT,
             ): "bridge2",
             executor.submit(
                 _deploy,
@@ -194,7 +195,7 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
                 validators[2],
                 VALIDATOR3_ID,
                 rho_file=STORE_DATA_CONTRACT,
-                phlo_limit=100_000_000,
+                phlo_limit=MAX_PHLO_LIMIT,
             ): "storage",
         }
 
@@ -236,7 +237,7 @@ def deployed_contracts(shared_shard, timeouts) -> Dict:
         find_timeout,
         lfb_timeout,
         rho_file=DATA_PROVIDER_CONTRACT,
-        phlo_limit=100_000_000,
+        phlo_limit=MAX_PHLO_LIMIT,
     )
     provider_uri = par_as_uri(provider_pars[0])
     results["provider"] = {
@@ -328,7 +329,7 @@ def test_cross_validator_queries_real_deploy(
                 key.private_key(),
                 find_timeout,
                 lfb_timeout,
-                phlo_limit=500_000_000,
+                phlo_limit=MAX_PHLO_LIMIT,
             )
             futures[f] = label
 
@@ -447,7 +448,7 @@ def test_contract_to_contract_interaction(
         lfb_timeout,
         rho_file=DATA_CONSUMER_CONTRACT,
         substitutions={"@provider_uri@": provider_uri},
-        phlo_limit=100_000_000,
+        phlo_limit=MAX_PHLO_LIMIT,
     )
 
     assert consumer_pars, "Consumer deploy returned no data"
@@ -530,7 +531,7 @@ def test_transfers_interleaved_with_queries(
             v3_key,
             find_timeout,
             lfb_timeout,
-            phlo_limit=500_000_000,
+            phlo_limit=MAX_PHLO_LIMIT,
         )
 
         for f in as_completed([transfer_future, query_future]):
@@ -607,7 +608,7 @@ def test_multi_block_state_evolution(
         v1_key,
         find_timeout,
         lfb_timeout,
-        phlo_limit=500_000_000,
+        phlo_limit=MAX_PHLO_LIMIT,
     )
     logging.info("Lock 1 result: %s", str(lock1_pars[0])[:120] if lock1_pars else "empty")
 
@@ -637,7 +638,7 @@ def test_multi_block_state_evolution(
         v2_key,
         find_timeout,
         lfb_timeout,
-        phlo_limit=500_000_000,
+        phlo_limit=MAX_PHLO_LIMIT,
     )
     logging.info("Lock 2 result: %s", str(lock2_pars[0])[:120] if lock2_pars else "empty")
 

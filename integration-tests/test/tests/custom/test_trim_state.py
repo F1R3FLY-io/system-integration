@@ -29,6 +29,7 @@ import pytest
 
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID
+from ...infra.node import MAX_PHLO_LIMIT
 from ...infra.polling import wait_for_block_visible
 from ...infra.shard import Shard
 
@@ -76,7 +77,7 @@ def test_trim_state(provider, timeouts) -> None:
             v1.deploy_string(
                 contract,
                 VALIDATOR1_ID.private_key(),
-                phlo_limit=100_000_000,
+                phlo_limit=MAX_PHLO_LIMIT,
                 phlo_price=1,
             )
             latest_block_hash = v1.propose()
@@ -122,7 +123,7 @@ def test_trim_state(provider, timeouts) -> None:
                 v1.deploy_string(
                     f'@"post-join-{i}"!({i})',
                     VALIDATOR1_ID.private_key(),
-                    phlo_limit=100_000_000,
+                    phlo_limit=MAX_PHLO_LIMIT,
                     phlo_price=1,
                 )
                 block_hash = v1.propose()
