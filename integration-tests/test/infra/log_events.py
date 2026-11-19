@@ -85,6 +85,15 @@ SYNC_MARKERS: Dict[str, str] = {
     # Requested blocks went unanswered within the requester's window and are
     # being re-requested. The retry path, not an error.
     "BlockRequestResend": "No responses for",
+    # Requested tuple-space state went unanswered within the requester's window
+    # and is being re-requested.
+    "TupleSpaceRequestResend": "No tuple space state responses for",
+    # The tuple-space or forward-horizon requester could not send chunk
+    # requests; the paths stay pending and are requested again.
+    "StateChunkResendPending": "paths remain pending for resend",
+    # The forward-horizon requester imported nothing for its resend interval
+    # and is requesting the pending roots again.
+    "HorizonRequestResend": "LFS forward-horizon: no imported chunk for",
     # A floor-cache response arrived after the request loop had moved past it
     # and was dropped; the loop asks again. Needs a responding peer, so it
     # does not fire while every source is silent.

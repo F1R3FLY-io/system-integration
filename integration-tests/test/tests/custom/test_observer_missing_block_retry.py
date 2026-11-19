@@ -34,6 +34,11 @@ _LOG_POLL_INTERVAL = 0.5
 # Unscaled budget for a log marker to appear, via the timeouts fixture.
 _LOG_WAIT_BUDGET = 15
 
+# Unscaled budget for retry evidence while every source is silent. The
+# forward-horizon requester re-requests only every 30 s, and a request it sends
+# to a paused peer fails after the observer's 2 s network timeout.
+_RETRY_EVIDENCE_BUDGET = 40
+
 
 @pytest.fixture(scope="module")
 def active_shard(provider, timeouts):
@@ -103,11 +108,15 @@ def test_observer_retries_missing_block_after_peer_returns(active_shard, timeout
             # Which restore phase meets the silence is a race the observer can
             # legitimately win: a small shard's block download completes in
             # well under the poll granularity above, so by the time the pause
-            # lands the outstanding work may be the floor-cache exchange, or
-            # nothing at all. Every arm below is evidence of the contract —
-            # the observer keeps asking or degrades loudly, and never wedges:
+            # lands the outstanding work may be the state or floor-cache
+            # exchange, or nothing at all. Every arm below is evidence of the
+            # contract — the observer keeps asking or degrades loudly, and
+            # never wedges:
             #   - BlockRequestResend: block requests re-issued (download was
             #     still in flight when the sources went silent)
+            #   - TupleSpaceRequestResend / StateChunkResendPending /
+            #     HorizonRequestResend: tuple-space or forward-horizon state
+            #     requests re-issued through the silence
             #   - FloorCacheRequestFailedRetry / FloorCacheResponseTimeoutRetry:
             #     the floor-cache loop re-asked through the silence
             #   - FloorCacheReAsked: a late floor-cache response was dropped and
@@ -121,6 +130,9 @@ def test_observer_retries_missing_block_after_peer_returns(active_shard, timeout
                 logs = observer.logs()
                 for key in (
                     "BlockRequestResend",
+                    "TupleSpaceRequestResend",
+                    "StateChunkResendPending",
+                    "HorizonRequestResend",
                     "FloorCacheReAsked",
                     "FloorCacheRequestFailedRetry",
                     "FloorCacheResponseTimeoutRetry",
@@ -133,7 +145,7 @@ def test_observer_retries_missing_block_after_peer_returns(active_shard, timeout
 
             poll_until(
                 _retry_or_progress_evidence,
-                timeout=timeouts.custom(_LOG_WAIT_BUDGET),
+                timeout=timeouts.custom(_RETRY_EVIDENCE_BUDGET),
                 interval=_LOG_POLL_INTERVAL,
                 description="observer retries, degrades loudly, or completes while sources are unavailable",
             )
