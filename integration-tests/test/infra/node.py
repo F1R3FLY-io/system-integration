@@ -23,6 +23,10 @@ from .types import NodeRole, PortMapping, ValidatorIdentity
 
 logger = logging.getLogger(__name__)
 
+# The node's default genesis max-phlo-limit: the largest phlo limit a deploy may
+# declare. A deploy above it is refused at admission.
+MAX_PHLO_LIMIT = 20_000_000
+
 # gRPC options for fast failure on dead connections
 _GRPC_OPTIONS = (
     ("grpc.enable_retries", 0),

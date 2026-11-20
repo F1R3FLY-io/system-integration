@@ -25,6 +25,10 @@ pytestmark = pytest.mark.xdist_group("shared")
 
 STORE_DATA_CONTRACT = "resources/storage/store-data.rho"
 
+# store-data.rho performs a registry insert, which costs more than the client's
+# default phlo limit.
+STORE_DATA_PHLO_LIMIT = 1_000_000
+
 VALIDATOR_KEYS = [VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID]
 
 
@@ -44,6 +48,7 @@ def _store_data(node, key, random_data, timeouts):
         STORE_DATA_CONTRACT,
         key.private_key(),
         substitutions={"@store_data@": random_data},
+        phlo_limit=STORE_DATA_PHLO_LIMIT,
     )
     block_info = wait_for_deploy_included(node, store_deploy_id, timeouts.deploy_inclusion)
     data = node.get_deploy_data(store_deploy_id, block_hash=block_info.blockHash)

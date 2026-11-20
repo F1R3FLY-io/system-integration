@@ -24,6 +24,7 @@ from ...infra.bridge import (
     wait_for_registry_visible,
 )
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.node import MAX_PHLO_LIMIT
 from ...infra.polling import (
     EmptyParListError,
     deploy_and_read,
@@ -48,7 +49,7 @@ def _deploy_bridge(shared_shard, timeouts):
         find_timeout,
         lfb_timeout,
         rho_file=BRIDGE_CONTRACT,
-        phlo_limit=500_000_000,
+        phlo_limit=MAX_PHLO_LIMIT,
     )
 
     target = block_number + 1
@@ -113,7 +114,7 @@ def _query_bridge(node, query_uri: str, method: str, private_key, find_timeout, 
     term = make_query_rho(query_uri, method)
     try:
         return deploy_and_read(
-            node, term, private_key, find_timeout, lfb_timeout, phlo_limit=500_000_000
+            node, term, private_key, find_timeout, lfb_timeout, phlo_limit=MAX_PHLO_LIMIT
         )
     except EmptyParListError as err:
         logging.warning(
@@ -123,7 +124,7 @@ def _query_bridge(node, query_uri: str, method: str, private_key, find_timeout, 
             err,
         )
         return deploy_and_read(
-            node, term, private_key, find_timeout, lfb_timeout, phlo_limit=500_000_000
+            node, term, private_key, find_timeout, lfb_timeout, phlo_limit=MAX_PHLO_LIMIT
         )
 
 

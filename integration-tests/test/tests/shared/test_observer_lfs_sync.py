@@ -62,6 +62,7 @@ from ...infra.assertions import (
 )
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.node import MAX_PHLO_LIMIT
 from ...infra.polling import (
     all_blocks_visible,
     get_blocks_if_enough,
@@ -95,7 +96,7 @@ _MIN_PRE_ATTACH_DEPTH = 12
 # advancing during the observer attach window without saturating the
 # horizon density (which can stretch sync past timeout).
 _BG_LOAD_INTERVAL = 2.5
-_BG_LOAD_PHLO_LIMIT = 100_000_000
+_BG_LOAD_PHLO_LIMIT = MAX_PHLO_LIMIT
 
 # How long to keep load running after observer attaches before stopping
 # and asserting drift convergence. Enough to give the observer a chance

@@ -13,7 +13,7 @@ from f1r3fly.token_amount import parse as parse_amount
 
 from ...infra.config import NodeConfig
 from ...infra.keys import BOOTSTRAP_ID
-from ...infra.node import Node
+from ...infra.node import MAX_PHLO_LIMIT, Node
 from ...infra.polling import wait_for_deploy_included
 from ...infra.types import NodeRole
 
@@ -49,7 +49,7 @@ def test_deploy_phlo_price_too_small(provider, timeouts) -> None:
             node.deploy_string(
                 '@"phlo-price-test-reject"!(1)',
                 BOOTSTRAP_ID.private_key(),
-                phlo_limit=100_000_000,
+                phlo_limit=MAX_PHLO_LIMIT,
                 phlo_price=1,
             )
         logging.info("Deploy with phlo_price=1 correctly rejected")
@@ -58,7 +58,7 @@ def test_deploy_phlo_price_too_small(provider, timeouts) -> None:
         deploy_id = node.deploy_string(
             '@"phlo-price-test-accept"!(1)',
             BOOTSTRAP_ID.private_key(),
-            phlo_limit=100_000_000,
+            phlo_limit=MAX_PHLO_LIMIT,
             phlo_price=10,
         )
         block_info = wait_for_deploy_included(node, deploy_id, timeouts.deploy_inclusion)
