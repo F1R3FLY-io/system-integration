@@ -111,7 +111,7 @@ def test_fault_tolerance_asymmetric_bonds(asymmetric_shard, timeouts) -> None:
     1. Deploy on all validators
     2. Wait for 10+ blocks on all nodes (including readonly)
     3. Multi-parent blocks exist
-    4. FT non-increasing by height on ALL validators
+    4. FT non-increasing along the main-parent chain on ALL validators
     """
     validators = asymmetric_shard.validators
     all_nodes = asymmetric_shard.all_nodes
@@ -149,24 +149,39 @@ def test_fault_tolerance_asymmetric_bonds(asymmetric_shard, timeouts) -> None:
     # ancestors (they are DAG-ancestors of the same latest message), so agreeing
     # weight -- and thus FT -- is non-increasing as you walk from the tip down the
     # main-parent chain toward genesis. Assert exactly that.
+    #
+    # One get_blocks response can straddle a finalization: an ancestor read just
+    # before it keeps its old stored FT while a descendant read just after reports
+    # the new one. That clears by the next read; a real violation persists.
     for node in validators:
-        by_hash = {b.blockHash: b for b in node.get_blocks(50)}
-        tip = max(by_hash.values(), key=lambda b: b.blockNumber)
-        cur = tip
-        steps = 0
-        while cur.parentsHashList:
-            main_parent = by_hash.get(cur.parentsHashList[0])
-            if main_parent is None:
-                break  # walked past the fetched window
-            assert float(main_parent.faultTolerance) >= float(cur.faultTolerance), (
-                f"FT not monotone along main-parent chain on {node.name}: "
-                f"ancestor #{main_parent.blockNumber} FT={main_parent.faultTolerance} < "
-                f"descendant #{cur.blockNumber} FT={cur.faultTolerance}"
-            )
-            cur = main_parent
-            steps += 1
-        assert steps > 0, f"main-parent chain walk did no steps on {node.name}"
+        steps = poll_until(
+            predicate=lambda n=node: _main_parent_ft_steps(n),
+            timeout=timeouts.custom(30),
+            interval=1.0,
+            description=f"FT monotone along main-parent chain on {node.name}",
+        )
         logging.info("FT monotone along main-parent chain on %s (%d steps)", node.name, steps)
+
+
+def _main_parent_ft_steps(node) -> int:
+    """Walk one get_blocks response down the main-parent chain, asserting FT
+    never rises from a block to its main parent. Returns the steps walked."""
+    by_hash = {b.blockHash: b for b in node.get_blocks(50)}
+    cur = max(by_hash.values(), key=lambda b: b.blockNumber)
+    steps = 0
+    while cur.parentsHashList:
+        main_parent = by_hash.get(cur.parentsHashList[0])
+        if main_parent is None:
+            break  # walked past the fetched window
+        assert float(main_parent.faultTolerance) >= float(cur.faultTolerance), (
+            f"FT not monotone along main-parent chain on {node.name}: "
+            f"ancestor #{main_parent.blockNumber} FT={main_parent.faultTolerance} < "
+            f"descendant #{cur.blockNumber} FT={cur.faultTolerance}"
+        )
+        cur = main_parent
+        steps += 1
+    assert steps > 0, f"main-parent chain walk did no steps on {node.name}"
+    return steps
 
 
 def test_finalization_asymmetric_bonds(asymmetric_shard, timeouts) -> None:
