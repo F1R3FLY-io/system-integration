@@ -14,6 +14,7 @@ Nodes use HOCON config files. These are **minimal overrides** — they contain o
 |---|---|---|
 | `conf/rust.conf` | All Rust shard roles | Overrides on top of Rust node defaults |
 | `conf/standalone-dev.conf` | All standalone nodes | Overrides for standalone mode (instant finalization, no peers) |
+| `conf/shard.conf` | One-node-per-host shards | Overrides for a long-lived shard on separate machines |
 
 The integration test framework reads the same files via `infra/config.py:NodeConf.resolve()`, so test behavior matches production conf.
 
@@ -65,6 +66,7 @@ Dotenv files in the repo root, loaded by Docker Compose via `--env-file`:
 | `.env.node` | All node compose files | Container hostnames (`BOOTSTRAP_HOST`, `VALIDATOR1_HOST`, etc.) and validator keys (private + public hex) |
 | `.env.embers` | `compose/embers.yml` | Embers API config |
 | `.env.f1r3sky` | `compose/f1r3sky.yml` | F1R3Sky / AT Protocol config |
+| `.env.shard` | The three one-node-per-host files | One host's role, identity and keys. **Gitignored**, generated per host, mode 600. Template: `.env.shard.example` |
 
 `shardctl` automatically picks the right `--env-file` based on the compose file (see `shardctl/compose.py:_get_env_file`). Direct `docker compose` invocation requires you to pass `--env-file` explicitly:
 
@@ -96,6 +98,81 @@ docker compose --env-file .env.node -f compose/f1r3node-rust.yml config | grep i
 `.env.node` ships with stable default validator keys (private + public hex per validator). These are the same keys the integration-test framework uses (`integration-tests/test/infra/keys.py`), so contracts deployed against a `shardctl up` shard work identically against an integration-test shard.
 
 For a real production deployment, generate your own keys and override the env vars in `.env.node`. Don't reuse the defaults — they're public.
+
+---
+
+## One node per host
+
+A long-lived shard with each node on its own machine uses a different pair of
+config layers: `conf/shard.conf` instead of `conf/rust.conf`, and a per-host
+`.env.shard` instead of the shared `.env.node`. The compose files are described
+in [../COMPOSE_STRUCTURE.md#one-node-per-host](../COMPOSE_STRUCTURE.md#one-node-per-host).
+
+### `conf/shard.conf`
+
+Same minimal-override principle as `conf/rust.conf`, different assumptions. It
+is for a shard that is expected to stay up for weeks and be joined from outside,
+so it sets a lower fault-tolerance threshold, a genesis-ceremony signature
+requirement, epoch and quarantine lengths, and a file log sink with daily
+rotation and retention — none of which matter for a shard that exists for the
+length of a test run.
+
+Two things about it are easy to misread:
+
+- **`network-id` is deliberately absent.** It is passed as `--network-id` from
+  `.env.shard` instead, because it is the one value that must differ between
+  shards and a stale value in a committed file is how a new node silently
+  attaches to an old chain. A node accepts messages only on its own network id,
+  and a mismatch completes the TCP and TLS handshake before discarding
+  everything — which looks exactly like a broken network.
+- **`allow-private-addresses = true` is required**, not a convenience. Nodes
+  advertise their cloud-private addresses to each other; without this they
+  discard those addresses and never peer.
+
+### `.env.shard`
+
+One per host, generated rather than committed, and holding only what that host's
+role needs — a validator host carries its own validator key and no others, so
+losing one host does not expose the rest of the shard.
+
+| Variable | boot | validator | read-only |
+|---|---|---|---|
+| `F1R3FLY_NODE_IMAGE`, `SHARD_NETWORK_ID`, `GENESIS_DIR`, `NODE_HOST` | yes | yes | yes |
+| `CEREMONY_PRIVATE_KEY` | yes | — | — |
+| `BOOTSTRAP_NODE_ID`, `BOOTSTRAP_HOST` | — | yes | yes |
+| `VALIDATOR_PUBLIC_KEY`, `VALIDATOR_PRIVATE_KEY` | — | yes | — |
+
+**Every variable is required and none has a fallback.** The files use
+`${VAR:?message}`, so a missing value stops compose with a message naming it
+rather than selecting a default — a default `GENESIS_DIR` would quietly point a
+new shard at the test shard's genesis, whose `bonds.txt` names committed keys.
+`.env.shard.example` is the annotated template; `.env.shard` itself is
+gitignored.
+
+### Generating keys and genesis
+
+`scripts/shard-setup.sh` generates the whole set: five keypairs, their derived
+vault addresses, the `bonds.txt`/`wallets.txt` genesis pair, and a per-role
+`.env.shard` at mode 600. Everything lands in gitignored directories
+(`shard-keys/<shard>/`, `genesis-shard/<shard>/`).
+
+Nothing it produces is committed, and that is the point — the repo holds no
+wallets, bonds or keys for a real shard. Re-running it reuses existing keys and
+refuses to replace an existing genesis pair without `--force`.
+
+It prints a SHA-256 of the genesis pair because **every host must hold a
+byte-identical `bonds.txt` and `wallets.txt`**. Nodes that disagree produce a
+ceremony that either fails or yields a chain the others reject. Git does not
+protect you here: a host's checkout can sit weeks behind without anyone
+noticing. Compare the digest on each host before starting the ceremony:
+
+```bash
+cat genesis-shard/<shard>/bonds.txt genesis-shard/<shard>/wallets.txt | sha256sum
+```
+
+One of the five generated keys is an operator key that is not a validator and is
+funded at genesis — the vault to fund joiners and faucets from, so that no
+validator's signing key has to be handed out to do it.
 
 ---
 

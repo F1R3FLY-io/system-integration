@@ -77,3 +77,12 @@ docs/work-logs/
 
 # Stigmergic Collaboration 
 services/f1r3node-rust
+
+# Per-host shard environment: carries validator and ceremony private keys
+.env.shard
+
+# Generated per-deployment shard material: scripts/shard-setup.sh emits these.
+# shard-keys/ holds validator and ceremony private keys and the per-host
+# .env.shard files. Never commit either tree.
+genesis-shard/
+shard-keys/
