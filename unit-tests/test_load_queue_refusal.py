@@ -1,147 +1,277 @@
-"""How the load module treats a deploy queue's refusal: recognized only when
-the queue names itself, retried after the wait it asks for, and counted
-apart from errors."""
+"""Retry policy for signed load and capacity setup deploys."""
 
 import importlib
 import sys
-import time
 from pathlib import Path
 
 import grpc
 import pytest
+from f1r3fly.client import DeployAdmissionRefused, DeploySubmissionUnknown
+from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "integration-tests"))
 
 load = importlib.import_module("test.infra.load")
+workloads = importlib.import_module("test.infra.workloads")
 
 
-class FakeRpcError(grpc.RpcError):
-    def __init__(self, code, details, metadata=()):
-        self._code = code
-        self._details = details
-        self._metadata = metadata
-
-    def code(self):
-        return self._code
-
-    def details(self):
-        return self._details
-
-    def trailing_metadata(self):
-        return self._metadata
-
-
-FULL = FakeRpcError(
-    grpc.StatusCode.RESOURCE_EXHAUSTED,
-    "deploy queue is full: the deploys ahead of this one would not land; retry in 7s",
-    (("retry-after", "7"),),
-)
-
-
-def test_a_queue_refusal_carries_its_wait():
-    refusal = load.queue_refusal(FULL)
-    assert isinstance(refusal, load.QueueRefusedError)
-    assert refusal.retry_after == 7.0
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        FakeRpcError(grpc.StatusCode.UNAVAILABLE, "failed to connect to all addresses"),
-        FakeRpcError(grpc.StatusCode.INTERNAL, "deploy queue store failed"),
-        RuntimeError("deploy queue is full"),
-    ],
-)
-def test_other_failures_are_not_refusals(error):
-    assert load.queue_refusal(error) is None
-
-
-class RefusingNode:
+class ScriptedNode:
     name = "validator1"
 
-    def __init__(self, refusals):
-        self.refusals = refusals
-        self.calls = 0
+    def __init__(self, *responses):
+        self.responses = iter(responses)
+        self.sent = []
 
-    def deploy_string(self, *args, **kwargs):
-        self.calls += 1
-        if self.calls <= self.refusals:
-            raise FULL
-        return "deploy-id"
+    def send_deploy(self, deploy):
+        self.sent.append(DeployDataProto.FromString(deploy.SerializeToString()))
+        response = next(self.responses, None)
+        if response is not None:
+            response(deploy)
+        return deploy.sig.hex()
 
 
 class FixedVabn:
-    def get(self):
+    def __init__(self):
+        self.refreshes = []
+        self.advances = []
+
+    def get(self, *, refreshed_after=None):
+        if refreshed_after is not None:
+            self.refreshes.append(refreshed_after)
+            return 20
         return 10
 
     def advance_to(self, height):
+        self.advances.append(height)
         return height - 1
 
 
-def test_a_refused_deploy_is_resubmitted_after_its_wait(monkeypatch):
-    waits = []
-    monkeypatch.setattr(load.time, "sleep", waits.append)
-    node = RefusingNode(refusals=2)
-    assert load.submit_deploy(node, None, "Nil", 1000, FixedVabn()) == "deploy-id"
-    assert node.calls == 3
-    assert waits == [7.0, 7.0]
+def refuse(cause, retry_after=7.0, deploy_id=None, code="deploy_queue_full"):
+    def reject(deploy):
+        raise DeployAdmissionRefused(
+            deploy_id=deploy_id or deploy.sig.hex(),
+            code=code,
+            message="queue refused this deploy",
+            retryable=cause == "deployer_share" or code == "node_unavailable",
+            retry_after=retry_after,
+            congestion=cause,
+        )
+
+    return reject
 
 
-def test_patience_runs_out(monkeypatch):
-    monkeypatch.setattr(load.time, "sleep", lambda _: None)
+def expire(deploy_id=None):
+    def reject(deploy):
+        raise DeployAdmissionRefused(
+            deploy_id=deploy_id or deploy.sig.hex(),
+            code="deploy_expired",
+            message=(
+                "deploy_expired: validAfterBlockNumber 10 has expired at block 70 "
+                "with deploy lifespan 50."
+            ),
+        )
+
+    return reject
+
+
+@pytest.fixture
+def retry_clock(monkeypatch):
+    class Clock:
+        now = 0.0
+
+        def __init__(self):
+            self.waits = []
+
+        def time(self):
+            return self.now
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.waits.append(seconds)
+            self.now += seconds
+
+    clock = Clock()
+    monkeypatch.setattr(load, "time", clock)
+    return clock
+
+
+@pytest.mark.parametrize(
+    "cause, code",
+    [
+        ("deployer_share", "deploy_queue_full"),
+        (None, "node_unavailable"),
+    ],
+)
+def test_same_deploy_is_sent_after_queue_wait(cause, code, retry_clock):
+    node = ScriptedNode(refuse(cause, code=code), refuse(cause, code=code))
+    vabn = FixedVabn()
+    deploy_id = load.submit_deploy(node, load.sender_key(0), "Nil", 1000, vabn)
+    assert len(node.sent) == 3
+    assert len({deploy.SerializeToString() for deploy in node.sent}) == 1
+    assert deploy_id == node.sent[0].sig.hex()
+    assert retry_clock.waits == [7.0, 7.0]
+    assert not vabn.refreshes
+
+
+@pytest.mark.parametrize("cause", ["validator", "validator_idle", "shard", "storage"])
+def test_capacity_refusal_refreshes_height_and_signs_again(cause, retry_clock):
+    node = ScriptedNode(refuse(cause))
+    vabn = FixedVabn()
+    deploy_id = load.submit_deploy(node, load.sender_key(0), "Nil", 1000, vabn)
+    first, second = node.sent
+    assert retry_clock.waits == [7.0]
+    assert len(vabn.refreshes) == 1
+    assert (first.validAfterBlockNumber, second.validAfterBlockNumber) == (10, 20)
+    assert deploy_id == second.sig.hex()
+    assert first.sig != second.sig
+
+
+@pytest.mark.parametrize("cause", [None, "future_cause"])
+def test_queue_refusal_with_no_recognized_cause_is_not_retried(cause, retry_clock):
+    node = ScriptedNode(refuse(cause))
+    with pytest.raises(load.QueueRefusedError) as caught:
+        load.submit_deploy(node, load.sender_key(0), "Nil", 1000, FixedVabn())
+    assert isinstance(caught.value.__cause__, DeployAdmissionRefused)
+    assert len(node.sent) == 1
+    assert not retry_clock.waits
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        refuse("validator", deploy_id="other"),
+        expire(deploy_id="other"),
+    ],
+)
+def test_refusal_for_a_different_deploy_is_not_retried(response, retry_clock):
+    node = ScriptedNode(response)
+    with pytest.raises(DeployAdmissionRefused):
+        load.submit_deploy(node, load.sender_key(0), "Nil", 1000, FixedVabn())
+    assert len(node.sent) == 1
+    assert not retry_clock.waits
+
+
+@pytest.mark.parametrize("error_type", [DeploySubmissionUnknown, grpc.RpcError, RuntimeError])
+def test_expiration_text_in_ambiguous_failure_cannot_authorize_resigning(error_type, retry_clock):
+    def fail(deploy):
+        message = (
+            "deploy_expired: validAfterBlockNumber 10 has expired at block 70 "
+            "with deploy lifespan 50"
+        )
+        if error_type is DeploySubmissionUnknown:
+            raise error_type(deploy.sig.hex(), message)
+        raise error_type(message)
+
+    node = ScriptedNode(fail)
+    with pytest.raises(error_type):
+        load.submit_deploy(node, load.sender_key(0), "Nil", 1000, FixedVabn())
+    assert len(node.sent) == 1
+    assert not retry_clock.waits
+
+
+def test_expiry_then_share_refusal_retries_the_replacement_bytes(retry_clock):
+    node = ScriptedNode(expire(), refuse("deployer_share"))
+    vabn = FixedVabn()
+    deploy_id = load.submit_deploy(node, load.sender_key(0), "Nil", 1000, vabn)
+    expired, refused, accepted = node.sent
+    assert vabn.advances == [70]
+    assert expired.validAfterBlockNumber == 10
+    assert refused.validAfterBlockNumber == 69
+    assert expired.sig != refused.sig
+    assert refused.SerializeToString() == accepted.SerializeToString()
+    assert deploy_id == accepted.sig.hex()
+    assert retry_clock.waits == [7.0]
+
+
+def test_sync_patience_runs_out_without_an_extra_attempt(monkeypatch, retry_clock):
     monkeypatch.setattr(load, "REFUSAL_PATIENCE_SECONDS", 10.0)
+    node = ScriptedNode(refuse("deployer_share"), refuse("deployer_share"))
     with pytest.raises(load.QueueRefusedError):
-        load.submit_deploy(RefusingNode(refusals=5), None, "Nil", 1000, FixedVabn())
+        load.submit_deploy(node, load.sender_key(0), "Nil", 1000, FixedVabn())
+    assert len(node.sent) == 2
+    assert retry_clock.waits == [7.0]
 
 
-class ScriptedSubmit:
-    """Refuses the first ``refusals`` resubmissions, then accepts."""
-
-    def __init__(self, refusals, retry_after):
-        self.refusals = refusals
-        self.retry_after = retry_after
-        self.calls = 0
-
-    def __call__(self, node, key, term, phlo_limit, vabn, retry_refusals):
-        assert retry_refusals is False, "a resubmission must not block on its own retries"
-        self.calls += 1
-        if self.calls <= self.refusals:
-            raise load.QueueRefusedError("deploy queue is full", self.retry_after)
-        return "deploy-id"
-
-
-def light_deploy():
-    return load.PlannedDeploy(RefusingNode(0), None, "Nil", 1000, "light")
+def test_workload_setup_uses_original_bytes_for_deployer_share(monkeypatch, retry_clock):
+    node = ScriptedNode(refuse("deployer_share"))
+    finalized = []
+    monkeypatch.setattr(
+        workloads,
+        "wait_for_deploy_finalized",
+        lambda node, deploy_id, timeout: finalized.append((node.name, deploy_id, timeout)),
+    )
+    setup = workloads.SetupContext(node, load.sender_key(0), [node], 30, FixedVabn())
+    (deploy_id,) = setup.deploy_all_and_wait(["Nil"], 1000)
+    assert node.sent[0].SerializeToString() == node.sent[1].SerializeToString()
+    assert deploy_id == node.sent[1].sig.hex()
+    assert finalized == [("validator1", deploy_id, 30)]
+    assert retry_clock.waits == [7.0]
 
 
-def resubmit(submit, records, first_attempt=None):
-    resubmitter = load.Resubmitter(2, FixedVabn(), records.append, submit=submit)
-    first_attempt = time.time() if first_attempt is None else first_attempt
-    resubmitter.refused(7, light_deploy(), "mix@8", 0.01, first_attempt)
-    assert resubmitter.wait_idle(5)
-    resubmitter.close()
-    return resubmitter.outcomes["mix@8"]
-
-
-def test_a_refused_deploy_is_resubmitted_after_its_wait_and_recorded_once_accepted():
+def run_open_loop(node, vabn):
     records = []
-    first_attempt = time.time() - 30
-    outcomes = resubmit(ScriptedSubmit(refusals=1, retry_after=0.01), records, first_attempt)
+    resubmitter = load.Resubmitter(2, vabn, records.append)
+    try:
+        stats = load.OpenLoopSubmitter(2).run(
+            rate=1,
+            duration=1,
+            first_index=7,
+            plan=lambda index: load.PlannedDeploy(
+                node, load.sender_key(index), "Nil", 1000, "light"
+            ),
+            vabn=vabn,
+            phase="mix@8",
+            on_record=records.append,
+            retry_refusals=False,
+            on_refused=resubmitter.refused,
+        )
+        assert resubmitter.wait_idle(5)
+    finally:
+        resubmitter.close()
+    return stats, records, resubmitter.outcomes.get("mix@8", {})
+
+
+def test_open_loop_carries_signed_bytes_until_cause_requires_resigning():
+    node = ScriptedNode(refuse("deployer_share", 0.01), refuse("storage", 0.01))
+    stats, records, outcomes = run_open_loop(node, FixedVabn())
+    first, second, third = node.sent
+    assert first.SerializeToString() == second.SerializeToString()
+    assert (second.validAfterBlockNumber, third.validAfterBlockNumber) == (10, 20)
+    assert third.sig != second.sig
+    assert stats.refused == 1
     assert [(r.deploy_id, r.index, r.phase, r.refusals) for r in records] == [
-        ("deploy-id", 7, "mix@8", 2)
+        (third.sig.hex(), 7, "mix@8", 2)
     ]
-    assert records[0].first_attempt == first_attempt
-    assert records[0].submit_time > first_attempt
+    assert records[0].submit_time - records[0].first_attempt >= 0.02
     assert outcomes == {"accepted": 1, "abandoned": 0, "error": 0, "attempts": 2}
 
 
-def test_a_deploy_refused_past_the_clients_patience_is_abandoned(monkeypatch):
-    monkeypatch.setattr(load, "REFUSAL_PATIENCE_SECONDS", 0.05)
-    records = []
-    outcomes = resubmit(ScriptedSubmit(refusals=10**6, retry_after=0.02), records)
+@pytest.mark.parametrize("cause, retry_after", [(None, 0.01), ("deployer_share", 7.0)])
+def test_open_loop_abandons_unknown_cause_or_expired_patience(monkeypatch, cause, retry_after):
+    monkeypatch.setattr(load, "REFUSAL_PATIENCE_SECONDS", 1.0)
+    node = ScriptedNode(refuse(cause, retry_after))
+    stats, records, outcomes = run_open_loop(node, FixedVabn())
+    assert stats.refused == 1
+    assert len(node.sent) == 1
     assert records == []
-    assert outcomes["abandoned"] == 1 and outcomes["accepted"] == 0
+    assert outcomes == {"accepted": 0, "abandoned": 1, "error": 0, "attempts": 0}
+
+
+def test_open_loop_never_queues_an_ambiguous_submit():
+    def fail(deploy):
+        raise DeploySubmissionUnknown(deploy.sig.hex(), "no RPC response")
+
+    node = ScriptedNode(fail)
+    stats, records, outcomes = run_open_loop(node, FixedVabn())
+    assert stats.refused == 0
+    assert len(stats.errors) == 1
+    assert node.sent[0].sig.hex() in stats.errors[0]
+    assert len(node.sent) == 1
+    assert not records
+    assert not outcomes
 
 
 def test_refusals_count_apart_from_errors_and_into_the_offered_rate():

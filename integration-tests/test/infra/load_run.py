@@ -506,9 +506,8 @@ def run_load(
 
     Each sender submits to one validator, or with ``spread`` a sender's
     consecutive deploys go to different validators. With ``resubmit``, a
-    deploy a queue refused is signed again and resubmitted after its
-    retry-after, as a client that honors refusals would; otherwise it is
-    dropped. ``stop_on_failure`` ends the run at the first failed step. Rows,
+    deploy a queue refused is resubmitted after its retry-after when its
+    cause permits it. ``stop_on_failure`` ends the run at the first failed step. Rows,
     the summary and every deploy's record are appended to ``out`` (JSON
     lines, deploys beside it as ``<out>-deploys.jsonl``) when given. Unless
     ``wait_for_baseline`` is off, the run starts once every node has
@@ -530,8 +529,11 @@ def run_load(
         )
 
     node, key = pairs[0]
+    vabn = VabnSource(validators)
     workload.prepare(
-        SetupContext(node=node, key=key, all_nodes=shard.all_nodes, timeout=timeouts.finalization)
+        SetupContext(
+            node=node, key=key, all_nodes=shard.all_nodes, timeout=timeouts.finalization, vabn=vabn
+        )
     )
 
     def plan(index: int) -> PlannedDeploy:
@@ -560,7 +562,6 @@ def run_load(
     tracker.start_lfb_monitor()
     sampler = HealthSampler(shard.all_nodes, validators[0], validators)
     sampler.start()
-    vabn = VabnSource(validators)
     resubmitter = (
         Resubmitter(
             OpenLoopSubmitter.workers_for(max(s.rate for s in steps)), vabn, tracker.track_deploy

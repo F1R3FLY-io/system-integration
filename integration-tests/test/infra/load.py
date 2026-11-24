@@ -20,8 +20,10 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-import grpc
+from f1r3fly.client import DeployAdmissionRefused
 from f1r3fly.crypto import PrivateKey
+from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto
+from f1r3fly.util import create_deploy_data
 
 from .metrics import DeployRecord
 from .polling import parse_vabn_expiration
@@ -41,33 +43,24 @@ REFUSAL_PATIENCE_SECONDS = 300.0
 # The wait for a refusal that carries no retry-after hint.
 DEFAULT_REFUSAL_WAIT_SECONDS = 1.0
 
+_QUEUE_REFUSALS = {"deploy_queue_full", "node_unavailable", "deploy_queue_stopped"}
+_REFRESH_VABN_CAUSES = {"validator", "validator_idle", "shard", "storage"}
+
 
 class QueueRefusedError(Exception):
-    """A deploy queue refused the deploy. A queue holds nothing it refused, so
-    resubmitting the same deploy is safe."""
+    """A queue refusal for the deploy sent by this worker, with its retry policy."""
 
-    def __init__(self, reason: str, retry_after: float):
-        super().__init__(reason)
-        self.retry_after = retry_after
-
-
-def queue_refusal(exc: BaseException) -> Optional[QueueRefusedError]:
-    """The refusal ``exc`` carries, or None when it is any other failure.
-
-    A queue refuses with RESOURCE_EXHAUSTED (full) or UNAVAILABLE (not
-    connected to its node), and names itself in the details; a bare
-    UNAVAILABLE is a connection failure, whose outcome is unknown.
-    """
-    if not isinstance(exc, grpc.RpcError):
-        return None
-    if exc.code() not in (grpc.StatusCode.RESOURCE_EXHAUSTED, grpc.StatusCode.UNAVAILABLE):
-        return None
-    details = exc.details() or ""
-    if not details.startswith("deploy queue"):
-        return None
-    hint = dict(exc.trailing_metadata() or ()).get("retry-after")
-    retry_after = float(hint) if hint is not None else DEFAULT_REFUSAL_WAIT_SECONDS
-    return QueueRefusedError(details, retry_after)
+    def __init__(self, refusal: DeployAdmissionRefused, deploy: DeployDataProto):
+        super().__init__(str(refusal))
+        self.retry_after = (
+            DEFAULT_REFUSAL_WAIT_SECONDS if refusal.retry_after is None else refusal.retry_after
+        )
+        self.refused_at = time.time()
+        self.refresh_vabn = (
+            refusal.code == "deploy_queue_full" and refusal.congestion in _REFRESH_VABN_CAUSES
+        )
+        self.can_retry = refusal.retryable or self.refresh_vabn
+        self.deploy = deploy
 
 
 def loop_term(steps: int, index: int) -> str:
@@ -236,16 +229,18 @@ class VabnSource:
             raise AssertionError(f"no validator answered the tip read within {TIP_READ_DEADLINE}s")
         return max(0, max(tips) - 1)
 
-    def _fresh(self) -> bool:
-        return time.time() - self._read_at <= VABN_REFRESH_INTERVAL
+    def _fresh(self, refreshed_after: Optional[float]) -> bool:
+        return time.time() - self._read_at <= VABN_REFRESH_INTERVAL and (
+            refreshed_after is None or self._read_at >= refreshed_after
+        )
 
-    def get(self) -> int:
+    def get(self, *, refreshed_after: Optional[float] = None) -> int:
         with self._lock:
-            if self._fresh():
+            if self._fresh(refreshed_after):
                 return self._value
         with self._refresh:
             with self._lock:
-                if self._fresh():
+                if self._fresh(refreshed_after):
                     return self._value
             value = self._highest_tip_vabn()
             with self._lock:
@@ -261,67 +256,73 @@ class VabnSource:
 
 
 def submit_deploy(
-    node, key, term: str, phlo_limit: int, vabn: VabnSource, retry_refusals: bool = True
+    node,
+    key: PrivateKey,
+    term: str,
+    phlo_limit: int,
+    vabn: VabnSource,
+    retry_refusals: bool = True,
+    *,
+    previous_refusal: Optional[QueueRefusedError] = None,
 ) -> str:
     """Submit one deploy and return its id.
 
-    Retries ONLY failures that guarantee the deploy was not accepted: the
-    vabn-expiration rejection, which carries the node's current height, and a
-    deploy queue's refusal, after the wait it asks for (up to
-    REFUSAL_PATIENCE_SECONDS in all; with ``retry_refusals`` off the refusal is
-    raised as a QueueRefusedError at once). Any other failure (deadline, connection
-    loss) is ambiguous, since the first submission may have landed, and a
-    blind retry would double-submit untracked load, so it is raised.
+    Refreshes an explicitly expired deploy once using the node's reported height.
+    A queue refusal may allow the original signature to be sent again or require
+    a fresh signature. When ``retry_refusals`` is enabled, honors the queue's wait
+    within ``REFUSAL_PATIENCE_SECONDS``. Ambiguous outcomes are raised to the caller.
     """
-    if retry_refusals:
-        return submit_through_refusals(lambda: _submit_once(node, key, term, phlo_limit, vabn))
-    try:
-        return _submit_once(node, key, term, phlo_limit, vabn)
-    except Exception as exc:
-        refusal = queue_refusal(exc)
-        if refusal is None:
-            raise
-        raise refusal from exc
-
-
-def submit_through_refusals(submit: Callable[[], str]) -> str:
-    """Run ``submit``, waiting out each deploy-queue refusal for the time it
-    asks, up to REFUSAL_PATIENCE_SECONDS in all. Any other failure is raised."""
-    waited = 0.0
+    deadline = time.monotonic() + REFUSAL_PATIENCE_SECONDS
     while True:
         try:
-            return submit()
-        except Exception as exc:
-            refusal = queue_refusal(exc)
-            if refusal is None:
+            return _submit_once(node, key, term, phlo_limit, vabn, previous_refusal)
+        except QueueRefusedError as refusal:
+            if not retry_refusals or not refusal.can_retry:
                 raise
-            if waited + refusal.retry_after > REFUSAL_PATIENCE_SECONDS:
-                raise refusal from exc
+            if time.monotonic() + refusal.retry_after > deadline:
+                raise
             time.sleep(refusal.retry_after)
-            waited += refusal.retry_after
+            if time.monotonic() > deadline:
+                raise
+            previous_refusal = refusal
 
 
-def _submit_once(node, key, term: str, phlo_limit: int, vabn: VabnSource) -> str:
+def _submit_once(
+    node,
+    key: PrivateKey,
+    term: str,
+    phlo_limit: int,
+    vabn: VabnSource,
+    previous_refusal: Optional[QueueRefusedError],
+) -> str:
+    if previous_refusal is None:
+        deploy = create_deploy_data(key, term, 1, phlo_limit, vabn.get(), shard_id="root")
+    elif previous_refusal.refresh_vabn:
+        height = vabn.get(refreshed_after=previous_refusal.refused_at)
+        deploy = create_deploy_data(key, term, 1, phlo_limit, height, shard_id="root")
+    else:
+        deploy = previous_refusal.deploy
     try:
-        return node.deploy_string(
-            term, key, phlo_limit=phlo_limit, phlo_price=1, valid_after_block_no=vabn.get()
-        )
-    except Exception as first_err:
-        height = parse_vabn_expiration(str(first_err))
+        return _send_load_deploy(node, deploy)
+    except DeployAdmissionRefused as refusal:
+        if refusal.code != "deploy_expired" or refusal.deploy_id != deploy.sig.hex():
+            raise
+        height = parse_vabn_expiration(str(refusal))
         if height is None:
             raise
-        try:
-            return node.deploy_string(
-                term,
-                key,
-                phlo_limit=phlo_limit,
-                phlo_price=1,
-                valid_after_block_no=vabn.advance_to(height),
-            )
-        except Exception as retry_err:
-            raise RuntimeError(
-                f"{retry_err} (vabn-refresh retry after: {first_err})"
-            ) from retry_err
+    replacement = create_deploy_data(
+        key, term, 1, phlo_limit, vabn.advance_to(height), shard_id="root"
+    )
+    return _send_load_deploy(node, replacement)
+
+
+def _send_load_deploy(node, deploy: DeployDataProto) -> str:
+    try:
+        return node.send_deploy(deploy)
+    except DeployAdmissionRefused as refusal:
+        if refusal.deploy_id == deploy.sig.hex() and refusal.code in _QUEUE_REFUSALS:
+            raise QueueRefusedError(refusal, deploy) from refusal
+        raise
 
 
 @dataclass(frozen=True)
@@ -363,16 +364,15 @@ class _Refused:
     phase: str
     first_attempt: float
     refusals: int
+    last_refusal: QueueRefusedError
 
 
 class Resubmitter:
     """A client's handling of deploy-queue refusals, beside an open-loop
-    submitter: a refused deploy is signed again with a fresh
-    validAfterBlockNumber and resubmitted once its retry-after has passed.
-    Retries run on their own thread and pool, so new slots keep their
-    schedule. A deploy is abandoned, as a client would give up, when a
-    retry-after would carry it past REFUSAL_PATIENCE_SECONDS from its first
-    attempt, or when the resubmitter closes before it is accepted.
+    submitter. Retryable refusals are acted on after their retry-after, on a
+    separate thread and pool so new slots keep their schedule. A deploy is
+    abandoned if its retry policy is unknown, its patience runs out, or the
+    resubmitter closes before it is accepted.
 
     ``outcomes`` counts, per phase, refused deploys later ``accepted``,
     ``abandoned``, failed with an ``error``, and resubmission ``attempts``.
@@ -403,16 +403,16 @@ class Resubmitter:
         index: int,
         planned: PlannedDeploy,
         phase: str,
-        retry_after: float,
+        refusal: QueueRefusedError,
         first_attempt: float,
     ) -> None:
         """Take over deploy ``index``, first attempted at ``first_attempt``
         and refused once, for resubmission."""
-        due = time.time() + retry_after
-        if due - first_attempt > REFUSAL_PATIENCE_SECONDS:
+        due = time.time() + refusal.retry_after
+        if not refusal.can_retry or due - first_attempt > REFUSAL_PATIENCE_SECONDS:
             self._count(phase, "abandoned")
             return
-        self._schedule(_Refused(index, planned, phase, first_attempt, 1), due)
+        self._schedule(_Refused(index, planned, phase, first_attempt, 1, refusal), due)
 
     def _schedule(self, item: _Refused, due: float) -> None:
         with self._cond:
@@ -443,9 +443,12 @@ class Resubmitter:
 
     def _attempt(self, item: _Refused) -> None:
         planned = item.planned
-        self._count(item.phase, "attempts")
         began = time.time()
         try:
+            if began - item.first_attempt > REFUSAL_PATIENCE_SECONDS:
+                self._count(item.phase, "abandoned")
+                return
+            self._count(item.phase, "attempts")
             deploy_id = self._submit(
                 planned.node,
                 planned.key,
@@ -453,13 +456,16 @@ class Resubmitter:
                 planned.phlo_limit,
                 self._vabn,
                 retry_refusals=False,
+                previous_refusal=item.last_refusal,
             )
         except QueueRefusedError as refusal:
-            if time.time() + refusal.retry_after - item.first_attempt > REFUSAL_PATIENCE_SECONDS:
+            due = time.time() + refusal.retry_after
+            if not refusal.can_retry or due - item.first_attempt > REFUSAL_PATIENCE_SECONDS:
                 self._count(item.phase, "abandoned")
             else:
                 item.refusals += 1
-                self._schedule(item, time.time() + refusal.retry_after)
+                item.last_refusal = refusal
+                self._schedule(item, due)
         except Exception as exc:
             logging.info("  resubmission of deploy %d failed: %s", item.index, exc)
             self._count(item.phase, "error")
@@ -552,10 +558,12 @@ class OpenLoopSubmitter:
         on_record: Callable[[DeployRecord], None],
         stop: Optional[threading.Event] = None,
         retry_refusals: bool = True,
-        on_refused: Optional[Callable[[int, PlannedDeploy, str, float, float], None]] = None,
+        on_refused: Optional[
+            Callable[[int, PlannedDeploy, str, QueueRefusedError, float], None]
+        ] = None,
     ) -> SubmitStats:
         """Run the schedule. A refused deploy is counted, then handed to
-        ``on_refused`` (index, deploy, phase, retry-after, attempt start) when
+        ``on_refused`` (index, deploy, phase, refusal, attempt start) when
         given."""
         if rate <= 0 or duration <= 0:
             raise ValueError("an open-loop run needs a positive rate and duration")
@@ -580,7 +588,7 @@ class OpenLoopSubmitter:
                 with lock:
                     stats.refused += 1
                 if on_refused is not None:
-                    on_refused(index, planned, phase, refusal.retry_after, began)
+                    on_refused(index, planned, phase, refusal, began)
                 return
             except Exception as exc:
                 with lock:
