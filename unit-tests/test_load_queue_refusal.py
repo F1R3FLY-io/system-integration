@@ -3,9 +3,11 @@
 import importlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import grpc
 import pytest
+from f1r3fly import util as sdk_util
 from f1r3fly.client import DeployAdmissionRefused, DeploySubmissionUnknown
 from f1r3fly.pb.CasperMessage_pb2 import DeployDataProto
 
@@ -127,6 +129,23 @@ def test_capacity_refusal_refreshes_height_and_signs_again(cause, retry_clock):
     assert (first.validAfterBlockNumber, second.validAfterBlockNumber) == (10, 20)
     assert deploy_id == second.sig.hex()
     assert first.sig != second.sig
+
+
+def test_capacity_refusal_signs_new_id_at_same_tip_and_millisecond(monkeypatch, retry_clock):
+    class UnchangedTip(FixedVabn):
+        def get(self, *, refreshed_after=None):
+            super().get(refreshed_after=refreshed_after)
+            return 10
+
+    monkeypatch.setattr(sdk_util, "time", SimpleNamespace(time_ns=lambda: 123_000_000))
+    node = ScriptedNode(refuse("storage", retry_after=0.0))
+    deploy_id = load.submit_deploy(node, load.sender_key(410), "Nil", 1000, UnchangedTip())
+    first, second = node.sent
+    assert retry_clock.waits == [0.0]
+    assert first.validAfterBlockNumber == second.validAfterBlockNumber == 10
+    assert second.timestamp > first.timestamp
+    assert first.sig != second.sig
+    assert deploy_id == second.sig.hex()
 
 
 @pytest.mark.parametrize("cause", [None, "future_cause"])
