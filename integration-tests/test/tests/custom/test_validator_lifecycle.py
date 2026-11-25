@@ -266,7 +266,7 @@ def _assert_withdraw_rejected(actor, all_nodes, ro, key, expected_reason: str, t
     bonds_before = ro.pos.get_bonds()
     deploy_id = _submit_pos_until_effective(
         all_nodes,
-        {"withdraw": lambda: actor.pos.withdraw(key)},
+        {"withdraw": lambda: actor.pos.withdraw(key, phlo_limit=_BOND_PHLO_LIMIT)},
         timeouts,
         f"withdraw-rejected[{expected_reason}]",
     )["withdraw"]
@@ -388,7 +388,7 @@ def _submit_bonds(ro, submissions, timeouts):
     """
     pending = []
     for proposer, identity, stake in submissions:
-        deploy_id = proposer.pos.bond(identity.private_key(), stake)
+        deploy_id = proposer.pos.bond(identity.private_key(), stake, phlo_limit=_BOND_PHLO_LIMIT)
         pending.append((proposer, identity, stake, deploy_id))
 
     results = []
@@ -765,7 +765,7 @@ def _submit_pos_until_effective(
 
 def _submit_withdraw(actor, identity, timeouts):
     """Submit a withdraw, await inclusion + contract success. Returns the block."""
-    deploy_id = actor.pos.withdraw(identity.private_key())
+    deploy_id = actor.pos.withdraw(identity.private_key(), phlo_limit=_BOND_PHLO_LIMIT)
     block = wait_for_deploy_included(actor, deploy_id, timeouts.deploy_inclusion * 3)
     wait_for_finalized(actor, block.blockNumber, timeouts.finalization * 3)
     result = actor.pos.read_result(deploy_id, block.blockHash)
@@ -1186,10 +1186,16 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         shard.all_nodes,
         {
             "bond-V6": lambda: v3.pos.bond(
-                VALIDATOR6_ID.private_key(), _JOINER_STAKE["validator6"]
+                VALIDATOR6_ID.private_key(),
+                _JOINER_STAKE["validator6"],
+                phlo_limit=_BOND_PHLO_LIMIT,
             ),
-            "withdraw-V4": lambda: v1.pos.withdraw(VALIDATOR4_ID.private_key()),
-            "withdraw-V5": lambda: v2.pos.withdraw(VALIDATOR5_ID.private_key()),
+            "withdraw-V4": lambda: v1.pos.withdraw(
+                VALIDATOR4_ID.private_key(), phlo_limit=_BOND_PHLO_LIMIT
+            ),
+            "withdraw-V5": lambda: v2.pos.withdraw(
+                VALIDATOR5_ID.private_key(), phlo_limit=_BOND_PHLO_LIMIT
+            ),
         },
         timeouts,
         "phase4-grow-and-shrink",
@@ -1216,7 +1222,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # move) withdrawers -> (quarantine) paid out and gone, so asserting membership of
     # one particular map asserts a race. Assert instead what holds at every stage: V4
     # never occupies two positions at once, and its withdrawing stake is what it bonded.
-    dw_id = v1.pos.withdraw(VALIDATOR4_ID.private_key())
+    dw_id = v1.pos.withdraw(VALIDATOR4_ID.private_key(), phlo_limit=_BOND_PHLO_LIMIT)
     dw_block = wait_for_deploy_included(v1, dw_id, timeouts.deploy_inclusion * 3)
     wait_for_finalized(v1, dw_block.blockNumber, timeouts.finalization * 3)
     dw_res = v1.pos.read_result(dw_id, dw_block.blockHash)
@@ -1401,7 +1407,9 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         shard.all_nodes,
         {
             "rebond-V4": lambda: v1.pos.bond(
-                VALIDATOR4_ID.private_key(), _JOINER_STAKE["validator4"]
+                VALIDATOR4_ID.private_key(),
+                _JOINER_STAKE["validator4"],
+                phlo_limit=_BOND_PHLO_LIMIT,
             )
         },
         timeouts,
@@ -1456,29 +1464,35 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     image_hex = keccak(secret).hex()
     secret_hex = secret.hex()
 
-    commit_id = v1.pos.commit_random_image(VALIDATOR1_ID.private_key(), image_hex)
+    commit_id = v1.pos.commit_random_image(
+        VALIDATOR1_ID.private_key(), image_hex, phlo_limit=MAX_PHLO_LIMIT
+    )
     r = _pos_call_result(v1, shard.all_nodes, commit_id, timeouts)
     assert r.success, f"commitRandomImage (happy) failed: {r}"
     # Re-commit by the same validator is rejected (one image per validator).
-    recommit_id = v1.pos.commit_random_image(VALIDATOR1_ID.private_key(), image_hex)
+    recommit_id = v1.pos.commit_random_image(
+        VALIDATOR1_ID.private_key(), image_hex, phlo_limit=MAX_PHLO_LIMIT
+    )
     r = _pos_call_result(v1, shard.all_nodes, recommit_id, timeouts)
     assert not r.success and "already committed" in r.reason.lower(), (
         f"second commitRandomImage should reject already-committed; got {r}"
     )
     # Reveal with no prior commit (V2 never committed) -> not-found.
-    nf_id = v2.pos.reveal_random(VALIDATOR2_ID.private_key(), secret_hex)
+    nf_id = v2.pos.reveal_random(VALIDATOR2_ID.private_key(), secret_hex, phlo_limit=MAX_PHLO_LIMIT)
     r = _pos_call_result(v2, shard.all_nodes, nf_id, timeouts)
     assert not r.success and "not found" in r.reason.lower(), (
         f"revealRandom with no commit should reject not-found; got {r}"
     )
     # Reveal a wrong preimage (keccak(wrong) != committed image) -> mismatch.
-    mismatch_id = v1.pos.reveal_random(VALIDATOR1_ID.private_key(), b"wrong-preimage".hex())
+    mismatch_id = v1.pos.reveal_random(
+        VALIDATOR1_ID.private_key(), b"wrong-preimage".hex(), phlo_limit=MAX_PHLO_LIMIT
+    )
     r = _pos_call_result(v1, shard.all_nodes, mismatch_id, timeouts)
     assert not r.success and "match" in r.reason.lower(), (
         f"revealRandom with wrong preimage should reject mismatch; got {r}"
     )
     # Reveal the correct preimage -> success (randomNumbers updated).
-    ok_id = v1.pos.reveal_random(VALIDATOR1_ID.private_key(), secret_hex)
+    ok_id = v1.pos.reveal_random(VALIDATOR1_ID.private_key(), secret_hex, phlo_limit=MAX_PHLO_LIMIT)
     r = _pos_call_result(v1, shard.all_nodes, ok_id, timeouts)
     assert r.success, f"revealRandom (correct preimage) should succeed; got {r}"
     logging.info(
@@ -1490,7 +1504,9 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # The human-facing posVault transfer is gated on the PoS contract key; any other
     # deployer (here a genesis validator) is denied. We cannot exercise the success
     # path without the PoS private key, so the reachable branch is the permission deny.
-    xfer_id = v1.pos.pos_vault_transfer(VALIDATOR1_ID.private_key(), _BG_DST_ADDR, 1)
+    xfer_id = v1.pos.pos_vault_transfer(
+        VALIDATOR1_ID.private_key(), _BG_DST_ADDR, 1, phlo_limit=MAX_PHLO_LIMIT
+    )
     r = _pos_call_result(v1, shard.all_nodes, xfer_id, timeouts)
     assert not r.success and "permission" in r.reason.lower(), (
         f"posVaultTransfer from a non-PoS key must be denied; got {r}"
@@ -1529,7 +1545,9 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # bundle) but reject a bogus token (Nil) before any work, so no state changes.
     bonds_before_t = ro.pos.get_bonds()
     for method in ("chargeDeploy", "refundDeploy", "closeBlock"):
-        tok_id = v1.pos.call_auth_gated_invalid_token(VALIDATOR1_ID.private_key(), method)
+        tok_id = v1.pos.call_auth_gated_invalid_token(
+            VALIDATOR1_ID.private_key(), method, phlo_limit=MAX_PHLO_LIMIT
+        )
         r = _pos_call_result(v1, shard.all_nodes, tok_id, timeouts)
         assert not r.success and "invalid system auth token" in r.reason.lower(), (
             f"{method} with a bogus token must reject Invalid-system-auth-token; got {r}"

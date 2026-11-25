@@ -29,6 +29,7 @@ from ...infra.keys import (
     VALIDATOR4_ID,
     VALIDATOR5_ID,
 )
+from ...infra.node import MAX_PHLO_LIMIT
 from ...infra.polling import (
     poll_until,
     wait_for_deploy_finalized,
@@ -106,7 +107,9 @@ def test_active_validator_cap(cap_shard, timeouts) -> None:
     _attach_prebond(shard, VALIDATOR4_ID, timeouts)
     _attach_prebond(shard, VALIDATOR5_ID, timeouts)
     for proposer, ident in [(v1, VALIDATOR4_ID), (v2, VALIDATOR5_ID)]:
-        did = proposer.pos.bond(ident.private_key(), _JOINER_STAKE[ident.name])
+        did = proposer.pos.bond(
+            ident.private_key(), _JOINER_STAKE[ident.name], phlo_limit=MAX_PHLO_LIMIT
+        )
         # Canonical-inclusion anchor: read the bond result at the block
         # that actually carried the deploy into canonical state, not the
         # first (orphanable) find_deploy inclusion.

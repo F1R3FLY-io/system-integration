@@ -26,6 +26,7 @@ import pytest
 from ...infra.assertions import assert_deploy_errored
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.node import MAX_PHLO_LIMIT
 from ...infra.polling import (
     lfb_number,
     poll_until,
@@ -345,7 +346,7 @@ def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeo
     deploy_id = validators[0].deploy_string(
         SLOW_LOOP_CONTRACT,
         VALIDATOR1_ID.private_key(),
-        phlo_limit=20_000_000,
+        phlo_limit=MAX_PHLO_LIMIT,
         phlo_price=1,
     )
     logging.info("Deployed loop contract on V1, deploy_id=%s", deploy_id[:24])
