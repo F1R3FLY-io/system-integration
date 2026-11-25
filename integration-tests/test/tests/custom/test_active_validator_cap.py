@@ -29,13 +29,13 @@ from ...infra.keys import (
     VALIDATOR4_ID,
     VALIDATOR5_ID,
 )
+from ...infra.node import MAX_PHLO_LIMIT
 from ...infra.polling import (
     poll_until,
     wait_for_deploy_finalized,
 )
 from ...infra.shard import Shard
 from .test_validator_lifecycle import (
-    _BOND_PHLO_LIMIT,
     _BOND_PHLO_PRICE,
     _EPOCH_LENGTH,
     _GENESIS_CLI,
@@ -106,7 +106,9 @@ def test_active_validator_cap(cap_shard, timeouts) -> None:
     _attach_prebond(shard, VALIDATOR4_ID, timeouts)
     _attach_prebond(shard, VALIDATOR5_ID, timeouts)
     for proposer, ident in [(v1, VALIDATOR4_ID), (v2, VALIDATOR5_ID)]:
-        did = proposer.pos.bond(ident.private_key(), _JOINER_STAKE[ident.name])
+        did = proposer.pos.bond(
+            ident.private_key(), _JOINER_STAKE[ident.name], phlo_limit=MAX_PHLO_LIMIT
+        )
         # Canonical-inclusion anchor: read the bond result at the block
         # that actually carried the deploy into canonical state, not the
         # first (orphanable) find_deploy inclusion.
@@ -142,7 +144,7 @@ def test_active_validator_cap(cap_shard, timeouts) -> None:
     lid = live_node.deploy_string(
         '@"cap-liveness"!(1)',
         live_id.private_key(),
-        phlo_limit=_BOND_PHLO_LIMIT,
+        phlo_limit=MAX_PHLO_LIMIT,
         phlo_price=_BOND_PHLO_PRICE,
     )
     # Canonical-inclusion anchor: resolve the block through the deploy's

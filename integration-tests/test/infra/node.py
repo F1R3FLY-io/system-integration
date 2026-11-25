@@ -23,9 +23,11 @@ from .types import NodeRole, PortMapping, ValidatorIdentity
 
 logger = logging.getLogger(__name__)
 
-# The node's default genesis max-phlo-limit: the largest phlo limit a deploy may
-# declare. A deploy above it is refused at admission.
-MAX_PHLO_LIMIT = 20_000_000
+# The largest phlo limit a test deploy declares: the protocol 7 (v6) default
+# demand cap, the most phlo a block's deploys may declare in total. It is below
+# the node's per-deploy max-phlo-limit (20,000,000), which refuses a deploy
+# above it at admission.
+MAX_PHLO_LIMIT = 5_845_811
 
 # gRPC options for fast failure on dead connections
 _GRPC_OPTIONS = (

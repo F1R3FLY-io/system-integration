@@ -35,8 +35,8 @@ From the original design documentation (`SafetyOracle`):
 | FTT | Equivocation tolerance | Requires to finalize | Use case |
 |-----|----------------------|---------------------|----------|
 | -1.0 | 100% | Any single validator | Completely unsafe |
-| 0.0 | 0% | >50% of weight | Standalone/dev, trusted validator set |
-| 0.1 | 10% | ~60% of weight | Trusted testnet |
+| 0.0 | 0% | >50% of weight | Trusted validator set |
+| 0.1 | 10% | ~60% of weight | Trusted testnet; this repo's shard and standalone confs |
 | 0.33 | 33% (BFT classic) | >2/3 of weight | Standard BFT — tolerates <1/3 byzantine |
 | 0.67 | 67% | >5/6 of weight | Very conservative (the default) |
 | 0.99 | 99% | Near-unanimity | Effectively broken for small validator sets |

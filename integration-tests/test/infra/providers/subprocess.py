@@ -90,6 +90,12 @@ def _cpu_affinity_prefix(cpus: Optional[AbstractSet[int]]) -> List[str]:
     """
     if cpus is None:
         return []
+    if not hasattr(os, "sched_getaffinity"):
+        raise RuntimeError(
+            "per-node CPU pinning needs Linux: this platform has no os.sched_getaffinity"
+        )
+    if shutil.which("taskset") is None:
+        raise RuntimeError("per-node CPU pinning needs taskset (util-linux) on PATH")
     allowed = os.sched_getaffinity(0)
     if not cpus or not set(cpus) <= allowed:
         raise ValueError(
