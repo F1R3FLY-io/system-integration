@@ -101,13 +101,9 @@ def poll_until(
 # deploy queue word it:
 #   "deploy_expired: validAfterBlockNumber 157 has expired at block 207 with
 #    deploy lifespan 50."
-# Retrying a submission is safe ONLY on this rejection — it is the
-# guarantee that the deploy was NOT accepted, so a resend cannot
-# double-submit. The regex is the retry GATE, not just a height extractor:
-# anything that does not match this exact shape must be recorded as a
-# failure, never retried. unit-tests/test_vabn_expiration_matcher.py pins
-# the shape, so silent drift on either side fails a sub-second test
-# instead of degrading retry behavior.
+# The load runner checks the typed rejection and the deploy ID, then uses
+# the node's message to extract the current height. The exact shape is
+# covered by unit-tests/test_vabn_expiration_matcher.py.
 VABN_EXPIRED_PATTERN = re.compile(
     r"deploy_expired: validAfterBlockNumber \d+ has expired at block (\d+) "
     r"with deploy lifespan \d+"
@@ -117,9 +113,8 @@ VABN_EXPIRED_PATTERN = re.compile(
 def parse_vabn_expiration(message: str) -> Optional[int]:
     """The node's CURRENT height from a vabn-expiration rejection, else None.
 
-    A non-None return simultaneously authorizes a retry (the node rejected,
-    nothing was accepted) and supplies the freshest possible height for the
-    replacement validAfterBlockNumber.
+    The caller verifies the refusal for the signed deploy before using the
+    height for the replacement validAfterBlockNumber.
     """
     match = VABN_EXPIRED_PATTERN.search(message)
     return int(match.group(1)) if match else None

@@ -19,7 +19,7 @@ Loads a shard through deploy queues at its sustained rate and above it. The shar
 | sustained | `SUSTAINED_RATE` | 240 s |
 | overload | 2 × `SUSTAINED_RATE` | 60 s |
 
-The baseline's finality pace is the reference for the loaded steps. In the overload step the queues refuse what the shard cannot settle in time. A refused deploy is signed again and resubmitted after its retry-after, as a client that honors a refusal does, and is abandoned after `REFUSAL_PATIENCE_SECONDS`. After the steps, load stops and the shard drains until finality passes every window the run signed.
+The baseline's finality pace is the reference for the loaded steps. In the overload step the queues refuse what the shard cannot settle in time. The retry worker waits for `retry-after`. For `deployer_share` and queue availability refusals it resends the original signed bytes. For `validator`, `validator_idle`, `shard`, or `storage` it signs a new deploy using a refreshed DAG-tip height. A refusal with no recognized cause or a retry beyond `REFUSAL_PATIENCE_SECONDS` is counted as abandoned. A lost or ambiguous submission is counted as an error and retains its original ID. Retries run separately from the regular submission schedule. After the steps, load stops and the shard drains until finality passes every window the run signed.
 
 `infra/load_run.py` runs the steps; `test_capacity` uses the same engine for its ramp.
 

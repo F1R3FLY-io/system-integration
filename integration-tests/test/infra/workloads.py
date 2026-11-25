@@ -27,7 +27,7 @@ from f1r3fly.vault import (
     render_contract_template,
 )
 
-from .load import DEPLOY_KINDS, interleave, parse_weights, submit_through_refusals
+from .load import DEPLOY_KINDS, VabnSource, interleave, parse_weights, submit_deploy
 from .polling import wait_for_deploy_finalized
 
 # Deploys read back per check. Every read is one or two RPCs per deploy, so
@@ -90,6 +90,7 @@ class SetupContext:
     key: object
     all_nodes: Sequence
     timeout: float
+    vabn: VabnSource
 
     def deploy_and_wait(self, term: str, phlo_limit: int) -> str:
         """Deploy ``term`` and wait until every node reports it Finalized."""
@@ -99,12 +100,7 @@ class SetupContext:
     def deploy_all_and_wait(self, terms: Sequence[str], phlo_limit: int) -> List[str]:
         """Deploy every term, then wait until every node reports each Finalized."""
         deploy_ids = [
-            submit_through_refusals(
-                lambda term=term: self.node.deploy_string(
-                    term, self.key, phlo_limit=phlo_limit, phlo_price=1
-                )
-            )
-            for term in terms
+            submit_deploy(self.node, self.key, term, phlo_limit, self.vabn) for term in terms
         ]
         for deploy_id in deploy_ids:
             for node in self.all_nodes:
