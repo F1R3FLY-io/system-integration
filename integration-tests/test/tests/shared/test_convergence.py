@@ -19,6 +19,7 @@ reaching downstream shared-shard tests.
 """
 
 import logging
+import threading
 import time
 
 import pytest
@@ -26,6 +27,7 @@ import pytest
 from ...infra.assertions import assert_deploy_errored
 from ...infra.config import ShardConfig
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID, VALIDATOR3_ID
+from ...infra.node import MAX_PHLO_LIMIT
 from ...infra.polling import (
     lfb_number,
     poll_until,
@@ -306,10 +308,12 @@ def test_ft_convergence(convergence_shard, node_conf, timeouts) -> None:
 def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeouts) -> None:
     """Deploy a phlo-exhausting loop and verify the shard converges.
 
-    The loop contract blocks V1 for ~25s while phlo is exhausted.
-    During this time, V2 and V3 create independent heartbeat blocks,
-    causing DAG tip divergence. After the deploy completes (errored),
-    the network must converge and LFB must advance.
+    The loop contract blocks V1 until it runs out of phlo. During this time,
+    V2 and V3 create independent heartbeat blocks, causing DAG tip
+    divergence. After the deploy completes (errored), the network must
+    converge and LFB must advance. The test also asserts that divergence
+    happened, so a stall too short to cause it fails the test instead of
+    passing without it.
 
     Reproduces:
     - #224: phlo-exhausting deploy stalls the proposing validator
@@ -341,19 +345,55 @@ def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeo
         VALIDATOR3_ID.private_key(),
     )
 
-    # Submit the slow deploy on V1
-    deploy_id = validators[0].deploy_string(
-        SLOW_LOOP_CONTRACT,
-        VALIDATOR1_ID.private_key(),
-        phlo_limit=20_000_000,
-        phlo_price=1,
-    )
-    logging.info("Deployed loop contract on V1, deploy_id=%s", deploy_id[:24])
+    # Watch V2 while V1 runs the slow deploy. The first sample is taken before
+    # the deploy is submitted, so blocks that already exist are not evidence.
+    sampler = _FirstSeenSampler(validators[1])
+    sampler.sample()
+    sampler.start()
+    try:
+        # Submit the slow deploy on V1
+        deploy_id = validators[0].deploy_string(
+            SLOW_LOOP_CONTRACT,
+            VALIDATOR1_ID.private_key(),
+            phlo_limit=MAX_PHLO_LIMIT,
+            phlo_price=1,
+        )
+        logging.info("Deployed loop contract on V1, deploy_id=%s", deploy_id[:24])
 
-    # Wait for the deploy to be included. The phlo-exhausting loop takes
-    # ~25s to execute, much longer than normal deploy inclusion.
-    info = wait_for_deploy_included(validators[0], deploy_id, timeout=timeouts.finalization * 10)
+        # Wait for the deploy to be included. The phlo-exhausting loop takes
+        # much longer to execute than normal deploy inclusion.
+        info = wait_for_deploy_included(
+            validators[0], deploy_id, timeout=timeouts.finalization * 10
+        )
+        poll_until(
+            predicate=lambda: info.blockHash in sampler.first_seen,
+            timeout=timeouts.finalization,
+            interval=0.5,
+            description="V2's sampler sees the slow deploy block",
+        )
+    finally:
+        sampler.stop()
     deploy_block = info.blockNumber
+
+    # Divergence evidence, measured during the stall: blocks from V2 or V3 at or
+    # above the deploy block's height that V2 held in an earlier sample than the
+    # deploy block. They were built while V1 was still running the deploy.
+    # Normal propagation takes milliseconds, so a one-second sample rarely sees
+    # such a block without a stall.
+    built_during_stall = _seen_before(sampler.first_seen, info.blockHash)
+    stall_samples = sampler.first_seen[info.blockHash][0]
+    assert built_during_stall, (
+        f"V2 saw no block at or above #{deploy_block} before the slow deploy block "
+        f"({stall_samples} samples, {sampler.errors} sample errors); the stall did not "
+        "cause DAG tip divergence, so this test did not exercise recovery from it"
+    )
+    logging.info(
+        "Divergence during the stall: %d block(s) at or above #%d before the deploy "
+        "block reached V2 (stall spanned %d samples)",
+        len(built_during_stall),
+        deploy_block,
+        stall_samples,
+    )
 
     # Verify the slow deploy is errored (phlo exhausted)
     block_info = validators[0].get_block(info.blockHash)
@@ -395,6 +435,60 @@ def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeo
         spread,
         node_conf.ftt,
     )
+
+
+class _FirstSeenSampler:
+    """Records the sample in which ``node`` first reports each recent block.
+
+    ``first_seen`` maps a block hash to ``(sample index, block number, sender)``.
+    A background thread takes a sample every ``interval`` seconds; ``sample()``
+    also takes one at once, for a baseline before the thread starts.
+    """
+
+    def __init__(self, node, interval: float = 1.0, depth: int = 10):
+        self._node = node
+        self._interval = interval
+        self._depth = depth
+        self.first_seen: dict = {}
+        self.samples = 0
+        self.errors = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="first-seen-sampler", daemon=True)
+
+    def sample(self) -> None:
+        try:
+            blocks = self._node.get_blocks(self._depth)
+        except Exception:  # a failed sample is counted, not fatal
+            self.errors += 1
+            return
+        index = self.samples
+        self.samples += 1
+        for b in blocks:
+            self.first_seen.setdefault(b.blockHash, (index, b.blockNumber, b.sender))
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=self._interval * 5)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            self.sample()
+
+
+def _seen_before(first_seen: dict, block_hash: str) -> list:
+    """Blocks seen after the baseline sample and before ``block_hash``.
+
+    Only blocks from other senders at or above ``block_hash``'s height count.
+    Blocks in sample 0 existed before the deploy was submitted, so they do not.
+    """
+    index, height, sender = first_seen[block_hash]
+    return [
+        h for h, (i, n, s) in first_seen.items() if 0 < i < index and n >= height and s != sender
+    ]
 
 
 def _lfb_past_genesis(node):
