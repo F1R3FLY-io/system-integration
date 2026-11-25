@@ -93,7 +93,6 @@ _EPOCH_LENGTH = 4
 _QUARANTINE_LENGTH = 10
 
 _WALLET_BALANCE = 50_000_000_000_000_000  # joiners: cover phlo + stake
-_BOND_PHLO_LIMIT = MAX_PHLO_LIMIT
 _BOND_PHLO_PRICE = 1
 # Mode-A out-of-phlo: a phlo_limit large enough to precharge but far too small to run the
 # bond contract to completion, so the deploy runs out of phlo mid-execution and errors.
@@ -155,7 +154,7 @@ _THROWAWAY_WITHDRAW_KEY = PrivateKey.from_seed(80002)
 # the contract's bond-deposit transfer then fails for insufficient balance ->
 # (false, "Bond deposit failed: ..."), distinct from out-of-phlo (Mode A).
 _MODE_B_KEY = PrivateKey.from_seed(80003)
-_MODE_B_BALANCE = _BOND_PHLO_LIMIT + 500  # ~500 left after precharge, < bond amount
+_MODE_B_BALANCE = MAX_PHLO_LIMIT + 500  # ~500 left after precharge, < bond amount
 
 
 class _BackgroundLoad:
@@ -206,7 +205,7 @@ class _BackgroundLoad:
                     _BG_TRANSFER_AMOUNT,
                     _BG_SRC_KEY,
                     phlo_price=1,
-                    phlo_limit=_BOND_PHLO_LIMIT,
+                    phlo_limit=MAX_PHLO_LIMIT,
                 )
                 with self._lock:
                     self._deploy_ids.append(did)
@@ -239,7 +238,7 @@ def _assert_bond_rejected(
     # rejection to assert; resubmit until one of them is judged.
     deploy_id = _submit_pos_until_effective(
         all_nodes,
-        {"bond": lambda: proposer.pos.bond(key, amount, phlo_limit=_BOND_PHLO_LIMIT)},
+        {"bond": lambda: proposer.pos.bond(key, amount, phlo_limit=MAX_PHLO_LIMIT)},
         timeouts,
         f"bond-rejected[{expected_reason}]",
     )["bond"]
@@ -266,7 +265,7 @@ def _assert_withdraw_rejected(actor, all_nodes, ro, key, expected_reason: str, t
     bonds_before = ro.pos.get_bonds()
     deploy_id = _submit_pos_until_effective(
         all_nodes,
-        {"withdraw": lambda: actor.pos.withdraw(key, phlo_limit=_BOND_PHLO_LIMIT)},
+        {"withdraw": lambda: actor.pos.withdraw(key, phlo_limit=MAX_PHLO_LIMIT)},
         timeouts,
         f"withdraw-rejected[{expected_reason}]",
     )["withdraw"]
@@ -366,7 +365,7 @@ def _attach_prebond(shard, identity, timeouts):
         joiner.deploy_string(
             f'@"pre-bond-{identity.name}"!(0)',
             identity.private_key(),
-            phlo_limit=_BOND_PHLO_LIMIT,
+            phlo_limit=MAX_PHLO_LIMIT,
             phlo_price=_BOND_PHLO_PRICE,
         )
     with pytest.raises(F1r3flyClientException, match="validator is not bonded"):
@@ -388,7 +387,7 @@ def _submit_bonds(ro, submissions, timeouts):
     """
     pending = []
     for proposer, identity, stake in submissions:
-        deploy_id = proposer.pos.bond(identity.private_key(), stake, phlo_limit=_BOND_PHLO_LIMIT)
+        deploy_id = proposer.pos.bond(identity.private_key(), stake, phlo_limit=MAX_PHLO_LIMIT)
         pending.append((proposer, identity, stake, deploy_id))
 
     results = []
@@ -467,7 +466,7 @@ def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bo
     joiner.deploy_string(
         f'@"active-{identity.name}"!(1)',
         identity.private_key(),
-        phlo_limit=_BOND_PHLO_LIMIT,
+        phlo_limit=MAX_PHLO_LIMIT,
         phlo_price=_BOND_PHLO_PRICE,
     )
 
@@ -502,7 +501,7 @@ def _activate_and_verify_participation(shard, ro, proposer, joiner, identity, bo
     proposer.deploy_string(
         f'@"after-{identity.name}"!(2)',
         proposer_id.private_key(),
-        phlo_limit=_BOND_PHLO_LIMIT,
+        phlo_limit=MAX_PHLO_LIMIT,
         phlo_price=_BOND_PHLO_PRICE,
     )
 
@@ -548,7 +547,7 @@ def _assert_full_liveness(shard, active, timeouts):
         live_id = node.deploy_string(
             f'@"liveness-{node.name}"!(1)',
             node_id.private_key(),
-            phlo_limit=_BOND_PHLO_LIMIT,
+            phlo_limit=MAX_PHLO_LIMIT,
             phlo_price=_BOND_PHLO_PRICE,
         )
         # Canonical-inclusion anchor; subsumes the number-based wait and
@@ -765,7 +764,7 @@ def _submit_pos_until_effective(
 
 def _submit_withdraw(actor, identity, timeouts):
     """Submit a withdraw, await inclusion + contract success. Returns the block."""
-    deploy_id = actor.pos.withdraw(identity.private_key(), phlo_limit=_BOND_PHLO_LIMIT)
+    deploy_id = actor.pos.withdraw(identity.private_key(), phlo_limit=MAX_PHLO_LIMIT)
     block = wait_for_deploy_included(actor, deploy_id, timeouts.deploy_inclusion * 3)
     wait_for_finalized(actor, block.blockNumber, timeouts.finalization * 3)
     result = actor.pos.read_result(deploy_id, block.blockHash)
@@ -870,7 +869,7 @@ def _advance_lfb_with_traffic(node, producers, n_blocks, timeouts) -> int:
                 _BG_TRANSFER_AMOUNT,
                 _REWARD_SRC_KEY,
                 phlo_price=1,
-                phlo_limit=_BOND_PHLO_LIMIT,
+                phlo_limit=MAX_PHLO_LIMIT,
             )
         except Exception:  # noqa: BLE001 — traffic is best-effort reward stimulus
             pass
@@ -1188,13 +1187,13 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
             "bond-V6": lambda: v3.pos.bond(
                 VALIDATOR6_ID.private_key(),
                 _JOINER_STAKE["validator6"],
-                phlo_limit=_BOND_PHLO_LIMIT,
+                phlo_limit=MAX_PHLO_LIMIT,
             ),
             "withdraw-V4": lambda: v1.pos.withdraw(
-                VALIDATOR4_ID.private_key(), phlo_limit=_BOND_PHLO_LIMIT
+                VALIDATOR4_ID.private_key(), phlo_limit=MAX_PHLO_LIMIT
             ),
             "withdraw-V5": lambda: v2.pos.withdraw(
-                VALIDATOR5_ID.private_key(), phlo_limit=_BOND_PHLO_LIMIT
+                VALIDATOR5_ID.private_key(), phlo_limit=MAX_PHLO_LIMIT
             ),
         },
         timeouts,
@@ -1222,7 +1221,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     # move) withdrawers -> (quarantine) paid out and gone, so asserting membership of
     # one particular map asserts a race. Assert instead what holds at every stage: V4
     # never occupies two positions at once, and its withdrawing stake is what it bonded.
-    dw_id = v1.pos.withdraw(VALIDATOR4_ID.private_key(), phlo_limit=_BOND_PHLO_LIMIT)
+    dw_id = v1.pos.withdraw(VALIDATOR4_ID.private_key(), phlo_limit=MAX_PHLO_LIMIT)
     dw_block = wait_for_deploy_included(v1, dw_id, timeouts.deploy_inclusion * 3)
     wait_for_finalized(v1, dw_block.blockNumber, timeouts.finalization * 3)
     dw_res = v1.pos.read_result(dw_id, dw_block.blockHash)
@@ -1342,7 +1341,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
         j4.deploy_string(
             f'@"postwd-{VALIDATOR4_ID.name}"!(0)',
             VALIDATOR4_ID.private_key(),
-            phlo_limit=_BOND_PHLO_LIMIT,
+            phlo_limit=MAX_PHLO_LIMIT,
             phlo_price=_BOND_PHLO_PRICE,
         )
     with pytest.raises(F1r3flyClientException, match="validator is not bonded"):
@@ -1350,7 +1349,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
     v6_live = j6.deploy_string(
         f'@"live-{VALIDATOR6_ID.name}"!(1)',
         VALIDATOR6_ID.private_key(),
-        phlo_limit=_BOND_PHLO_LIMIT,
+        phlo_limit=MAX_PHLO_LIMIT,
         phlo_price=_BOND_PHLO_PRICE,
     )
     v6_block = wait_for_deploy_included(j6, v6_live, timeouts.deploy_inclusion * 5)
@@ -1409,7 +1408,7 @@ def _run_lifecycle(shard, v1, v2, v3, ro, v4_pk, v5_pk, v6_pk, bg, timeouts) -> 
             "rebond-V4": lambda: v1.pos.bond(
                 VALIDATOR4_ID.private_key(),
                 _JOINER_STAKE["validator4"],
-                phlo_limit=_BOND_PHLO_LIMIT,
+                phlo_limit=MAX_PHLO_LIMIT,
             )
         },
         timeouts,

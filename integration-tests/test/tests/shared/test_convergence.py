@@ -307,10 +307,12 @@ def test_ft_convergence(convergence_shard, node_conf, timeouts) -> None:
 def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeouts) -> None:
     """Deploy a phlo-exhausting loop and verify the shard converges.
 
-    The loop contract blocks V1 for ~25s while phlo is exhausted.
-    During this time, V2 and V3 create independent heartbeat blocks,
-    causing DAG tip divergence. After the deploy completes (errored),
-    the network must converge and LFB must advance.
+    The loop contract blocks V1 until it runs out of phlo. During this time,
+    V2 and V3 create independent heartbeat blocks, causing DAG tip
+    divergence. After the deploy completes (errored), the network must
+    converge and LFB must advance. The test also asserts that divergence
+    happened, so a stall too short to cause it fails the test instead of
+    passing without it.
 
     Reproduces:
     - #224: phlo-exhausting deploy stalls the proposing validator
@@ -389,6 +391,24 @@ def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeo
     spread = max(final_lfbs.values()) - min(final_lfbs.values())
     logging.info("Final LFBs after slow deploy: %s (spread: %d)", final_lfbs, spread)
 
+    # Divergence evidence: blocks that V2 or V3 built above the deploy block
+    # without it as an ancestor. Same-height siblings do not count, because they
+    # occur without a stall. Ordinary network delay can also cause such a block,
+    # so this is a lower bound: it fails only when no divergence happened.
+    built_without = _blocks_built_without(
+        validators[1], info.blockHash, deploy_block, min(final_lfbs.values())
+    )
+    assert built_without, (
+        f"no block above #{deploy_block} was built without the slow deploy block; "
+        "the stall did not cause DAG tip divergence, so this test did not exercise "
+        "recovery from it"
+    )
+    logging.info(
+        "Divergence during the stall: %d block(s) above #%d built without the deploy block",
+        len(built_without),
+        deploy_block,
+    )
+
     _wait_for_lfb_ft_at_or_above_ftt(all_nodes, node_conf.ftt, timeouts.finalization)
 
     logging.info(
@@ -396,6 +416,27 @@ def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeo
         spread,
         node_conf.ftt,
     )
+
+
+def _blocks_built_without(node, block_hash: str, height: int, top: int) -> list:
+    """Blocks from other senders above ``height`` that do not descend from ``block_hash``.
+
+    Reads heights ``height``..``top`` from ``node``. A block descends from
+    ``block_hash`` when one of its parents is ``block_hash`` or descends from it.
+    Parents have lower heights, so one pass in height order finds them all.
+    """
+    blocks = node.get_blocks_by_heights(height, top)
+    target = next((b for b in blocks if b.blockHash == block_hash), None)
+    assert target is not None, f"block {block_hash[:16]} is not at height #{height} on {node.name}"
+    descendants = {block_hash}
+    for b in sorted(blocks, key=lambda b: b.blockNumber):
+        if any(p in descendants for p in b.parentsHashList):
+            descendants.add(b.blockHash)
+    return [
+        b
+        for b in blocks
+        if b.blockNumber > height and b.sender != target.sender and b.blockHash not in descendants
+    ]
 
 
 def _lfb_past_genesis(node):
