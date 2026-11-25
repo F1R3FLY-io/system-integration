@@ -19,6 +19,7 @@ reaching downstream shared-shard tests.
 """
 
 import logging
+import threading
 import time
 
 import pytest
@@ -344,19 +345,55 @@ def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeo
         VALIDATOR3_ID.private_key(),
     )
 
-    # Submit the slow deploy on V1
-    deploy_id = validators[0].deploy_string(
-        SLOW_LOOP_CONTRACT,
-        VALIDATOR1_ID.private_key(),
-        phlo_limit=MAX_PHLO_LIMIT,
-        phlo_price=1,
-    )
-    logging.info("Deployed loop contract on V1, deploy_id=%s", deploy_id[:24])
+    # Watch V2 while V1 runs the slow deploy. The first sample is taken before
+    # the deploy is submitted, so blocks that already exist are not evidence.
+    sampler = _FirstSeenSampler(validators[1])
+    sampler.sample()
+    sampler.start()
+    try:
+        # Submit the slow deploy on V1
+        deploy_id = validators[0].deploy_string(
+            SLOW_LOOP_CONTRACT,
+            VALIDATOR1_ID.private_key(),
+            phlo_limit=MAX_PHLO_LIMIT,
+            phlo_price=1,
+        )
+        logging.info("Deployed loop contract on V1, deploy_id=%s", deploy_id[:24])
 
-    # Wait for the deploy to be included. The phlo-exhausting loop takes
-    # ~25s to execute, much longer than normal deploy inclusion.
-    info = wait_for_deploy_included(validators[0], deploy_id, timeout=timeouts.finalization * 10)
+        # Wait for the deploy to be included. The phlo-exhausting loop takes
+        # much longer to execute than normal deploy inclusion.
+        info = wait_for_deploy_included(
+            validators[0], deploy_id, timeout=timeouts.finalization * 10
+        )
+        poll_until(
+            predicate=lambda: info.blockHash in sampler.first_seen,
+            timeout=timeouts.finalization,
+            interval=0.5,
+            description="V2's sampler sees the slow deploy block",
+        )
+    finally:
+        sampler.stop()
     deploy_block = info.blockNumber
+
+    # Divergence evidence, measured during the stall: blocks from V2 or V3 at or
+    # above the deploy block's height that V2 held in an earlier sample than the
+    # deploy block. They were built while V1 was still running the deploy.
+    # Normal propagation takes milliseconds, so a one-second sample rarely sees
+    # such a block without a stall.
+    built_during_stall = _seen_before(sampler.first_seen, info.blockHash)
+    stall_samples = sampler.first_seen[info.blockHash][0]
+    assert built_during_stall, (
+        f"V2 saw no block at or above #{deploy_block} before the slow deploy block "
+        f"({stall_samples} samples, {sampler.errors} sample errors); the stall did not "
+        "cause DAG tip divergence, so this test did not exercise recovery from it"
+    )
+    logging.info(
+        "Divergence during the stall: %d block(s) at or above #%d before the deploy "
+        "block reached V2 (stall spanned %d samples)",
+        len(built_during_stall),
+        deploy_block,
+        stall_samples,
+    )
 
     # Verify the slow deploy is errored (phlo exhausted)
     block_info = validators[0].get_block(info.blockHash)
@@ -391,24 +428,6 @@ def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeo
     spread = max(final_lfbs.values()) - min(final_lfbs.values())
     logging.info("Final LFBs after slow deploy: %s (spread: %d)", final_lfbs, spread)
 
-    # Divergence evidence: blocks that V2 or V3 built above the deploy block
-    # without it as an ancestor. Same-height siblings do not count, because they
-    # occur without a stall. Ordinary network delay can also cause such a block,
-    # so this is a lower bound: it fails only when no divergence happened.
-    built_without = _blocks_built_without(
-        validators[1], info.blockHash, deploy_block, min(final_lfbs.values())
-    )
-    assert built_without, (
-        f"no block above #{deploy_block} was built without the slow deploy block; "
-        "the stall did not cause DAG tip divergence, so this test did not exercise "
-        "recovery from it"
-    )
-    logging.info(
-        "Divergence during the stall: %d block(s) above #%d built without the deploy block",
-        len(built_without),
-        deploy_block,
-    )
-
     _wait_for_lfb_ft_at_or_above_ftt(all_nodes, node_conf.ftt, timeouts.finalization)
 
     logging.info(
@@ -418,24 +437,57 @@ def test_network_converges_after_slow_deploy(convergence_shard, node_conf, timeo
     )
 
 
-def _blocks_built_without(node, block_hash: str, height: int, top: int) -> list:
-    """Blocks from other senders above ``height`` that do not descend from ``block_hash``.
+class _FirstSeenSampler:
+    """Records the sample in which ``node`` first reports each recent block.
 
-    Reads heights ``height``..``top`` from ``node``. A block descends from
-    ``block_hash`` when one of its parents is ``block_hash`` or descends from it.
-    Parents have lower heights, so one pass in height order finds them all.
+    ``first_seen`` maps a block hash to ``(sample index, block number, sender)``.
+    A background thread takes a sample every ``interval`` seconds; ``sample()``
+    also takes one at once, for a baseline before the thread starts.
     """
-    blocks = node.get_blocks_by_heights(height, top)
-    target = next((b for b in blocks if b.blockHash == block_hash), None)
-    assert target is not None, f"block {block_hash[:16]} is not at height #{height} on {node.name}"
-    descendants = {block_hash}
-    for b in sorted(blocks, key=lambda b: b.blockNumber):
-        if any(p in descendants for p in b.parentsHashList):
-            descendants.add(b.blockHash)
+
+    def __init__(self, node, interval: float = 1.0, depth: int = 10):
+        self._node = node
+        self._interval = interval
+        self._depth = depth
+        self.first_seen: dict = {}
+        self.samples = 0
+        self.errors = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="first-seen-sampler", daemon=True)
+
+    def sample(self) -> None:
+        try:
+            blocks = self._node.get_blocks(self._depth)
+        except Exception:  # a failed sample is counted, not fatal
+            self.errors += 1
+            return
+        index = self.samples
+        self.samples += 1
+        for b in blocks:
+            self.first_seen.setdefault(b.blockHash, (index, b.blockNumber, b.sender))
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=self._interval * 5)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            self.sample()
+
+
+def _seen_before(first_seen: dict, block_hash: str) -> list:
+    """Blocks seen after the baseline sample and before ``block_hash``.
+
+    Only blocks from other senders at or above ``block_hash``'s height count.
+    Blocks in sample 0 existed before the deploy was submitted, so they do not.
+    """
+    index, height, sender = first_seen[block_hash]
     return [
-        b
-        for b in blocks
-        if b.blockNumber > height and b.sender != target.sender and b.blockHash not in descendants
+        h for h, (i, n, s) in first_seen.items() if 0 < i < index and n >= height and s != sender
     ]
 
 
