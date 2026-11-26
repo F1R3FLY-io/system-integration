@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Sequence
 from ..cleanup import DockerCleanupRegistry, session_patterns
 from ..compose import NODE_LOG_SINK_ARGS, generate_compose
 from ..config import NodeConfig, ResourcePaths, ShardConfig, resolve_node_image
+from ..first_use import confirm_fresh_validators, first_use_enabled, register_fresh_shard
 from ..genesis import generate_genesis
 from ..keys import BOOTSTRAP_NODE_ID
 from ..ports import PortAllocator
@@ -437,6 +438,19 @@ class DockerNodeHandle:
         # per_core_cpu_percent baseline: (mode, data, monotonic_time)
         self._percore_prev: Optional[tuple] = None
         self._file_logs_seen = False
+
+    def write_first_use(self, filename: str, content: str) -> None:
+        _docker(
+            "exec",
+            self.name,
+            "sh",
+            "-ec",
+            'cd /var/lib/rnode; umask 077; printf "%s" "$2" > "$1.tmp"; mv "$1.tmp" "$1"',
+            "sh",
+            filename,
+            content,
+            check=True,
+        )
 
     @property
     def volume_name(self) -> Optional[str]:
@@ -993,6 +1007,11 @@ class DockerProvider:
         # "No such container" on the next compose up).
         project_name = f"test-{shard_scope}"
 
+        if first_use_enabled():
+            existing = set(_docker("volume", "ls", "-q", check=True).stdout.splitlines())
+            if any(f"{project_name}_{role}-data" in existing for role in roles):
+                raise RuntimeError("First-use requires fresh shard volumes")
+
         # Start all services. Retry on Docker-on-Mac transient network race
         # (network just created but daemon reports "not found" when attaching
         # the first container) — clean up the partial state and try again.
@@ -1069,10 +1088,12 @@ class DockerProvider:
         )
         archive_dir = self._archive_dir / f"shard{self._shard_counter}"
 
+        register_fresh_shard(handles)
         # Wait for all nodes to reach Running state
         if wait_running:
             wait_for_handles_or_archive(handles, archive_dir, self._timeouts.node_startup)
             try:
+                confirm_fresh_validators(boot_handle, handles[1:])
                 wait_for_deploy_queues(
                     [
                         f"http://{h.grpc_host}:{h.ports.http}/queue/status"
@@ -1581,6 +1602,11 @@ class DockerProvider:
             *cmd,
         ]
 
+        if (
+            getattr(bootstrap_handle, "fresh_shard_signers", None)
+            and volume_name in _docker("volume", "ls", "-q", check=True).stdout.splitlines()
+        ):
+            raise RuntimeError("First-use requires a fresh joiner volume")
         _docker("volume", "create", volume_name)
         self._registry.register_volume(volume_name)
 
@@ -1601,14 +1627,18 @@ class DockerProvider:
             volume_name=volume_name,
         )
 
+        self._active_handles.append(handle)
+        signers = getattr(bootstrap_handle, "fresh_shard_signers", None)
+        if signers is not None:
+            signers.register(handle)
+
         if wait_running:
             wait_for_handles_or_archive(
                 [handle],
                 self._archive_dir,
                 self._timeouts.node_startup,
             )
-
-        self._active_handles.append(handle)
+            confirm_fresh_validators(bootstrap_handle, [handle])
         return handle
 
     def remove_node(self, handle: DockerNodeHandle) -> None:

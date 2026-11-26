@@ -45,6 +45,7 @@ from f1r3fly.websocket import (
 )
 
 from ...infra.config import ShardConfig
+from ...infra.first_use import confirm_fresh_validators
 from ...infra.keys import VALIDATOR1_ID, VALIDATOR2_ID
 from ...infra.node import Node
 from ...infra.polling import wait_for_deploy_included
@@ -144,6 +145,8 @@ def ws_shard(provider, timeouts):
                 timeout=timeouts.node_startup,
                 status_url=f"http://{handle.grpc_host}:{handle.ports.http}/api/status",
             )
+
+        confirm_fresh_validators(handles[0], handles[1:])
 
         # Wait for expected events on all connections
         wait_for_events(result.v1_events, EXPECTED_VALIDATOR_EVENTS, timeout=timeouts.finalization)

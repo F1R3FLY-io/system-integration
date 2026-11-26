@@ -43,6 +43,7 @@ from ..config import (
     resolve_deploy_queue_binary,
     resolve_node_binary,
 )
+from ..first_use import confirm_fresh_validators, first_use_enabled, register_fresh_shard
 from ..genesis import write_wallets
 from ..keys import BOOTSTRAP_NODE_ID
 from ..ports import PortAllocator
@@ -187,6 +188,12 @@ class SubprocessNodeHandle:
     @property
     def identity(self) -> Optional[ValidatorIdentity]:
         return self._identity
+
+    def write_first_use(self, filename: str, content: str) -> None:
+        target = self.data_dir / filename
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(content, encoding="ascii")
+        temporary.replace(target)
 
     @property
     def data_dir(self) -> Path:
@@ -539,7 +546,7 @@ class SubprocessProvider:
         ports the node listens on instead of those in ``ports``: a deploy
         queue serves those of ``ports``."""
         data_dir = self._session_root / role_key
-        data_dir.mkdir(parents=True, exist_ok=True)
+        data_dir.mkdir(parents=True, exist_ok=not first_use_enabled())
         log_path = self._session_root / f"{role_key}.log"
         listen = client_ports or ports
 
@@ -806,6 +813,7 @@ class SubprocessProvider:
                 )
             )
 
+        register_fresh_shard(handles)
         # ── Wait for all to reach Running ──
         if wait_running:
             archive_dir = self._archive_dir / f"shard{self._shard_counter}"
@@ -814,6 +822,7 @@ class SubprocessProvider:
             ]
             try:
                 wait_for_handles_or_archive(handles, archive_dir, self._timeouts.node_startup)
+                confirm_fresh_validators(boot_handle, handles[1:])
                 wait_for_deploy_queues(
                     [f"http://{q.grpc_host}:{q.ports.http}/queue/status" for q in queues],
                     self._timeouts.node_startup,
@@ -1238,14 +1247,18 @@ class SubprocessProvider:
             identity=identity,
         )
 
+        self._active_handles.append(handle)
+        signers = getattr(bootstrap_handle, "fresh_shard_signers", None)
+        if signers is not None:
+            signers.register(handle)
+
         if wait_running:
             wait_for_handles_or_archive(
                 [handle],
                 self._archive_dir,
                 self._timeouts.node_startup,
             )
-
-        self._active_handles.append(handle)
+            confirm_fresh_validators(bootstrap_handle, [handle])
         return handle
 
     def remove_node(self, handle: SubprocessNodeHandle) -> None:
